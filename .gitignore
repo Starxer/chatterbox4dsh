@@ -15,3 +15,6 @@ client/client.js.map
 
 # 本地开发 agent 指令文件（含本机路径/主机名等隐私），不外发
 AGENTS.md
+
+# 维护期脚本产物（DSH WebUI 文案对齐快照/报告），非项目文件
+scripts/out/

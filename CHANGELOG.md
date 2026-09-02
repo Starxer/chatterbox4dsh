@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 移除：`/stream` 命令及 `showIntermediateMessages` 配置（`src/index.ts` / `src/commands.ts` / `src/commands-i18n.ts` / `src/config.ts` / `tests/*`）
+
+- **背景**：用户决定不再做「流式输出」（stream on 状态），但**保留三段式 per-step 卡片更新机制**（stream off/默认行为不变）。经核查 `showIntermediateMessages` 已是死配置——只在 `/stream` toggle 里被写入，无任何渲染路径读取，统一 per-step 卡片本就始终渲染、与开关无关，故移除安全。
+- **改动**：
+  - 删除 `commands.ts` 的 `/stream` 命令注册、`FEISHU_OWNED_COMMANDS` 里的 `'stream'`、`renderFeishuCommandsOnly` 里的 `/stream` 条目、`CommandTranslations.streamDescription` 字段。
+  - 删除 `commands-i18n.ts` 的 zh/en `streamDescription`。
+  - 删除 `index.ts` 的 `/stream` 命令 handler（`executeSlashCommand`）、`toggleStream` 参数、`startChannel` 调用处的 toggle 回调。
+  - 删除 `config.ts` 的 `showIntermediateMessages` 字段 / `SettingsConfig` 键 / zod schema / 默认值。
+  - 同步清理 `tests/commands.spec.ts`（注册名列表、translations 对象）与 `tests/plugin.spec.ts`（config 载荷）。
+- **保留**：`feishu-streaming.ts` 三段式 `renderStepCard`/逐卡更新、`assistant/chunk` 逐 delta 累积、`feishu-toolcalls.ts` 原地更新——默认（stream off）行为完全不变。
+- **验证**：`npm run typecheck` / `npm run test`（220 passed）/ `npm run build` 全绿。
+
 ### 修复：图片判型按真实字节，不再猜 JPEG（非 JPEG 图片接收失败）（`src/channel.ts` / `tests/plugin.spec.ts`）
 
 - **问题**：用户发送**非 JPEG 图片**（PNG/WebP/GIF 等）时，插件报 `图片处理出错：Declared image type does not match its bytes. (code: IMAGE_TYPE_MISMATCH)` 并被拒收。只碰巧收到 JPEG 图才正常。

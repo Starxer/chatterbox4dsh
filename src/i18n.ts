@@ -14,7 +14,7 @@
  *
  * Terminology aligns with the DSH native UI (see the AGENTS.md compatibility
  * table): `Agent 预设`, `会话`, `工作区`, `推理`, permission presets
- * `仅可查看`/`可写入工作区`/`完全权限`, etc.
+ * `仅可查看`/`工作区内修改`/`完全权限`, etc.
  *
  * @module @starxer/chatterbox4dsh/i18n
  */
@@ -300,7 +300,7 @@ export const zh = {
   permissionCurrent: mode => `**当前权限模式：** \`${mode}\``,
   permissionHint: '_点击下方按钮切换本会话的权限（沙箱）模式。切换写入会话日志，下一次受限调用即生效。_',
   permissionReadOnly: '仅可查看',
-  permissionWorkspaceWrite: '可写入工作区',
+  permissionWorkspaceWrite: '工作区内修改',
   permissionFullAccess: '完全权限',
 
   busyTitle: '⏳ 忙碌行为',

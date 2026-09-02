@@ -71,7 +71,7 @@
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
-| 1 | subagent 只读列表面板 | **中** | 订阅 `ctx.subagents.listChildren` / `listDescendants`，列名称/状态/depth，并在会话面板/命令加入口。**只读列表**（用户澄清） |
+| 1 | subagent 会话独立命令 | **中** | `/session`（含 `/session list`）当前列出**所有**会话，含 subagent 生成的会话。改为：**主会话列表剔除 subagent 会话**，新增专门命令（暂定名 `subagent`）单独查看子代理会话。数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**2026-09-02 用户明确方向**（先记 TODO，未动工） |
 | 2 | `/steer` 与 `/queue` idle 兼容 | **中** | agent 空闲时自动**回退为发新消息**（不再报错），回执注明「空闲→已作为新消息」；running 时行为不变（`/queue` 同）。读 `bridge.isAgentRunning` + `resolveAgentOrResume` 判断。**2026-08-30 核查**：`/steer` 仍未解决 —— 空闲时 `bridge.steer` 抛「当前没有运行中的 turn 可注入」，无明显空闲回退；`/queue` 空闲时实际已走新轮路径（`forceQueue` 正常），仅 `busyMode==='queue'` 的冗余短接会返回提示。**待办焦点 = `/steer` 空闲回退** |
 | 3 | `locale` 设置 + `/lang` | **中** | ✅ 已完成（2026-08-31）：插件 `locale` 字段（`auto`/`zh`/`en`，默认 `auto`）+ `/lang [zh\|en\|auto]` 切换持久化。**语言源 = 插件字段，默认跟随 DSH**（`settings.get('locale').preference`，无值回退 `zh`）。见 CHANGELOG「中英双语 i18n」 |
 | 4 | 插件文案 i18n（zh/en) | **中** | ✅ 已完成（2026-08-31）：命令响应层（`CommandTranslations` 拆 zh/en，`src/commands-i18n.ts`）+ 卡片层（`Translations` 字典 `src/i18n.ts`）：streaming/session/busy/permission/questions/onboarding/model-select/status/footer 全部双语，术语对齐 DSH。191 测试通过 |
@@ -88,7 +88,8 @@
 | 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-08-30 核实**：3000 字符截断**已做**（`feishu-streaming.ts` reasoning/text 均 `slice(0,3000)`），仅 `collapsible` 未实现 |
 | — | **step 卡片可见性开关**（过程透明可配置） | **中** | **后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
 | 3 | 工作区候选补全 | **中** | 输入前缀列出匹配目录供选。**2026-08-30 核实**：插件源码无补全/建议逻辑，未实现 |
-| 9 | 流式输出 → CardKit | **低** | 解决 5 QPS 瓶颈。**2026-08-30 核实**：卡片**已用** `cardkit.v1.card.create/update`（V2）建/改卡，但**未用** `streaming_mode` 单卡持续流式；per-step 仍各发一卡。待办收窄为「单卡流式更新」 |
+| 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
+| — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
 | 8 | 文档与版本一致性 | **低** | 2026-08-30 核实：package.json `0.1.0`，README 明显过期未同步，仍待办 |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
 

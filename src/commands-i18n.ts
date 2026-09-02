@@ -117,7 +117,6 @@ export const zhCommandTranslations: CommandTranslations = {
     }
     return lines.join('\n')
   },
-  streamDescription: '切换 Agent 运行期间的中间消息显示',
   stopDescription: '停止本聊天当前运行中的 Agent（同 WebUI 停止按钮）',
   reasoningDescription: '查看或更改模型推理强度（思考强度）',
   reasoningUsage: '用法：/reasoning [off|low|high|max] [show on|off]',
@@ -230,7 +229,6 @@ export const enCommandTranslations: CommandTranslations = {
     }
     return lines.join('\n')
   },
-  streamDescription: 'Toggle intermediate assistant messages during agent turns',
   stopDescription: 'Stop the currently running agent in this chat (like the WebUI stop button)',
   reasoningDescription: 'Show or change the model reasoning effort (thinking intensity)',
   reasoningUsage: 'Usage: /reasoning [off|low|high|max] [show on|off]',

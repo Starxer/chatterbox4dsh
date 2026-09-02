@@ -342,13 +342,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         createLarkChannel,
         ctx.logger,
         console,
-        message => executeSlashCommand(message, bridge, commands, bridgeHolder, () => {
-          const current = currentSettings().showIntermediateMessages
-          const next = !current
-          ctx.logger('dsh-feishu').info(`dsh-feishu: /stream toggle: ${current} → ${next}`)
-          void settings.mutate(namespace, [{ op: 'set', path: ['showIntermediateMessages'], value: next }], currentRevision())
-          return { enabled: next as boolean }
-        }, sessionController, agents, sandboxPolicy, permissionHandle, llm, defaultModel, cardChannel,
+        message => executeSlashCommand(message, bridge, commands, bridgeHolder, sessionController, agents, sandboxPolicy, permissionHandle, llm, defaultModel, cardChannel,
         busyHandle,
         modelSelectHandle !== undefined ? { cardByMessage: modelSelectHandle.cardByMessage, sequenceByCard: modelSelectHandle.sequenceByCard } : undefined,
         onboardingHandle, workspaceRegistry, agentPresets, approvalControl, showReasoningControl, sessionHandle,
@@ -880,7 +874,6 @@ async function executeSlashCommand(
   bridge: HarnessConversationService,
   commands: CommandRuntime,
   bridgeHolder: { lastChatMessage: { chatId: string; chatType: 'p2p' | 'group'; threadId?: string } | undefined },
-  toggleStream?: () => { enabled: boolean },
   sessionController?: { selectModel?: (r: any) => Promise<any>; cancel?: (r: any) => Promise<any> },
   agents?: { get: (id: any) => { cancel: (cause: { kind: 'user' }, opts: { keepInbox?: boolean }) => void; session?: any } | undefined },
   sandboxPolicy?: { resolve?: (r: { session?: any }) => { mode: string; workspaceRoot?: string } },
@@ -1061,21 +1054,6 @@ async function executeSlashCommand(
   }
   if (parsed.name === 'detach') {
     return await handleDetachDirect(parsed.rawInput.trim(), bridge)
-  }
-  if (parsed.name === 'stream') {
-    if (toggleStream === undefined) {
-      return { kind: 'error', text: 'Stream mode toggle is not available.' }
-    }
-    const result = toggleStream()
-    const lines = [
-      result.enabled
-        ? '🟢 Streaming intermediate assistant messages: **ON**'
-        : '🔴 Streaming intermediate assistant messages: **OFF**',
-      '',
-      'When ON, assistant text responses between tool calls will appear as purple cards in the chat.',
-      'This setting persists across restarts.',
-    ]
-    return { kind: 'success', text: lines.join('\n') }
   }
   // /stop cancels the running agent — mirrors the WebUI stop button. The
   // bridge both bumps the per-chat stop generation (so a message queued behind

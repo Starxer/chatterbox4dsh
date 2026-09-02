@@ -27,8 +27,6 @@ export interface Config {
   errorMessage?: string
   /** Emoji reaction the bot adds to every inbound message; empty string disables it. */
   reactEmoji?: string
-  /** Show intermediate assistant messages during agent turns. */
-  showIntermediateMessages?: boolean
   /** Show model reasoning/thinking content in tool call cards and final reply. */
   showReasoning?: boolean
   /** Plugin language; `auto` (default) follows the DSH browser-language preference. */
@@ -37,7 +35,7 @@ export interface Config {
 
 export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
-  'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showIntermediateMessages' | 'showReasoning'>> {
+  'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning'>> {
   appSecret?: string
   provider?: string
   model?: string
@@ -67,7 +65,6 @@ export const ConfigSchema: z<Config> = z.object({
   agentPreset: z.string(),
   errorMessage: z.string().default(DEFAULT_ERROR_MESSAGE),
   reactEmoji: z.string().default(DEFAULT_REACTION_EMOJI).description('Emoji reaction added to each inbound message; empty string disables it'),
-  showIntermediateMessages: z.boolean().default(true).description('Show intermediate assistant messages during agent turns (not just tool calls and final reply)'),
   showReasoning: z.boolean().default(true).description('Show model reasoning/thinking content in tool call cards and final reply'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').description('Plugin language; auto follows the DSH browser-language preference'),
 })
@@ -87,7 +84,6 @@ export function resolveSettingsConfig(config: Config): SettingsConfig {
     dmAllowlist: config.dmAllowlist ?? [],
     errorMessage,
     reactEmoji: config.reactEmoji ?? DEFAULT_REACTION_EMOJI,
-    showIntermediateMessages: config.showIntermediateMessages ?? true,
     showReasoning: config.showReasoning ?? true,
     ...(config.appSecret === undefined ? {} : { appSecret: config.appSecret }),
     ...(config.provider === undefined ? {} : { provider: config.provider }),

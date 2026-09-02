@@ -116,7 +116,6 @@ export interface CommandTranslations {
   readonly approvalsAgeHours: (n: number) => string
   readonly statusDescription: string
   readonly statusOutput: (meta: { sessionId: string; workspace: string; agentPreset: string; model: string; title: string; turns: number; steps: number; toolCalls: number; inputTokens: number; outputTokens: number; contextWindow: number; lastInputTokens: number; cacheHitRate: number; ttftAvgMs: number; tokensPerSecond: number; llmDurationMs: number; toolDurationMs: number }) => string
-  readonly streamDescription: string
   readonly stopDescription: string
   readonly reasoningDescription: string
   readonly reasoningUsage: string
@@ -286,11 +285,6 @@ export function registerLarkCommands(
       handler: invocation => handleStatusCommand(invocation, bridge, chatMessageFor, t),
     })
     yield ctx.commands.register({
-      name: 'stream',
-      description: t.streamDescription,
-      handler: async () => ({ kind: 'success', text: '' }),
-    })
-    yield ctx.commands.register({
       name: 'reasoning',
       description: t.reasoningDescription,
       handler: invocation => handleReasoningCommand(
@@ -303,7 +297,7 @@ export function registerLarkCommands(
         sessionController,
       ),
     })
-  }, 'dsh-feishu: /model /new /session /detach /help /approve /deny /approvals /status /stream /reasoning commands')
+  }, 'dsh-feishu: /model /new /session /detach /help /approve /deny /approvals /status /reasoning commands')
 }
 
 export async function handleModelCommand(
@@ -551,7 +545,7 @@ async function handleDetachCommand(
  */
 const FEISHU_OWNED_COMMANDS = new Set<string>([
   'model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals',
-  'status', 'stream', 'reasoning', 'busy', 'steer', 'queue', 'permission', 'stop',
+  'status', 'reasoning', 'busy', 'steer', 'queue', 'permission', 'stop',
 ])
 export { FEISHU_OWNED_COMMANDS }
 
@@ -633,7 +627,6 @@ export function renderFeishuCommandsOnly(t: CommandTranslations): string {
     { name: 'model', description: t.modelDescription, hint: '[list|provider/model]' },
     { name: 'status', description: t.statusDescription },
     { name: 'reasoning', description: t.reasoningDescription, hint: '[off|low|high|max]' },
-    { name: 'stream', description: t.streamDescription },
     { name: 'new', description: t.newDescription },
     { name: 'session', description: t.threadDescription, hint: '[N]' },
     { name: 'detach', description: t.detachDescription, hint: '<N>' },

@@ -65,7 +65,6 @@ const translations: CommandTranslations = {
   approvalsAgeHours: n => `${n}h`,
   statusDescription: 'Show session status',
   statusOutput: (meta) => `Session: ${meta.sessionId} | Title: ${meta.title} | Workspace: ${meta.workspace} | Preset: ${meta.agentPreset} | Model: ${meta.model}`,
-  streamDescription: 'Toggle streaming messages',
   stopDescription: 'Stop the running agent',
   reasoningDescription: 'Show or change reasoning effort',
   reasoningUsage: 'Usage: /reasoning [off|low|high|max]',
@@ -208,7 +207,7 @@ describe('registerLarkCommands', () => {
   it('registers the /model, /new, /session, and /help commands on the registry', () => {
     const fake = fakeContext()
     registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
-    expect(fake.registered.map(item => item.name)).toEqual(['model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals', 'status', 'stream', 'reasoning'])
+    expect(fake.registered.map(item => item.name)).toEqual(['model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals', 'status', 'reasoning'])
     fake.dispose()
   })
 })
