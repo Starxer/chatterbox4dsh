@@ -64,6 +64,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/approve` `/deny` `/approvals` | 处理工具审批 |
 | `/help` | 卡片列出所有可用命令（分组：chatterbox4dsh 插件 / DSH 内置） |
 
+> **关于会话压缩**：`compact` 命令由 **DSH 内置**提供（`@deepseek-ai/dsh-command-compact`，注册 `/compact` 并调用官方压缩），本插件**不注册** `compact` 命令（避免与 DSH 内置同名冲突）。当某个会话历史过大时，用 DSH 内置的 `/compact` 压缩其上下文，或将会话归档/另开新会话。DSH 压缩只改写「进入模型上下文的部分」，会话的完整事件日志不会被删除。
+
 > **运行中发消息的行为（`/busy`）**：`queue`（排队发送，等待当前轮结束后作为新轮运行）或 `steer`（插话发送，注入当前轮立即响应，persist）。`/status` 的 **Enter while busy** 行显示当前值。一次性插话用 `/steer <内容>`；一次性排队用 `/queue <内容>`。**agent 空闲时**，`/steer`、`/queue` 都会自动回退为「作为新消息发送」而不是报错。`/stop` 会中止当前轮并**丢弃排队/等待中的消息**（不再自动进入下一 turn）。
 
 ## 配置

@@ -289,6 +289,30 @@ describe('HarnessConversationService', () => {
     await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'one' })).rejects.toThrow(/successful assistant response/)
   })
 
+  it('reply bounds the event snapshot to the current turn instead of the whole history', async () => {
+    // The host-from-source Session exposes `snapshotEvents(fromSeq, toSeqExclusive)`
+    // with a no-arg default that copies the ENTIRE log (and caches it). reply()
+    // only summarises the current turn (events with `seq >= firstSeq`), so it must
+    // pass `firstSeq` rather than snapshot everything — on a bloated session that
+    // copy is the amplifier behind the "heap out of memory" crashes.
+    const snapshotEvents = vi.fn((fromSeq?: number) => [
+      { seq: 100, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } },
+      { seq: 101, type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    ])
+    const create = vi.fn(async ({ sessionId }: any) => ({
+      agent: {
+        session: { id: sessionId, seq: 100, snapshotEvents },
+        whenIdle: async () => undefined,
+        followup() {}, steer() {}, cancel() {}, status: 'idle' as const,
+      },
+      dispose: async () => undefined,
+    }))
+    const service = new HarnessConversationService({ agents: { create, resume: vi.fn(), get: () => undefined }, sessions: { flush: async () => true }, sessionPersistence: { list: async () => [] }, selection: () => ({ provider: 'p', model: 'm' }), agentPresets: { resolve: async () => ({ id: 'default' }), mount: async () => undefined }, workspaceRegistry: { list: () => [], resolveByPath: async () => undefined, archivedSessionIds: [] } }, { domain: 'feishu', workspace: '/work' })
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'one' })).resolves.toBe('done')
+    expect(snapshotEvents).toHaveBeenCalledWith(100)
+    expect(snapshotEvents).not.toHaveBeenCalledWith()
+  })
+
   it('listSessions filters out the workspace archive set', async () => {
     const f = fixture()
     const deps = dependencies(f)
@@ -338,6 +362,77 @@ describe('HarnessConversationService', () => {
     const first = sessions[0]!
     expect(first.id).toBe(sessionId)
     expect(first.agentPreset).toBe('PTC 模式')
+  })
+
+  it('listSessions filters out subagent sessions (durable origin: subagent)', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-test-subagent'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: { origin: 'subagent', parentSession: 'lark-v2-parent', agentPreset: 'ptc', createdAt: 1000 },
+      events: [
+        { seq: 0, type: 'session', data: {}, time: 1000 },
+        { seq: 1, type: 'turn/start', data: {}, time: 1000 },
+        { seq: 2, type: 'session/title', data: { title: 'Child session' }, time: 1000 },
+      ],
+    }))
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const sessions = await service.listSessions()
+    expect(sessions.map(s => s.id)).toEqual([])
+  })
+
+  it('listSessions keeps forked sessions that have a parentSession but no subagent origin', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-test-fork'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: { parentSession: 'lark-v2-parent', agentPreset: 'ptc', createdAt: 1000 },
+      events: [
+        { seq: 0, type: 'session', data: {}, time: 1000 },
+        { seq: 1, type: 'turn/start', data: {}, time: 1000 },
+        { seq: 2, type: 'session/title', data: { title: 'Forked session' }, time: 1000 },
+      ],
+    }))
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const sessions = await service.listSessions()
+    expect(sessions.map(s => s.id)).toEqual([sessionId])
+  })
+
+  it('getSessionMeta follows the agent-preset/selected event over the creation header', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: { cwd: '/w', agentPreset: 'standard', createdAt: 1000 },
+      events: [
+        { seq: 0, type: 'session', data: {}, time: 1000 },
+        { seq: 1, type: 'turn/start', data: {}, time: 1000 },
+        // Blank-session preset switch recorded after creation: the header still
+        // says `standard`, but the effective preset is `cordis`.
+        { seq: 2, type: 'agent-preset/selected', data: { agentPreset: 'cordis' }, time: 1000 },
+      ],
+    }))
+    deps.agentPresets.list = vi.fn(async () => [{ id: 'cordis', name: '创造模式' }, { id: 'standard', name: '标准模式' }])
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const meta = await service.getSessionMeta({ chatId: 'a', chatType: 'p2p' })
+    expect(meta.agentPreset).toBe('创造模式')
+  })
+
+  it('getSessionMeta falls back to the creation header preset when no switch event exists', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: { cwd: '/w', agentPreset: 'standard', createdAt: 1000 },
+      events: [
+        { seq: 0, type: 'session', data: {}, time: 1000 },
+        { seq: 1, type: 'turn/start', data: {}, time: 1000 },
+      ],
+    }))
+    deps.agentPresets.list = vi.fn(async () => [{ id: 'standard', name: '标准模式' }])
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const meta = await service.getSessionMeta({ chatId: 'a', chatType: 'p2p' })
+    expect(meta.agentPreset).toBe('标准模式')
   })
 
   it('switchToSession refuses to redirect a chat to an archived session', async () => {

@@ -71,7 +71,7 @@
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
-| 1 | subagent 会话独立命令 | **中** | `/session`（含 `/session list`）当前列出**所有**会话，含 subagent 生成的会话。改为：**主会话列表剔除 subagent 会话**，新增专门命令（暂定名 `subagent`）单独查看子代理会话。数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**2026-09-02 用户明确方向**（先记 TODO，未动工） |
+| 1 | subagent 会话独立命令 | **中** | **主会话列表剔除 subagent 会话：✅ 已完成（2026-09-02）** —— `listSessions()` 按会话 durable header `origin === 'subagent'` 过滤（DSH 子代理会话创建时即写该字段；fork 会话只有 `parentSession`、无 `origin`，不受影响，仍显示）。`/session`、`/session list`、`/session N`、onboarding 选择卡全部经 `listSessions`，一处过滤全覆盖。剩余：新增专门命令（暂定名 `subagent`）单独查看子代理会话，数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**尚未动工** |
 | 2 | `/steer` 与 `/queue` idle 兼容 | **中** | agent 空闲时自动**回退为发新消息**（不再报错），回执注明「空闲→已作为新消息」；running 时行为不变（`/queue` 同）。读 `bridge.isAgentRunning` + `resolveAgentOrResume` 判断。**2026-08-30 核查**：`/steer` 仍未解决 —— 空闲时 `bridge.steer` 抛「当前没有运行中的 turn 可注入」，无明显空闲回退；`/queue` 空闲时实际已走新轮路径（`forceQueue` 正常），仅 `busyMode==='queue'` 的冗余短接会返回提示。**待办焦点 = `/steer` 空闲回退** |
 | 3 | `locale` 设置 + `/lang` | **中** | ✅ 已完成（2026-08-31）：插件 `locale` 字段（`auto`/`zh`/`en`，默认 `auto`）+ `/lang [zh\|en\|auto]` 切换持久化。**语言源 = 插件字段，默认跟随 DSH**（`settings.get('locale').preference`，无值回退 `zh`）。见 CHANGELOG「中英双语 i18n」 |
 | 4 | 插件文案 i18n（zh/en) | **中** | ✅ 已完成（2026-08-31）：命令响应层（`CommandTranslations` 拆 zh/en，`src/commands-i18n.ts`）+ 卡片层（`Translations` 字典 `src/i18n.ts`）：streaming/session/busy/permission/questions/onboarding/model-select/status/footer 全部双语，术语对齐 DSH。191 测试通过 |

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### 修复：消息处理触发 `JavaScript heap out of memory` 崩溃——`reply()` 不再整段快照会话历史（`src/harness.ts` / `tests/harness.spec.ts`）
+
+- **现象**：给某一(些)会话发消息后约几十秒，dsh 进程以 `FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory` 崩溃并 core dump（`systemd-coredump`，`status=6/ABRT`），`Restart=on-failure` 自动重启，`/session list` 里的会话还在但当前轮丢失。日志显示崩溃紧随 `[msg]` 之后，堆由低快速涨到默认 ~4GB 上限。
+- **根因（两层）**：
+  1. **会话历史膨胀**：主会话历史解压后达 ~170MB、约 31 万条事件、约 9000 轮，内含多个 100KB–735KB 的大工具结果块；DSH 每轮都要加载整段历史。
+  2. **插件放大器**：`reply()`（steer 与 queue 两条路径，`src/harness.ts` 的 `readSessionEvents`）调用 `session.snapshotEvents()` 时**不带范围参数**——DSH 源码的 `snapshotEvents(fromSeq, toSeqExclusive)` 无参默认 `(0, seq)`，并**缓存一份整段历史的冻结副本**（`eventsSnapshot = Object.freeze([...log])`）。每条消息都这么调，等于在 DSH 自身开销之上再整天复读历史并叠加一份常驻副本，堆被推过 4GB → OOM。而 `summarizeTurn()` 本就 `if (event.seq < firstSeq) continue` 只关心本轮事件，全量快照纯属浪费。
+- **修复**：`readSessionEvents(agent, fromSeq?)` 接受可选 `fromSeq`；`snapshotEvents` 存在时传 `fromSeq`（`snapshotEvents(fromSeq)`）只拷贝本轮增量事件，而不是整段 log。`reply()` 两条路径改为 `readSessionEvents(agent, firstSeq)`。`/session list` live 路径仍按需全量（需探测 `turn/start` 与 `agent-preset/selected` 覆盖事件，且该项为用户主动调用、非每消息触发）。
+- **验证**：`npm run typecheck` / `npm run test`（225 passed，新增 1 例：`snapshotEvents` 被以 `firstSeq` 调用、而非无参全量）/ `npm run build` 全绿。
+- **说明**：此修复消除插件侧的全量快照放大。若会话本身已大到 DSH 核心每轮加载仍易触顶，建议对超大会话执行 **DSH 内置的 `compact` 命令**（`@deepseek-ai/dsh-command-compact`，注册 `/compact` 并调 `compaction.compactNow`）或另开新会话，见 TODO。（本插件**从未注册** `compact` 命令——早期曾做过 `/compact`，但与 DSH 自带的 `command-compact` 重名、启动即 `command "compact" is already registered` 冲突，故已作为 fork 分歧移除，见 AGENTS.md「关键坑」第 1 条；压缩功能始终由 DSH 内置命令提供。）
+
+### 修复：`/session`（含 `/session list`）不再误列 subagent 会话（`src/harness.ts` / `tests/harness.spec.ts`）
+
+- **背景**：`listSessions()` 原样列出 `sessionPersistence.list()` 里的所有会话，subagent 生成的子代理会话也混入 `/session`、`/session list`、`/session N`、onboarding 选择卡，与 WebUI 会话树（只展示非子会话）不一致。
+- **改动**：`listSessions()` 对每个持久化会话按 session header 的 `origin === 'subagent'` 过滤并跳过。DSH 的子代理会话在创建时即写 durable header `origin: 'subagent'`（`subagent/child-agent.ts`），故仅凭该字段即可精确判别；**fork 会话只有 `parentSession`、无 `origin`，不受影响仍正常显示**。live 会话在持久化 seam 缺失时回退读 `agent.session.header.origin`。
+- **覆盖面**：`/session`、`/session list`、`/session N`、onboarding 选择卡均经 `bridge.listSessions()`，一处过滤即全覆盖。
+- **验证**：`npm run typecheck` / `npm run test`（222 passed，新增 2 例：subagent 被过滤、fork 保留）/ `npm run build` 全绿。
+- **剩余**：单独查看子代理会话的 `subagent` 命令（数据源 `ctx.subagents.listChildren`，只读）仍待动工，记 TODO。
+
 ### 移除：`/stream` 命令及 `showIntermediateMessages` 配置（`src/index.ts` / `src/commands.ts` / `src/commands-i18n.ts` / `src/config.ts` / `tests/*`）
 
 - **背景**：用户决定不再做「流式输出」（stream on 状态），但**保留三段式 per-step 卡片更新机制**（stream off/默认行为不变）。经核查 `showIntermediateMessages` 已是死配置——只在 `/stream` toggle 里被写入，无任何渲染路径读取，统一 per-step 卡片本就始终渲染、与开关无关，故移除安全。

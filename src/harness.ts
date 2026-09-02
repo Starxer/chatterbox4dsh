@@ -240,7 +240,7 @@ export class HarnessConversationService {
       agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
       await agent.whenIdle()
       await this.deps.sessions.flush(agent.session)
-      const result = summarizeTurn(agent.session.events, firstSeq)
+      const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
       if (!result.ok) throw new Error('Harness turn did not produce a successful assistant response')
       return result.text
     }
@@ -260,9 +260,59 @@ export class HarnessConversationService {
     }))
     await agent.whenIdle()
     await this.deps.sessions.flush(agent.session)
-    const result = summarizeTurn(agent.session.events, firstSeq)
+    const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
     if (!result.ok) throw new Error('Harness turn did not produce a successful assistant response')
     return result.text
+  }
+
+  /**
+   * The live session's event log, tolerant of the two Session API surfaces
+   * DSH's `Session` has shipped. The host running from source exposes
+   * `snapshotEvents()` while the published `dsh-session` package exposes a
+   * plain `events` getter; reading the wrong one makes a downstream `for..of`
+   * throw "events is not iterable". Prefer the plain array, fall back to the
+   * snapshot method, and never fail just because neither is present.
+   *
+   * When `fromSeq` is given, bound the snapshot to events at or after that
+   * sequence instead of copying the entire history. `snapshotEvents()` with no
+   * range defaults to `(0, session.seq)` and caches a frozen copy of the WHOLE
+   * log (`eventsSnapshot`); for a long-lived session that is hundreds of MB.
+   * `reply()` only summarises the current turn (`summarizeTurn` drops anything
+   * with `seq < firstSeq`), so snapshotting the full history is pure overhead
+   * and was the amplifier behind the "JavaScript heap out of memory" crashes on
+   * bloated sessions.
+   */
+  private readSessionEvents(
+    agent: AgentLike,
+    fromSeq?: number,
+  ): readonly { seq: number; type: string; data: any }[] {
+    const session = agent.session as unknown as {
+      events?: readonly { seq: number; type: string; data: any }[]
+      snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly { seq: number; type: string; data: any }[]
+    }
+    if (Array.isArray(session.events)) return session.events
+    if (typeof session.snapshotEvents === 'function') {
+      return fromSeq === undefined ? session.snapshotEvents() : session.snapshotEvents(fromSeq)
+    }
+    return []
+  }
+
+  /**
+   * Resolve one agent preset id to its display name via the roster, matching
+   * what `/session list` and the WebUI show. Falls back to the raw id when the
+   * roster is unavailable or the id is unknown / empty.
+   */
+  private async resolvePresetDisplayName(id: string): Promise<string> {
+    if (id === '') return ''
+    if (typeof this.deps.agentPresets.list !== 'function') return id
+    try {
+      for (const row of await this.deps.agentPresets.list()) {
+        if (row.id === id) return row.name !== undefined && row.name !== '' ? row.name : row.id
+      }
+    } catch {
+      // Roster read failure: fall back to the id below.
+    }
+    return id
   }
 
   /** Per-chat busy mode for a message sent while the agent is running. */
@@ -700,18 +750,27 @@ export class HarnessConversationService {
       let title = ''
       let blank = false
       let presetId = ''
+      let subagent = false
       let events: ReadonlyArray<{ seq: number; type: string; data: any }> | undefined
       if (live !== undefined) {
-        events = (live as unknown as AgentLike).session.events
+        events = this.readSessionEvents(live as unknown as AgentLike)
         // The live session's in-memory log has no header, so read the on-disk
         // meta for the creation preset (also catches the docs getSessionMeta path).
         if (typeof readFrom === 'function') {
           try {
             const result = await readFrom.call(this.deps.sessionPersistence, item.id as never, 0)
-            presetId = (result.meta as { agentPreset?: string } | undefined)?.agentPreset ?? ''
+            const meta = result.meta as { agentPreset?: string; origin?: unknown } | undefined
+            presetId = meta?.agentPreset ?? ''
+            subagent = meta?.origin === 'subagent'
           } catch {
             // Missing artifact / service: preset stays unknown.
           }
+        } else {
+          // No persistence seam: fall back to the live session header. A DSH
+          // subagent session carries `origin: 'subagent'` on its durable
+          // header, so detection does not depend on the persistence service.
+          const header = (live as unknown as { session?: { header?: { origin?: unknown } } })?.session?.header
+          subagent = header?.origin === 'subagent'
         }
       } else {
         // Cold session: ask SessionPersistence for the on-disk log via the same
@@ -722,8 +781,9 @@ export class HarnessConversationService {
           try {
             const result = await readFrom.call(this.deps.sessionPersistence, item.id as never, 0)
             events = result.events as ReadonlyArray<{ seq: number; type: string; data: any }>
-            const meta = result.meta as { agentPreset?: string; createdAt?: number } | undefined
+            const meta = result.meta as { agentPreset?: string; createdAt?: number; origin?: unknown } | undefined
             presetId = meta?.agentPreset ?? ''
+            subagent = meta?.origin === 'subagent'
             const metaTime = Number(meta?.createdAt ?? 0)
             if (metaTime > updatedAt) updatedAt = metaTime
           } catch {
@@ -732,6 +792,12 @@ export class HarnessConversationService {
           }
         }
       }
+      // Subagent-routed sessions live under their parent's delegation tree and
+      // are surfaced there, not in the main session list. Hide them here so
+      // `/session` matches the webui's tree (which shows only non-child
+      // sessions); a fork is a user-facing session (parentSession without
+      // `origin:'subagent'`) and stays visible.
+      if (subagent) continue
       if (events !== undefined) {
         for (const event of events) {
           const seqTime = Number((event as { time?: number }).time ?? 0)
@@ -788,7 +854,7 @@ export class HarnessConversationService {
         const result = await readFrom.call(this.deps.sessionPersistence, sessionId as never, 0)
         const header = result.meta as { cwd?: string; agentPreset?: string } | undefined
         const ws = header?.cwd ?? this.config.workspace ?? ''
-        const preset = header?.agentPreset ?? this.config.agentPreset ?? ''
+        let preset = header?.agentPreset ?? this.config.agentPreset ?? ''
         const events = result.events as ReadonlyArray<{ type: string; data: any }>
         const stats = this.deriveSessionStats(events)
         // Prefer the latest request header recorded in the session log over the
@@ -797,6 +863,15 @@ export class HarnessConversationService {
         // so the ref here can lag behind the model actually used in the last turn.
         let latestConfig: { provider?: string; model?: string; reasoningEffort?: string } | undefined
         for (const event of events) {
+          if (event?.type === 'agent-preset/selected' && typeof event?.data?.agentPreset === 'string' && event.data.agentPreset !== '') {
+            // A blank-session preset switch records `agent-preset/selected` but
+            // never rewrites the creation header, so the event — not
+            // `header.agentPreset` — is the authority for the effective preset.
+            // The WebUI projection reads it; mirror that here so `/status`
+            // matches the webui and `/session list` instead of showing the
+            // stale creation preset.
+            preset = event.data.agentPreset
+          }
           if (event?.type === 'request/header' && event.data?.header?.config) {
             latestConfig = event.data.header.config
           }
@@ -810,10 +885,12 @@ export class HarnessConversationService {
           }
           reasoningEffort = effort ? String(effort) : ''
         }
-        return { sessionId, workspace: ws, agentPreset: preset, model: `${model.provider}/${model.model}`, reasoningEffort, ...stats }
+        const agentPreset = await this.resolvePresetDisplayName(preset)
+        return { sessionId, workspace: ws, agentPreset, model: `${model.provider}/${model.model}`, reasoningEffort, ...stats }
       } catch { /* fall through to config defaults */ }
     }
-    return { sessionId, workspace: this.config.workspace ?? '', agentPreset: this.config.agentPreset ?? '', model: `${model.provider}/${model.model}`, reasoningEffort, ...empty }
+    const agentPreset = await this.resolvePresetDisplayName(this.config.agentPreset ?? '')
+    return { sessionId, workspace: this.config.workspace ?? '', agentPreset, model: `${model.provider}/${model.model}`, reasoningEffort, ...empty }
   }
 
   /**

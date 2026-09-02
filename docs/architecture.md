@@ -60,3 +60,5 @@ turn/end         → flush debounce，发送 Turn Complete 卡片
 - **Card JSON 2.0**：所有卡片使用 `schema: '2.0'` + `body.elements`，原生支持 markdown
 - **入站图片判型按字节**：飞书 `messageResource` 不给内容 MIME、SDK 归一化的 image 资源无文件名，故图片必须**先下载字节、用 magic bytes 判真实格式**（`sniffImageMime`）再交给 `attachments.saveImage`，**不得猜 JPEG**——DSH 附件库会校验声明与实际字节（`IMAGE_TYPE_MISMATCH`），猜错即拒收非 JPEG 图片
 - **入站文件落工作区收件箱**：文件经 `admitFilesForMessage` 落到会话工作区根 `.feishu-inbox/`（`resolveWorkspaceRoot` 解析，无则回退全局）；图片走 DSH 原生附件库（`~/.dsh/attachments/v1/`），**两条独立路径**
+- **会话事件读取必须按 seq 范围，不要全量物化**：DSH `Session` 的 `snapshotEvents(fromSeq, toSeqExclusive)` 无参默认 `(0, seq)` 且**缓存一整段日志的冻结副本**（`eventsSnapshot`）；会话日志是 **append-only**、随使用无限膨胀。插件读会话事件（如 `summarizeTurn` 做本轮摘要）应传 `firstSeq` 只取本轮增量，避免每条消息全量复读+常驻副本引发的内存峰值（本项目曾直接 `JavaScript heap out of memory`）。
+- **压缩只改 surface、不删日志**：DSH `compaction-basic` 压缩改写的是 **surface（进模型的上下文视图）**，经 `replaceGeneration` 替换它；**事件日志本体不被删除**，仍是全量。故日志体积只能靠「新会话/归档」收敛，压缩只降低每轮上下文折叠的峰值。读会话事件时须牢记「日志 ≠ 上下文」这一差别。
