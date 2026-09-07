@@ -12,17 +12,19 @@
 
 ## 结论速览
 
-| 优先级 | 改动 | 插件文件 | 类型 |
+| 优先级 | 改动 | 插件文件 | 类型 / 实现状态 |
 |---|---|---|---|
-| 🔴 P0 | `assistant/chunk` 流式机制被替换 | `src/feishu-streaming.ts` | 破坏性 |
-| 🔴 P0 | `sessionPersistence.readFrom()/prepare()` 被移除 | `src/harness.ts` | 破坏性 |
-| 🟡 P1 | `sessionPersistence.list()` 返回结构变化 | `src/harness.ts` | 兼容 |
-| 🟡 P1 | `commands` `input.images` → `input.attachments` | `src/index.ts` | 兼容（空数组不受影响） |
-| 🟢 P2 | 通用文件附件原生缝合 | `src/channel.ts` / `src/feishu-receive-file.ts` / `src/feishu-send-file.ts` | 新特性接入 |
-| 🟢 P2 | `/steer` `/queue` 走 `sessionController.prompt()` | `src/harness.ts` / `src/index.ts` | 新特性接入（✅ 已实现，版本无关） |
+| 🔴 P0 | `assistant/chunk` 流式机制被替换 | `src/feishu-streaming.ts` | 破坏性 · ✅ 已实现（方案 B） |
+| 🔴 P0 | `sessionPersistence.readFrom()/prepare()` 被移除 | `src/harness.ts` | 破坏性 · ✅ 已实现 |
+| 🟡 P1 | `sessionPersistence.list()` 返回结构变化 | `src/harness.ts` | 兼容 · ✅ 已适配 |
+| 🟡 P1 | `commands` `input.images` → `input.attachments` | `src/index.ts` | 兼容（空数组不受影响）· ✅ 已核对 |
+| 🟢 P2 | 通用文件附件原生缝合 | `src/channel.ts` / `src/feishu-receive-file.ts` / `src/feishu-send-file.ts` | 新特性接入 · ✅ 已实现 |
+| 🟢 P2 | `/steer` `/queue` 走 `sessionController.prompt()` | `src/harness.ts` / `src/index.ts` | 新特性接入 · ✅ 已实现（版本无关） |
 | ⚪ 免改 | 图片接入 (`saveImage`/`imageLimits`)、瀑布事件、`sessionController` 系列 | — | 无变化 |
 
-**一句话**：升级到 0.1.3 需要 **1 处核心重构（流式渲染）+ 1 处持久化调用迁移（SessionHandle）+ 少量取值适配**；图片接入与审批/问答瀑布事件**无需改动**。新版本带来的**原生文件附件**是替换插件 `.feishu-inbox` 手工路径的最佳机会。
+**实现状态（2026-09-08 全部完成）**：以上各项均已实现，DSH 已升级到 `0.1.3-alpha.1`，typecheck/test/build 全绿，实机重启干净启动。
+
+**一句话**：升级到 0.1.3 需要 **1 处核心重构（流式渲染，方案 B）+ 1 处持久化调用迁移（SessionHandle）+ 少量取值适配**；图片接入与审批/问答瀑布事件**无需改动**。已改用 0.1.3 **原生文件附件**替换插件 `.feishu-inbox` 手工路径。
 
 > ⚠️ **重要修正（2026-09-08 核对源码后）**：现状卡片**并不是逐 token 流式**——`assistant/chunk` 只做内存累积（`state.reasoning +=` / `state.text +=`），真正的 `sendStepCard` 只在 `assistant/message` 或首个 `tool/call` 边界发**整卡**。因此 **0.1.3 的流式迁移以「方案 B（从 `assistant/message.stream` 一次性重建）」为主**——它贴近现状、近乎零回归；方案 A（订阅 `agent/assistant-stream` 实时帧、逐 delta 渲染）是**今天并不存在**的增量能力，降为**可选**。早期文档（2026-09-06）写的"方案 A 为主 + end 兜底"已作废。
 
@@ -350,24 +352,15 @@ export type PromptContentPart =
 
 ---
 
-## 八、迁移计划 / TODO
+## 八、迁移计划 / 完成状态
 
-> 每项给出「受影响文件·函数/行」+「迁移写法」+「本次（alpha.4）可做与否」。**除第 5 项（已完成）外，其余均依赖 0.1.3 运行时，当前 alpha.4 无法实测**——需先升级 DSH 到 0.1.3 再动工。
+> 每项给出「受影响文件·函数/行」+「迁移写法」+「实现状态」。**全部项已实现并升级**（DSH 已升到 `0.1.3-alpha.1`，typecheck/test/build 全绿，实机重启干净启动；见 CHANGELOG）。下面保留各项目标写法供回溯；✅ 标记已完成/已核对。
 
-1. **[P0] 流式渲染**——`src/feishu-streaming.ts`。
-   **方案 B 为主（贴近现状，近乎零回归）**：删除 `assistant/chunk` 分支（仅需累积逻辑迁走）；在 `assistant/message` 分支（:362-419）用 `expandAssistantStream(event.data.stream)` 展开，按 `chunk.type` 累积到 `state.text`/`state.reasoning`，`firstTokenTime` 取首个 `TimedStreamChunk.time`；识别 `interrupted: true` 前缀。`sendStepCard`/`buildStepCard`/工具块分支**不动**。**可选项方案 A**（订阅 `agent/assistant-stream` 逐 delta 实时渲染）——今天并不存在的能力，除非明确要逐 token 观感否则不做。
-2. **[P0] SessionHandle**——`src/harness.ts`。
-   - `list()` 的 `.id` → `.header.id`（`needsOnboarding` :673、`listSessions` :791、归档过滤 :500/:1154），并确认 `agentPresets.list()` 相关的 `persisted` 判断继续成立。
-   - `readFrom(id, 0)` → `open(id,'read')` + `handle.read(0)`（`listSessions` 冷会话 :808-849、`getSessionMeta` :911-968），**用后 `close()`**（`await using` 或 try/finally）；header 从 `handle.header` 取。
-   - **只读优先 `stat(id)`/`list()` 取 header，不开 handle**；`prepare` 本插件不用，忽略。
-   - `readSessionEvents`（:305-316）走 live agent 的 `session.events`/`snapshotEvents`，**不涉 `sessionPersistence`，无需改**。
-3. **[P1] 取值适配**——核对确认：`list()` 返回结构（第 2 项覆盖）；`commands` 的 `input.images`→`CommandInputDescriptor.attachments` —— 插件传空数组 `[]`，**预期零改动**（§三）。
-4. **[P2] 原生文件附件**——`src/channel.ts`（`admitFilesForMessage` :190-216、`AttachmentLike` :42）、`src/feishu-receive-file.ts`、`src/feishu-send-file.ts`。
-   - 入站文件下载 → `ctx.attachments.saveFile({ data, name })` 返回 `FileAttachmentRef` → 在 user message content push `{ type:'file', attachment }` 块（替代写 `.feishu-inbox` + `[文件: …]` 文本）；`feishu-receive-file.ts` 返回 path 用 `fileHostPath(ref)`。
-   - `feishu-send-file.ts` **不动**（输出方向，不依赖 `FileAttachmentRef`）；图片路径（`saveImage`/`imageLimits`）**不动**。
-   - **需实测**：agent 从 handle 文本读 `fileHostPath` 绝对路径、且路径在 agent 工具沙箱内可读。
-   - 不需要 `@deepseek-ai/dsh-client-file-upload`（host 插件直接调 `attachments` 可得同样 durable ref）。
-5. **[P2] 消息投递原生化**——`/steer`、`/queue`。**✅ 已实现（版本无关）**：文本派发已走 `prompt()`（`harness.ts` `dispatchPrompt`），保留 whenIdle/running-guard 包装；带图/带文件与不可用时回退直连（类型必然，见 §五）。**升级 0.1.3 后无需再改**。
-6. **[验证]**：`npm run typecheck` / `npm run test` / `npm run build` 全绿；实机 `systemctl --user restart dsh` 后 `journalctl --user -u dsh -n 30` 干净启动（无 `error|failed|already registered`）。
+1. **[P0] 流式渲染**——`src/feishu-streaming.ts`。**✅ 已实现（方案 B）**：`assistant/message` 分支改用 `expandAssistantStream(event.data.stream)` 重建 text/reasoning（0.1.3 下 `assistant/chunk` 已移除），`firstTokenTime` 取首个 `TimedStreamChunk.time`；保留旧版 chunk 累积作兜底。`sendStepCard`/`buildStepCard`/工具块分支不动。
+2. **[P0] SessionHandle**——`src/harness.ts`。**✅ 已实现**：新增 `persistedIdOf()`（归一 `.id`/`.header.id`）与 `readColdSession()`（0.1.3 用 `open(id,'read')`+`handle.read(0)`+`close()`，旧版回退 `readFrom`）。所有 `list().some(item=>item.id)` → `persistedIdOf`，冷会话 `readFrom(id,0)` → `readColdSession`；`prepare` 本插件不用。
+3. **[P1] 取值适配**——**✅ 已核对/已修**：`list()` 返回结构第 2 项覆盖；`commands` 的 `input.images`→`CommandInputDescriptor.attachments` 插件传空数组 `[]`，零改动。另修 3 个 0.1.3 真实契约：`AgentLike.session.events` 改可选（0.1.3 `Session` 无 `.events`）、`SessionPersistenceSnapshot` 只有 `.header.id`（无顶层 id）、`todo/write` 宽松匹配（运行时仍发射，但不在 `SessionEventMap` 判别联合里）。
+4. **[P2] 原生文件附件**——`src/channel.ts`、`src/feishu-receive-file.ts`、`src/harness.ts`。**✅ 已实现**：入站文件经 `ctx.attachments.saveFile({ data, name })` 返回 `FileAttachmentRef` → 在 user message content push `{ type:'file', attachment }` 块；`InboundMessage` 加 `fileBlocks`，`reply()`/`steer()` 附块，`dispatchPrompt` 对带文件/图片回退直连；`feishu-receive-file.ts` 返回 path 用 `fileHostPath(ref)`，`feishu-send-file.ts` 不动（输出方向）。图片路径（`saveImage`/`imageLimits`）**不动**；如 `saveFile` 缺失（旧版）回退 `.feishu-inbox`。
+5. **[P2] 消息投递原生化**——`/steer`、`/queue`。**✅ 已实现（版本无关）**：文本派发已走 `prompt()`（`harness.ts` `dispatchPrompt`），保留 whenIdle/running-guard 包装；带图/带文件与不可用时回退直连（类型必然，见 §五）。升级 0.1.3 后无需再改。
+6. **[验证]**——**✅ 已通过**（DSH 0.1.3）：`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿；实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。
 
-> ⚠️ 本插件 `node_modules` 内链接的 DSH 类型为旧版（rc.8 级），**不能**作为 0.1.3 兼容信号的依据；改造后应基于 0.1.3 源码做类型核验（本文 §二/§四 的签名已按 0.1.3 源码核实）。
+> ⚠️ 本插件 `node_modules` 内链接的 DSH 类型为旧版（rc.8 级），**不能**作为 0.1.3 兼容信号的依据；改造后应基于 0.1.3 源码做类型核验（本文 §二/§四 的签名已按 0.1.3 源码核实）。本次为验证已把插件 `node_modules` 的 DSH 包软链到 DSH workspace 0.1.3（本地编译用，不涉及部署）。

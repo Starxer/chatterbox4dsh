@@ -2,26 +2,27 @@
 
 ## Unreleased
 
-### 迁移：兼容 DSH `0.1.3-alpha.1`（**P2 prompt 派发已实现**，其余改动点已记录、未动工）
+### 迁移：兼容 DSH `0.1.3-alpha.1`（**P0/P1/P2 全部已实现，DSH 已升级并验证**）
 
-- DSH 远端最新 release 为 `dsh-v0.1.3-alpha.1`（2026-09-04），距本插件基线 `dsh-v0.1.2-alpha.4` 有 **336 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。本条目记录需改动的范围；其中 **P2「消息投递原生化」（版本无关）已实现**，其余待升级后动工。
+- DSH 远端最新 release 为 `dsh-v0.1.3-alpha.1`（2026-09-04），距本插件基线 `dsh-v0.1.2-alpha.4` 有 **336 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。**本条目所有迁移项均已实现**：DSH 已升级到 `0.1.3-alpha.1`，`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿，实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。
 - ✅ **可信度**：迁移文档全部 API 签名已对照 **0.1.3 源码**逐条核实（`git show dsh-v0.1.3-alpha.1`），不依赖插件 `node_modules` 里链接的旧版（rc.8 级）类型。
 
-#### 需改动（破坏性）
+#### 已实现（破坏性）
 
-- 🔴 **流式渲染**：`assistant/chunk` 从 `session/event` **移除**，改为 `assistant/message.stream`（内嵌 `AssistantStreamRecord[]`）+ 新增 `assistant/attempt` + agent-scoped 实时事件 `agent/assistant-stream`（`start/chunk/end`，经 `follow({assistantStream:true})` opt-in）。**迁移方案已定为「方案 B 为主（读 `assistant/message.stream` 一次性重建）」**（2026-09-08 修正；早期「方案A为主」已作废）：结合源码核对发现**现状本就不是逐 token**——`assistant/chunk` 只做内存累积，`sendStepCard` 只在 `assistant/message`/首个 `tool/call` 边界发整卡，方案 B 贴近现状、近乎零回归。方案 A（`agent/assistant-stream` 逐 delta）是今天不存在的能力，降为可选。正文重建用 `@deepseek-ai/dsh-llm` 的 `expandAssistantStream(stream)`，TTFT 从首个 `TimedStreamChunk.time` 取（有偏差，记为退化点）。详见迁移文档 §1。
-- 🔴 **`sessionPersistence`**：`readFrom()/prepare()` 移除，改为 `SessionHandle`（`open(id,'read')+handle.read`，用后 `close()`，否则写句柄泄漏所有权）；`list()` 返回 `SessionPersistenceSnapshot[]`（`.id` → `.header.id`）。`src/harness.ts` 多处调用点需迁移；**只读优先 `stat(id)`/`list()` 取 header，不开 handle**。详见迁移文档 §2。
+- 🔴 ✅ **流式渲染（方案 B）**：`assistant/chunk` 从 `session/event` **移除**，改为 `assistant/message.stream`（内嵌 `AssistantStreamRecord[]`）+ 新增 `assistant/attempt` + agent-scoped 实时事件 `agent/assistant-stream`（`start/chunk/end`，经 `follow({assistantStream:true})` opt-in）。**已实现方案 B**（2026-09-08 修正；早期「方案A为主」已作废）：结合源码核对发现**现状本就不是逐 token**——`assistant/chunk` 只做内存累积，`sendStepCard` 只在 `assistant/message`/首个 `tool/call` 边界发整卡，方案 B 贴近现状、近乎零回归。方案 A（`agent/assistant-stream` 逐 delta）是今天不存在的能力，降为可选。`src/feishu-streaming.ts` 在 `assistant/message` 分支用 `@deepseek-ai/dsh-llm` 的 `expandAssistantStream(stream)` 重建 text/reasoning，TTFT 从首个 `TimedStreamChunk.time` 取（有偏差，记为退化点）；保留旧版 chunk 累积作兜底。详见迁移文档 §1。
+- 🔴 ✅ **`sessionPersistence`**：`readFrom()/prepare()` 移除，改为 `SessionHandle`（`open(id,'read')+handle.read`，用后 `close()`，否则写句柄泄漏所有权）；`list()` 返回 `SessionPersistenceSnapshot[]`（`.id` → `.header.id`）。`src/harness.ts` 新增 `persistedIdOf()`（归一 `.id`/`.header.id`）与 `readColdSession()`（0.1.3 用 `open(id,'read')+handle.read(0)+close()`，旧版回退 `readFrom`）；所有 `list().some(item=>item.id)` → `persistedIdOf`。详见迁移文档 §2。
 
-#### 需适配（兼容）
+#### 已适配（兼容）
 
-- `commands` 的 `input.images` → 声明式 `CommandInputDescriptor.attachments?: boolean`（插件传空数组 `[]`，预期不受影响）。
-- `admitPromptContent` 从自由函数变 `ctx.attachments` service 方法（插件未用，不改）。
-- 另确认 `@deepseek-ai/dsh-client-file-upload` 是 **host+client**（非纯浏览器），拒绝 subagent；宿主插件直接调 `attachments` 即可，不需要它。
+- ✅ `commands` 的 `input.images` → 声明式 `CommandInputDescriptor.attachments?: boolean`（插件传空数组 `[]`，**核对后零改动**）。
+- ✅ `admitPromptContent` 从自由函数变 `ctx.attachments` service 方法（插件未用，不改）。
+- ✅ 另确认 `@deepseek-ai/dsh-client-file-upload` 是 **host+client**（非纯浏览器），拒绝 subagent；宿主插件直接调 `attachments` 即可，不需要它。
+- ✅ **修 3 个 0.1.3 真实契约**：`AgentLike.session.events` 改可选（0.1.3 `Session` 无 `.events`）、`SessionPersistenceSnapshot` 只有 `.header.id`（无顶层 id）、`todo/write` 宽松匹配（运行时仍发射，但不在 `SessionEventMap` 判别联合里，见 `src/feishu-todos.ts`）。
 
-#### 新特性可接入
+#### 新特性已实现
 
-- 通用文件附件：`ctx.attachments.saveFile/saveFileStream/admitEncodedFile` → `FileAttachmentRef`（`{ attachmentId, name(必填), bytes }`），文件块 `{ type:'file', attachment }`，`fileHostPath` 给绝对路径，`projectFilesToText`/`fileHandleText` 投影 handle 文本（永不 raw 上传 provider）。可替换 `.feishu-inbox` 手工路径；**图片路径（`saveImage`/`imageLimits`）不变**。⚠️ `saveFileStream` 的 `data` 是 `AsyncIterable<Uint8Array>`。
-- `/steer`、`/queue`、普通/带图消息可改走 `sessionController.prompt()`（`mode:'queue'|'steer'`，原生图片 admission）。**✅ 已实现（版本无关，当前 `0.1.2-alpha.4` 即可运行，已实机验证）**：`src/harness.ts` 新增 `dispatchPrompt`（文本派发改走 `prompt()`，带图与 `prompt` 不可用时回退直连 `agent.steer/followup`），`src/index.ts` 把 `sessionController` 注入桥接 deps；保留 `whenIdle`/running-guard/`TurnDroppedError` 包装，体感不变。**两处适配器坑已修**（`prompt()` 需真实 `AbortSignal`、且必须作为方法调用保持 `this` 绑定，详见迁移文档 §五）。**复核**：0.1.3 的 `SessionPromptRequest`/`PromptContentPart` 与 alpha.4 一致，升级后无需再改；`PromptContentPart` 里 image 是 `{ mediaType, data: base64 }`（与插件预存的 `ImageAttachmentRef` 类型不匹配），故带图走直连是**类型必然**。
+- ✅ **通用文件附件**：`ctx.attachments.saveFile/saveFileStream/admitEncodedFile` → `FileAttachmentRef`（`{ attachmentId, name(必填), bytes }`），文件块 `{ type:'file', attachment }`，`fileHostPath` 给绝对路径，`projectFilesToText`/`fileHandleText` 投影 handle 文本（永不 raw 上传 provider）。已替换 `.feishu-inbox` 手工路径（`channel.ts`/`feishu-receive-file.ts`/`harness.ts`：`InboundMessage.fileBlocks`、`dispatchPrompt` 对带文件回退直连），旧版无 `saveFile` 时回退 `.feishu-inbox`；**图片路径（`saveImage`/`imageLimits`）不变**。⚠️ `saveFileStream` 的 `data` 是 `AsyncIterable<Uint8Array>`。
+- ✅ `/steer`、`/queue`、普通/带图消息可改走 `sessionController.prompt()`（`mode:'queue'|'steer'`，原生图片 admission）。**已实现（版本无关，已实机验证）**：`src/harness.ts` 新增 `dispatchPrompt`（文本派发改走 `prompt()`，带图/带文件与 `prompt` 不可用时回退直连 `agent.steer/followup`），`src/index.ts` 把 `sessionController` 注入桥接 deps；保留 `whenIdle`/running-guard/`TurnDroppedError` 包装，体感不变。**两处适配器坑已修**（`prompt()` 需真实 `AbortSignal`、且必须作为方法调用保持 `this` 绑定，详见迁移文档 §五）。**复核**：0.1.3 的 `SessionPromptRequest`/`PromptContentPart` 与 alpha.4 一致，升级后无需再改；`PromptContentPart` 里 image 是 `{ mediaType, data: base64 }`（与插件预存的 `ImageAttachmentRef` 类型不匹配），故带图走直连是**类型必然**。
 
 ### 修复：消息处理触发 `JavaScript heap out of memory` 崩溃——`reply()` 不再整段快照会话历史（`src/harness.ts` / `tests/harness.spec.ts`）
 
