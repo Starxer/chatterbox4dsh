@@ -92,6 +92,7 @@
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
 | 8 | 文档与版本一致性 | **低** | 2026-08-30 核实：package.json `0.1.0`，README 明显过期未同步，仍待办 |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
+| — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | **2026-09-08 调研完成 + 部分实现**：reasoning 预览已收紧 200 字（`REASONING_CAP`）、工具 args 已改 pretty 打印（2k 上限），**剩余：step 卡 text 超长分段**。根因：`feishu-streaming.ts` `renderStepCard` 的 text 仍 `slice(0,3000)+'…(truncated)'` 硬截断；卡片 markdown 元素有内容上限（30KB 请求体 / ~10k 元素）。目标：超长 text 用 `chunkText` 拆多张连续卡而非截断。见「飞书消息长度限制调研记录」 |
 
 > ✅ 已从本表移除（2026-08-30 确认完成）：
 > - `/new` 带参数（`--workspace`/`--preset`）—— 已实现
@@ -313,3 +314,36 @@ POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
 - **`followup()`**：消息进 `next-turn` 队列，`wakeRequested` latch，当前 turn 完成后自动处理
 - **`whenIdle()`**：spin-until-stable，等所有排队 turn 完成才返回
 - **关键结论**：消息不会丢失，但飞书侧需等当前 turn 完成才能响应
+
+---
+
+## 飞书消息长度限制调研记录（2026-09-08）
+
+> 出处：飞书/Lark 开放平台文档与实测参考（官方域名 `open.feishu.cn` / `open.larksuite.com` 在本机 DNS 解析为非公网 IP 无法直连，结论综合可信第三方文档 + 已知 bug 报告）。
+
+### 平台限制（请求体上限，非字符数）
+- **text（文本）消息**：请求体最大 **150 KB**
+- **interactive（卡片）/ 富文本消息**：请求体最大 **30 KB**
+- 来源：[Tapdata Lark-IM 文档](https://github.com/tapdata/docs/blob/main/docs/prerequisites/saas-and-api/lark-im.md)（转引官方 `im/v1/message/create` 条款）。
+
+### 卡片 markdown 元素的隐式内容上限
+- 单个 `markdown` 元素的 `content` 有**隐式长度上限**（社区实测/报告约 **~10,000 字符/元素**）。**关键坑**：超限时 Feishu API 返回 **HTTP 200、无错误**，但**静默丢弃超出部分**——客户端无从感知，看到的回复就是被截断的。
+- 来源：[openclaw/openclaw#88631](https://github.com/openclaw/openclaw/issues/88631)——流式卡片 text 累积超限即静默截断；[openclaw/openclaw#70651](https://github.com/openclaw/openclaw/pull/70651) 另记录了卡片**表格数量**超限错误码（`230099`/内层 `11310`，>3 个 markdown 表格）。
+
+### 本插件现状（截断点，均需改成分段）
+| 位置 | 现在 | 问题 |
+|---|---|---|
+| `feishu-streaming.ts` `renderStepCard`（~792/801） | text/reasoning 各 `slice(0,3000)+'…(truncated)'` | 独立 step 卡直接截断（用户看到的主因） |
+| `channel.ts` `renderReasoningForReply`（525） | reasoning `slice(0,5000)+'…(truncated)'` | 两阶段 reply 的 thinking 卡截断 |
+| `channel.ts` `renderReplyCards`（546） | `chunkText(displayText, CARD_TEXT_MAX=4000)` 已分卡（≤30 张） | **已分段**，基本安全 |
+| `text-chunk.ts` | `chunkText` 按段落装箱 + `capChunks` | 已具备分段工具，可复用 |
+
+### 结沦 / 改动方向（待实现）
+1. **step 卡 & reasoning 卡**：把 `…(truncated)` 硬截断改为「超限即另起一段/一张卡」——流式 step 卡本身是逐 step 更新，长 step 的 text 可用 `chunkText` 拆多张连续卡，或至少放宽到安全阈值并标注「已分段」。
+2. **阈值选择**：卡片 30KB 请求体（非字符数，中文按 UTF-8 ~3B/字）换算 ≈ **中文约 1 万字**、英文约 3 万字符；单 markdown 元素另有 ~10k 字符隐式上限。`CARD_TEXT_MAX=4000` 是保守安全值，**拆卡阈值宜取 ~6k–8k 字符**，留足 markdown 开销与表头/footer 余量。
+3. **text 消息回退**：超长纯文本可改发 `text` 消息（150KB，上限远高于卡片），或卡片 + 文本混合。
+4. **静默截断防护**：发送前按已知上限（30KB 请求体 / ~10k 元素）本地校验并主动分段，**不要依赖飞书静默截断**。
+
+### 待定
+- 是否需要 `renderMode: auto|card|text` 配置（对齐 openclaw 建议，让超长回复回退纯文本）。
+- 分段后是否在每卡加 `Part i/N` 标注（`renderReplyCards` 已有，step 卡可复用）。

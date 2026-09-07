@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 调整：reasoning 只留预览窗口（200 字）+ 工具调用 args 显示更详细（`src/feishu-streaming.ts` / `src/channel.ts` / `tests/feishu-streaming.spec.ts` / `tests/truncation.spec.ts`）
+
+- **reasoning 截断收紧到 200 字**：用户认为 reasoning 内容应截断、且应留得更少——统一三处 reasoning 预览窗口从 `3000/5000/2000` 收紧为 **`REASONING_CAP = 200`**（`feishu-streaming.ts` `renderStepCard`、`channel.ts` `renderReasoningForReply`/`renderReplyCards`）。reasoning 只是"思考概要"预览，不展示完整思维链。
+- **工具调用 args 显示更详细**：原 `summarizeValue(tool.arguments, 200)` 只留 200 字、超出即 `…` 省略。改用新 `formatToolArgs()`：**JSON 参数 pretty-print（2 格缩进，逐 key 一行）**，字符串参数尝试 JSON.parse 再格式化，上限放宽到 **`ARGS_DISPLAY_CAP = 2000`**（超限才 `…`）。读者能看清真实参数（路径/命令/flag），不再是压缩摘要。
+- **验证**：`npm run typecheck` / `npm run test`（228 passed，新增 3 例：reasoning 200 字截断 ×2、args pretty 打印不截断）/ `npm run build` 全绿。
+
+### 记录：agent 回复过长被飞书截断 → 需自动分段发送（**调研完成，分段实现待后续**）
+
+- **调研结论**：飞书 text 消息请求体上限 **150 KB**、卡片/富文本 **30 KB**，单个卡片 `markdown` 元素另有 ~10k 字符隐式上限，且**超限时 API 返回 200、静默丢弃溢出内容**。本插件 `renderReplyCards`（`chunkText(text, 4000)`）已分段，但 `feishu-streaming.ts` 的 step 卡 text/reasoning 仍是 `slice(0,3000)+…(truncated)` 硬截断（reasoning 已改 200，text 分段待实现）。详见 TODO.md「飞书消息长度限制调研记录」。
+
 ### 整理：飞书文件路径收敛到 DSH 原生附件库（不再向前兼容 alpha.4）（`src/channel.ts` / `src/feishu-receive-file.ts` / `src/index.ts` / `tests/plugin.spec.ts` / `tests/feishu-receive-file.spec.ts`）
 
 - **背景**：插件此前对入站文件维护**两条并行路径**——0.1.3 走原生 `attachments.saveFile`（`FileAttachmentRef` + `fileHostPath`），旧版/无 `saveFile` 回退写工作区 `.feishu-inbox/` 并注入 `[文件: name → path]` 文本。既然插件不再向前兼容 alpha.4（DSH 已是 `0.1.3-alpha.2`，`AttachmentStore` 必有 `saveFileStream`/`fileHostPath`），把文件统一收敛到**一条原生路径**。

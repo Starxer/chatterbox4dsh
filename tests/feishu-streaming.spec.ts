@@ -152,3 +152,28 @@ describe('deriveToolSummary', () => {
     expect(deriveToolSummary('bash', '{"a":1}')).toBe('{"a":1}')
   })
 })
+
+describe('renderStepCard reasoning + args budgets', () => {
+  it('caps reasoning to a short preview window (200 chars)', () => {
+    const reasoning = 'x'.repeat(500)
+    const card = renderStepCard(t, reasoning, undefined, []) as any
+    const md = mdOf(card)
+    expect(md).toContain(`${'x'.repeat(200)}\n…(truncated)`)
+    expect(md).not.toContain('x'.repeat(201))
+  })
+
+  it('shows JSON args pretty-printed (not a one-line digest) up to an expanded cap', () => {
+    const args = '{"command":"echo hello","flags":["-l","-a"],"path":"/tmp/file.txt"}'
+    const card = renderStepCard(t, undefined, undefined, [{
+      toolName: 'bash', callId: 'c1', arguments: args, startedAt: 0,
+      result: { isError: false, content: 'ok', elapsed: 5 },
+      resultView: { card: 'terminal', output: 'ok' },
+    }]) as any
+    const md = mdOf(card)
+    // The args block carries each key on its own line (pretty JSON), not `…`.
+    expect(md).toContain('"command": "echo hello"')
+    expect(md).toContain('"flags"')
+    expect(md).toContain('"path": "/tmp/file.txt"')
+    expect(md).not.toContain('…(truncated)')
+  })
+})

@@ -18,6 +18,9 @@ export interface PluginLogger {
   error(message: string): unknown
 }
 
+/** Max reasoning characters shown on a reply/thinking card (preview only). */
+const REASONING_CAP = 200
+
 /**
  * Dispatch a parsed slash command against the receiving chat.
  * Returning `undefined` means the message is not a command; the bridge
@@ -522,7 +525,8 @@ function formatMs(ms: number): string {
  * Shown first, then updated with the full reply content.
  */
 function renderReasoningForReply(reasoning: string): object {
-  const displayReasoning = reasoning.length > 5000 ? reasoning.slice(0, 5000) + '\n…(truncated)' : reasoning
+  // Reasoning is a preview only: keep a short window, never the full chain.
+  const displayReasoning = reasoning.length > REASONING_CAP ? reasoning.slice(0, REASONING_CAP) + '\n…(truncated)' : reasoning
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -558,7 +562,8 @@ export function renderReplyCards(text: string, meta?: ReplyCardMeta, reasoning?:
     const elements: object[] = []
 
     if (isFirst && reasonForHeader !== undefined) {
-      const displayReasoning = reasonForHeader.length > 2000 ? reasonForHeader.slice(0, 2000) + '\n…(truncated)' : reasonForHeader
+      // Reasoning is a preview only: keep a short window, never the full chain.
+      const displayReasoning = reasonForHeader.length > REASONING_CAP ? reasonForHeader.slice(0, REASONING_CAP) + '\n…(truncated)' : reasonForHeader
       elements.push({
         tag: 'markdown',
         content: `🧠 **Reasoning**\n\`\`\`\n${displayReasoning}\n\`\`\``,

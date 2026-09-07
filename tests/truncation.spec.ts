@@ -94,4 +94,12 @@ describe('renderReplyCards', () => {
     expect(cards).toHaveLength(1)
     expect(markdownOf(cards[0])).toContain('(empty response)')
   })
+
+  it('caps reasoning to a short preview window (200 chars)', () => {
+    const cards = renderReplyCards('short reply', undefined, 'r'.repeat(500))
+    const reasoningCard = cards[0]
+    const md = markdownOf(reasoningCard)
+    expect(md).toContain(`${'r'.repeat(200)}\n…(truncated)`)
+    expect(md).not.toContain('r'.repeat(201))
+  })
 })

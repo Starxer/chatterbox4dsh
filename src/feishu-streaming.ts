@@ -633,6 +633,12 @@ const RESULT_CONTENT_CAP = 1500
 /** Cap for one tool result preview rendered into the card (characters). */
 const RESULT_PREVIEW_CAP = 1500
 
+/** Max reasoning characters shown on a step card (preview only). */
+const REASONING_CAP = 200
+
+/** Cap for one tool call's args rendered in the fenced code block (characters). */
+const ARGS_DISPLAY_CAP = 2000
+
 /**
  * Truncate a value to a readable summary for card display.
  */
@@ -641,6 +647,30 @@ function summarizeValue(value: unknown, maxLen: number = 200): string {
   const str = typeof value === 'string' ? value : JSON.stringify(value)
   if (str.length <= maxLen) return str
   return str.slice(0, maxLen) + '…'
+}
+
+/**
+ * Format a tool call's arguments for the fenced code block, showing as much
+ * detail as the budget allows. JSON objects are stringified in a compact (but
+ * indented) form when they parse, so the reader sees the real parameters
+ * instead of one line; passes through plain strings unchanged. Capped at
+ * `ARGS_DISPLAY_CAP` characters so a single args block never blows the card.
+ */
+function formatToolArgs(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  let str: string
+  if (typeof value === 'string') {
+    // Try to pretty-print a JSON string so multi-arg calls stay legible.
+    try {
+      const parsed: unknown = JSON.parse(value)
+      str = JSON.stringify(parsed, null, 2)
+    } catch {
+      str = value
+    }
+  } else {
+    str = JSON.stringify(value, null, 2)
+  }
+  return str.length > ARGS_DISPLAY_CAP ? str.slice(0, ARGS_DISPLAY_CAP) + '\n…' : str
 }
 
 /** Sanitize raw content for embedding in a fenced code block: collapse any
@@ -787,9 +817,10 @@ export function renderStepCard(
 ): object {
   const elements: object[] = []
 
-  // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning)
+  // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning).
+  // Reasoning is a preview only: keep a short window, never the full chain.
   if (reasoning !== undefined && reasoning !== '') {
-    const displayReasoning = reasoning.length > 3000 ? reasoning.slice(0, 3000) + '\n…(truncated)' : reasoning
+    const displayReasoning = reasoning.length > REASONING_CAP ? reasoning.slice(0, REASONING_CAP) + '\n…(truncated)' : reasoning
     elements.push({
       tag: 'markdown',
       content: `${t.stepReasoningHeader}\n\`\`\`\`\`\n${displayReasoning}\n\`\`\`\`\``,
@@ -836,8 +867,10 @@ export function renderStepCard(
       // Args in a dedicated fenced code block: it wraps/scrolls instead of
       // overflowing, and tolerates backticks/newlines that would otherwise
       // break the inline `...` formatting. Label it so it is not confused
-      // with the tool result block below.
-      const argsCode = sanitizeCodeblock(summarizeValue(tool.arguments, 200))
+      // with the tool result block below. Args are shown in full detail
+      // (pretty-printed JSON) up to a generous cap so the reader can see the
+      // actual parameters, not an ellipsized digest.
+      const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments))
       if (argsCode !== '') {
         elements.push({ tag: 'markdown', content: `${t.stepToolArgsHeader}\n\`\`\`\n${argsCode}\n\`\`\`` })
       }
