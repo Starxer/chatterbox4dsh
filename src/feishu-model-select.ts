@@ -95,16 +95,6 @@ export type ModelCardFlow = 'new-session' | undefined
 // Card rendering — two-step dropdown flow
 // ---------------------------------------------------------------------------
 
-function reasoningEffortOptions(t: Translations): Array<{ label: string; value: string }> {
-  return [
-    { label: t.modelEffortDefault, value: 'default' },
-    { label: t.modelEffortOff, value: 'off' },
-    { label: t.modelEffortLow, value: 'low' },
-    { label: t.modelEffortHigh, value: 'high' },
-    { label: t.modelEffortMax, value: 'max' },
-  ]
-}
-
 function buildProviderOptions(providers: readonly LlmProviderInfo[]): object[] {
   return providers.map(p => ({
     text: { tag: 'plain_text', content: p.name !== '' ? `${p.name} (${p.id})` : p.id },
@@ -175,7 +165,8 @@ export function renderModelSelectCard(
   selectedProvider: string,
   selectedModel: string,
   currentEffort: string | undefined,
-  supportsReasoning: boolean,
+  supportedEfforts: readonly { id: string; name?: string }[],
+  modelDefaultEffort: string | undefined,
   flow: ModelCardFlow | undefined,
   t: Translations,
 ): object {
@@ -186,12 +177,22 @@ export function renderModelSelectCard(
     ? `${providerInfo.name} (${providerInfo.id})`
     : selectedProvider
 
-  // Reasoning effort dropdown options
-  const effortValue = currentEffort !== undefined && currentEffort !== '' ? currentEffort : 'default'
-  const effortOptions = reasoningEffortOptions(t).map(o => ({
-    text: { tag: 'plain_text', content: o.label },
-    value: o.value,
-  }))
+  // Build effort dropdown from the model's actual supported efforts.
+  // Always include 'default' (no override) as the first option.
+  const effortIds = supportedEfforts.map(e => e.id)
+  const effortOptions: object[] = [
+    { text: { tag: 'plain_text', content: t.modelEffortDefault }, value: 'default' },
+    ...supportedEfforts
+      .filter(e => e.id !== 'default')
+      .map(e => ({
+        text: { tag: 'plain_text', content: e.name ?? e.id.charAt(0).toUpperCase() + e.id.slice(1) },
+        value: e.id,
+      })),
+  ]
+  // Select initial value: prefer current effort if supported, else model default, else 'default'.
+  const effortValue = (currentEffort !== undefined && currentEffort !== '' && currentEffort !== 'default' && effortIds.includes(currentEffort))
+    ? currentEffort
+    : (modelDefaultEffort !== undefined && effortIds.includes(modelDefaultEffort) ? modelDefaultEffort : 'default')
 
   // Build form elements — conditionally include reasoning effort dropdown.
   const formElements: object[] = [
@@ -208,7 +209,7 @@ export function renderModelSelectCard(
     },
   ]
 
-  if (supportsReasoning) {
+  if (supportedEfforts.length > 0 && effortOptions.length > 1) {
     formElements.push({
       tag: 'markdown',
       content: t.modelSelectEffortHeader,
@@ -431,6 +432,29 @@ export function startFeishuModelSelect(deps: {
   const actionQueue = new Map<string, QueuedAction[]>()
   const MIN_UPDATE_INTERVAL_MS = 500
 
+  /**
+   * Resolve the model that THIS chat's session actually runs, falling back to
+   * the global default. `agentDefaultModel.currentSelection()` is only the
+   * default for agents without a session-specific selection; a WebUI switch or
+   * session creation can set a per-session model that never touches that
+   * default, so reading the session's own `request/header` (the authority,
+   * matching `/status` and the reply card) is what keeps the selector's
+   * "当前模型" line truthful.
+   */
+  async function resolveCurrent(chatMessage: ConversationMessage): Promise<ModelSelection> {
+    const bridge = bridgeHolder.current
+    const sessionSel = bridge !== undefined
+      ? await bridge.sessionCurrentSelection(chatMessage).catch(() => undefined)
+      : undefined
+    const fallback = agentDefaultModel.currentSelection()
+    const base = sessionSel ?? { provider: fallback.provider, model: fallback.model }
+    return {
+      provider: base.provider,
+      model: base.model,
+      ...(base.reasoningEffort !== undefined ? { reasoningEffort: String(base.reasoningEffort) } : {}),
+    }
+  }
+
   const cardByMessage = new Map<string, string>()
   const sequenceByCard = new Map<string, number>()
 
@@ -469,7 +493,7 @@ export function startFeishuModelSelect(deps: {
   ): Promise<void> {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
-    const current = agentDefaultModel.currentSelection()
+    const current = await resolveCurrent(chatMessage)
 
     let models: readonly LlmModelInfo[]
     try {
@@ -480,24 +504,27 @@ export function startFeishuModelSelect(deps: {
       models = []
     }
 
-    // Check if any model in this provider supports reasoning effort.
-    // If none do, hide the reasoning dropdown to avoid confusing the user.
-    let supportsReasoning = false
-    try {
-      const checks = await Promise.allSettled(
-        models.slice(0, 8).map(m => llm.resolveModelInfo(provider, m.id)),
-      )
-      supportsReasoning = checks.some(r =>
-        r.status === 'fulfilled' &&
-        r.value.reasoning !== undefined &&
-        r.value.reasoning.efforts.length > 0,
-      )
-    } catch {
-      // If we can't resolve, default to not showing (safer).
+    // Resolve the model's actual supported reasoning efforts.
+    // Prefer the session's current model if it belongs to this provider,
+    // else the first model in the list. pi-ai typically has uniform effort
+    // sets within a provider, so this covers the whole provider well.
+    const defaultForEfforts = models.find(m => m.id === current.model) ?? models[0]
+    let supportedEfforts: readonly { id: string; name?: string }[] = []
+    let modelDefaultEffort: string | undefined
+    if (defaultForEfforts !== undefined) {
+      try {
+        const info = await llm.resolveModelInfo(provider, defaultForEfforts.id)
+        if (info.reasoning !== undefined && info.reasoning.efforts.length > 0) {
+          supportedEfforts = info.reasoning.efforts
+          modelDefaultEffort = info.reasoning.defaultEffort
+        }
+      } catch {
+        // Non-fatal — no reasoning dropdown shown.
+      }
     }
 
     const providers = llm.listProviders()
-    const card = renderModelSelectCard(providers, models, provider, current.model, current.reasoningEffort, supportsReasoning, flow, getTranslations())
+    const card = renderModelSelectCard(providers, models, provider, current.model, current.reasoningEffort, supportedEfforts, modelDefaultEffort, flow, getTranslations())
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 
@@ -509,7 +536,7 @@ export function startFeishuModelSelect(deps: {
   ): Promise<void> {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
-    const current = agentDefaultModel.currentSelection()
+    const current = await resolveCurrent(chatMessage)
     const providers = llm.listProviders()
     const card = renderProviderSelectCard(providers, current, flow, getTranslations())
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
@@ -545,9 +572,10 @@ export function startFeishuModelSelect(deps: {
       return
     }
 
-    // Get model name and check reasoning support (non-fatal).
+    // Get model name and resolve its actual supported efforts (non-fatal).
     let modelName: string | undefined
-    let modelSupportsReasoning = true
+    let supportedEffortIds: string[] | undefined
+    let modelDefaultEffort: string | undefined
     try {
       const models = await llm.listModels(provider)
       const found = models.find(m => m.id === model)
@@ -557,13 +585,29 @@ export function startFeishuModelSelect(deps: {
     }
     try {
       const info = await llm.resolveModelInfo(provider, model)
-      modelSupportsReasoning = info.reasoning !== undefined && info.reasoning.efforts.length > 0
+      if (info.reasoning !== undefined && info.reasoning.efforts.length > 0) {
+        supportedEffortIds = info.reasoning.efforts.map(e => e.id)
+        modelDefaultEffort = info.reasoning.defaultEffort
+      }
     } catch {
-      // If we can't resolve, assume supported.
+      // Unknown — pass through as-is.
     }
 
-    // Strip reasoning effort if the model doesn't support it.
-    const effectiveReasoningEffort = modelSupportsReasoning ? reasoningEffort : undefined
+    // Auto-downgrade: if the chosen effort isn't supported by this model,
+    // fall back to the model's default effort, then to undefined (no override).
+    let effectiveReasoningEffort = reasoningEffort
+    if (supportedEffortIds !== undefined) {
+      if (reasoningEffort !== undefined && reasoningEffort !== 'default') {
+        if (!supportedEffortIds.includes(reasoningEffort)) {
+          effectiveReasoningEffort = (modelDefaultEffort !== undefined && supportedEffortIds.includes(modelDefaultEffort))
+            ? modelDefaultEffort
+            : undefined
+        }
+      } else {
+        // 'default' or undefined → omit (no override).
+        effectiveReasoningEffort = undefined
+      }
+    }
 
     // Atomic model switch via session controller: resolves the session
     // (creating the live agent if needed), validates the model, writes the
@@ -643,7 +687,7 @@ export function startFeishuModelSelect(deps: {
             case 'enter-select': {
               const bridge = bridgeHolder.current
               if (bridge === undefined) break
-              const current = agentDefaultModel.currentSelection()
+              const current = await resolveCurrent(item.chatMessage)
               const providers = llm.listProviders()
               const card = renderProviderSelectCard(providers, current, item.flow, getTranslations())
               await updateCardInstanceOnMessage(item.messageId, item.chatMessage, card)

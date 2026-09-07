@@ -6,7 +6,6 @@ import type {} from '@deepseek-ai/dsh-agent-presets'
 import type { CommandRuntime, CommandResult, CommandExecution } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
-import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-workspace'
@@ -393,21 +392,6 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           },
         },
       () => translationsFor(currentLocale().id),
-      async (message) => {
-        const b = bridgeHolder.current
-        if (b === undefined) return undefined
-        const coords: ConversationMessage = {
-          chatId: message.chatId,
-          chatType: message.chatType,
-          ...message.threadId === undefined ? {} : { threadId: message.threadId },
-        }
-        try {
-          const meta = await b.getSessionMeta(coords)
-          return meta.workspace !== '' ? meta.workspace : undefined
-        } catch {
-          return undefined
-        }
-      },
       )
     },
   })
@@ -427,27 +411,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     logger: ctx.logger('dsh-feishu'),
   })
   // `feishu_receive_file` mirrors the send tool: pull an inbound Feishu file
-  // resource into the session workspace inbox on demand. Registers
+  // resource into the native attachment store on demand. Registers
   // unconditionally; unbound sessions fail at execution time.
   stopReceiveFileTool = startFeishuReceiveFileTool({
     ctx,
     bridgeHolder,
     channelHolder,
     logger: ctx.logger('dsh-feishu'),
-    // 0.1.3: persist pulled files via the native attachment store.
-    attachments: attachments as unknown as { saveFile?: (input: { data: Uint8Array; name?: string }) => Promise<{ attachmentId: unknown; name: string; bytes: number }>; fileHostPath?: (ref: { attachmentId: unknown; name: string; bytes: number }) => string | undefined },
-    resolveWorkspaceRoot: async (sessionId) => {
-      const b = bridgeHolder.current
-      if (b === undefined) return undefined
-      const chat = b.resolveChat(sessionId)
-      if (chat === undefined) return undefined
-      try {
-        const meta = await b.getSessionMeta(chat)
-        return meta.workspace !== '' ? meta.workspace : undefined
-      } catch {
-        return undefined
-      }
-    },
+    // 0.1.3: persist pulled files via the native attachment store (`attachments`
+    // is guaranteed present — index.ts rejects the plugin without it).
+    attachments,
   })
   // Interactive `/permission` picker card. Independent of the questions/
   // approvals seams; only needs the live card channel + the sandbox policy.
@@ -587,6 +560,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       describeChatKey: key => bridgeHolder.current?.describeChatKey(key) ?? key,
       listSessions: async () => bridgeHolder.current?.listSessions() ?? [],
       getSessionMeta: async (chatMessage) => bridgeHolder.current?.getSessionMeta(chatMessage) ?? { sessionId: '', workspace: '', agentPreset: '', model: '', reasoningEffort: '', title: '', turns: 0, steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, contextWindow: 0, lastInputTokens: 0, cacheHitRate: 0, ttftAvgMs: 0, tokensPerSecond: 0, llmDurationMs: 0, toolDurationMs: 0 },
+      sessionCurrentSelection: async (chatMessage) => bridgeHolder.current?.sessionCurrentSelection(chatMessage),
       resolveAgent: async (chatMessage) => bridgeHolder.current?.resolveAgent(chatMessage),
       resolveSessionIdFor: (chatMessage) => bridgeHolder.current?.resolveSessionIdFor(chatMessage) ?? '',
     },
@@ -1261,9 +1235,20 @@ async function executeSlashCommand(
     if (llm === undefined) {
       return { kind: 'error', text: '⚠️ LLM service is not available.' }
     }
+    // Show the model THIS session actually runs, not the global default:
+    // `agentDefaultModel.currentSelection()` is only the default for agents
+    // without a session-specific selection, and a WebUI switch / session
+    // creation can set a per-session model that never touches it. Fall back to
+    // the default only when the session has no recorded model yet.
+    const defaultCurrent = agentDefaultModel.currentSelection()
+    const sessionCurrent = await bridge.sessionCurrentSelection(chatMessage).catch(() => undefined)
+    const current = sessionCurrent ?? {
+      provider: defaultCurrent.provider,
+      model: defaultCurrent.model,
+      ...(defaultCurrent.reasoningEffort !== undefined ? { reasoningEffort: String(defaultCurrent.reasoningEffort) } : {}),
+    }
     if (cardChannel === undefined || modelSelectMaps === undefined) {
       // Fallback: return the card in the old format (embedded JSON).
-      const current = agentDefaultModel.currentSelection()
       const providers = llm.listProviders()
       return { kind: 'success', text: '', card: renderProviderSelectCard(providers, {
         provider: current.provider,
@@ -1272,7 +1257,6 @@ async function executeSlashCommand(
       }, undefined, translationsFor(localeControl?.current().id ?? 'zh')) }
     }
     // V2 flow: create card instance + send by card_id reference.
-    const current = agentDefaultModel.currentSelection()
     const providers = llm.listProviders()
     const card = renderProviderSelectCard(providers, {
       provider: current.provider,
@@ -1308,8 +1292,8 @@ async function executeSlashCommand(
   if (parsed.name === 'model' && parsed.rawInput.trim() !== '' && llm !== undefined && agentDefaultModel !== undefined) {
     return toEcho(await handleModelCommand(freeInvocation(parsed.rawInput), llm, agentDefaultModel, bridge, freeChatMessageFor, activeCommandTranslations, (sessionController ?? {}) as never))
   }
-  if (parsed.name === 'reasoning' && agentDefaultModel !== undefined) {
-    return toEcho(await handleReasoningCommand(freeInvocation(parsed.rawInput), agentDefaultModel, bridge, freeChatMessageFor, activeCommandTranslations, showReasoning ?? { get: () => false, toggle: () => {} }, (sessionController ?? {}) as never))
+  if (parsed.name === 'reasoning' && agentDefaultModel !== undefined && llm !== undefined) {
+    return toEcho(await handleReasoningCommand(freeInvocation(parsed.rawInput), llm, agentDefaultModel, bridge, freeChatMessageFor, activeCommandTranslations, showReasoning ?? { get: () => false, toggle: () => {} }, (sessionController ?? {}) as never))
   }
   if (parsed.name === 'approvals' && approvals !== undefined) {
     return toEcho(await handleListApprovalsCommand(freeInvocation(parsed.rawInput), approvals, activeCommandTranslations))

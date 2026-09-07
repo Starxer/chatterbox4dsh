@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { startChannel } from '../src/channel.ts'
-import type { AttachmentId, ImageAttachmentRef, ImageMediaType, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentId, FileAttachmentRef, ImageAttachmentRef, ImageMediaType, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 
 /** Flush the microtask queue so fire-and-forget promises settle. */
 const flushAsync = () => new Promise<void>(resolve => setTimeout(resolve, 0))
@@ -25,10 +29,37 @@ function fakeImageRef(input: { data: Uint8Array; mediaType: string; name?: strin
   }
 }
 
+async function fakeFileHost(overrides: { saveFileStream?: (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => Promise<FileAttachmentRef> } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-plugin-file-'))
+  const captured: Buffer[] = []
+  return {
+    root,
+    saveImage: vi.fn(async input => fakeImageRef(input)),
+    imageLimits: IMAGE_LIMITS,
+    saveFileStream: vi.fn(overrides.saveFileStream ?? (async (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of input.data) chunks.push(Buffer.from(chunk))
+      const bytes = Buffer.concat(chunks)
+      captured.push(bytes)
+      const hostPath = join(root, input.name ?? 'file')
+      await writeFile(hostPath, bytes)
+      return {
+        attachmentId: `sha256:${createHash('sha256').update(bytes).digest('hex')}` as AttachmentId,
+        name: input.name ?? 'file',
+        bytes: bytes.byteLength,
+      }
+    })),
+    captured,
+    fileHostPath: vi.fn((ref: FileAttachmentRef) => join(root, ref.name)),
+  }
+}
+
 function fakeAttachments(overrides: { saveImage?: (input: any) => Promise<ImageAttachmentRef> } = {}) {
   return {
     saveImage: vi.fn(overrides.saveImage ?? (async input => fakeImageRef(input))),
     imageLimits: IMAGE_LIMITS,
+    saveFileStream: vi.fn(),
+    fileHostPath: vi.fn(),
   }
 }
 
@@ -288,15 +319,14 @@ describe('startChannel', () => {
     expect(channel.send).toHaveBeenCalledWith('oc_4', { text: '图片处理出错：storage full' }, { replyTo: 'om_4', replyInThread: false })
   })
 
-  it('admits files into the session workspace .feishu-inbox and injects the path', async () => {
-    const channel = fakeChannel()
+  it('streams files into the native attachment store and attaches durable file blocks', async () => {
+    const channel = fakeChannel(Buffer.from('pdf payload'))
     const bridge: any = { reply: vi.fn(async () => 'ok'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false) }
-    const workspaceRoot = await (await import('node:fs/promises')).mkdtemp('/tmp/dsh-test-ws-')
-    const resolveWorkspaceRoot = vi.fn(async () => workspaceRoot)
+    const attachments = await fakeFileHost()
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
       groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
-    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, resolveWorkspaceRoot)
+    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
       messageId: 'om_file', chatId: 'oc_file', chatType: 'p2p', content: '',
       resources: [{ type: 'file', fileKey: 'file_abc', fileName: 'report.pdf' }],
@@ -306,13 +336,19 @@ describe('startChannel', () => {
       params: { type: 'file' },
       path: { message_id: 'om_file', file_key: 'file_abc' },
     })
-    expect(resolveWorkspaceRoot).toHaveBeenCalled()
-    const { readdir } = await import('node:fs/promises')
-    const files = await readdir(`${workspaceRoot}/.feishu-inbox`)
-    expect(files.length).toBeGreaterThan(0)
-    const injected = (bridge.reply.mock.calls[0]![0] as { content: string }).content
-    expect(injected).toContain('[文件: report.pdf')
-    expect(injected).toContain(`${workspaceRoot}/.feishu-inbox`)
+    // The file is streamed into the native store (not buffered into `.feishu-inbox`).
+    expect(attachments.saveFileStream).toHaveBeenCalledOnce()
+    const callInput = attachments.saveFileStream.mock.calls[0]![0] as { data: AsyncIterable<Uint8Array>; name: string }
+    expect(callInput.name).toBe('report.pdf')
+    expect(attachments.captured).toHaveLength(1)
+    expect(attachments.captured[0]!.toString()).toBe('pdf payload')
+    // The durable file block is attached to the user turn with its host path.
+    const replied = bridge.reply.mock.calls[0]![0] as { fileBlocks: Array<{ attachment: { name: string; bytes: number }; hostPath: string }> }
+    expect(replied.fileBlocks).toHaveLength(1)
+    expect(replied.fileBlocks[0]!.attachment.name).toBe('report.pdf')
+    expect(replied.fileBlocks[0]!.hostPath).toContain('report.pdf')
+    // No `.feishu-inbox` text injection remains.
+    expect((bridge.reply.mock.calls[0]![0] as { content: string }).content).not.toContain('[文件:')
     await stop()
   })
 })

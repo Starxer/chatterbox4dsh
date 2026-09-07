@@ -17,6 +17,7 @@ declare module '@deepseek-ai/cordis' {
 export interface LlmDirectoryLike {
   listProviders(): readonly LlmProviderInfo[]
   listModels(provider: string): Promise<readonly LlmModelInfo[]>
+  resolveModelInfo(provider: string, model: string): Promise<{ reasoning?: { efforts: readonly { id: string }[]; defaultEffort?: string } | undefined }>
 }
 
 /**
@@ -123,6 +124,7 @@ export interface CommandTranslations {
   readonly reasoningCurrentDefault: string
   readonly reasoningSwitched: (effort: string) => string
   readonly reasoningLevels: string
+  readonly reasoningLevelsFrom: (effortIds: readonly string[]) => string
   readonly reasoningUnknown: (level: string) => string
   readonly reasoningShowToggled: (enabled: boolean) => string
 }
@@ -207,7 +209,7 @@ export function registerLarkCommands(
   agentDefaultModel: AgentDefaultModelConfig,
   bridge: Pick<
     HarnessConversationService,
-    'startNewSession' | 'switchToSession' | 'detachSession' | 'listSessions' | 'getSessionMeta' | 'resolveAgent' | 'resolveSessionIdFor' | 'describeChatKey'
+    'startNewSession' | 'switchToSession' | 'detachSession' | 'listSessions' | 'getSessionMeta' | 'sessionCurrentSelection' | 'resolveAgent' | 'resolveSessionIdFor' | 'describeChatKey'
   >,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
@@ -289,6 +291,7 @@ export function registerLarkCommands(
       description: t.reasoningDescription,
       handler: invocation => handleReasoningCommand(
         invocation,
+        llm,
         agentDefaultModel,
         bridge,
         chatMessageFor,
@@ -304,7 +307,7 @@ export async function handleModelCommand(
   invocation: CommandInvocation,
   llm: LlmDirectoryLike,
   agentDefaultModel: AgentDefaultModelConfig,
-  bridge: Pick<HarnessConversationService, 'resolveAgent' | 'resolveSessionIdFor'>,
+  bridge: Pick<HarnessConversationService, 'resolveAgent' | 'resolveSessionIdFor' | 'sessionCurrentSelection'>,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
   sessionController: SessionControllerLike,
@@ -319,8 +322,21 @@ export async function handleModelCommand(
     return { kind: 'error', text: `${t.modelUnknown(rawInput)}\n${t.modelUsage}` }
   }
   const defaultCurrent = agentDefaultModel.currentSelection()
-  const current = defaultCurrent
   if (route === undefined) {
+    // Show the model THIS session actually runs, not the global default. A
+    // WebUI switch / session creation can set a per-session model without
+    // touching the global default (see `sessionCurrentSelection`).
+    let sessionCurrent: { provider: string; model: string; reasoningEffort?: string } | undefined
+    try {
+      sessionCurrent = await bridge.sessionCurrentSelection(chatMessageFor(invocation))
+    } catch {
+      sessionCurrent = undefined
+    }
+    const current = sessionCurrent ?? {
+      provider: defaultCurrent.provider,
+      model: defaultCurrent.model,
+      ...(defaultCurrent.reasoningEffort !== undefined ? { reasoningEffort: String(defaultCurrent.reasoningEffort) } : {}),
+    }
     return {
       kind: 'success',
       text: `${t.modelCurrentHeader}\n• \`${current.provider}/${current.model}\``,
@@ -358,15 +374,17 @@ export async function handleModelCommand(
   }
 }
 
-const VALID_REASONING_LEVELS = ['off', 'low', 'high', 'max'] as const
-
 /**
  * Handle `/reasoning [level] [show on|off]`. Show or change the reasoning effort.
  * The setting is persisted through agentDefaultModel.saveSelection so it
  * survives DSH restarts. `show on|off` toggles reasoning content display.
+ *
+ * Effort levels are resolved dynamically from the model's actual capabilities
+ * via `llm.resolveModelInfo()`, not from a hardcoded list.
  */
 export async function handleReasoningCommand(
   invocation: CommandInvocation,
+  llm: LlmDirectoryLike,
   agentDefaultModel: AgentDefaultModelConfig,
   bridge: Pick<HarnessConversationService, 'resolveSessionIdFor'>,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
@@ -377,6 +395,19 @@ export async function handleReasoningCommand(
   const rawInput = invocation.rawInput.trim().toLowerCase()
   const current = agentDefaultModel.currentSelection()
   const currentEffort = current.reasoningEffort ? String(current.reasoningEffort) : undefined
+
+  // Resolve this model's actual supported efforts dynamically.
+  let supportedEffortIds: string[] | undefined
+  let modelDefaultEffort: string | undefined
+  try {
+    const info = await llm.resolveModelInfo(current.provider, current.model)
+    if (info.reasoning?.efforts && info.reasoning.efforts.length > 0) {
+      supportedEffortIds = info.reasoning.efforts.map(e => e.id)
+      modelDefaultEffort = info.reasoning.defaultEffort
+    }
+  } catch {
+    // If resolution fails, we can still show current state but cannot validate new levels.
+  }
 
   // Handle "show on/off" sub-command
   if (rawInput.startsWith('show')) {
@@ -393,6 +424,15 @@ export async function handleReasoningCommand(
     return { kind: 'success', text: `🧠 Reasoning content display: **${state}**\nUse \`/reasoning show on|off\` to toggle.` }
   }
 
+  // Build dynamic levels string from actual model capabilities
+  const buildLevelsString = (): string => {
+    if (supportedEffortIds && supportedEffortIds.length > 0) {
+      return t.reasoningLevelsFrom(supportedEffortIds)
+    }
+    // Fallback if we couldn't resolve model info
+    return t.reasoningLevels
+  }
+
   // No argument → show current level + show state
   if (rawInput === '') {
     const display = currentEffort ?? t.reasoningCurrentDefault
@@ -401,25 +441,40 @@ export async function handleReasoningCommand(
       t.reasoningCurrent(display),
       `🧠 Reasoning display: **${showState}**`,
       '',
-      t.reasoningLevels,
+      buildLevelsString(),
     ]
     return { kind: 'success', text: lines.join('\n') }
   }
 
-  // Validate level
-  if (!(VALID_REASONING_LEVELS as readonly string[]).includes(rawInput)) {
-    return { kind: 'error', text: `${t.reasoningUnknown(rawInput)}\n${t.reasoningLevels}` }
+  // Validate level against model's actual supported efforts
+  if (supportedEffortIds !== undefined) {
+    if (!supportedEffortIds.includes(rawInput)) {
+      return { kind: 'error', text: `${t.reasoningUnknown(rawInput)}\n${buildLevelsString()}` }
+    }
+  } else {
+    // Fallback if we couldn't resolve model info: allow the input (DSH will validate)
+    if (!['off', 'low', 'high', 'max'].includes(rawInput)) {
+      return { kind: 'error', text: `${t.reasoningUnknown(rawInput)}\n${buildLevelsString()}` }
+    }
   }
 
-  const level = rawInput as typeof VALID_REASONING_LEVELS[number]
+  const level = rawInput
+
+  // Auto-downgrade: if the level is not supported, fall back to model default or undefined
+  let effectiveLevel: string | undefined = level
+  if (supportedEffortIds !== undefined && !supportedEffortIds.includes(level)) {
+    effectiveLevel = (modelDefaultEffort !== undefined && supportedEffortIds.includes(modelDefaultEffort))
+      ? modelDefaultEffort
+      : undefined
+  }
 
   // Preserve existing provider/model, only change reasoningEffort
-  const selection = {
+  const selection: { provider: string; model: string; reasoningEffort?: string } = {
     provider: current.provider,
     model: current.model,
-    reasoningEffort: level as never,
+    ...(effectiveLevel !== undefined ? { reasoningEffort: effectiveLevel } : {}),
   }
-  await agentDefaultModel.saveSelection(selection)
+  await agentDefaultModel.saveSelection(selection as never)
   // Sync to live agent + WebUI via session controller (atomic).
   try {
     const message = chatMessageFor(invocation)
@@ -428,7 +483,7 @@ export async function handleReasoningCommand(
       sessionId,
       provider: current.provider,
       model: current.model,
-      reasoningEffort: level,
+      ...(effectiveLevel !== undefined ? { reasoningEffort: effectiveLevel } : {}),
     })
   } catch {
     // Non-fatal: reasoning effort is already saved to settings.

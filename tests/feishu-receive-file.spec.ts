@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { startFeishuReceiveFileTool } from '../src/feishu-receive-file.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { HarnessConversationService } from '../src/harness.ts'
 
 /** Minimal Cordis context exposing only tools.register. */
@@ -40,15 +44,33 @@ function fakeChannel(downloadBytes: Buffer) {
   } as unknown as LarkChannel
 }
 
-describe('startFeishuReceiveFileTool', () => {
-  async function tempRoot(): Promise<string> {
-    const { tmpdir } = await import('node:os')
-    const { mkdtemp } = await import('node:fs/promises')
-    return mkdtemp(`${tmpdir()}/dsh-rx-`)
+/** Fake native attachment store: persist bytes to a temp dir and answer a host path. */
+async function fakeAttachments() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-rx-'))
+  const captured: Buffer[] = []
+  return {
+    root,
+    captured,
+    saveFileStream: vi.fn(async (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }): Promise<FileAttachmentRef> => {
+      const chunks: Buffer[] = []
+      for await (const chunk of input.data) chunks.push(Buffer.from(chunk))
+      const bytes = Buffer.concat(chunks)
+      captured.push(bytes)
+      const hostPath = join(root, input.name ?? 'file')
+      await writeFile(hostPath, bytes)
+      return {
+        attachmentId: `att_${bytes.byteLength}` as FileAttachmentRef['attachmentId'],
+        name: input.name ?? 'file',
+        bytes: bytes.byteLength,
+      }
+    }),
+    fileHostPath: vi.fn((ref: FileAttachmentRef) => join(root, ref.name)),
   }
+}
 
+describe('startFeishuReceiveFileTool', () => {
   it('registers a tool named feishu_receive_file', async () => {
-    const tempWorkspace = await tempRoot()
+    const attachments = await fakeAttachments()
     const fake = fakeCtx()
     const ctx = fake as unknown as Context
     const channelHolder = { current: fakeChannel(Buffer.from('hi')) }
@@ -57,15 +79,15 @@ describe('startFeishuReceiveFileTool', () => {
       ctx,
       bridgeHolder,
       channelHolder,
-      resolveWorkspaceRoot: async () => tempWorkspace,
+      attachments,
       logger: { warn: vi.fn(), error: vi.fn() },
     })
     expect(fake.registered.some(t => t.name === 'feishu_receive_file')).toBe(true)
     disposer()
   })
 
-  it('downloads by message_id + file_key into the workspace .feishu-inbox and returns the path', async () => {
-    const tempWorkspace = await tempRoot()
+  it('downloads by message_id + file_key into the native store and returns the host path', async () => {
+    const attachments = await fakeAttachments()
     const fake = fakeCtx()
     const ctx = fake as unknown as Context
     const bytes = Buffer.from('pdf payload bytes')
@@ -79,7 +101,7 @@ describe('startFeishuReceiveFileTool', () => {
       ctx,
       bridgeHolder,
       channelHolder,
-      resolveWorkspaceRoot: async () => tempWorkspace,
+      attachments,
       logger: { warn: vi.fn(), error: vi.fn() },
     })
 
@@ -95,14 +117,17 @@ describe('startFeishuReceiveFileTool', () => {
       path: { message_id: 'om_9', file_key: 'fkey_x' },
     })
     expect(bridge.resolveChat).toHaveBeenCalledWith('sess_1')
+    expect(attachments.saveFileStream).toHaveBeenCalledOnce()
+    const input = attachments.saveFileStream.mock.calls[0]![0] as { data: AsyncIterable<Uint8Array>; name: string }
+    expect(input.name).toBe('paper.pdf')
+    expect(attachments.captured).toHaveLength(1)
+    expect(attachments.captured[0]!.toString()).toBe('pdf payload bytes')
     expect(result.file_name).toBe('paper.pdf')
-    expect(result.workspace).toBe(tempWorkspace)
-    expect(result.path).toContain(`${tempWorkspace}/.feishu-inbox`)
-    expect(result.path).toContain('paper.pdf')
+    expect(result.path).toBe(join(attachments.root, 'paper.pdf'))
   })
 
   it('fails with a clear error for an unbound session', async () => {
-    const tempWorkspace = await tempRoot()
+    const attachments = await fakeAttachments()
     const fake = fakeCtx()
     const ctx = fake as unknown as Context
     const channelHolder = { current: fakeChannel(Buffer.from('hi')) }
@@ -111,7 +136,7 @@ describe('startFeishuReceiveFileTool', () => {
       ctx,
       bridgeHolder,
       channelHolder,
-      resolveWorkspaceRoot: async () => tempWorkspace,
+      attachments,
       logger: { warn: vi.fn(), error: vi.fn() },
     })
     const tool = fake.registered.find((t: any) => t.name === 'feishu_receive_file') as any
@@ -122,7 +147,7 @@ describe('startFeishuReceiveFileTool', () => {
   })
 
   it('rejects empty downloads', async () => {
-    const tempWorkspace = await tempRoot()
+    const attachments = await fakeAttachments()
     const fake = fakeCtx()
     const ctx = fake as unknown as Context
     const channelHolder = { current: fakeChannel(Buffer.alloc(0)) }
@@ -131,7 +156,7 @@ describe('startFeishuReceiveFileTool', () => {
       ctx,
       bridgeHolder,
       channelHolder,
-      resolveWorkspaceRoot: async () => tempWorkspace,
+      attachments,
       logger: { warn: vi.fn(), error: vi.fn() },
     })
     const tool = fake.registered.find((t: any) => t.name === 'feishu_receive_file') as any

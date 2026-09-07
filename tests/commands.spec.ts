@@ -72,6 +72,7 @@ const translations: CommandTranslations = {
   reasoningCurrentDefault: '(default)',
   reasoningSwitched: (effort: string) => `Switched to ${effort}`,
   reasoningLevels: 'Levels: off, low, high, max',
+  reasoningLevelsFrom: (effortIds: readonly string[]) => `Levels: ${effortIds.join(', ')}`,
   reasoningUnknown: (level: string) => `Unknown: ${level}`,
   reasoningShowToggled: (enabled: boolean) => `Reasoning display: ${enabled ? 'on' : 'off'}`,
 }
@@ -130,6 +131,7 @@ function fakeBridge(overrides?: {
   detachSession?: ReturnType<typeof vi.fn>
   listSessions?: ReturnType<typeof vi.fn>
   getSessionMeta?: ReturnType<typeof vi.fn>
+  sessionCurrentSelection?: ReturnType<typeof vi.fn>
 }) {
   const setCurrentSelection = overrides?.setCurrentSelection ?? vi.fn(() => undefined)
   const startNewSession = overrides?.startNewSession ?? vi.fn(() => 'new-session-id')
@@ -148,6 +150,7 @@ function fakeBridge(overrides?: {
       getSessionMeta,
       resolveAgent: vi.fn(async () => undefined),
       resolveSessionIdFor: vi.fn(() => 'test-session'),
+      sessionCurrentSelection: overrides?.sessionCurrentSelection ?? vi.fn(async () => undefined),
       describeChatKey: (key: string) => (key.startsWith('thread:') ? `topic:${key.slice(7, 15)}` : 'main'),
     },
     setCurrentSelection,
@@ -182,12 +185,19 @@ function fakeDefaultModel(): AgentDefaultModelConfig {
 function fakeLlmDirectory(overrides: {
   providers?: ReadonlyArray<{ id: string; name: string }>
   models?: Record<string, ReadonlyArray<{ provider: string; id: string; name: string }>>
+  modelEfforts?: Record<string, { efforts: readonly { id: string }[]; defaultEffort?: string }>
 } = {}) {
   const providers = overrides.providers ?? [{ id: 'p1', name: 'P1' }, { id: 'p2', name: 'P2' }]
   const models = overrides.models ?? { p1: [{ provider: 'p1', id: 'm1', name: 'M1' }], p2: [] }
+  const modelEfforts = overrides.modelEfforts ?? {}
   return {
     listProviders: () => providers,
     listModels: vi.fn(async (provider: string) => models[provider] ?? []),
+    resolveModelInfo: vi.fn(async (provider: string, model: string) => {
+      const key = `${provider}/${model}`
+      const efforts = modelEfforts[key]
+      return efforts ? { reasoning: { efforts: efforts.efforts, ...(efforts.defaultEffort !== undefined ? { defaultEffort: efforts.defaultEffort } : {}) } } : { reasoning: undefined }
+    }),
   }
 }
 

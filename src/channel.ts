@@ -1,7 +1,4 @@
 import { Readable } from 'node:stream'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { Domain, LoggerLevel, createLarkChannel } from '@larksuiteoapi/node-sdk'
 import type { LarkChannel, LarkChannelOptions, NormalizedMessage, ResourceDescriptor } from '@larksuiteoapi/node-sdk'
 import type { AttachmentStore, FileAttachmentRef, ImageAttachmentRef, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
@@ -38,12 +35,13 @@ export type SlashCommandHandler = (
   | undefined
 >
 
-/** Narrow attachment-store view needed for image admission (and 0.1.3 file
- *  admission via `saveFile`). The file verbs are optional so the plugin still
- *  works on DSH versions without the general file path. */
+/** Narrow attachment-store view needed for image + file admission. The file
+ *  verbs are required: this plugin targets DSH 0.1.3, whose `AttachmentStore`
+ *  always provides streamed verbatim file storage (`saveFileStream`) and a
+ *  host path (`fileHostPath`). No alpha.4 `.feishu-inbox` fallback is kept. */
 type AttachmentLike = Pick<AttachmentStore, 'saveImage' | 'imageLimits'> & {
-  saveFile?: (input: { data: Uint8Array; name?: string }) => Promise<FileAttachmentRef>
-  fileHostPath?: (ref: FileAttachmentRef) => string | undefined
+  saveFileStream: (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => Promise<FileAttachmentRef>
+  fileHostPath: (ref: FileAttachmentRef) => string | undefined
 }
 
 export type ImageMediaTypeId = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
@@ -107,6 +105,23 @@ async function readDownloadStream(raw: unknown): Promise<Buffer> {
 }
 
 /**
+ * Expose the SDK download wrapper as an `AsyncIterable<Uint8Array>` so the
+ * native attachment stream (`saveFileStream`) can pull bounded chunks with
+ * backpressure instead of buffering the whole file in memory.
+ */
+async function* downloadStream(raw: unknown): AsyncGenerator<Uint8Array> {
+  if (Buffer.isBuffer(raw)) { yield raw; return }
+  if (raw instanceof Uint8Array) { yield raw; return }
+  if (raw !== null && typeof raw === 'object' && typeof (raw as { getReadableStream?: () => unknown }).getReadableStream === 'function') {
+    const stream = (raw as { getReadableStream: () => unknown }).getReadableStream()
+    if (!(stream instanceof Readable)) throw new Error('dsh-feishu: unexpected stream type from messageResource.get')
+    for await (const chunk of stream) yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+    return
+  }
+  throw new Error('dsh-feishu: unsupported download response shape')
+}
+
+/**
  * Pull every image resource off one normalized message, download it via the
  * correct `im.v1.messageResource` endpoint (user-sent images, NOT `im.v1.image`
  * which only serves bot-uploaded keys), and durably commit the bytes via the
@@ -152,70 +167,31 @@ async function admitImagesForMessage(
   return refs
 }
 
-/**
- * Fallback inbox directory (when no session workspace is resolved at inbound
- * time) so inbound files always land somewhere persistent and readable by the
- * agent's file tools. A plain `/tmp` path is unusable because the channel
- * service and the agent's tool sandbox have isolated `/tmp` mounts; DSH_HOME is
- * a real on-disk directory both sides can reach.
- */
-async function getFallbackInboxDir(): Promise<string> {
-  const dshHome = process.env.DSH_HOME || `${homedir()}/.dsh`
-  const dir = join(dshHome, 'feishu-inbox')
-  await mkdir(dir, { recursive: true })
-  return dir
-}
-
-/**
- * Resolve the per-workspace inbox directory for an inbound file. Prefers the
- * session's workspace root (`<workspace>/.feishu-inbox/`) so files stay with
- * the session's files instead of a global shared dir; falls back to the
- * global `~/.dsh/feishu-inbox/` when no workspace is resolvable.
- */
-async function resolveInboxDir(message: NormalizedMessage, resolveWorkspaceRoot?: (msg: NormalizedMessage) => Promise<string | undefined>): Promise<string> {
-  if (resolveWorkspaceRoot !== undefined) {
-    try {
-      const root = await resolveWorkspaceRoot(message)
-      if (root !== undefined && root.trim() !== '') {
-        const dir = join(root, '.feishu-inbox')
-        await mkdir(dir, { recursive: true })
-        return dir
-      }
-    } catch { /* fall through to global inbox */ }
-  }
-  return getFallbackInboxDir()
-}
-
-/** One admitted inbound file. On 0.1.3 the bytes are persisted via
- *  `attachments.saveFile` and `fileRef` is the durable ref to attach as a
- *  `{ type:'file', attachment }` content block; `hostPath` is its absolute
- *  on-disk path. On older DSH versions (no `saveFile`) `path` is the fallback
- *  workspace `.feishu-inbox` path used for the `[文件: …]` text reference. */
+/** One admitted inbound file. The bytes are persisted via the native
+ *  attachment store (`attachments.saveFileStream`) and `fileRef` is the durable
+ *  ref to attach as a `{ type:'file', attachment }` content block; `hostPath`
+ *  is its absolute on-disk path (the agent reads the file there). */
 export interface FileAdmission {
-  fileRef?: FileAttachmentRef
+  fileRef: FileAttachmentRef
   hostPath?: string
-  path?: string
   fileName: string
 }
 
 /**
  * Download every file resource off one normalized message and persist the
- * bytes. Prefers DSH's native file attachment store (`attachments.saveFile`,
- * 0.1.3) so the bytes can be attached to the user message as a durable file
- * content block; falls back to writing the session's workspace `.feishu-inbox`
- * dir on older DSH versions. Returns an empty array when the message carries
- * no file resources.
+ * bytes through DSH's native attachment store (`saveFileStream`), so each is
+ * attached to the user message as a durable `{ type:'file', attachment }`
+ * content block whose `hostPath` the agent can open with its file tools.
+ * Returns an empty array when the message carries no file resources.
  */
 async function admitFilesForMessage(
   channel: LarkChannel,
   message: NormalizedMessage,
   signal: AbortSignal,
-  attachments?: AttachmentLike,
-  resolveWorkspaceRoot?: (msg: NormalizedMessage) => Promise<string | undefined>,
+  attachments: AttachmentLike,
 ): Promise<readonly FileAdmission[]> {
   const resources = (message.resources ?? []).filter(resource => resource.type === 'file')
   if (resources.length === 0) return []
-  const dir = await resolveInboxDir(message, resolveWorkspaceRoot)
   const results: FileAdmission[] = []
   for (const resource of resources) {
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
@@ -224,27 +200,15 @@ async function admitFilesForMessage(
       path: { message_id: message.messageId, file_key: resource.fileKey },
     })
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
-    const bytes = await readDownloadStream(raw)
     const fileName = resource.fileName ?? resource.fileKey
     const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_')
-    // 0.1.3: native file attachment store -> durable ref + host path.
-    if (attachments?.saveFile !== undefined) {
-      try {
-        const fileRef = await attachments.saveFile({ data: bytes, name: safeName })
-        const hostPath = attachments.fileHostPath?.(fileRef)
-        results.push(hostPath === undefined ? { fileRef, fileName } : { fileRef, hostPath, fileName })
-        continue
-      } catch (error: unknown) {
-        console.log(`dsh-feishu: [file] saveFile failed, falling back to inbox: ${error instanceof Error ? error.message : String(error)}`)
-        // Fall through to the inbox path below.
-      }
-    }
-    // Fallback/alpha.4: write to the session workspace inbox dir and inject a
-    // `[文件: name → path]` text reference instead of a content block.
-    const ts = Date.now()
-    const filePath = join(dir, `${ts}_${safeName}`)
-    await writeFile(filePath, bytes)
-    results.push({ path: filePath, fileName })
+    const fileRef = await attachments.saveFileStream({
+      data: downloadStream(raw),
+      signal,
+      name: safeName,
+    })
+    const hostPath = attachments.fileHostPath(fileRef)
+    results.push(hostPath === undefined ? { fileRef, fileName } : { fileRef, hostPath, fileName })
   }
   return results
 }
@@ -286,7 +250,6 @@ export async function startChannel(
     sendOnboardingCard(msg: NormalizedMessage): Promise<void>
   },
   getTranslations?: () => Translations,
-  resolveWorkspaceRoot?: (msg: NormalizedMessage) => Promise<string | undefined>,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -410,34 +373,27 @@ export async function startChannel(
           return
         }
       }
-      // Admit file resources: persist the bytes (native attachment store on
-      // 0.1.3, `.feishu-inbox` fallback otherwise) and attach them to the
-      // user turn so the agent can read them.
+      // Admit file resources: persist the bytes through the native attachment
+      // store (`saveFileStream`) and attach each durable ref to the user turn
+      // so the agent can read the file at `hostPath`.
       if ((message.resources ?? []).some(resource => resource.type === 'file')) {
+        if (attachments === undefined) {
+          await channel.send(message.chatId, {
+            text: 'File messages are not supported because the deployment has no attachment service composed.',
+          }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
+          return
+        }
         try {
-          const files = await admitFilesForMessage(channel, message, new AbortController().signal, attachments, resolveWorkspaceRoot)
+          const files = await admitFilesForMessage(channel, message, new AbortController().signal, attachments)
           if (files.length > 0) {
-            // 0.1.3: durable ref -> attach as content blocks.
-            const blockFiles = files.filter((f): f is FileAdmission & { fileRef: FileAttachmentRef } => f.fileRef !== undefined)
-            if (blockFiles.length > 0) {
-              inboundMessage = {
-                ...inboundMessage,
-                fileBlocks: [
-                  ...(inboundMessage.fileBlocks ?? []),
-                  ...blockFiles.map(f => f.hostPath === undefined
-                    ? { attachment: f.fileRef }
-                    : { attachment: f.fileRef, hostPath: f.hostPath }),
-                ],
-              }
-            }
-            // Fallback (alpha.4) / any path-backed file: inject a text reference.
-            const pathFiles = files.filter((f): f is FileAdmission & { path: string } => f.path !== undefined)
-            if (pathFiles.length > 0) {
-              const fileRefs = pathFiles.map(f => `[文件: ${f.fileName} → ${f.path}]`).join('\n')
-              const extraContent = inboundMessage.content.length > 0
-                ? `${inboundMessage.content}\n${fileRefs}`
-                : fileRefs
-              inboundMessage = { ...inboundMessage, content: extraContent }
+            inboundMessage = {
+              ...inboundMessage,
+              fileBlocks: [
+                ...(inboundMessage.fileBlocks ?? []),
+                ...files.map(f => f.hostPath === undefined
+                  ? { attachment: f.fileRef }
+                  : { attachment: f.fileRef, hostPath: f.hostPath }),
+              ],
             }
           }
         } catch (error: unknown) {

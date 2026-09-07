@@ -1,15 +1,14 @@
 /**
  * `feishu_receive_file` model tool: lets the agent pull an inbound Feishu file
- * resource into the session's workspace inbox.
+ * resource into the agent's native attachment store.
  *
  * The channel service auto-admits file resources carried on a normal message
- * (it downloads them and injects a `[文件: name → path]` reference). But when
- * a file reference is NOT auto-admitted — e.g. a message whose resource key
+ * (it downloads them and persists a durable `FileAttachmentRef`). But when a
+ * file reference is NOT auto-admitted — e.g. a message whose resource key
  * never got pulled, or a downstream agent that wants the bytes on demand —
  * this tool lets the agent fetch it directly by its Feishu identifiers
  * (`message_id` + `file_key`, the pair `im.v1.messageResource.get` needs) and
- * persists it to `<workspace>/.feishu-inbox/` so it shares the same landing
- * dir as auto-admitted files.
+ * persist it through the same native attachment store.
  *
  * Like `feishu_send_file`, this is the model-side counterpart to the channel's
  * inbound admission: send pushes a workspace file out; receive pulls a Feishu
@@ -20,16 +19,41 @@
  * @module @starxer/chatterbox4dsh/feishu-receive-file
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { HarnessConversationService } from './harness.ts'
-import { errorText } from './error-text.ts'
 
 /** Feishu file-message ceiling (`resource.get` rejects > 30 MB upstream). */
 const MAX_FILE_BYTES = 30 * 1024 * 1024
+
+/**
+ * Expose the SDK download wrapper as an `AsyncIterable<Uint8Array>` and reject
+ * empty or over-limit bodies before `saveFileStream` commits them.
+ */
+async function* downloadStream(raw: unknown): AsyncGenerator<Uint8Array> {
+  let total = 0
+  const emit = (chunk: Uint8Array): Uint8Array => {
+    total += chunk.byteLength
+    if (total > MAX_FILE_BYTES) throw new Error(`File is over Feishu's 30 MB limit: ${total} bytes`)
+    return chunk
+  }
+  const finish = () => {
+    if (total === 0) throw new Error('Feishu returned an empty file — returning no local path.')
+  }
+  if (Buffer.isBuffer(raw)) { yield emit(raw); finish(); return }
+  if (raw instanceof Uint8Array) { yield emit(raw); finish(); return }
+  if (raw !== null && typeof raw === 'object' && typeof (raw as { getReadableStream?: () => unknown }).getReadableStream === 'function') {
+    const stream = (raw as { getReadableStream: () => unknown }).getReadableStream()
+    if (!(stream instanceof Readable)) throw new Error('dsh-feishu: unexpected stream type from messageResource.get')
+    for await (const chunk of stream) yield emit(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array))
+    finish()
+    return
+  }
+  throw new Error('dsh-feishu: unsupported download response shape')
+}
 
 /** Minimal logger surface; matches ctx.logger's call style. */
 interface PluginLogger {
@@ -43,13 +67,11 @@ export interface FeishuReceiveFileDeps {
   /** Reverse lookup: sessionId → bound chat message. */
   bridgeHolder: { current: HarnessConversationService | undefined }
   channelHolder: { current: LarkChannel | undefined }
-  /** Resolve the workspace root for a session's bound chat. */
-  resolveWorkspaceRoot(sessionId: string): Promise<string | undefined>
-  /** 0.1.3 attachment store (optional): persist the file via `saveFile` instead
-   *  of the workspace `.feishu-inbox` path, returning `fileHostPath`. */
-  attachments?: {
-    saveFile?: (input: { data: Uint8Array; name?: string }) => Promise<{ attachmentId: unknown; name: string; bytes: number }>
-    fileHostPath?: (ref: { attachmentId: unknown; name: string; bytes: number }) => string | undefined
+  /** Native attachment store: persist the pulled file via `saveFileStream` and
+   *  return `fileHostPath`. Required on DSH 0.1.3. */
+  attachments: {
+    saveFileStream: (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => Promise<FileAttachmentRef>
+    fileHostPath: (ref: FileAttachmentRef) => string | undefined
   }
   logger: PluginLogger
 }
@@ -63,16 +85,16 @@ export interface FeishuReceiveFileDeps {
  * @returns the exact disposer that unregisters the tool.
  */
 export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => void {
-  const { ctx, bridgeHolder, channelHolder, resolveWorkspaceRoot, logger, attachments } = deps
+  const { ctx, bridgeHolder, channelHolder, logger, attachments } = deps
 
   return ctx.tools.register(defineTool({
     name: 'feishu_receive_file',
     description:
-      'Download an inbound Feishu file into the current session\'s workspace '
-      + 'inbox (`.feishu-inbox/`). Requires the message_id and file_key of the '
-      + 'file (the pair shown in an incoming file reference). Returns the local '
-      + 'path the agent can then open with its file tools. Only works when the '
-      + 'current session is bound to a Feishu chat and its workspace resolves.',
+      'Download an inbound Feishu file into the agent\'s native attachment '
+      + 'store. Requires the message_id and file_key of the file (the pair '
+      + 'shown in an incoming file reference). Returns the local path the '
+      + 'agent can then open with its file tools. Only works when the current '
+      + 'session is bound to a Feishu chat.',
     parameters: {
       message_id: {
         type: 'string',
@@ -96,12 +118,11 @@ export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => v
         properties: {
           file_name: { type: 'string', required: true },
           path: { type: 'string', required: true },
-          workspace: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `Received "${value.file_name}" into ${value.path} (workspace ${value.workspace}).`,
+        text: `Received "${value.file_name}" into ${value.path}.`,
       }],
     },
     async execute(args, exec) {
@@ -127,18 +148,6 @@ export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => v
       }
 
       exec.signal.throwIfAborted()
-      const root = await resolveWorkspaceRoot(agent.id)
-      const inboxDir = root !== undefined && root.trim() !== ''
-        ? join(root, '.feishu-inbox')
-        : await (async () => {
-            const { join: j } = await import('node:path')
-            const { homedir } = await import('node:os')
-            const dshHome = process.env.DSH_HOME || `${homedir()}/.dsh`
-            return j(dshHome, 'feishu-inbox')
-          })()
-      await mkdir(inboxDir, { recursive: true })
-
-      exec.signal.throwIfAborted()
       // `rawClient` reaches the real `im.v1.messageResource.get` endpoint,
       // which needs `(message_id, file_key)` together (the SDK's typed
       // `downloadResource` routes user-sent keys to the wrong endpoint). The
@@ -148,57 +157,23 @@ export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => v
         path: { message_id: args.message_id, file_key: args.file_key },
       })
 
-      let bytes: Buffer
-      if (Buffer.isBuffer(raw)) {
-        bytes = raw
-      } else if (raw instanceof Uint8Array) {
-        bytes = Buffer.from(raw)
-      } else if (raw !== null && typeof raw === 'object' && typeof (raw as { getReadableStream?: () => unknown }).getReadableStream === 'function') {
-        const { Readable } = await import('node:stream')
-        const stream = (raw as { getReadableStream: () => unknown }).getReadableStream()
-        if (!(stream instanceof Readable)) throw new Error('dsh-feishu: unexpected stream type from messageResource.get')
-        const chunks: Buffer[] = []
-        for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array))
-        bytes = Buffer.concat(chunks)
-      } else {
-        throw new Error('dsh-feishu: unsupported download response shape')
-      }
-
-      if (bytes.length === 0) {
-        throw new Error('Feishu returned an empty file — returning no local path.')
-      }
-      if (bytes.length > MAX_FILE_BYTES) {
-        throw new Error(`File is ${bytes.length} bytes, over Feishu's 30 MB limit: ${args.file_key}`)
-      }
-
       const fileName = (args.file_name ?? args.file_key).replace(/[^a-zA-Z0-9._-]/g, '_') || args.file_key
-      // 0.1.3: persist via the native attachment store and return its on-disk path.
-      if (attachments?.saveFile !== undefined) {
-        try {
-          const fileRef = await attachments.saveFile({ data: bytes, name: fileName })
-          const hostPath = attachments.fileHostPath?.(fileRef)
-          if (hostPath !== undefined) {
-            logger.warn(`dsh-feishu: feishu_receive_file pulled "${fileName}" (message ${args.message_id}) into ${hostPath}`)
-            return {
-              file_name: fileName,
-              path: hostPath,
-              workspace: root ?? '(attachment store)',
-            }
-          }
-        } catch (error: unknown) {
-          logger.warn(`dsh-feishu: feishu_receive_file saveFile failed, falling back to inbox: ${error instanceof Error ? error.message : String(error)}`)
-          // Fall through to the workspace inbox path below.
-        }
+      // Persist via the native attachment store (streamed, with backpressure)
+      // and return its on-disk path for the agent's file tools.
+      const fileRef = await attachments.saveFileStream({
+        data: downloadStream(raw),
+        signal: exec.signal,
+        name: fileName,
+      })
+      const hostPath = attachments.fileHostPath(fileRef)
+      if (hostPath === undefined) {
+        throw new Error('dsh-feishu: the attachment store did not expose a host path for the received file')
       }
-      const ts = Date.now()
-      const filePath = join(inboxDir, `${ts}_${fileName}`)
-      await writeFile(filePath, bytes)
-      logger.warn(`dsh-feishu: feishu_receive_file pulled "${fileName}" (message ${args.message_id}) into ${filePath}`)
+      logger.warn(`dsh-feishu: feishu_receive_file pulled "${fileName}" (message ${args.message_id}) into ${hostPath}`)
 
       return {
         file_name: fileName,
-        path: filePath,
-        workspace: root ?? '(fallback)',
+        path: hostPath,
       }
     },
   }))

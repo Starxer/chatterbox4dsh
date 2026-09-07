@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 整理：飞书文件路径收敛到 DSH 原生附件库（不再向前兼容 alpha.4）（`src/channel.ts` / `src/feishu-receive-file.ts` / `src/index.ts` / `tests/plugin.spec.ts` / `tests/feishu-receive-file.spec.ts`）
+
+- **背景**：插件此前对入站文件维护**两条并行路径**——0.1.3 走原生 `attachments.saveFile`（`FileAttachmentRef` + `fileHostPath`），旧版/无 `saveFile` 回退写工作区 `.feishu-inbox/` 并注入 `[文件: name → path]` 文本。既然插件不再向前兼容 alpha.4（DSH 已是 `0.1.3-alpha.2`，`AttachmentStore` 必有 `saveFileStream`/`fileHostPath`），把文件统一收敛到**一条原生路径**。
+- **改动**：
+  - `channel.ts`：`AttachmentLike` 改为要求 `saveFileStream` + `fileHostPath`（去掉可选的 `saveFile`）；`FileAdmission` 只剩 `{ fileRef, hostPath?, fileName }`（去掉 `path`）；`admitFilesForMessage` 单路径——下载流经新 `downloadStream()`（`AsyncIterable<Uint8Array>`，背压、不整块进内存）直接喂 `attachments.saveFileStream`；删除 `getFallbackInboxDir`/`resolveInboxDir` 与 `[文件: …]` 文本注入；`startChannel` 移除 `resolveWorkspaceRoot` 参数；文件消息无附件服务时像图片一样明确拒绝。
+  - `feishu-receive-file.ts`：依赖改为必填原生 `saveFileStream` + `fileHostPath`，删除 `.feishu-inbox` 写盘与 `resolveWorkspaceRoot`，`downloadStream()` 保留空文件/超 30MB 校验；工具输出 schema 去掉 `workspace` 字段。
+  - `index.ts`：`startFeishuReceiveFileTool` 直接传 `attachments`（去掉 `as unknown as` 类型转换与 `resolveWorkspaceRoot` 回调），移除 `startChannel` 的 `resolveWorkspaceRoot` 实参；删除未用的 `AttachmentStore` import。
+  - **图片路径不变**（`saveImage`/`imageLimits`/`sniffImageMime` 已对齐原生）。
+- **验证**：`npm run typecheck` / `npm run test`（225 passed，含重写的文件用例：流式进入原生 store、干净地附 `{ type:'file', attachment }` 块、无 `.feishu-inbox` 遗留）/ `npm run build` 全绿。
+
 ### 迁移：兼容 DSH `0.1.3-alpha.1` → `0.1.3-alpha.2`（**P0/P1/P2 全部已实现，DSH 已升级并验证**）
 
 - DSH 远端最新打 tag 的 release 仍为 `dsh-v0.1.3-alpha.1`（2026-09-04），但 `origin/master` 上已有 `0.1.3-alpha.2` 的 release commit（`e379fa8bdd`）——距本插件基线 `dsh-v0.1.2-alpha.4` 共 **449 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。**本条目所有迁移项均已实现**：DSH 已升级到 `0.1.3-alpha.2`（`git switch -d e379fa8bdd`），`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿，实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。

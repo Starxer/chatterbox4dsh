@@ -1,6 +1,6 @@
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, expandAssistantStream, type ReasoningEffortId, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
@@ -105,8 +105,8 @@ export interface HarnessBridgeConfig {
 export interface InboundMessage extends ConversationMessage {
   content: string
   imageBlocks?: readonly ImageAttachmentRef[]
-  /** 0.1.3 durable file attachments (from `attachments.saveFile`), attached to
-   *  the user message as `{ type:'file', attachment }` content blocks. Each
+  /** 0.1.3 durable file attachments (from `attachments.saveFileStream`), attached
+   *  to the user message as `{ type:'file', attachment }` content blocks. Each
    *  carries the ref and its absolute on-disk host path. */
   fileBlocks?: readonly { attachment: any; hostPath?: string }[]
 }
@@ -1013,6 +1013,39 @@ export class HarnessConversationService {
   }
 
   /**
+   * Resolve the model that THIS session actually runs, read from its persisted
+   * log. `agentDefaultModel.currentSelection()` is only the global default for
+   * agents without a session-specific selection — a WebUI switch or session
+   * creation can set a per-session model that never touches that default, so
+   * the default alone is NOT the authority. The `request/header` config is
+   * what each turn was actually dispatched with, so the latest one is the
+   * authoritative "current". Returns `undefined` when the session has no
+   * recorded model (fresh/uncreated) so callers fall back to the default.
+   */
+  async sessionCurrentSelection(message: ConversationMessage): Promise<ModelSelection | undefined> {
+    const sessionId = this.resolveSessionIdFor(message)
+    if (sessionId === '') return undefined
+    const cold = await this.readColdSession(sessionId)
+    if (cold === undefined) return undefined
+    let selection: ModelSelection | undefined
+    for (const event of cold.events) {
+      if (event?.type === 'request/header' && event.data?.header?.config) {
+        const c = event.data.header.config as { provider?: unknown; model?: unknown; reasoningEffort?: unknown } | undefined
+        if (typeof c?.provider === 'string' && typeof c?.model === 'string') {
+          selection = {
+            provider: c.provider,
+            model: c.model,
+            ...(typeof c.reasoningEffort === 'string' && c.reasoningEffort !== ''
+              ? { reasoningEffort: c.reasoningEffort as ReasoningEffortId }
+              : {}),
+          }
+        }
+      }
+    }
+    return selection
+  }
+
+  /**
    * Derive session statistics from event log, mirroring the WebUI's
    * tokenUsage + contextPressure projections.
    *
@@ -1111,6 +1144,28 @@ export class HarnessConversationService {
         }
         // TTFT and decode time for assistant/message events.
         if (event.type === 'assistant/message' && stepStartTime > 0) {
+          // 0.1.3: `assistant/chunk` events no longer exist, so firstTokenTime
+          // was never set here. Recover it from the message's lossless compact
+          // stream (the only surviving source of first-token timing).
+          if (firstTokenTime === 0) {
+            const rawStream = Array.isArray(event.data?.stream)
+              ? event.data.stream as readonly AssistantStreamRecord[]
+              : undefined
+            if (rawStream !== undefined) {
+              try {
+                for (const timed of expandAssistantStream(rawStream)) {
+                  const chunk = timed.chunk
+                  if ((chunk.type === 'reasoning-delta' || chunk.type === 'text-delta')
+                    && typeof chunk.text === 'string' && chunk.text !== '') {
+                    firstTokenTime = timed.time
+                    break
+                  }
+                }
+              } catch {
+                // leave firstTokenTime at 0 — TTFT/decode simply not shown
+              }
+            }
+          }
           if (firstTokenTime > 0 && firstTokenTime >= stepStartTime) {
             ttftSum += firstTokenTime - stepStartTime
             ttftCount++

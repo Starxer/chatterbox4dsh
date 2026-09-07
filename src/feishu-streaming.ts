@@ -361,6 +361,34 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
         }
       } else if (event.type === 'assistant/message') {
+        // 0.1.3: `assistant/chunk` was removed; `assistant/message` now carries
+        // the lossless compact stream. Rebuild text/reasoning from it FIRST and
+        // use the first timed chunk as the TTFT anchor — the turn-stats
+        // timing math below reads `state.firstTokenTime`, and in 0.1.3 this
+        // rebuild is the only thing that sets it (no `assistant/chunk` events
+        // exist to populate it ahead of time). Guarded on the stream being
+        // present so older DSH versions (alpha.4, where chunks already
+        // populated the state via the `assistant/chunk` branch) are unaffected.
+        const rawStream = Array.isArray((event.data as { stream?: unknown })?.stream)
+          ? (event.data as { stream: readonly AssistantStreamRecord[] }).stream
+          : undefined
+        if (rawStream !== undefined && state.reasoning === '' && state.text === '') {
+          try {
+            for (const timed of expandAssistantStream(rawStream)) {
+              const chunk = timed.chunk
+              if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+                state.reasoning += chunk.text
+                if (state.firstTokenTime === 0) state.firstTokenTime = timed.time
+              } else if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+                state.text += chunk.text
+                if (state.firstTokenTime === 0) state.firstTokenTime = timed.time
+              }
+            }
+          } catch (streamError: unknown) {
+            console.log(`dsh-feishu: [message] expandAssistantStream failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`)
+          }
+        }
+
         // The assembled message arrived. Record usage and message time.
         state.messageTime = event.time ?? Date.now()
         state.completedTime = state.messageTime
@@ -410,32 +438,6 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
           if (state.stepStartTime > 0 && state.messageTime > state.stepStartTime) {
             ts.totalStepMs += state.messageTime - state.stepStartTime
-          }
-        }
-
-        // 0.1.3: `assistant/chunk` was removed; `assistant/message` now carries
-        // the lossless compact stream. Rebuild text/reasoning from it here so
-        // the card still renders, and use the first timed chunk as the TTFT
-        // anchor. Guarded on the stream being present so older DSH versions
-        // (alpha.4, where chunks already populated the state via the
-        // `assistant/chunk` branch) are unaffected.
-        const rawStream = Array.isArray((event.data as { stream?: unknown })?.stream)
-          ? (event.data as { stream: readonly AssistantStreamRecord[] }).stream
-          : undefined
-        if (rawStream !== undefined && state.reasoning === '' && state.text === '') {
-          try {
-            for (const timed of expandAssistantStream(rawStream)) {
-              const chunk = timed.chunk
-              if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
-                state.reasoning += chunk.text
-                if (state.firstTokenTime === 0) state.firstTokenTime = timed.time
-              } else if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
-                state.text += chunk.text
-                if (state.firstTokenTime === 0) state.firstTokenTime = timed.time
-              }
-            }
-          } catch (streamError: unknown) {
-            console.log(`dsh-feishu: [message] expandAssistantStream failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`)
           }
         }
 

@@ -124,6 +124,7 @@ export const zhCommandTranslations: CommandTranslations = {
   reasoningCurrentDefault: '(provider 默认)',
   reasoningSwitched: (effort: string) => `🧠 推理强度已切换为 **${effort}**。跨重启持久化。`,
   reasoningLevels: '可用档位：`off` · `low` · `high` · `max`\n使用 `/reasoning show on|off` 切换推理内容显示。',
+  reasoningLevelsFrom: (effortIds: readonly string[]) => `可用档位：${effortIds.map(id => `\`${id}\``).join(' · ')}\n使用 \`/reasoning show on|off\` 切换推理内容显示。`,
   reasoningUnknown: (level: string) => `未知推理档位 "${level}"。`,
   reasoningShowToggled: (enabled: boolean) => `🧠 推理内容显示：**${enabled ? 'on' : 'off'}**。跨重启持久化。`,
 }
@@ -236,6 +237,7 @@ export const enCommandTranslations: CommandTranslations = {
   reasoningCurrentDefault: '(provider default)',
   reasoningSwitched: (effort: string) => `🧠 Reasoning effort switched to **${effort}**. Persisted across restarts.`,
   reasoningLevels: 'Available levels: `off` · `low` · `high` · `max`\nUse `/reasoning show on|off` to toggle reasoning content display.',
+  reasoningLevelsFrom: (effortIds: readonly string[]) => `Available levels: ${effortIds.map(id => `\`${id}\``).join(' · ')}\nUse \`/reasoning show on|off\` to toggle reasoning content display.`,
   reasoningUnknown: (level: string) => `Unknown reasoning level "${level}".`,
   reasoningShowToggled: (enabled: boolean) => `🧠 Reasoning content display: **${enabled ? 'on' : 'off'}**. Persisted across restarts.`,
 }
