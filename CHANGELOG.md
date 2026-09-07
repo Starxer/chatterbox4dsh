@@ -2,15 +2,15 @@
 
 ## Unreleased
 
-### 迁移：兼容 DSH `0.1.3-alpha.1`（**P0/P1/P2 全部已实现，DSH 已升级并验证**）
+### 迁移：兼容 DSH `0.1.3-alpha.1` → `0.1.3-alpha.2`（**P0/P1/P2 全部已实现，DSH 已升级并验证**）
 
-- DSH 远端最新 release 为 `dsh-v0.1.3-alpha.1`（2026-09-04），距本插件基线 `dsh-v0.1.2-alpha.4` 有 **336 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。**本条目所有迁移项均已实现**：DSH 已升级到 `0.1.3-alpha.1`，`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿，实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。
-- ✅ **可信度**：迁移文档全部 API 签名已对照 **0.1.3 源码**逐条核实（`git show dsh-v0.1.3-alpha.1`），不依赖插件 `node_modules` 里链接的旧版（rc.8 级）类型。
+- DSH 远端最新打 tag 的 release 仍为 `dsh-v0.1.3-alpha.1`（2026-09-04），但 `origin/master` 上已有 `0.1.3-alpha.2` 的 release commit（`e379fa8bdd`）——距本插件基线 `dsh-v0.1.2-alpha.4` 共 **449 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。**本条目所有迁移项均已实现**：DSH 已升级到 `0.1.3-alpha.2`（`git switch -d e379fa8bdd`），`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿，实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。
+- ✅ **可信度**：迁移文档全部 API 签名已对照 **0.1.3 源码**逐条核实（`git show dsh-v0.1.3-alpha.1` + `e379fa8bdd`），不依赖插件 `node_modules` 里链接的旧版（rc.8 级）类型。
 
 #### 已实现（破坏性）
 
 - 🔴 ✅ **流式渲染（方案 B）**：`assistant/chunk` 从 `session/event` **移除**，改为 `assistant/message.stream`（内嵌 `AssistantStreamRecord[]`）+ 新增 `assistant/attempt` + agent-scoped 实时事件 `agent/assistant-stream`（`start/chunk/end`，经 `follow({assistantStream:true})` opt-in）。**已实现方案 B**（2026-09-08 修正；早期「方案A为主」已作废）：结合源码核对发现**现状本就不是逐 token**——`assistant/chunk` 只做内存累积，`sendStepCard` 只在 `assistant/message`/首个 `tool/call` 边界发整卡，方案 B 贴近现状、近乎零回归。方案 A（`agent/assistant-stream` 逐 delta）是今天不存在的能力，降为可选。`src/feishu-streaming.ts` 在 `assistant/message` 分支用 `@deepseek-ai/dsh-llm` 的 `expandAssistantStream(stream)` 重建 text/reasoning，TTFT 从首个 `TimedStreamChunk.time` 取（有偏差，记为退化点）；保留旧版 chunk 累积作兜底。详见迁移文档 §1。
-- 🔴 ✅ **`sessionPersistence`**：`readFrom()/prepare()` 移除，改为 `SessionHandle`（`open(id,'read')+handle.read`，用后 `close()`，否则写句柄泄漏所有权）；`list()` 返回 `SessionPersistenceSnapshot[]`（`.id` → `.header.id`）。`src/harness.ts` 新增 `persistedIdOf()`（归一 `.id`/`.header.id`）与 `readColdSession()`（0.1.3 用 `open(id,'read')+handle.read(0)+close()`，旧版回退 `readFrom`）；所有 `list().some(item=>item.id)` → `persistedIdOf`。详见迁移文档 §2。
+- 🔴 ✅ **`sessionPersistence`**：`readFrom()/prepare()` 移除，改为 `SessionHandle`（`open(id,'read')+handle.read`，用后 `close()`，否则写句柄泄漏所有权）；`list()` 返回 `SessionPersistenceSnapshot[]`（`.id` → `.header.id`）。`src/harness.ts` 新增 `persistedIdOf()`（归一 `.id`/`.header.id`）与 `readColdSession()`（0.1.3 用 `open(id,'read')+handle.read(0)+close()`，**alpha.2 又把 `handle.read()` 返回从 `ReadonlyArray<Event>` 改成 `{ eventState, events }` envelope**——`readColdSession` 改为 `const result = await handle.read(0); const events = result?.events ?? result` envelope-first / array-fallback 双兼容；旧版回退 `readFrom`）。所有 `list().some(item=>item.id)` → `persistedIdOf`。详见迁移文档 §2。
 
 #### 已适配（兼容）
 

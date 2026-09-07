@@ -55,8 +55,11 @@ export interface HarnessDependencies {
      *  hides the service still lists cold sessions with no title. */
     readFrom?(id: unknown, fromSeq: number): Promise<{ meta: unknown; events: ReadonlyArray<{ seq: number; type: string; data: any }> }>
     /** 0.1.3: open a session handle (read|write). Read-only usage for the
-     *  bridge; must close() after use (write handles leak ownership if not). */
-    open?(id: unknown, access: 'read' | 'write'): Promise<{ read(offset?: number, length?: number): Promise<ReadonlyArray<{ seq: number; type: string; data: any; time?: number }>>; header?: unknown; close(): Promise<void> }>
+     *  bridge; must close() after use (write handles leak ownership if not).
+     *  0.1.3-alpha.2: `handle.read()` returns a `SessionHandleReadResult`
+     *  envelope `{ eventState, events }`; older alphas returned the event
+     *  array directly. The bridge destructures `.events` to stay neutral. */
+    open?(id: unknown, access: 'read' | 'write'): Promise<{ read(offset?: number, length?: number): Promise<{ eventState?: unknown; events: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> }>; header?: unknown; close(): Promise<void> }>
   }
   selection(): { provider: string; model: string; reasoningEffort?: ReasoningEffortId }
   agentPresets: {
@@ -352,8 +355,16 @@ export class HarnessConversationService {
       try {
         const handle = await persistence.open(sessionId as never, 'read')
         try {
-          const events = await handle.read(0)
-          return { meta: handle.header, events: events as ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> }
+          // 0.1.3-alpha.2: `read()` returns `{ eventState, events }`. Older
+          //  alphas returned the event array directly — those arrays are
+          //  structurally compatible with the envelope (each element has
+          //  seq/type/data/time), so a single destructure is safe to call
+          //  on either. `result?.events ?? result` covers the alpha.4 path
+          //  without an extra branch.
+          const result = await handle.read(0)
+          const events = (result as { events?: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> })?.events
+            ?? (result as unknown as ReadonlyArray<{ seq: number; type: string; data: any; time?: number }>)
+          return { meta: handle.header, events }
         } finally {
           // Read handles are safe to close; always release to avoid leaking
           // (write handles would not, but this bridge only reads).
