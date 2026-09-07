@@ -434,6 +434,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     bridgeHolder,
     channelHolder,
     logger: ctx.logger('dsh-feishu'),
+    // 0.1.3: persist pulled files via the native attachment store.
+    attachments: attachments as unknown as { saveFile?: (input: { data: Uint8Array; name?: string }) => Promise<{ attachmentId: unknown; name: string; bytes: number }>; fileHostPath?: (ref: { attachmentId: unknown; name: string; bytes: number }) => string | undefined },
     resolveWorkspaceRoot: async (sessionId) => {
       const b = bridgeHolder.current
       if (b === undefined) return undefined

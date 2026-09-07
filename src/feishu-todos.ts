@@ -102,7 +102,11 @@ export function startFeishuTodos(deps: FeishuTodosDeps): () => void {
   // for `todo/write`; the (session, event) callback receives the full session
   // object (no sessionId hop) and the event object directly (no envelope
   // wrapper).
-  const disposeListener = ctx.on('session/event', (session, event) => {
+  const disposeListener = ctx.on('session/event', (session, rawEvent) => {
+    // `todo/write` is emitted by the todo tool (`session.append('todo/write', …)`)
+    // but is not part of the typed `SessionEventMap` discriminant union, so the
+    // event must be matched loosely. Guard defensively on shape.
+    const event = rawEvent as { type: string; data?: { todos?: unknown } }
     if (event.type !== 'todo/write') return
     const sessionId = session.id
     const bridge = bridgeHolder.current

@@ -45,6 +45,12 @@ export interface FeishuReceiveFileDeps {
   channelHolder: { current: LarkChannel | undefined }
   /** Resolve the workspace root for a session's bound chat. */
   resolveWorkspaceRoot(sessionId: string): Promise<string | undefined>
+  /** 0.1.3 attachment store (optional): persist the file via `saveFile` instead
+   *  of the workspace `.feishu-inbox` path, returning `fileHostPath`. */
+  attachments?: {
+    saveFile?: (input: { data: Uint8Array; name?: string }) => Promise<{ attachmentId: unknown; name: string; bytes: number }>
+    fileHostPath?: (ref: { attachmentId: unknown; name: string; bytes: number }) => string | undefined
+  }
   logger: PluginLogger
 }
 
@@ -57,7 +63,7 @@ export interface FeishuReceiveFileDeps {
  * @returns the exact disposer that unregisters the tool.
  */
 export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => void {
-  const { ctx, bridgeHolder, channelHolder, resolveWorkspaceRoot, logger } = deps
+  const { ctx, bridgeHolder, channelHolder, resolveWorkspaceRoot, logger, attachments } = deps
 
   return ctx.tools.register(defineTool({
     name: 'feishu_receive_file',
@@ -166,6 +172,24 @@ export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => v
       }
 
       const fileName = (args.file_name ?? args.file_key).replace(/[^a-zA-Z0-9._-]/g, '_') || args.file_key
+      // 0.1.3: persist via the native attachment store and return its on-disk path.
+      if (attachments?.saveFile !== undefined) {
+        try {
+          const fileRef = await attachments.saveFile({ data: bytes, name: fileName })
+          const hostPath = attachments.fileHostPath?.(fileRef)
+          if (hostPath !== undefined) {
+            logger.warn(`dsh-feishu: feishu_receive_file pulled "${fileName}" (message ${args.message_id}) into ${hostPath}`)
+            return {
+              file_name: fileName,
+              path: hostPath,
+              workspace: root ?? '(attachment store)',
+            }
+          }
+        } catch (error: unknown) {
+          logger.warn(`dsh-feishu: feishu_receive_file saveFile failed, falling back to inbox: ${error instanceof Error ? error.message : String(error)}`)
+          // Fall through to the workspace inbox path below.
+        }
+      }
       const ts = Date.now()
       const filePath = join(inboxDir, `${ts}_${fileName}`)
       await writeFile(filePath, bytes)

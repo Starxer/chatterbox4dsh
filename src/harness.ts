@@ -10,7 +10,7 @@ import type { DomainName } from './config.ts'
 
 /** Minimum surface of {@link Agent} the conversation service depends on. */
 interface AgentLike {
-  session: { id: unknown; seq: number; events: readonly { seq: number; type: string; data: any }[] }
+  session: { id: unknown; seq: number; events?: readonly { seq: number; type: string; data: any }[] }
   whenIdle(): Promise<void>
   followup(message: ReturnType<typeof createUserMessage>): void
   steer(message: ReturnType<typeof createUserMessage>): void
@@ -46,12 +46,17 @@ export interface HarnessDependencies {
   }
   sessions: { flush(session: AgentLike['session']): Promise<unknown> }
   sessionPersistence: {
-    list(): Promise<Array<{ id: string }>>
-    /** Read a cold session's full log so the bridge can surface the same
-     *  `session/title` and `turn/start` signals the webui's session list
-     *  uses. Optional: when the deployment omits it (or hides the service
-     *  behind cordis), cold sessions still list with no title. */
+    /** 0.1.3: list() returns SessionPersistenceSnapshot[] (id = .header.id).
+     *  Older (alpha.4) returns elements with a top-level `.id`. The bridge
+     *  resolves both via `persistedIdOf`. */
+    list(): Promise<ReadonlyArray<{ id?: string; header: { id: string } }>>
+    /** 0.1.3: read via open(id,'read') + handle.read(0) (SessionHandle).
+     *  Older (alpha.4): readFrom(id, fromSeq). Optional so a deployment that
+     *  hides the service still lists cold sessions with no title. */
     readFrom?(id: unknown, fromSeq: number): Promise<{ meta: unknown; events: ReadonlyArray<{ seq: number; type: string; data: any }> }>
+    /** 0.1.3: open a session handle (read|write). Read-only usage for the
+     *  bridge; must close() after use (write handles leak ownership if not). */
+    open?(id: unknown, access: 'read' | 'write'): Promise<{ read(offset?: number, length?: number): Promise<ReadonlyArray<{ seq: number; type: string; data: any; time?: number }>>; header?: unknown; close(): Promise<void> }>
   }
   selection(): { provider: string; model: string; reasoningEffort?: ReasoningEffortId }
   agentPresets: {
@@ -94,7 +99,14 @@ export interface HarnessBridgeConfig {
   statePath?: string
 }
 
-export interface InboundMessage extends ConversationMessage { content: string; imageBlocks?: readonly ImageAttachmentRef[] }
+export interface InboundMessage extends ConversationMessage {
+  content: string
+  imageBlocks?: readonly ImageAttachmentRef[]
+  /** 0.1.3 durable file attachments (from `attachments.saveFile`), attached to
+   *  the user message as `{ type:'file', attachment }` content blocks. Each
+   *  carries the ref and its absolute on-disk host path. */
+  fileBlocks?: readonly { attachment: any; hostPath?: string }[]
+}
 
 /** Per-chat creation options captured from the `/new` card flow or text
  *  command. Applied when the bridge creates the session agent, overriding
@@ -231,23 +243,26 @@ export class HarnessConversationService {
     const running = agent.status === 'running'
     const text = message.content
     const imageBlocks = message.imageBlocks ?? []
+    const fileBlocks = message.fileBlocks ?? []
     const hasText = text.length > 0
     const hasImages = imageBlocks.length > 0
-    if (!hasText && !hasImages) {
-      // An inbound message must carry either text or at least one image; the
-      // channel layer filters empties out, so this is defensive.
+    const hasFiles = fileBlocks.length > 0
+    if (!hasText && !hasImages && !hasFiles) {
+      // An inbound message must carry either text or at least one image/file;
+      // the channel layer filters empties out, so this is defensive.
       throw new Error('dsh-feishu: cannot submit an empty user turn')
     }
     // Tag every Feishu user turn with a leading `[Feishu] ` marker so the
     // model and any later session-log reader can tell the message originated
-    // from the Lark channel rather than the webui composer. Image-only
+    // from the Lark channel rather than the webui composer. Image/file-only
     // messages get the tag as a standalone text block because there is no
     // caption to attach it to.
     const tag = '[Feishu] '
-    const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef }> = []
+    const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef } | { type: 'file'; attachment: any }> = []
     if (hasText) content.push({ type: 'text', text: `${tag}${text}` })
     else content.push({ type: 'text', text: tag })
     for (const attachment of imageBlocks) content.push({ type: 'image', attachment })
+    for (const file of fileBlocks) content.push({ type: 'file', attachment: file.attachment })
 
     // Steer mode + running: inject into the live turn immediately (no wait),
     // then wait for the running turn (including the steered step) to finish.
@@ -317,6 +332,48 @@ export class HarnessConversationService {
     return []
   }
 
+  /** Resolve the durable session id from a `sessionPersistence.list()` row.
+   *  0.1.3 rows are `SessionPersistenceSnapshot` (id = `.header.id`); older
+   *  versions expose a top-level `.id`. Either shape resolves here. */
+  private persistedIdOf(item: { id?: string; header?: { id: string } }): string {
+    return item.id ?? item.header?.id ?? ''
+  }
+
+  /** Read a cold session's header + events from persistence across DSH
+   *  versions. 0.1.3 uses `open(id,'read') + handle.read(0)`; alpha.4 uses
+   *  `readFrom(id, 0)`. Returns `undefined` when the service (or backend) is
+   *  absent so callers can fall back to live-session data. */
+  private async readColdSession(
+    sessionId: unknown,
+  ): Promise<{ meta: unknown; events: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> } | undefined> {
+    const persistence = this.deps.sessionPersistence
+    // 0.1.3: SessionHandle seam.
+    if (typeof persistence.open === 'function') {
+      try {
+        const handle = await persistence.open(sessionId as never, 'read')
+        try {
+          const events = await handle.read(0)
+          return { meta: handle.header, events: events as ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> }
+        } finally {
+          // Read handles are safe to close; always release to avoid leaking
+          // (write handles would not, but this bridge only reads).
+          await handle.close().catch(() => undefined)
+        }
+      } catch {
+        return undefined
+      }
+    }
+    // alpha.4: readFrom primitive.
+    if (typeof persistence.readFrom === 'function') {
+      try {
+        return await persistence.readFrom.call(persistence, sessionId as never, 0)
+      } catch {
+        return undefined
+      }
+    }
+    return undefined
+  }
+
   /**
    * Dispatch one user turn through DSH's native `sessionController.prompt()`
    * when it is available AND the content is text-only. The native entry gives
@@ -336,10 +393,10 @@ export class HarnessConversationService {
   private async dispatchPrompt(
     agent: AgentLike,
     mode: 'steer' | 'queue',
-    content: ReadonlyArray<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef }>,
+    content: ReadonlyArray<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef } | { type: 'file'; attachment: any }>,
   ): Promise<boolean> {
     if (this.deps.sessionController?.prompt === undefined) return false
-    if (content.some(part => part.type === 'image')) return false
+    if (content.some(part => part.type === 'image' || part.type === 'file')) return false
     // `prompt()` must be invoked as a METHOD (`this` bound to the
     // sessionController) — its internals read `this.commands.prompt`, so
     // calling it as a detached bare function leaves `this` undefined and
@@ -431,9 +488,10 @@ export class HarnessConversationService {
     }
     // Same `[Feishu] ` marker as reply() so the model and session log can tell
     // the injection came from the Lark channel rather than the webui composer.
-    const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef }> = []
+    const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef } | { type: 'file'; attachment: any }> = []
     content.push({ type: 'text', text: `[Feishu] ${text}` })
     for (const attachment of (message.imageBlocks ?? [])) content.push({ type: 'image', attachment })
+    for (const file of (message.fileBlocks ?? [])) content.push({ type: 'file', attachment: file.attachment })
     if (!(await this.dispatchPrompt(agent, 'steer', content))) {
       ;(agent as unknown as AgentLike).steer(createUserMessage({
         content,
@@ -497,7 +555,7 @@ export class HarnessConversationService {
     // history; do not silently create a brand-new session for a reference
     // command. `getOrCreate` takes the `resume` branch because `createAgent`
     // checks `sessionPersistence.list()`.
-    const persisted = (await this.deps.sessionPersistence.list()).some(item => item.id === sessionId)
+    const persisted = (await this.deps.sessionPersistence.list()).some(item => this.persistedIdOf(item) === sessionId)
     if (!persisted) return undefined
     try {
       return (await this.getOrCreate(key)).agent as unknown as Agent
@@ -671,7 +729,7 @@ export class HarnessConversationService {
     if (this.chatToSession.has(key)) return false
     const defaultId = toSessionId(this.config.domain, key)
     const persisted = await this.deps.sessionPersistence.list()
-    return !persisted.some(item => item.id === defaultId)
+    return !persisted.some(item => this.persistedIdOf(item) === defaultId)
   }
 
   /** Read the creation options captured for one chat (if any). */
@@ -803,28 +861,24 @@ export class HarnessConversationService {
     }
     const entries: Array<{ id: string; updatedAt: number; title: string; ownedBy?: string; agentPreset?: string }> = []
     for (const item of persisted) {
-      if (archived.has(item.id)) continue
-      const live = this.deps.agents.get(item.id as never)
-      const readFrom = this.deps.sessionPersistence.readFrom
+      const itemId = this.persistedIdOf(item)
+      if (archived.has(itemId)) continue
+      const live = this.deps.agents.get(itemId as never)
       let updatedAt = 0
       let title = ''
       let blank = false
       let presetId = ''
       let subagent = false
-      let events: ReadonlyArray<{ seq: number; type: string; data: any }> | undefined
+      let events: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> | undefined
       if (live !== undefined) {
         events = this.readSessionEvents(live as unknown as AgentLike)
         // The live session's in-memory log has no header, so read the on-disk
         // meta for the creation preset (also catches the docs getSessionMeta path).
-        if (typeof readFrom === 'function') {
-          try {
-            const result = await readFrom.call(this.deps.sessionPersistence, item.id as never, 0)
-            const meta = result.meta as { agentPreset?: string; origin?: unknown } | undefined
-            presetId = meta?.agentPreset ?? ''
-            subagent = meta?.origin === 'subagent'
-          } catch {
-            // Missing artifact / service: preset stays unknown.
-          }
+        const result = await this.readColdSession(itemId)
+        if (result !== undefined) {
+          const meta = result.meta as { agentPreset?: string; origin?: unknown } | undefined
+          presetId = meta?.agentPreset ?? ''
+          subagent = meta?.origin === 'subagent'
         } else {
           // No persistence seam: fall back to the live session header. A DSH
           // subagent session carries `origin: 'subagent'` on its durable
@@ -833,23 +887,17 @@ export class HarnessConversationService {
           subagent = header?.origin === 'subagent'
         }
       } else {
-        // Cold session: ask SessionPersistence for the on-disk log via the same
-        // readFrom primitive the webui's session list uses. The dependency
-        // surface is widened lazily here so cold sessions still expose their
-        // latest `session/title` event and `turn/start` bit.
-        if (typeof readFrom === 'function') {
-          try {
-            const result = await readFrom.call(this.deps.sessionPersistence, item.id as never, 0)
-            events = result.events as ReadonlyArray<{ seq: number; type: string; data: any }>
-            const meta = result.meta as { agentPreset?: string; createdAt?: number; origin?: unknown } | undefined
-            presetId = meta?.agentPreset ?? ''
-            subagent = meta?.origin === 'subagent'
-            const metaTime = Number(meta?.createdAt ?? 0)
-            if (metaTime > updatedAt) updatedAt = metaTime
-          } catch {
-            // No artifact, missing service, or cordis shadow mismatch: fall
-            // through with no events and show the session without a title.
-          }
+        // Cold session: ask SessionPersistence for the on-disk log (0.1.3
+        // `open(id,'read')`/alpha.4 `readFrom`) so cold sessions still expose
+        // their latest `session/title` event and `turn/start` bit.
+        const result = await this.readColdSession(itemId)
+        if (result !== undefined) {
+          events = result.events as ReadonlyArray<{ seq: number; type: string; data: any; time?: number }>
+          const meta = result.meta as { agentPreset?: string; createdAt?: number; origin?: unknown } | undefined
+          presetId = meta?.agentPreset ?? ''
+          subagent = meta?.origin === 'subagent'
+          const metaTime = Number(meta?.createdAt ?? 0)
+          if (metaTime > updatedAt) updatedAt = metaTime
         }
       }
       // Subagent-routed sessions live under their parent's delegation tree and
@@ -874,10 +922,10 @@ export class HarnessConversationService {
         blank = !events.some(event => event.type === 'turn/start')
       }
       if (blank) continue
-      const ownerKey = this.sessionOwnerKey(item.id)
+      const ownerKey = this.sessionOwnerKey(itemId)
       const agentPreset = presetId === '' ? undefined : (presetDisplay[presetId] ?? presetId)
       entries.push({
-        id: item.id,
+        id: itemId,
         updatedAt,
         title,
         ...(ownerKey === undefined ? {} : { ownedBy: ownerKey }),
@@ -907,15 +955,15 @@ export class HarnessConversationService {
     let model = this.deps.selection()
     let reasoningEffort = model.reasoningEffort ? String(model.reasoningEffort) : ''
     const empty = { title: '', turns: 0, steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, contextWindow: 0, lastInputTokens: 0, cacheHitRate: 0, ttftAvgMs: 0, tokensPerSecond: 0, llmDurationMs: 0, toolDurationMs: 0 }
-    // Try reading the session header + events from persistence
-    const readFrom = this.deps.sessionPersistence.readFrom
-    if (typeof readFrom === 'function') {
+    // Try reading the session header + events from persistence (0.1.3
+    // `open(id,'read')` / alpha.4 `readFrom`).
+    const cold = await this.readColdSession(sessionId)
+    if (cold !== undefined) {
       try {
-        const result = await readFrom.call(this.deps.sessionPersistence, sessionId as never, 0)
-        const header = result.meta as { cwd?: string; agentPreset?: string } | undefined
+        const header = cold.meta as { cwd?: string; agentPreset?: string } | undefined
         const ws = header?.cwd ?? this.config.workspace ?? ''
         let preset = header?.agentPreset ?? this.config.agentPreset ?? ''
-        const events = result.events as ReadonlyArray<{ type: string; data: any }>
+        const events = cold.events as ReadonlyArray<{ type: string; data: any }>
         const stats = this.deriveSessionStats(events)
         // Prefer the latest request header recorded in the session log over the
         // bridge's in-memory selection ref: a WebUI model switch updates
@@ -1151,7 +1199,7 @@ export class HarnessConversationService {
     const setup = async (agentCtx: import('@deepseek-ai/cordis').Context) => {
       await this.deps.agentPresets.mount(agentCtx, agentPreset)
     }
-    const persisted = (await this.deps.sessionPersistence.list()).some(item => item.id === sessionId)
+    const persisted = (await this.deps.sessionPersistence.list()).some(item => this.persistedIdOf(item) === sessionId)
     const handle = persisted
       ? await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions: initial, setup })
       : await this.deps.agents.create({
