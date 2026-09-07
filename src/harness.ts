@@ -2,6 +2,7 @@ import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import { conversationKey, summarizeTurn, toSessionId } from './conversation.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -65,6 +66,21 @@ export interface HarnessDependencies {
     /** Session ids hidden from listing surfaces (e.g. `/session`); matches the
      *  workspace webui archive set so users see the same list in both places. */
     readonly archivedSessionIds: readonly string[]
+  }
+  /**
+   * DSH's unified Agent prompt entry (`@deepseek-ai/dsh-api-session-controller`),
+   * used to dispatch `/steer` and `/queue` messages through the native
+   * `sessionController.prompt()` instead of a hand-built `agent.steer/followup`
+   * state machine. Optional: when absent (or `prompt` missing) dispatch falls
+   * back to the direct `agent.steer` / `agent.followup` calls, so the change is
+   * safe on any DSH version. Present on the current 0.1.2-alpha.4 baseline and
+   * unchanged in 0.1.3.
+   */
+  sessionController?: {
+    prompt?: (
+      request: { sessionId: unknown; requestId: string; mode: 'steer' | 'queue'; content: unknown },
+      signal?: AbortSignal,
+    ) => Promise<{ accepted: boolean }>
   }
 }
 
@@ -237,7 +253,9 @@ export class HarnessConversationService {
     // then wait for the running turn (including the steered step) to finish.
     if (runBusyMode === 'steer' && running) {
       const firstSeq = agent.session.seq
-      agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
+      if (!(await this.dispatchPrompt(agent, 'steer', content))) {
+        agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
+      }
       await agent.whenIdle()
       await this.deps.sessions.flush(agent.session)
       const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
@@ -254,10 +272,12 @@ export class HarnessConversationService {
       throw new TurnDroppedError('message dropped: session stopped while it was queued')
     }
     const firstSeq = agent.session.seq
-    agent.followup(createUserMessage({
-      content,
-      source: { kind: 'user' },
-    }))
+    if (!(await this.dispatchPrompt(agent, 'queue', content))) {
+      agent.followup(createUserMessage({
+        content,
+        source: { kind: 'user' },
+      }))
+    }
     await agent.whenIdle()
     await this.deps.sessions.flush(agent.session)
     const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
@@ -295,6 +315,44 @@ export class HarnessConversationService {
       return fromSeq === undefined ? session.snapshotEvents() : session.snapshotEvents(fromSeq)
     }
     return []
+  }
+
+  /**
+   * Dispatch one user turn through DSH's native `sessionController.prompt()`
+   * when it is available AND the content is text-only. The native entry gives
+   * us the same `agent.steer` / `agent.followup` endpoint plus route-served
+   * validation and request-id tracing, while the caller keeps its `whenIdle` /
+   * running-guard / generation-drop wrappers around it.
+   *
+   * Image content is deliberately NOT routed here: `prompt()` re-admits the
+   * content via `admitPromptContent`, but this plugin already pre-admits images
+   * through `attachments.saveImage` and hands the durable `ImageAttachmentRef`
+   * straight to the agent — re-admitting that path is an untested regression
+   * risk. Calling this with a mixed/image content always returns `false` so the
+   * caller falls back to the direct `agent.steer` / `agent.followup`.
+   *
+   * @returns `true` when the turn was dispatched through `sessionController.prompt()`.
+   */
+  private async dispatchPrompt(
+    agent: AgentLike,
+    mode: 'steer' | 'queue',
+    content: ReadonlyArray<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef }>,
+  ): Promise<boolean> {
+    if (this.deps.sessionController?.prompt === undefined) return false
+    if (content.some(part => part.type === 'image')) return false
+    // `prompt()` must be invoked as a METHOD (`this` bound to the
+    // sessionController) — its internals read `this.commands.prompt`, so
+    // calling it as a detached bare function leaves `this` undefined and
+    // crashes with "Cannot read properties of undefined (reading 'commands')".
+    // It also dereferences the AbortSignal unconditionally
+    // (`signal.throwIfAborted()` in the adapter), so the signal must be real —
+    // passing `undefined` crashed with "...reading 'throwIfAborted')".
+    const controller = new AbortController()
+    await this.deps.sessionController.prompt(
+      { sessionId: agent.session.id, requestId: randomUUID(), mode, content },
+      controller.signal,
+    )
+    return true
   }
 
   /**
@@ -376,10 +434,12 @@ export class HarnessConversationService {
     const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef }> = []
     content.push({ type: 'text', text: `[Feishu] ${text}` })
     for (const attachment of (message.imageBlocks ?? [])) content.push({ type: 'image', attachment })
-    ;(agent as unknown as AgentLike).steer(createUserMessage({
-      content,
-      source: { kind: 'user' },
-    }))
+    if (!(await this.dispatchPrompt(agent, 'steer', content))) {
+      ;(agent as unknown as AgentLike).steer(createUserMessage({
+        content,
+        source: { kind: 'user' },
+      }))
+    }
     // Do NOT `await whenIdle()`: steering injects into the running turn and
     // returns immediately. The steered step renders through feishu-streaming.
   }

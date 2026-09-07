@@ -334,6 +334,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         selection: () => defaultModel.currentSelection(),
         agentPresets,
         workspaceRegistry,
+        sessionController,
       }, { ...config, statePath })
       bridgeHolder.current = bridge
       return startChannel(
@@ -874,7 +875,7 @@ async function executeSlashCommand(
   bridge: HarnessConversationService,
   commands: CommandRuntime,
   bridgeHolder: { lastChatMessage: { chatId: string; chatType: 'p2p' | 'group'; threadId?: string } | undefined },
-  sessionController?: { selectModel?: (r: any) => Promise<any>; cancel?: (r: any) => Promise<any> },
+  sessionController?: { selectModel?: (r: any) => Promise<any>; cancel?: (r: any) => Promise<any>; prompt?: (req: any, signal?: AbortSignal) => Promise<{ accepted: boolean }> },
   agents?: { get: (id: any) => { cancel: (cause: { kind: 'user' }, opts: { keepInbox?: boolean }) => void; session?: any } | undefined },
   sandboxPolicy?: { resolve?: (r: { session?: any }) => { mode: string; workspaceRoot?: string } },
   permissionCard?: { open: (chat: ConversationMessage, sessionId: string) => Promise<string | undefined> },

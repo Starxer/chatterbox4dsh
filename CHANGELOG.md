@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### 迁移：兼容 DSH `0.1.3-alpha.1`（**P2 prompt 派发已实现**，其余改动点已记录、未动工）
+
+- DSH 远端最新 release 为 `dsh-v0.1.3-alpha.1`（2026-09-04），距本插件基线 `dsh-v0.1.2-alpha.4` 有 **336 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。本条目记录需改动的范围；其中 **P2「消息投递原生化」（版本无关）已实现**，其余待升级后动工。
+
+#### 需改动（破坏性）
+
+- 🔴 **流式渲染**：`assistant/chunk` 从 `session/event` 移除，改为 `assistant/message.stream`（内嵌 `AssistantStreamRecord[]`）+ 新增 `assistant/attempt` + agent-scoped 实时事件 `agent/assistant-stream`（`start/chunk/end`，经 `follow({assistantStream:true})` opt-in）。`src/feishu-streaming.ts` 的逐 delta 累积逻辑需迁到新机制。**迁移方案已定为「方案 A（agent/assistant-stream + 逐 delta）+ end 帧兜底补齐」**，详见迁移文档 §1；`chunk` 帧携带原始 `StreamChunk`，体感可保持与现状一致，唯一落差点是中途接入时缺起始帧（由 end 兜底补齐正文，避免空正文）。
+- 🔴 **`sessionPersistence`**：`readFrom()/prepare()` 移除，改为 `SessionHandle`（`open(id,'read')+handle.read`）；`list()` 返回 `SessionPersistenceSnapshot[]`（`.id` → `.header.id`）。`src/harness.ts` 多处调用点需迁移。
+
+#### 需适配（兼容）
+
+- `commands` 的 `input.images` → `input.attachments`（插件传空数组 `[]`，预期不受影响）。
+- `admitPromptContent` 从自由函数变 `ctx.attachments` service 方法（插件未用，不改）。
+
+#### 新特性可接入
+
+- 通用文件附件：`ctx.attachments.saveFile/saveFileStream/admitEncodedFile` → `FileAttachmentRef`，加 `@deepseek-ai/dsh-client-file-upload`（`FileBlock` 内容投影为 handle 文本、永不 raw 上传 provider）。可替换 `.feishu-inbox` 手工路径；**图片路径（`saveImage`/`imageLimits`）不变**。
+- `/steer`、`/queue`、普通/带图消息可改走 `sessionController.prompt()`（`mode:'queue'|'steer'`，原生图片 admission）。**✅ 已实现（版本无关，当前 `0.1.2-alpha.4` 即可运行，已实机验证）**：`src/harness.ts` 新增 `dispatchPrompt`（文本派发改走 `prompt()`，带图与 `prompt` 不可用时回退直连 `agent.steer/followup`），`src/index.ts` 把 `sessionController` 注入桥接 deps；保留 `whenIdle`/running-guard/`TurnDroppedError` 包装，体感不变。**两处适配器坑已修**（`prompt()` 需真实 `AbortSignal`、且必须作为方法调用保持 `this` 绑定，详见迁移文档 §五）。
+
 ### 修复：消息处理触发 `JavaScript heap out of memory` 崩溃——`reply()` 不再整段快照会话历史（`src/harness.ts` / `tests/harness.spec.ts`）
 
 - **现象**：给某一(些)会话发消息后约几十秒，dsh 进程以 `FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory` 崩溃并 core dump（`systemd-coredump`，`status=6/ABRT`），`Restart=on-failure` 自动重启，`/session list` 里的会话还在但当前轮丢失。日志显示崩溃紧随 `[msg]` 之后，堆由低快速涨到默认 ~4GB 上限。
