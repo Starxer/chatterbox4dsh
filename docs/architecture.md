@@ -25,7 +25,7 @@ Harness Agent (模型、工具、会话日志)
 |---|---|
 | `src/index.ts` | 插件入口，注册服务和命令 |
 | `src/channel.ts` | 飞书 Channel 封装，入站图片/文件接收（`admitImagesForMessage`/`admitFilesForMessage`），回复卡片渲染，Turn Complete 卡片 |
-| `src/harness.ts` | Harness 会话服务，session 映射持久化 |
+| `src/harness.ts` | Harness 会话服务，session 映射持久化；用户文本原样进入模型（不加 `[Feishu] ` 之类的通道前缀，纯图片/文件消息只带 image/file 块），通道归属由 session↔chat 绑定记录 |
 | `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览 + 思考耗时/思考 token）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览；标题带「第 N 轮 · 第 M 步」，footer 两行（时长/token · tok/s/上下文） |
 | `src/card-supersede.ts` | 交互流程「每步发新卡」的配套：把被替换的旧卡片改写成无按钮的失效提示（zh/en 双语，优先 CardKit 实例、best-effort） |
 | `src/feishu-todos.ts` | Todo 进度卡片 |
@@ -74,3 +74,4 @@ turn/end          → flush 待发卡 + pending debounce → 发送溢出文本 
 - **入站文件/图片统一走 DSH 原生附件库**：图片经 `admitImagesForMessage` → `saveImage`；文件经 `admitFilesForMessage` → `downloadStream()`（`AsyncIterable`，背压）→ `saveFileStream`。两者都落 DSH 原生附件库（`~/.dsh/attachments/v1/`，文件在 `files/<sha256 前 2 位>/<sha256>/<文件名>`），agent 经 `fileHostPath` 读取；不再写 `.feishu-inbox/` 或注入 `[文件: …]` 文本（单路径）
 - **会话事件读取必须按 seq 范围，不要全量物化**：DSH `Session` 的 `snapshotEvents(fromSeq, toSeqExclusive)` 无参默认 `(0, seq)` 且**缓存一整段日志的冻结副本**（`eventsSnapshot`）；会话日志是 **append-only**、随使用无限膨胀。插件读会话事件（如 `summarizeTurn` 做本轮摘要）应传 `firstSeq` 只取本轮增量，避免每条消息全量复读+常驻副本引发的内存峰值（本项目曾直接 `JavaScript heap out of memory`）。
 - **压缩只改 surface、不删日志**：DSH `compaction-basic` 压缩改写的是 **surface（进模型的上下文视图）**，经 `replaceGeneration` 替换它；**事件日志本体不被删除**，仍是全量。故日志体积只能靠「新会话/归档」收敛，压缩只降低每轮上下文折叠的峰值。读会话事件时须牢记「日志 ≠ 上下文」这一差别。
+- **标题色带是客户端渲染，插件只保证数据正确**：每张步骤卡的 `header.template` 都随状态写入（调用中 wathet → 完成 green / 失败 red / 回复 blue）。已核实某些飞书客户端在卡片实体更新后不重绘标题背景（同一条消息在不同设备上一台正常、一台白底），而用 `im.v1.message.list` + `card_msg_content_type: 'user_card_content'` 拉回的服务端实体始终是正确颜色。**这是飞书客户端问题，不要在插件里改 header 数据去"修"它**。

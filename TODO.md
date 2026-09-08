@@ -1,6 +1,6 @@
 # dsh-feishu TODO
 
-> 定位见 [AGENTS.md](./AGENTS.md)：**把 DSH 的原生特性接入飞书，而非再造一个 agent 平台/助手**。
+> 定位见 [README.md](./README.md)：**把 DSH 的原生特性接入飞书，而非再造一个 agent 平台/助手**。
 > 状态：`已有` ✅ / `部分` ⚠️ / `待实现` 🔲 / `规划中` 📋 / `待调研` 🔍
 
 ---
@@ -70,6 +70,8 @@
 | — | 每张助手卡都带 tok/s | ✅ **已完成（2026-09-08）**：步骤卡 footer、溢出续卡、兜底回复卡 footer 均显示速度 |
 | — | 步骤卡 footer 两行 + 定位信息 | ✅ **已完成（2026-09-08）**：footer 拆两行（`⏱ 时长 · 📥 in → 📤 out` / `🚀 tok/s · 📊 上下文`）；卡片标题带「第 N 轮 · 第 M 步」；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`） |
 | — | 运行中发消息提示 + steer 去重 | ✅ **已完成（2026-09-08）**：运行中发普通消息立即回一条**纯文本**提示（steer 已插入 / queue 已排队）；steer 分支不再等待本轮、不返回文本，避免同一 turn 出现两张回复卡 |
+| — | 去掉用户消息的 `[Feishu] ` 前缀 | ✅ **已完成（2026-09-08）**：`reply()`/`steer()` 都不再拼通道前缀，用户文本原样进模型；纯图片/文件消息只带 image/file 块（不再补空文本块）。通道归属由 session↔chat 绑定记录，回复路由由插件决定，与文本无关。见 CHANGELOG |
+| — | 步骤卡标题色带"变白底"定性 | ✅ **已定性（2026-09-08）**：插件发出的 `header.template` 始终正确，飞书服务端实体也是正确颜色；**部分客户端在卡片更新后不重绘标题背景**，属飞书客户端渲染问题，非插件 bug。取证方法：`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`。不再往代码里查（详见下方「已知问题」） |
 
 ## 下一轮待办（2026-08-30 定，未动工）
 
@@ -81,13 +83,15 @@
 | 2 | `/steer` 与 `/queue` idle 兼容 | **中** | ✅ **已完成（2026-09-08）**：agent 空闲时 `/steer` 自动回退为发新消息，不再报错 |
 | 3 | `locale` 设置 + `/lang` | **中** | ✅ 已完成（2026-08-31）：插件 `locale` 字段（`auto`/`zh`/`en`，默认 `auto`）+ `/lang [zh\|en\|auto]` 切换持久化。**语言源 = 插件字段，默认跟随 DSH**（`settings.get('locale').preference`，无值回退 `zh`）。见 CHANGELOG「中英双语 i18n」 |
 | 4 | 插件文案 i18n（zh/en) | **中** | ✅ 已完成（2026-08-31）：命令响应层（`CommandTranslations` 拆 zh/en，`src/commands-i18n.ts`）+ 卡片层（`Translations` 字典 `src/i18n.ts`）：streaming/session/busy/permission/questions/onboarding/model-select/status/footer 全部双语，术语对齐 DSH。191 测试通过 |
-| 5 | 测试 + typecheck + build + restart + 文档 | **中** | 上述改动收尾：补 spec、`npm run typecheck`/`test`/`build`、`systemctl --user restart dsh`、AGENTS/CHANGELOG 更新 |
+| 5 | 测试 + typecheck + build + restart + 文档 | **中** | ✅ 已完成：改动均已补 spec，`npm run typecheck` / `npm run test` / `npm run build` 全绿，延迟重启生效，CHANGELOG 与文档同步（`AGENTS.md` 为本地开发笔记，不入库） |
 
 ---
 
 ## 待实现
 
 > ⚠️ 状态已刷新（2026-08-30）：`#16 权限系统接入`、`/thread→/session` 改名均已**完成**，从本表移除。
+>
+> 下表是**条目状态归档**（含已完成项，保留以便追溯）。真正还没动工的只有两条：**#18 reasoning 代码块折叠**、**step 卡片可见性开关**。
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
@@ -100,7 +104,7 @@
 | — | **step 卡丢失更新（工具状态不刷新 / 卡片只剩 reasoning）** | **高** | ✅ **已修复（2026-09-08）**：① `assistant/message` 曾无条件发新卡 → 工具先开卡时旧卡被弃、再也收不到结果；改为「已有卡就更新」。② 防抖表按 session state 键 → 下一步骤的更新取消上一步骤待触发的定时器；改为按卡片 ref 键。另加 `[send]`/`[update]` 诊断日志。见 CHANGELOG「修复：step 卡片丢失工具状态更新 / 只剩 reasoning」 |
 | 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
-| 8 | 文档与版本一致性 | **低** | **README 已同步（2026-09-08）**：per-step 卡片/footer/定位信息、原生附件库、busy 提示等均已更新；`docs/architecture.md` 同步 0.1.3 事件流与卡片约束。剩余：`package.json` 版本号仍为 `0.1.0`，留待发版时统一 bump |
+| 8 | 文档与版本一致性 | **低** | **README / docs/architecture.md / TODO / CHANGELOG 已同步（2026-09-08 二轮）**：per-step 卡片/footer/定位信息、reasoning 耗时与思考 token、原生附件库、busy 提示、`[Feishu] ` 前缀移除、标题色带客户端问题均已写入；README/TODO 里指向未公开 `AGENTS.md` 的链接已改指 `CHANGELOG.md`/`README.md`。剩余：`package.json` 版本号仍为 `0.1.0`，留待发版时统一 bump |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
 | — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | ✅ **已实现**（2026-09-08）：step 卡 text 超 `TEXT_STEP_CAP=3000` 自动拆溢出卡（`renderOverflowCard` + `chunkText`），不再截断丢弃；reasoning 收紧 200 字；args 改 pretty 打印 2k 上限。见 CHANGELOG「修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送」 |
 
@@ -133,19 +137,15 @@
 
 ## 已知问题
 
-### `im.v1.message.patch` 不更新卡片头部
+### 卡片标题色带在部分客户端更新后不重绘（2026-09-08 重新定性）
 
-**现象**：`updateCard`（底层调 `im.v1.message.patch`）只更新 body，不更新 header（标题、颜色）。
+**现象**：卡片更新（`im.v1.message.patch` 或 `cardkit.v1.card.update`）后，标题背景色在部分飞书客户端上消失、变成白底（`header.template` 的缺省值 `default`）；同一张卡片在另一台设备上显示正常。
 
-**影响**：
-- Tool Call → Tool Done 颜色变化不生效（保持初始颜色）
-- 选项卡片选择后颜色变化不生效
+**核实结论**：**不是插件 bug，也不是 patch 的问题**。用 `im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回用户可见卡片 JSON，最近 2000 条消息 / 1836 张卡片的 `header.template` 全部合法（green/blue/wathet/red/grey/turquoise），**0 张缺失或 default**，且头体一致、服务端实体颜色正确。故属于飞书客户端渲染问题。
 
-**解决**：需要改 header 时，recall 旧卡 + 发新卡。已用于：
-- 选项卡片（feishu-questions.ts）— 选择后 recall + resend
-- 审批卡片（feishu-approvals.ts）— 使用 updateCard（仅 body 变化，header 橙→绿 需要 recall）
+**旧记录更正**：早期「`im.v1.message.patch` 只更新 body、不更新 header」的判断**不成立**——拉回的实体里 header 标题与 template 都已更新（例如 patch 后标题从「创建时」变为「更新后」）。真正不生效的是部分客户端的**重绘**。
 
-**待优化**：审批卡片的 header 颜色变化目前依赖 updateCard，实际上不会生效。需要改为 recall + resend。**2026-08-30 核实**：`feishu-approvals.ts` 结算卡仍走 `channel.updateCard`（=patch），未按 `已知问题` 说明改 recall+resend，故橙→绿 header 变化至今仍未生效 —— **暂搁置**（审批卡片触发频率低，用户决定先不处理）。
+**处理**：不要在插件里改 header 数据去"修"它。用户侧切换会话 / 重启客户端通常可恢复。若将来要弱化影响，方向是让状态不依赖标题色带（用标题文字/emoji 表达），而不是改数据。
 
 ### ~~Node.js SDK `MessageType.CARD` 被过滤~~（已证伪，补丁已移除）
 
@@ -243,21 +243,15 @@
 - **Session 事件**：`sandbox/mode`、`permission/preset`，持久化在 session log
 - **飞书接入**：`/permission [模式]`（`feishu-permission.ts`）交互式选择卡 + 带参直接切换；`/sandbox` 保留为隐藏别名；命名/显示名对齐 WebUI `ui-permission-presets`（Read Only / Workspace Write / Full access）；`/status` 显示 Permission。复用 `ctx.get('sandboxPolicy')` 服务 + 会话日志 log-only `sandbox/mode` 事件
 
-## #18 思考内容展示
-
-- **目标**：模型 reasoning/thinking 内容以卡片形式展示，内容放在代码块里防止占用过多行
-- **数据源**：`assistant/chunk` 事件中 `chunk.type === 'reasoning-delta'` 的文本
-- **UI 方案**：紫色卡片（同中间消息），reasoning 文字包裹在 ` ``` ` 代码块中，可折叠
-
-## #18 思考内容展示 —— 部分完成
+## #18 思考内容展示 —— ✅ 基本完成（仅 `collapsible` 未做）
 
 - **已完成**：
-  - `feishu-streaming.ts` 累积 `reasoning-delta` chunks
-  - 在 `assistant/message` 时发送 step 卡片，reasoning 放在代码块中
-  - `/reasoning show on|off` 控制是否显示 reasoning 内容
+  - `feishu-streaming.ts` 从 `assistant/chunk`（旧版）与 `assistant/message.stream`（0.1.3）两条路径累积 reasoning-delta
+  - step 卡片里 reasoning 放在代码块中，按 **200 字预览** 展示（不展示完整思维链，见 `REASONING_CAP`）
+  - reasoning 标题显示思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）
 - **待优化**：
-  - reasoning 代码块可折叠（飞书 Card JSON 2.0 支持 `collapsible` 组件）
-  - reasoning 长度截断策略（当前 200 字预览，可配置与否待定）
+  - reasoning 代码块可折叠（飞书 Card JSON 2.0 支持 `collapsible` 组件）—— **未实现**
+  - reasoning 预览字数是否做成可配置 —— 待定
 
 ## #19 tool_call / tool_done 顺序问题 —— ✅ 已修复
 
@@ -320,7 +314,7 @@ POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
 
 ## 飞书消息长度限制调研记录（2026-09-08）
 
-> 出处：飞书/Lark 开放平台文档与实测参考（官方域名 `open.feishu.cn` / `open.larksuite.com` 在本机 DNS 解析为非公网 IP 无法直连，结论综合可信第三方文档 + 已知 bug 报告）。
+> 出处：飞书/Lark 开放平台文档与实测参考。**查文档小技巧**：官方域名在本机解析到非公网 IP，`web_fetch` 会被拦，但用 `curl` 直连并在路径后加 `.md`（如 `https://open.feishu.cn/document/cardkit-v1/card/update.md`）可直接拿到纯 markdown 正文。
 
 ### 平台限制（请求体上限，非字符数）
 - **text（文本）消息**：请求体最大 **150 KB**

@@ -1,7 +1,7 @@
 {
   "name": "@starxer/chatterbox4dsh",
   "version": "0.1.0",
-  "description": "A verbose Feishu/Lark channel plugin for DeepSeek Harness (dsh) — narrates every agent step (reasoning, tool calls, results) and mirrors the native dsh experience.",
+  "description": "A Feishu/Lark channel plugin for DeepSeek Harness (dsh): use the same agent from Feishu chat, with every step (reasoning, tool calls, results, timing) shown as a card.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

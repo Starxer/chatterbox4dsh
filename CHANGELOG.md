@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 文档：同步全部文档到当前实现，并重写仓库与 npm 包简介（`README.md` / `docs/*` / `TODO.md` / `package.json`）
+
+- **README**：修正指向未公开 `AGENTS.md` 的失效链接（改指 `CHANGELOG.md`）；新增「已知问题」小节（步骤卡标题色带在部分客户端不重绘、审批卡结算颜色）；开发节补上「重启会中断运行中的会话」提示。
+- **docs/architecture.md**：`harness.ts` 行注明用户文本原样进入模型（无通道前缀，纯图片/文件消息只带 image/file 块）；技术要点新增「标题色带是客户端渲染，插件只保证数据正确」及其取证方法。
+- **docs/feishu-capabilities.md**：刷新「dsh-feishu 现状」列（图片/文件收发、`column_set`、`select_static`、`input` 均已使用），功能规划表补状态列，已知限制表补卡片实体 14 天有效期、JSON 2.0 客户端要求、标题色带重绘问题。
+- **docs/feishu-setup.md**：权限表对齐 `FEISHU_PROVISION_SCOPES`（补 `im:message.group_msg`、`im:message.reaction`、`application:application:patch`）。
+- **TODO.md**：新增本轮完成项（去掉 `[Feishu] ` 前缀、标题色带定性）；**更正过期结论**——原「`im.v1.message.patch` 不更新卡片 header」不成立，实为部分客户端不重绘；合并重复的 `#18` 小节；修正失效链接与文档查法说明。
+- **简介**：GitHub 仓库 About 与 `package.json` 的 `description` 重写为更直白的中英文表述。
+
 ### 变更：去掉用户消息的 `[Feishu] ` 来源前缀（`src/harness.ts` / `tests/harness.spec.ts`）
 
 - **背景**：每条从飞书进来的用户消息都会被加上 `[Feishu] ` 前缀，本意是让模型/日志能区分消息来自飞书还是 WebUI。实际使用中这个信息几乎用不上，代价却是每条 turn 都被污染：模型上下文与 session log 里都带前缀，纯图片/文件消息还会多出一个只有 `[Feishu] ` 的空文本块。

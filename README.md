@@ -1,4 +1,4 @@
-# chatterbox4dsh — 陪 DeepSeek Harness 用的唠叨型飞书/Lark 插件
+# chatterbox4dsh — 把 DeepSeek Harness 接进飞书/Lark 的唠叨型插件
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 agent 能力接入飞书/Lark 聊天，并把 **agent 的每一步都唠叨给你看**（推理、工具调用、结果、时长/token）。安装后，用户直接从飞书与 Harness Agent 对话，共享 DSH 的模型、工具、工作区和会话存储。
 
@@ -110,15 +110,20 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 
 ```sh
 npm install
-npm test
+npm run test
 npm run build
 ```
 
-修改源码后：`npm run build && systemctl --user restart dsh`
+修改源码后需要 `npm run build` 并重启 DSH 进程（如 `systemctl --user restart dsh`，具体取决于部署方式）。注意重启会中断正在运行的会话/turn，建议在空闲时执行。
+
+## 已知问题
+
+- **步骤卡标题色带在部分飞书客户端不显示**：插件发出的卡片 JSON 里 `header.template` 始终存在且正确（服务端卡片实体为 green/wathet/red），但某些飞书客户端在卡片被更新后不重绘标题背景，表现为白底。属飞书客户端渲染问题（同一条消息在不同设备上表现不同），不是插件 bug；切换会话或重启客户端通常可恢复。
+- **审批卡片结算后的颜色变化**：结算卡走 `im.v1.message.patch`，标题颜色变化在部分客户端同样可能不重绘（同上）。
 
 ## 上游来源
 
-基于 [sugarforever/dsh-lark](https://github.com/sugarforever/dsh-lark)（`ee639df`）fork，**已独立维护**，不再跟踪上游同步。详见 [AGENTS.md](AGENTS.md)。
+基于 [sugarforever/dsh-lark](https://github.com/sugarforever/dsh-lark)（`ee639df`）fork，**已独立维护**，不再跟踪上游同步。本仓库的改动记录见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## License
 

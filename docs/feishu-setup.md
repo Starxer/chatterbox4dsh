@@ -29,9 +29,12 @@
 |---|---|
 | `im:message.p2p_msg:readonly` | 接收单聊消息 |
 | `im:message.group_at_msg:readonly` | 接收群聊 @机器人消息 |
+| `im:message.group_msg` | 接收群聊全部消息（关闭 @机器人 限制时必需，通常需管理员审批） |
 | `im:message:send_as_bot` | 以机器人身份发消息 |
+| `im:message.reaction` | 收到消息时添加表情回应（`reactEmoji`） |
+| `application:application:patch` | 扫码建应用流程专用（写入长连接等配置） |
 
-如需关闭 @机器人 限制，额外申请 `im:message.group_msg`（通常需管理员审批）。
+> 扫码一键配置会自动申请以上全部权限（`src/provision.ts` 的 `FEISHU_PROVISION_SCOPES`）。
 
 ### 4. 配置事件
 
