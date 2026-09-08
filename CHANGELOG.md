@@ -2,15 +2,15 @@
 
 ## Unreleased
 
-### 变更：工作区下拉标签自适应收窄 + 目录浏览改宫格排列（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
+### 变更：工作区下拉只显示序号 + 目录浏览按内容宽度流式排列（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
 
-- **下拉标签有时仍放不下三级路径**：`select_static` 的选项是单行且会被飞书裁切，上一版固定「最后三级 + 上限 48 字」在目录名较长时依然溢出。改为自适应：
-  1. 优先**最后三级**，两个工作区尾部相同时逐级**加深**直到唯一；
-  2. 若三级仍超过 `WORKSPACE_LABEL_MAX = 24` 字，**降为两级、再降为一级**，只要仍能互相区分；
-  3. 都放不下时，对三级形式做 `elideMiddle(…, 24)`（保留尾部——尾部才是区分度所在）。
-- **目录浏览改宫格**：条目按钮由「每个占一整行」改为 **`column_set` 三列宫格**（`gridRows`），30 项一页的卡片高度降到约三分之一；行尾用空白 `markdown` 补齐，保证每格等宽。⬆️ 上一级 / 🏠 家目录 / 👁 隐藏 三个控制按钮同样排成一行，上一页/下一页排成两列（只剩一个时占满整行）。按钮加 `width: 'fill'` 填满所在列，条目名 `elideMiddle(…, 12)`。
-- **实机校验**：用 profile 凭据调飞书 `cardkit.v1.card.create` 验证生成的**工作区选择卡**与**目录浏览卡**，均 `code=0 success`——`column_set` / `flex_mode: 'none'` / `column.width: 'weighted'` / `button.width: 'fill'` 的写法被飞书接受（不只是本地测试通过）。
-- **验证**：`npm run typecheck` / `npm run test`（253 passed，新增 2 例：超长标签收窄到 ≤24 字且互不相同、7 个条目排成 4 行宫格且行尾补齐）/ `npm run build` 全绿。
+- **长路径在下拉里怎么缩都显示不全**：`select_static` 的选项是**单行且被飞书裁切**，无论截成三级、两级还是一级，目录名一长就只剩省略号。改为**把完整路径移到卡片正文**：
+  - 正文按行列出 `**1.** \`/完整/路径\``（当前工作区带 ✅），路径在 markdown 里可换行、**必定完整可读**；
+  - 下拉选项只放**行号**（`1` / `2`，当前项 `1 ✅`），**完整路径仍是 option 的 `value`**，选中结果不变；
+  - 这与 `ask_user_question` 卡片一贯的做法一致（选项文字放题干、按钮只放序号）。
+- **宫格按钮名字被省略得太狠**：等宽三列宫格把每个名字压进 1/3 卡宽，只能 `elideMiddle(…, 12)`，长目录名几乎认不出。改为 **`column_set` + `flex_mode: 'flow'` + `column.width: 'auto'`**：每个按钮按**内容自然宽度**排列，短名字一行挤下多个，长名字占够宽度后自动换行，**条目名一律不省略**。控制按钮（⬆️/🏠/👁）与上一页/下一页同样流式排列。
+- **实机校验**：用 profile 凭据调飞书 `cardkit.v1.card.create` 验证生成的**工作区选择卡**与**目录浏览卡**，均 `code=0 success`——`flex_mode: 'flow'` / `column.width: 'auto'` 的写法被飞书接受（不只是本地测试通过）。
+- **验证**：`npm run typecheck` / `npm run test`（252 passed，新增 2 例：下拉选项只含序号且正文含完整路径、浏览按钮流式排列且名字不省略）/ `npm run build` 全绿。
 
 ### 变更：`/new` 工作区选择改为下拉框，只显示最后三级目录（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
 

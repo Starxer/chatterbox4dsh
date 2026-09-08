@@ -299,88 +299,47 @@ function renderOnboardingCard(
   }
 }
 
-/** Middle-elide a long path so a button label never overflows: keep a head
- *  fragment and the trailing basename, join with an ellipsis. */
-function elideMiddle(value: string, max: number): string {
-  if (value.length <= max) return value
-  const head = Math.max(4, Math.floor(max * 0.4))
-  const tail = Math.max(4, Math.floor(max * 0.45))
-  return `${value.slice(0, head)}…${value.slice(-tail)}`
-}
-
 /**
- * Trailing `levels` path segments of `path`, prefixed with `…` when anything
- * was dropped. Splits on both separators so a Windows workspace renders the
- * same way, and returns the whole path once it has no more levels to hide.
- */
-function tailSegments(path: string, levels: number): string {
-  const clean = path.replace(/[\\/]+$/, '') || path
-  let index = clean.length
-  for (let found = 0; found < levels; found++) {
-    const slash = Math.max(clean.lastIndexOf('/', index - 1), clean.lastIndexOf('\\', index - 1))
-    if (slash < 0) return clean
-    index = slash
-  }
-  const more = index <= 0 ? -1 : Math.max(clean.lastIndexOf('/', index - 1), clean.lastIndexOf('\\', index - 1))
-  return more < 0 ? clean : `…${clean.slice(index)}`
-}
-
-/** Longest dropdown option text. A `select_static` option is a single line and
- *  Feishu clips it, so a label has to stay short to remain readable — the
- *  three-segment form alone still overflowed for long directory names. */
-const WORKSPACE_LABEL_MAX = 24
-
-/**
- * Dropdown labels for the workspace picker: the last three path segments,
- * shortened when they do not fit and deepened when two workspaces would render
- * the same tail.
+ * One workspace row for the picker's body: `1. \`/full/path\`` plus a ✅ on the
+ * current one.
  *
- * A `select_static` option is a single clipped line, so the label must stay
- * short. Preference order:
- *   1. three trailing segments, deepened one level at a time while two
- *      workspaces collide (`/a/x/y/z` vs `/b/x/y/z`);
- *   2. if even three segments are too long, drop to two, then one, as long as
- *      the labels stay unique;
- *   3. otherwise elide the three-segment form (keeps the tail, which is the
- *      part that tells workspaces apart).
+ * A `select_static` option is a single clipped line, so a long path there is
+ * unreadable no matter how it is shortened. The full paths therefore live in
+ * the card body and the dropdown only carries the row NUMBER — the same split
+ * the `ask_user_question` card uses (text in the stem, buttons carry the
+ * number). The option value still carries the full path, so the pick is exact.
  */
-function workspaceLabels(workspaces: readonly WorkspaceLike[]): string[] {
-  const maxLevels = Math.max(3, ...workspaces.map(ws => ws.path.split(/[\\/]/).filter(Boolean).length))
-  const unique = (labels: readonly string[]): boolean => new Set(labels).size === labels.length
-  const fits = (labels: readonly string[]): boolean => labels.every(label => label.length <= WORKSPACE_LABEL_MAX)
-  for (let levels = 3; levels <= maxLevels; levels++) {
-    const labels = workspaces.map(ws => tailSegments(ws.path, levels))
-    if (!fits(labels)) break
-    if (unique(labels)) return labels
-  }
-  for (let levels = 2; levels >= 1; levels--) {
-    const labels = workspaces.map(ws => tailSegments(ws.path, levels))
-    if (fits(labels) && unique(labels)) return labels
-  }
-  return workspaces.map(ws => elideMiddle(tailSegments(ws.path, 3), WORKSPACE_LABEL_MAX))
+function workspaceRow(index: number, workspace: WorkspaceLike, currentWorkspace: string | undefined): string {
+  const mark = workspace.path === currentWorkspace ? ' ✅' : ''
+  return `**${index + 1}.** \`${workspace.path}\`${mark}`
 }
 
 /** Workspace picker card (step 1 of /new): choose an existing workspace from a
- *  dropdown or create a new one by absolute path or a `~`-relative path.
+ *  numbered dropdown or create a new one by absolute path or a `~`-relative
+ *  path.
  *
  *  The picker used to render one button per workspace, which grew without bound
- *  as workspaces accumulated. It is now a single `select_static` showing the
- *  last three path segments (full path stays the option value), submitted
+ *  as workspaces accumulated. It is now a single `select_static` submitted
  *  through the same form as the manual-path input — one form per card, because
- *  a form submit button belongs to its container. */
+ *  a form submit button belongs to its container. The dropdown lists only row
+ *  numbers; the body lists every full path, because a dropdown option clips
+ *  long paths. */
 function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWorkspace: string | undefined, t: Translations): object {
   const formElements: object[] = []
   if (workspaces.length === 0) {
     formElements.push({ tag: 'markdown', content: t.onboardingNoWorkspaces })
   } else {
-    const labels = workspaceLabels(workspaces)
     const selectedIndex = Math.max(0, workspaces.findIndex(ws => ws.path === currentWorkspace))
+    formElements.push({
+      tag: 'markdown',
+      content: workspaces.map((ws, index) => workspaceRow(index, ws, currentWorkspace)).join('\n'),
+    })
     formElements.push({
       tag: 'select_static',
       name: 'workspace',
       placeholder: { tag: 'plain_text', content: t.onboardingWorkspaceSelectPlaceholder },
       options: workspaces.map((ws, index) => ({
-        text: { tag: 'plain_text', content: `${labels[index]!}${ws.path === currentWorkspace ? ' ✅' : ''}` },
+        text: { tag: 'plain_text', content: `${index + 1}${ws.path === currentWorkspace ? ' ✅' : ''}` },
         value: ws.path,
       })),
       value: workspaces[selectedIndex]!.path,
@@ -517,45 +476,37 @@ interface BrowseState {
   page: number
 }
 
-/** Columns per browser row. Three keeps entry names legible at phone width
- *  while cutting the card's height to roughly a third of one-button-per-row. */
-const BROWSE_GRID_COLUMNS = 3
-
 /**
- * Wrap elements in Card JSON 2.0 `column_set`s of equal-width columns, so a
- * list of buttons renders as a grid instead of one full-width row each.
+ * Lay a list of buttons out as a flowing row: one Card JSON 2.0 `column_set`
+ * with `flex_mode: 'flow'` and auto-width columns, so each button keeps its
+ * FULL label and the row wraps only when it runs out of width.
  *
- * Short rows are padded with blank markdown cells so every cell keeps the same
- * width — a ragged last row reads as a layout bug. One element per column.
+ * A fixed three-column grid was tried first and rejected: equal columns force
+ * every label into one third of the card, so long directory names had to be
+ * elided until they were unreadable. Flow mode lets the widths follow the
+ * content — short names pack several per line, long ones take the space they
+ * need and wrap.
  */
-function gridRows(cells: readonly object[], columns: number): object[] {
-  const rows: object[] = []
-  for (let start = 0; start < cells.length; start += columns) {
-    const row = [...cells.slice(start, start + columns)]
-    while (row.length < columns) row.push({ tag: 'markdown', content: ' ' })
-    rows.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: row.map(element => ({
-        tag: 'column',
-        width: 'weighted',
-        weight: 1,
-        vertical_align: 'top',
-        elements: [element],
-      })),
-    })
+function flowRow(elements: readonly object[]): object {
+  return {
+    tag: 'column_set',
+    flex_mode: 'flow',
+    horizontal_spacing: 'small',
+    columns: elements.map(element => ({
+      tag: 'column',
+      width: 'auto',
+      vertical_align: 'top',
+      elements: [element],
+    })),
   }
-  return rows
 }
 
-/** One browser grid cell: a folder button that fills its column. */
+/** One browser entry button: the folder name is never elided. */
 function browseEntryButton(entry: DirectoryEntry): object {
   return {
     tag: 'button',
-    text: { tag: 'plain_text', content: `📁 ${elideMiddle(entry.name, 12)}` },
+    text: { tag: 'plain_text', content: `📁 ${entry.name}` },
     type: 'default',
-    width: 'fill',
     behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
   }
 }
@@ -563,8 +514,9 @@ function browseEntryButton(entry: DirectoryEntry): object {
 /** Folder-browser card: navigate levels, toggle hidden entries, page a large
  *  level, and pick the listed directory as the new session's workspace.
  *
- *  Buttons are laid out in a three-column grid (`column_set`) instead of one
- *  full-width row each, so a level of 30 entries stays a compact card. */
+ *  Buttons flow into rows of their natural width (`flowRow`) instead of one
+ *  full-width row each, so a level of 30 entries stays a compact card without
+ *  truncating any name. */
 function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
   const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
   const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
@@ -577,14 +529,13 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     { tag: 'markdown', content: t.onboardingBrowseHeader(listing.path) },
     { tag: 'hr' },
   ]
-  // Up / home / hidden share one grid row.
+  // Up / home / hidden share one flowing row.
   const controls: object[] = []
   if (parent !== undefined) {
     controls.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t.onboardingBrowseUp },
       type: 'default',
-      width: 'fill',
       behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: parent.path } }],
     })
   }
@@ -593,7 +544,6 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
       tag: 'button',
       text: { tag: 'plain_text', content: t.onboardingBrowseHome },
       type: 'default',
-      width: 'fill',
       behaviors: [{ type: 'callback', value: { kind: 'browse-home' } }],
     })
   }
@@ -601,16 +551,15 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     tag: 'button',
     text: { tag: 'plain_text', content: state.hidden ? t.onboardingBrowseHideHidden : t.onboardingBrowseShowHidden },
     type: 'default',
-    width: 'fill',
     behaviors: [{ type: 'callback', value: { kind: 'browse-hidden' } }],
   })
-  elements.push(...gridRows(controls, BROWSE_GRID_COLUMNS))
+  elements.push(flowRow(controls))
   elements.push({ tag: 'hr' })
 
   if (slice.length === 0) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseEmpty })
   } else {
-    elements.push(...gridRows(slice.map(browseEntryButton), BROWSE_GRID_COLUMNS))
+    elements.push(flowRow(slice.map(browseEntryButton)))
   }
 
   if (totalPages > 1) {
@@ -621,7 +570,6 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
         tag: 'button',
         text: { tag: 'plain_text', content: t.onboardingBrowsePrev },
         type: 'default',
-        width: 'fill',
         behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page - 1) } }],
       })
     }
@@ -630,11 +578,10 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
         tag: 'button',
         text: { tag: 'plain_text', content: t.onboardingBrowseNext },
         type: 'default',
-        width: 'fill',
         behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page + 1) } }],
       })
     }
-    elements.push(...(pager.length === 1 ? pager : gridRows(pager, 2)))
+    elements.push(flowRow(pager))
   }
   if (listing.truncated) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseTruncated })

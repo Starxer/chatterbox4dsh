@@ -165,7 +165,7 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('renders workspaces as a dropdown of trailing path segments instead of one button each', async () => {
+  it('renders workspaces as a numbered dropdown plus the full paths in the body', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     d.workspaceRegistry = {
@@ -181,9 +181,14 @@ describe('feishu-onboarding', () => {
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     const form = card.body.elements.find((el: any) => el.tag === 'form')
     const select = form.elements.find((el: any) => el.tag === 'select_static')
-    // Only the last three segments are shown; the full path stays the value.
-    expect(select.options.map((o: any) => o.text.content)).toEqual(['…/one/two/three', '…/one/two/four', '…/c/d/e'])
+    // Dropdown options are only the row numbers — a clipped single line can
+    // never show a long path; the full path stays the option value.
+    expect(select.options.map((o: any) => o.text.content)).toEqual(['1', '2', '3'])
     expect(select.options.map((o: any) => o.value)).toEqual(['/srv/one/two/three', '/srv/one/two/four', '/opt/a/b/c/d/e'])
+    // The body lists every full path, so nothing is truncated.
+    const body = JSON.stringify(card.body.elements)
+    expect(body).toContain('/srv/one/two/three')
+    expect(body).toContain('/opt/a/b/c/d/e')
     // One dropdown + submit, one manual-path submit — no per-workspace buttons.
     expect(form.elements.filter((el: any) => el.tag === 'button')).toHaveLength(2)
     handle.dispose()
@@ -210,22 +215,7 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('deepens dropdown labels until workspaces are distinguishable', async () => {
-    const { channel, handlers } = fakeChannel()
-    const d = deps(channel, fakeBridge())
-    d.workspaceRegistry = {
-      list: () => [{ path: '/a/x/y/z' }, { path: '/b/x/y/z' }],
-      create: vi.fn(async () => undefined),
-    }
-    const handle = startFeishuOnboarding(d)
-    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
-    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    const select = card.body.elements.find((el: any) => el.tag === 'form').elements.find((el: any) => el.tag === 'select_static')
-    expect(select.options.map((o: any) => o.text.content)).toEqual(['/a/x/y/z', '/b/x/y/z'])
-    handle.dispose()
-  })
-
-  it('shortens dropdown labels that would overflow the option line', async () => {
+  it('lists long workspace paths in full instead of clipping the dropdown option', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     d.workspaceRegistry = {
@@ -237,15 +227,18 @@ describe('feishu-onboarding', () => {
     }
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
-    const select = (channel.createCardInstance.mock.calls.at(-1)![0] as any).body.elements
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const select = card.body.elements
       .find((el: any) => el.tag === 'form').elements.find((el: any) => el.tag === 'select_static')
-    const labels = select.options.map((o: any) => o.text.content) as string[]
-    expect(labels.every(label => label.length <= 24)).toBe(true)
-    expect(new Set(labels).size).toBe(2)
+    expect(select.options.map((o: any) => o.text.content)).toEqual(['1', '2'])
+    // The body carries both full paths verbatim — no elision anywhere.
+    const body = JSON.stringify(card.body.elements)
+    expect(body).toContain('/srv/a/verylongprojectdirectoryname')
+    expect(body).toContain('/srv/b/anotherverylongprojectname')
     handle.dispose()
   })
 
-  it('lays the browser out in a three-column grid with padded rows', async () => {
+  it('flows browser buttons at their natural width without eliding names', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     const entries = Array.from({ length: 7 }, (_, index) => ({
@@ -268,19 +261,18 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    const grids = card.body.elements.filter((el: any) => el.tag === 'column_set')
-    // One controls row (up + hidden, padded to 3) + 7 entries in rows of 3.
-    expect(grids).toHaveLength(4)
-    expect(grids.map((grid: any) => grid.columns.length)).toEqual([3, 3, 3, 3])
-    expect(grids.every((grid: any) => grid.columns.every((col: any) => col.width === 'weighted' && col.weight === 1))).toBe(true)
-    const cells = grids.slice(1).flatMap((grid: any) => grid.columns.map((col: any) => col.elements[0]))
-    expect(cells.filter((el: any) => el.tag === 'button')).toHaveLength(7)
-    // The last row is padded so every cell keeps the same width.
-    expect(cells.filter((el: any) => el.tag === 'markdown')).toHaveLength(2)
-    // Entry buttons fill their column and carry the full path.
-    const entry = cells.find((el: any) => el.tag === 'button')
-    expect(entry.width).toBe('fill')
-    expect(entry.behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/entry-0' })
+    const rows = card.body.elements.filter((el: any) => el.tag === 'column_set')
+    // Controls row + one flowing row for all 7 entries (no manual row packing).
+    expect(rows).toHaveLength(2)
+    const entriesRow = rows[1]
+    expect(entriesRow.flex_mode).toBe('flow')
+    expect(entriesRow.columns).toHaveLength(7)
+    expect(entriesRow.columns.every((col: any) => col.width === 'auto')).toBe(true)
+    const buttons = entriesRow.columns.map((col: any) => col.elements[0])
+    // Names are shown in full — no ellipsis, no fixed-width clipping.
+    expect(buttons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
+    expect(buttons.every((b: any) => b.width === undefined)).toBe(true)
+    expect(buttons[0].behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/entry-0' })
     handle.dispose()
   })
 
