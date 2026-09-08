@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+> 对齐 DSH `0.1.5-alpha.1`。插件**无需改代码**：typecheck / 266 tests / build 全绿，全部 `@deepseek-ai/dsh-*` 依赖的公开 API 逐项 diff 无变化。
+>
+> Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / 266 tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
+
+### 构建：依赖范围与锁文件对齐 DSH 0.1.5（`package.json` / `package-lock.json`）
+
+- `peerDependencies` / `devDependencies` 的 `@deepseek-ai/dsh-*` 由 **`^0.1.3-alpha.1`** 升到 **`^0.1.5-alpha.1`**（锁文件解析到 `0.1.5-alpha.1`）。
+- **原因**：semver 的预发布规则下，带预发布标签的范围只匹配**同一 `major.minor.patch`** 的预发布版本——实测 `semver.satisfies('0.1.5-alpha.1', '^0.1.3-alpha.1') === false`。旧范围虽然「看起来」覆盖 0.1.5，实际不匹配，`npm ci` 仍会装到 `0.1.3-alpha.2`。每次 DSH 预发布版本跳跃都必须同步升这个范围。
+- 重新生成 `package-lock.json`，`npm ci` 可直接安装（359 个包）。
+
+### 文档：DSH 0.1.3-alpha.2 → 0.1.5-alpha.1 升级评估（`docs/migration-0.1.3-to-0.1.5.md`）
+
+- 新增升级评估文档，记录 563 个 commit 里的关键变更、插件兼容性核验方法、以及唯一的必改项（依赖范围）。
+
 ## 0.2.0 (2026-09-08)
 
 > 首个以 `chatterbox4dsh` 名义独立发布的版本（npm `@starxer/chatterbox4dsh@0.1.0` 之后）。要求 DSH `0.1.3-alpha.x`（`assistant/chunk` 已移除，改由 `assistant/message.stream` 重建；不再向前兼容 0.1.2）。

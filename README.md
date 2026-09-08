@@ -85,6 +85,10 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 ```
 
+> **要求 DSH `0.1.5-alpha.1` 或更高（同一 `0.1.5` 预发布线）**。DSH 仍处于 pre-release，预发布版本之间 API 可能变动；插件的 `@deepseek-ai/dsh-*` 依赖范围会随 DSH 预发布版本同步升级，升级 DSH 后请一并升级本插件。
+>
+> **Requires DSH `0.1.5-alpha.1` or newer on the same `0.1.5` prerelease line.** DSH is still pre-release and its API may change between prereleases; the plugin bumps its `@deepseek-ai/dsh-*` ranges in lockstep, so upgrade both together.
+
 **中文**：然后在 DSH **Settings** → 飞书与 Lark 中配置 App ID 和 App Secret。支持扫码一键配置（推荐）或手动创建应用。详见 [docs/feishu-setup.md](docs/feishu-setup.md)。
 
 **English**: Then configure the App ID and App Secret in DSH **Settings** → Feishu & Lark. You can use the QR-code one-click setup (recommended) or create the app manually. See [docs/feishu-setup.md](docs/feishu-setup.md).
