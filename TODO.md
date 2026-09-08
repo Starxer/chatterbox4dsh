@@ -92,7 +92,7 @@
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
 | 8 | 文档与版本一致性 | **低** | 2026-08-30 核实：package.json `0.1.0`，README 明显过期未同步，仍待办 |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
-| — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | **2026-09-08 调研完成 + 部分实现**：reasoning 预览已收紧 200 字（`REASONING_CAP`）、工具 args 已改 pretty 打印（2k 上限），**剩余：step 卡 text 超长分段**。根因：`feishu-streaming.ts` `renderStepCard` 的 text 仍 `slice(0,3000)+'…(truncated)'` 硬截断；卡片 markdown 元素有内容上限（30KB 请求体 / ~10k 元素）。目标：超长 text 用 `chunkText` 拆多张连续卡而非截断。见「飞书消息长度限制调研记录」 |
+| — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | ✅ **已实现**（2026-09-08）：step 卡 text 超 `TEXT_STEP_CAP=3000` 自动拆溢出卡（`renderOverflowCard` + `chunkText`），不再截断丢弃；reasoning 收紧 200 字；args 改 pretty 打印 2k 上限。见 CHANGELOG「修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送」 |
 
 > ✅ 已从本表移除（2026-08-30 确认完成）：
 > - `/new` 带参数（`--workspace`/`--preset`）—— 已实现

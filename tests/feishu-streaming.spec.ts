@@ -176,4 +176,15 @@ describe('renderStepCard reasoning + args budgets', () => {
     expect(md).toContain('"path": "/tmp/file.txt"')
     expect(md).not.toContain('…(truncated)')
   })
+
+  it('caps step card text at 3000 chars without a truncation marker (overflow goes to follow-up cards)', () => {
+    const longText = 'a'.repeat(5000)
+    const card = renderStepCard(t, undefined, longText, []) as any
+    const md = mdOf(card)
+    // First 3000 chars are present, remainder is not.
+    expect(md).toContain('a'.repeat(3000))
+    expect(md).not.toContain('a'.repeat(3001))
+    // No truncation marker — overflow is handled by separate cards.
+    expect(md).not.toContain('…(truncated)')
+  })
 })

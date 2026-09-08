@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **问题**：agent 回复正文（text）在 step 卡里被 `slice(0,3000)+'…(truncated)'` 硬截断，超出部分直接丢弃。而 `renderReplyCards` 的 4000 分卡（`CARD_TEXT_MAX`）只在 `intermediateSent=false` 时才走——正常 agent 回复几乎不走这条路，所以用户看到的截断就是 step 卡的 3000 上限。
+- **修复**：step 卡 text 超过 `TEXT_STEP_CAP=3000` 时，首屏只展示前 3000 字（不加 `…(truncated)` 标记），**溢出部分在 `turn/end` flush 完成后自动拆成「Reply (continued N/M)」卡发送**（复用 `chunkText` 按段落分段）。不再丢弃任何内容。reasoning（200 字）和工具 args（2000 字 pretty JSON）预算不变。
+- **验证**：`npm run typecheck` / `npm run test`（229 passed，新增 1 例：step 卡 text 3000 字截断无标记）/ `npm run build` 全绿。
+
 ### 调整：reasoning 只留预览窗口（200 字）+ 工具调用 args 显示更详细（`src/feishu-streaming.ts` / `src/channel.ts` / `tests/feishu-streaming.spec.ts` / `tests/truncation.spec.ts`）
 
 - **reasoning 截断收紧到 200 字**：用户认为 reasoning 内容应截断、且应留得更少——统一三处 reasoning 预览窗口从 `3000/5000/2000` 收紧为 **`REASONING_CAP = 200`**（`feishu-streaming.ts` `renderStepCard`、`channel.ts` `renderReasoningForReply`/`renderReplyCards`）。reasoning 只是"思考概要"预览，不展示完整思维链。

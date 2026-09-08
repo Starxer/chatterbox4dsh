@@ -21,6 +21,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
 import { expandAssistantStream, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
+import { chunkText } from './text-chunk.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -558,7 +559,29 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           turnStats.totalTurnMs = now - turnStats.turnStartTime
           turnStatsMap.set(sessionId, turnStats)
         }
-        flushPendingUpdate(state).then(() => {
+
+        // Capture overflow data BEFORE resetStep clears state.
+        const fullText = state.text.trim()
+        const overflowText = fullText.length > TEXT_STEP_CAP ? fullText.slice(TEXT_STEP_CAP).trim() : undefined
+        const overflowChat = state.chat
+        const overflowOpts = overflowChat !== undefined
+          ? overflowChat.threadId !== undefined
+            ? { replyInThread: true, ...(overflowChat.rootId !== undefined ? { replyTo: overflowChat.rootId } : {}) }
+            : {}
+          : undefined
+
+        const hasOverflow = overflowText !== undefined && overflowText !== '' && overflowChat !== undefined && overflowOpts !== undefined
+        const overflowChunks = hasOverflow ? chunkText(overflowText!, TEXT_STEP_CAP) : []
+
+        flushPendingUpdate(state).then(async () => {
+          // Step card is now on screen with the first TEXT_STEP_CAP chars.
+          // Send overflow text as follow-up "continued" cards so the full
+          // reply is delivered without silent truncation.
+          if (overflowChunks.length > 0 && overflowChat !== undefined && overflowOpts !== undefined) {
+            for (let i = 0; i < overflowChunks.length; i++) {
+              await channel.send(overflowChat.chatId, { card: renderOverflowCard(overflowChunks[i]!, i + 1, overflowChunks.length) }, overflowOpts)
+            }
+          }
           const entry = flushPromises.get(sessionId)
           if (entry !== undefined) {
             entry.resolve()
@@ -639,6 +662,10 @@ const REASONING_CAP = 200
 /** Cap for one tool call's args rendered in the fenced code block (characters). */
 const ARGS_DISPLAY_CAP = 2000
 
+/** Cap for the text section of a step card (characters). Overflow is sent as
+ *  follow-up "continued" cards so no content is silently dropped. */
+const TEXT_STEP_CAP = 3000
+
 /**
  * Truncate a value to a readable summary for card display.
  */
@@ -679,6 +706,25 @@ function sanitizeCodeblock(text: string): string {
   return text
     .replace(/`+/g, '`')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ')
+}
+
+/**
+ * Render a follow-up "continued" card for overflow text that exceeded the step
+ * card's TEXT_STEP_CAP. No reasoning (already shown on the step card), no
+ * footer (footer is sent separately by channel.ts).
+ */
+function renderOverflowCard(text: string, part: number, total: number): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: total > 1 ? `Reply (continued ${part}/${total})` : 'Reply (continued)' },
+      template: 'blue',
+    },
+    body: {
+      elements: [{ tag: 'markdown', content: text }],
+    },
+  }
 }
 
 /** Format a token count for display (e.g. 1234 → "1.2K"). */
@@ -828,8 +874,10 @@ export function renderStepCard(
   }
 
   // Text section — with a title, mirroring the Reasoning / Tool Call sections.
+  // Overflow beyond TEXT_STEP_CAP is sent as follow-up "continued" cards in
+  // the turn/end handler; the step card itself shows only the first segment.
   if (text !== undefined && text !== '') {
-    const displayText = text.length > 3000 ? text.slice(0, 3000) + '\n…(truncated)' : text
+    const displayText = text.length > TEXT_STEP_CAP ? text.slice(0, TEXT_STEP_CAP) : text
     if (elements.length > 0) elements.push({ tag: 'hr' })
     elements.push({ tag: 'markdown', content: `${t.stepMessageHeader}\n\n${displayText}` })
   }
