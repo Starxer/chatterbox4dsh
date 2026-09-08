@@ -179,6 +179,14 @@ function parseOnboardingAction(evt: CardActionLike): QueuedAction | undefined {
       if (path !== undefined) return { kind: 'create-workspace', chatMessage, messageId: evt.messageId, value: path }
       return undefined
     }
+    if (kind === 'pick-workspace') {
+      // Submitted by the workspace dropdown's "use this workspace" button.
+      const path = typeof formValue.workspace === 'string' && formValue.workspace.trim() !== ''
+        ? formValue.workspace.trim()
+        : undefined
+      if (path !== undefined) return { kind: 'pick-workspace', chatMessage, messageId: evt.messageId, value: path }
+      return undefined
+    }
     return undefined
   }
 
@@ -300,75 +308,111 @@ function elideMiddle(value: string, max: number): string {
   return `${value.slice(0, head)}…${value.slice(-tail)}`
 }
 
-/** Workspace picker card (step 1 of /new): choose an existing workspace or
- *  create a new one by absolute path or a `~`-relative path.
+/**
+ * Trailing `levels` path segments of `path`, prefixed with `…` when anything
+ * was dropped. Splits on both separators so a Windows workspace renders the
+ * same way, and returns the whole path once it has no more levels to hide.
+ */
+function tailSegments(path: string, levels: number): string {
+  const clean = path.replace(/[\\/]+$/, '') || path
+  let index = clean.length
+  for (let found = 0; found < levels; found++) {
+    const slash = Math.max(clean.lastIndexOf('/', index - 1), clean.lastIndexOf('\\', index - 1))
+    if (slash < 0) return clean
+    index = slash
+  }
+  const more = index <= 0 ? -1 : Math.max(clean.lastIndexOf('/', index - 1), clean.lastIndexOf('\\', index - 1))
+  return more < 0 ? clean : `…${clean.slice(index)}`
+}
+
+/**
+ * Dropdown labels for the workspace picker: the last three path segments.
  *
- *  Long workspace paths do not fit a Feishu button's single-line label, so
- *  each row renders the FULL path as a wrapping `markdown` line (guaranteed
- *  readable) plus a compact button that carries a short label (a workspace
- *  name, or a middle-elided path when unnamed) and the full path in its
- *  `behavior` value. */
+ * A `select_static` option is a single line, so a deep absolute path overflows
+ * it; showing the tail keeps the row readable. When two workspaces would render
+ * the same tail (e.g. `/a/x/y/z` vs `/b/x/y/z`), the suffix is deepened until
+ * every option is distinct — an ambiguous picker is worse than a long label.
+ */
+function workspaceLabels(workspaces: readonly WorkspaceLike[]): string[] {
+  const maxLevels = Math.max(3, ...workspaces.map(ws => ws.path.split(/[\\/]/).filter(Boolean).length))
+  for (let levels = 3; levels <= maxLevels; levels++) {
+    const labels = workspaces.map(ws => tailSegments(ws.path, levels))
+    if (new Set(labels).size === labels.length) return labels
+  }
+  return workspaces.map(ws => ws.path)
+}
+
+/** Workspace picker card (step 1 of /new): choose an existing workspace from a
+ *  dropdown or create a new one by absolute path or a `~`-relative path.
+ *
+ *  The picker used to render one button per workspace, which grew without bound
+ *  as workspaces accumulated. It is now a single `select_static` showing the
+ *  last three path segments (full path stays the option value), submitted
+ *  through the same form as the manual-path input — one form per card, because
+ *  a form submit button belongs to its container. */
 function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWorkspace: string | undefined, t: Translations): object {
+  const formElements: object[] = []
+  if (workspaces.length === 0) {
+    formElements.push({ tag: 'markdown', content: t.onboardingNoWorkspaces })
+  } else {
+    const labels = workspaceLabels(workspaces)
+    const selectedIndex = Math.max(0, workspaces.findIndex(ws => ws.path === currentWorkspace))
+    formElements.push({
+      tag: 'select_static',
+      name: 'workspace',
+      placeholder: { tag: 'plain_text', content: t.onboardingWorkspaceSelectPlaceholder },
+      options: workspaces.map((ws, index) => ({
+        text: { tag: 'plain_text', content: `${elideMiddle(labels[index]!, 48)}${ws.path === currentWorkspace ? ' ✅' : ''}` },
+        value: ws.path,
+      })),
+      value: workspaces[selectedIndex]!.path,
+    })
+    formElements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.onboardingWorkspaceSelectButton },
+      type: 'primary',
+      name: 'select_ws',
+      form_action_type: 'submit',
+      behaviors: [{ type: 'callback', value: { kind: 'pick-workspace' } }],
+    })
+    formElements.push({ tag: 'hr' })
+  }
+  formElements.push({ tag: 'markdown', content: t.onboardingNewWorkspaceHeader })
+  formElements.push({
+    tag: 'input',
+    name: 'workspace_path',
+    placeholder: { tag: 'plain_text', content: t.onboardingWorkspacePlaceholder },
+    value: { tag: 'plain_text', content: '' },
+  })
+  formElements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.onboardingCreateWorkspaceButton },
+    type: 'primary',
+    name: 'create_ws',
+    form_action_type: 'submit',
+    behaviors: [{ type: 'callback', value: { kind: 'create-workspace' } }],
+  })
+
   const elements: object[] = [
     { tag: 'markdown', content: t.onboardingWorkspaceHeader },
     { tag: 'hr' },
-  ]
-  if (workspaces.length === 0) {
-    elements.push({ tag: 'markdown', content: t.onboardingNoWorkspaces })
-  }
-  for (const ws of workspaces) {
-    const named = ws.name !== undefined && ws.name !== ''
-    const buttonLabel = named ? (ws.name as string) : elideMiddle(ws.path, 28)
-    const mark = ws.path === currentWorkspace ? ' ✅' : ''
-    // Full path first (wraps freely, never clipped), then the pick button.
-    elements.push({ tag: 'markdown', content: `📁 \`${ws.path}\`` })
-    elements.push({
+    { tag: 'form', name: 'onboarding_workspace_form', elements: formElements },
+    // Folder browsing — the only way to reach a path the operator cannot recall
+    // while away from the host. Backed by DSH's `browse` capability when it is
+    // mounted, otherwise by the plugin's own read-only listing.
+    {
       tag: 'button',
-      text: { tag: 'plain_text', content: `选择：${buttonLabel}${mark}` },
-      type: ws.path === currentWorkspace ? 'primary' : 'default',
-      behaviors: [{ type: 'callback', value: { kind: 'pick-workspace', value: ws.path } }],
-    })
-  }
-  elements.push({ tag: 'hr' })
-  // Folder browsing — the only way to reach a path the operator cannot recall
-  // while away from the host. Backed by DSH's `browse` capability when it is
-  // mounted, otherwise by the plugin's own read-only listing.
-  elements.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: t.onboardingBrowseButton },
-    type: 'default',
-    behaviors: [{ type: 'callback', value: { kind: 'browse-open' } }],
-  })
-  elements.push({
-    tag: 'markdown',
-    content: t.onboardingNewWorkspaceHeader,
-  })
-  elements.push({
-    tag: 'form',
-    name: 'onboarding_workspace_form',
-    elements: [
-      {
-        tag: 'input',
-        name: 'workspace_path',
-        placeholder: { tag: 'plain_text', content: t.onboardingWorkspacePlaceholder },
-        value: { tag: 'plain_text', content: '' },
-      },
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.onboardingCreateWorkspaceButton },
-        type: 'primary',
-        name: 'create_ws',
-        form_action_type: 'submit',
-        behaviors: [{ type: 'callback', value: { kind: 'create-workspace' } }],
-      },
-    ],
-  })
-  elements.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: `← ${t.cancel}` },
-    type: 'default',
-    behaviors: [{ type: 'callback', value: { kind: 'cancel' } }],
-  })
+      text: { tag: 'plain_text', content: t.onboardingBrowseButton },
+      type: 'default',
+      behaviors: [{ type: 'callback', value: { kind: 'browse-open' } }],
+    },
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: `← ${t.cancel}` },
+      type: 'default',
+      behaviors: [{ type: 'callback', value: { kind: 'cancel' } }],
+    },
+  ]
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },

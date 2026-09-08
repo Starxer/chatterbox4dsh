@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 变更：`/new` 工作区选择改为下拉框，只显示最后三级目录（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
+
+- **背景**：工作区越来越多时，工作区卡片按「每个工作区一行 markdown + 一个按钮」渲染，按钮数量随工作区线性增长，卡片越滚越长。
+- **改动**：`renderWorkspacePicker` 改为**一个 `select_static` 下拉框 + 「✅ 使用这个工作区」提交按钮**：
+  - 下拉项文案只显示**路径最后三级**（更长的路径前缀以 `…` 省略，如 `…/two/three`），**完整路径仍是 option 的 `value`**；当前工作区带 `✅` 并作为默认选中项。
+  - 下拉与「🆕 新建工作区」输入框**共用同一个 form**（提交按钮必须归属其容器，卡片只保留一个 form），`parseOnboardingAction` 新增 `pick-workspace` 的 `form_value.workspace` 解析；旧的按钮回调路径保留，聊天里已发出的旧卡片仍可点。
+  - **标签自动去重**：两个工作区尾部三级相同（`/a/x/y/z` vs `/b/x/y/z`）时，层级逐级加深直到每个选项唯一（最多到全路径）；单段过长再走 `elideMiddle(48)`，避免下拉行溢出。
+  - 「📂 浏览目录…」与「← 取消」按钮不变。
+- **验证**：`npm run typecheck` / `npm run test`（251 passed，新增 3 例：下拉标签只留三级且 value 为全路径、表单提交推进到预设步骤、重复尾部自动加深到可区分）/ `npm run build` 全绿。
+
 ### 新增：发新卡片时把被替换的旧卡片改写为「已失效」提示（`src/card-supersede.ts` 新增 / `src/feishu-onboarding.ts` / `src/feishu-model-select.ts` / `src/index.ts` / `src/i18n.ts` / `tests/card-supersede.spec.ts` / `tests/onboarding.spec.ts`）
 
 - **背景**：为了绕开「就地更新约 2–3 次后按钮回调失效」的硬上限（见下条），交互卡片流程改成**每一步发一张新卡片**，旧卡片留在聊天里（用户明确不要 recall）。但旧卡片仍显示着看起来能点的按钮，容易误导。

@@ -165,6 +165,66 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
+  it('renders workspaces as a dropdown of trailing path segments instead of one button each', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.workspaceRegistry = {
+      list: () => [
+        { path: '/srv/one/two/three' },
+        { path: '/srv/one/two/four' },
+        { path: '/opt/a/b/c/d/e' },
+      ],
+      create: vi.fn(async () => undefined),
+    }
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const form = card.body.elements.find((el: any) => el.tag === 'form')
+    const select = form.elements.find((el: any) => el.tag === 'select_static')
+    // Only the last three segments are shown; the full path stays the value.
+    expect(select.options.map((o: any) => o.text.content)).toEqual(['…/one/two/three', '…/one/two/four', '…/c/d/e'])
+    expect(select.options.map((o: any) => o.value)).toEqual(['/srv/one/two/three', '/srv/one/two/four', '/opt/a/b/c/d/e'])
+    // One dropdown + submit, one manual-path submit — no per-workspace buttons.
+    expect(form.elements.filter((el: any) => el.tag === 'button')).toHaveLength(2)
+    handle.dispose()
+  })
+
+  it('submits the dropdown selection through the workspace form', async () => {
+    const { channel, handlers } = fakeChannel()
+    const bridge = fakeBridge()
+    const onModelStep = vi.fn(async () => undefined)
+    const handle = startFeishuOnboarding({ ...deps(channel, bridge), onModelStep })
+    await fire(handlers, {
+      chatId: 'oc_1',
+      messageId: 'm-ref',
+      action: { value: JSON.stringify({ kind: 'pick-workspace' }) },
+      raw: { action: { form_value: { workspace: '/ws-2' } } },
+    })
+    expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('选择 Agent 预设')
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-preset', value: 'researcher' }) } })
+    expect(onModelStep).toHaveBeenCalledWith(
+      { chatId: 'oc_1', chatType: 'p2p' },
+      'm-ref',
+      { workspace: '/ws-2', agentPreset: 'researcher' },
+    )
+    handle.dispose()
+  })
+
+  it('deepens dropdown labels until workspaces are distinguishable', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.workspaceRegistry = {
+      list: () => [{ path: '/a/x/y/z' }, { path: '/b/x/y/z' }],
+      create: vi.fn(async () => undefined),
+    }
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const select = card.body.elements.find((el: any) => el.tag === 'form').elements.find((el: any) => el.tag === 'select_static')
+    expect(select.options.map((o: any) => o.text.content)).toEqual(['/a/x/y/z', '/b/x/y/z'])
+    handle.dispose()
+  })
+
   it('create-workspace form creates the workspace and advances to preset picker', async () => {
     const { channel, handlers } = fakeChannel()
     const bridge = fakeBridge()
