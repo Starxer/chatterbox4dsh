@@ -269,8 +269,11 @@ describe('feishu-onboarding', () => {
     // row cannot stretch to the full card width and look widest.
     const totals = rows.map((row: any) => row.columns.reduce((sum: number, col: any) => sum + col.weight, 0))
     expect(totals.slice(0, -1).every((total: number) => total === 32)).toBe(true)
-    // The padding is an empty markdown column.
-    expect(rows.some((row: any) => row.columns.some((col: any) => col.elements[0].tag === 'markdown'))).toBe(true)
+    // The padding is a VISIBLE placeholder: a plain space is trimmed away and
+    // the column dropped, which lets the button stretch again.
+    const fillers = rows.flatMap((row: any) => row.columns).filter((col: any) => col.elements[0].tag === 'markdown')
+    expect(fillers.length).toBeGreaterThan(0)
+    expect(fillers.every((col: any) => col.elements[0].content === '\u3000')).toBe(true)
     const entryButtons = rows
       .flatMap((row: any) => row.columns.map((col: any) => col.elements[0]))
       .filter((el: any) => el.tag === 'button' && el.behaviors[0].value.kind === 'browse-enter' && String(el.behaviors[0].value.value).startsWith('/g/'))

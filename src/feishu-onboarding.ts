@@ -498,13 +498,17 @@ const BROWSE_MAX_COLUMNS = 4
 
 /**
  * Pack buttons into `column_set` rows, weighting each column by its label and
- * padding every row out to the full {@link BROWSE_ROW_BUDGET} with an empty
- * filler column.
+ * padding every row out to the full {@link BROWSE_ROW_BUDGET} with a filler
+ * column.
  *
  * The padding is what keeps short names from looking widest: a short name that
  * lands alone on a row would otherwise take 100% of the card width. With the
  * filler, every button gets a share proportional to its label, and every row
  * spans the same width.
+ *
+ * The filler must be VISIBLE (an ideographic space): a plain ASCII space is
+ * trimmed by the markdown renderer, the column is dropped, and the button
+ * stretches after all — observed on the live card.
  *
  * Rows are grouped by what fits: as many equal columns as the WIDEST label on
  * the row allows, so a long name drops to a two-column row or a full-width row
@@ -541,7 +545,10 @@ function packedRows(cells: readonly { label: string; button: object }[]): object
         width: 'weighted',
         weight: BROWSE_ROW_BUDGET - used,
         vertical_align: 'top',
-        elements: [{ tag: 'markdown', content: ' ' }],
+        // A plain ASCII space is trimmed by the markdown renderer, which drops
+        // the column and lets the button stretch after all (verified on the
+        // live card). An ideographic space is real content, so it survives.
+        elements: [{ tag: 'markdown', content: '\u3000' }],
       })
     }
     return {
