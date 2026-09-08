@@ -238,12 +238,12 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('packs browser buttons into fitting rows and never elides names', async () => {
+  it('lists browser entries in the body and picks them from a numbered dropdown', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     const entries = [
       ...Array.from({ length: 6 }, (_, index) => ({ name: `dir-${index}`, path: `/g/dir-${index}`, hidden: false })),
-      // Too long for the row budget: it must get a row to itself.
+      // Long enough that a dropdown option would clip it: it must live in the body.
       { name: 'a-really-quite-long-directory-name', path: '/g/long', hidden: false },
     ]
     d.getDirectoryPicker = () => ({
@@ -261,29 +261,38 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    const rows = card.body.elements.filter((el: any) => el.tag === 'column_set')
-    // No single-line overflow: several rows instead of one, each a fixed row.
-    expect(rows.length).toBeGreaterThan(2)
-    expect(rows.every((row: any) => row.flex_mode === 'none')).toBe(true)
-    // Every row is padded to the same total width, so a short name alone on a
-    // row cannot stretch to the full card width and look widest.
-    const totals = rows.map((row: any) => row.columns.reduce((sum: number, col: any) => sum + col.weight, 0))
-    expect(totals.slice(0, -1).every((total: number) => total === 32)).toBe(true)
-    // The padding is a VISIBLE placeholder: a plain space is trimmed away and
-    // the column dropped, which lets the button stretch again.
-    const fillers = rows.flatMap((row: any) => row.columns).filter((col: any) => col.elements[0].tag === 'markdown')
-    expect(fillers.length).toBeGreaterThan(0)
-    expect(fillers.every((col: any) => col.elements[0].content === '\u3000')).toBe(true)
-    const entryButtons = rows
-      .flatMap((row: any) => row.columns.map((col: any) => col.elements[0]))
-      .filter((el: any) => el.tag === 'button' && el.behaviors[0].value.kind === 'browse-enter' && String(el.behaviors[0].value.value).startsWith('/g/'))
-    // Every name is shown verbatim — no ellipsis anywhere.
-    expect(entryButtons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
-    // The long name is the only one that gets a row to itself.
-    const singleColumnRows = rows.filter((row: any) => row.columns.length === 1)
-    expect(singleColumnRows).toHaveLength(1)
-    expect(singleColumnRows[0].columns[0].elements[0].text.content).toContain('a-really-quite-long')
-    expect(singleColumnRows[0].columns[0].elements[0].behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/long' })
+    const form = card.body.elements.find((el: any) => el.tag === 'form')
+    const select = form.elements.find((el: any) => el.tag === 'select_static')
+    // The dropdown carries only row numbers; the full paths stay in the values.
+    expect(select.options.map((o: any) => o.text.content)).toEqual(entries.map((_, index) => String(index + 1)))
+    expect(select.options.map((o: any) => o.value)).toEqual(entries.map(entry => entry.path))
+    // Every name is listed verbatim in the body — no elision anywhere.
+    const body = JSON.stringify(card.body.elements)
+    for (const entry of entries) expect(body).toContain(entry.name)
+    // Entering a folder is a form submit, not a per-entry button.
+    const submit = form.elements.find((el: any) => el.tag === 'button')
+    expect(submit.form_action_type).toBe('submit')
+    expect(submit.behaviors[0].value).toEqual({ kind: 'browse-enter' })
+    handle.dispose()
+  })
+
+  it('enters the folder submitted through the browser dropdown', async () => {
+    const { channel, handlers } = fakeChannel()
+    const picker = fakeDirectoryPicker()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => picker.picker
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    await fire(handlers, {
+      chatId: 'oc_1',
+      messageId: 'm-ref',
+      action: { value: JSON.stringify({ kind: 'browse-enter' }) },
+      raw: { action: { form_value: { browse_target: '/home/me/projects' } } },
+    })
+    expect(picker.list).toHaveBeenCalledWith('/home/me/projects')
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    expect(JSON.stringify(card)).toContain('/home/me/projects')
+    expect(JSON.stringify(card)).toContain('my-app')
     handle.dispose()
   })
 

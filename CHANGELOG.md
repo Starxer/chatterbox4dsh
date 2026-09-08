@@ -2,7 +2,20 @@
 
 ## Unreleased
 
+### 变更：目录浏览也改为编号下拉框（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
+
+- **背景**：目录浏览器此前把每个子目录渲染成一个按钮，再按标签宽度把它们装进行（`packedRows`）。按钮宽度只能按**内容宽度**给，但飞书**不认列内按钮的 `width: 'fill'`**——按钮永远按自身文字宽度渲染，宽列里多出来的宽度就变成两个按钮之间的空隙（实机表现为 `qwentts.cpp` 与 `R` 相距一大段空白）。同一行要么紧挨着、要么留缝，无法既等宽又贴边，迭代几版都不稳定。
+- **改动**：目录浏览器与工作区选择器**统一为同一种交互**——一个编号 `select_static` 下拉框 + 提交按钮：
+  - 正文逐行列出 `**1.** 📁 \`目录名\``（30 项一页），**名字一律不省略**；
+  - 下拉选项只放**行号**（`1` / `2` …，翻页后编号连续），**绝对路径仍是 option 的 `value`**，选中结果精确；
+  - 「📁 进入这个目录」是 form 提交按钮，`parseOnboardingAction` 新增 `form_value.browse_target` 解析（与 `pick-workspace` / `create-workspace` 同一分支）。
+  - 上/家目录/隐藏开关、翻页仍是短标签按钮，改用 `buttonRow`（单行 `column_set` + `width: 'auto'` 列）排布；`displayWidth` / `BROWSE_ROW_BUDGET` / `packedRows` / `browseEntryCell` / `plainCell` 全部删除。
+- **多语言**：新增 `onboardingBrowseSelectPlaceholder` / `onboardingBrowseEnterButton`（zh/en）。
+- **验证**：`npm run typecheck` / `npm run test`（253 passed，改写 1 例、新增 1 例：正文列出全部名字且下拉只含行号与全路径 value、表单提交进入子目录）/ `npm run build`；并用 profile 凭据调 `cardkit.v1.card.create` 校验生成的浏览卡 `code=0 success`。
+
 ### 变更：工作区下拉只显示序号 + 目录浏览按内容宽度分行排列（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
+
+> ⚠️ 本条中「目录浏览按内容宽度分行排列」已被上一条取代——按钮布局无法同时满足等宽与贴边，目录浏览最终也改为编号下拉框。工作区下拉只显示序号的部分仍然有效。
 
 - **长路径在下拉里怎么缩都显示不全**：`select_static` 的选项是**单行且被飞书裁切**，无论截成三级、两级还是一级，目录名一长就只剩省略号。改为**把完整路径移到卡片正文**：
   - 正文按行列出 `**1.** \`/完整/路径\``（当前工作区带 ✅），路径在 markdown 里可换行、**必定完整可读**；

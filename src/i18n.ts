@@ -257,6 +257,8 @@ export interface Translations {
   onboardingBrowsePage: (page: number, total: number) => string
   onboardingBrowseEmpty: string
   onboardingBrowseTruncated: string
+  onboardingBrowseSelectPlaceholder: string
+  onboardingBrowseEnterButton: string
   onboardingBrowsePick: string
   onboardingBrowseBack: string
 
@@ -489,6 +491,8 @@ export const zh = {
   onboardingBrowsePage: (page, total) => `第 ${page} / ${total} 页`,
   onboardingBrowseEmpty: '（这个目录下没有子目录）',
   onboardingBrowseTruncated: '…目录项过多，仅列出前一部分，请进入更具体的目录继续浏览。',
+  onboardingBrowseSelectPlaceholder: '选择要进入的目录…',
+  onboardingBrowseEnterButton: '📁 进入这个目录',
   onboardingBrowsePick: '✅ 用这个目录',
   onboardingBrowseBack: '← 返回工作区列表',
 
@@ -720,6 +724,8 @@ export const en: Translations = {
   onboardingBrowsePage: (page, total) => `Page ${page} / ${total}`,
   onboardingBrowseEmpty: '(No subfolders here)',
   onboardingBrowseTruncated: '…Too many entries; only the first part is listed. Enter a more specific folder to continue.',
+  onboardingBrowseSelectPlaceholder: 'Choose a folder to enter…',
+  onboardingBrowseEnterButton: '📁 Enter this folder',
   onboardingBrowsePick: '✅ Use this folder',
   onboardingBrowseBack: '← Back to workspace list',
 
