@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 文档：同步 README / 架构文档 / TODO 到当前实现（`README.md` / `docs/architecture.md` / `TODO.md`）
+
+- **README**：per-step 卡片行补上「标题带轮次/步骤、reasoning 带耗时与思考 token、footer 两行、快步骤只发一张卡」；Turn Complete 行注明吞吐量口径对齐 Web UI；入站/接收文件从过期的 `.feishu-inbox/` 改为 **DSH 原生附件库**；busy 段落补上「运行中发普通消息先回纯文本提示、steer 不再单独回卡」。
+- **docs/architecture.md**：事件流改为 0.1.3 实际路径（`assistant/chunk` 已移除，改由 `assistant/message.stream` 重建），补上「实例更新必须等消息发出」与「首发防抖合并」两条约束；Step 卡片与 Debounce 小节同步当前 footer/定位信息。
+- **TODO**：新增本轮修复/优化条目（卡片更新时序、首发合并、tok/s 口径、每卡 tok/s、footer 两行与定位信息、busy 提示去重）；修正 reasoning 截断的过期描述（3000 → 200 字预览）；`#8 文档一致性` 标记 README/架构文档已同步。
+
 ### 变更：reasoning 标题去掉两个指标的 emoji（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **改动**：reasoning 标题由 `💬 **推理** · 🧠 4.3s · 🪙 1.2K tokens` 改为 `💬 **推理** · 4.3s · 1.2K tokens`（只保留「推理」前的 💬，去掉耗时与 token 两处 emoji）。

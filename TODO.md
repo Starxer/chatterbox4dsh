@@ -64,6 +64,12 @@
 | — | `/busy` 交互选择卡 + `/queue` | ✅ `feishu-busy.ts`、`/queue`（`forceQueue`），模式匹配短接 |
 | — | `action.value` 双解码 | ✅ `decodeCardValue`（多深度 JSON.parse，cap 4），busy/permission/model-select/session 共用 |
 | — | `/model` 一站式 | ✅ `ctx.sessionController.selectModel`（agent scoped ref + WebUI + 持久化），不再用插件 `selections: Map`/`installModelSelection` |
+| — | 步骤卡实例更新必须等消息发出 | ✅ **已修复（2026-09-08）**：飞书在发送引用卡片实体的消息时对内容做快照，`cardkit.v1.card.update` 若早于 `sendCardByReference` 就不会进入该消息（表现为「只剩 reasoning」/「工具停在 running」）。`executeCardUpdate` 先 `await ref.messageId` 再更新。用 `im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回真实渲染内容验证 |
+| — | 快步骤首发合并 | ✅ **已优化（2026-09-08）**：`STEP_CARD_DEBOUNCE_MS = 150`，首发也防抖——一步内 reasoning→call→result 全落窗口内时只发一张卡（内容已含结果）；步骤在窗口内结束或 turn/end 时 `flushPendingSend` 补发 |
+| — | Turn Complete tok/s 口径 | ✅ **已修复（2026-09-08）**：首 token 判定改用 dsh-llm `isTokenDelta`（含 tool-call delta），新增 `totalDecodeTokens` 与 decode 时间同批配对，对齐 Web UI `deriveTurnMetrics`（此前「只调工具」的步骤会虚高，实测最高 2×） |
+| — | 每张助手卡都带 tok/s | ✅ **已完成（2026-09-08）**：步骤卡 footer、溢出续卡、兜底回复卡 footer 均显示速度 |
+| — | 步骤卡 footer 两行 + 定位信息 | ✅ **已完成（2026-09-08）**：footer 拆两行（`⏱ 时长 · 📥 in → 📤 out` / `🚀 tok/s · 📊 上下文`）；卡片标题带「第 N 轮 · 第 M 步」；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`） |
+| — | 运行中发消息提示 + steer 去重 | ✅ **已完成（2026-09-08）**：运行中发普通消息立即回一条**纯文本**提示（steer 已插入 / queue 已排队）；steer 分支不再等待本轮、不返回文本，避免同一 turn 出现两张回复卡 |
 
 ## 下一轮待办（2026-08-30 定，未动工）
 
@@ -85,7 +91,7 @@
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
-| 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-08-30 核实**：3000 字符截断**已做**（`feishu-streaming.ts` reasoning/text 均 `slice(0,3000)`），仅 `collapsible` 未实现 |
+| 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-09-08 核实**：reasoning 已收紧为 **200 字预览**（`REASONING_CAP`，不展示完整思维链）、text 超 3000 字改为拆溢出续卡；仅 `collapsible` 未实现 |
 | — | **step 卡片可见性开关**（过程透明可配置） | **中** | **后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
 | 3 | ~~工作区候选补全~~ → 目录浏览器 | **中** | ✅ **已完成（2026-09-08）**：改为**目录浏览器**（比输入前缀补全更直接）——`/new` 工作区卡片新增「📂 浏览目录…」，可导航 / 分页 / 显示隐藏目录 / 选当前目录为工作区。目录来源优先 DSH `directoryPicker` 的 `browse` 能力，`native` 或缺失时回退插件自带只读列举。见 CHANGELOG「新增：/new 工作区卡片支持浏览目录」。**前缀补全本身不再做**（浏览器已覆盖）。**2026-09-08 追加**：工作区列表与目录浏览最终统一用 **`interactive_container`**（Card 2.0 整块可点击区域，官方定位就是「卡片内的列表项」）：每个工作区 / 目录一整行可点、无按钮外观、名字与路径不省略——按钮宫格 / 按内容宽度分行（飞书不认列内 `width: 'fill'`）、编号下拉框（要先选号再提交，太绕）、整行按钮（有多余按钮外观）均已弃用。控制按钮行用 `column_set` + `flex_mode: 'stretch'`（窄屏堆叠，避免手机端被压缩截断） |
 | — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查**：`feishu-session.ts` 面板仍是就地更新（未改成发新卡，故无失效提示可写） |
@@ -94,7 +100,7 @@
 | — | **step 卡丢失更新（工具状态不刷新 / 卡片只剩 reasoning）** | **高** | ✅ **已修复（2026-09-08）**：① `assistant/message` 曾无条件发新卡 → 工具先开卡时旧卡被弃、再也收不到结果；改为「已有卡就更新」。② 防抖表按 session state 键 → 下一步骤的更新取消上一步骤待触发的定时器；改为按卡片 ref 键。另加 `[send]`/`[update]` 诊断日志。见 CHANGELOG「修复：step 卡片丢失工具状态更新 / 只剩 reasoning」 |
 | 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
-| 8 | 文档与版本一致性 | **低** | 2026-08-30 核实：package.json `0.1.0`，README 明显过期未同步，仍待办 |
+| 8 | 文档与版本一致性 | **低** | **README 已同步（2026-09-08）**：per-step 卡片/footer/定位信息、原生附件库、busy 提示等均已更新；`docs/architecture.md` 同步 0.1.3 事件流与卡片约束。剩余：`package.json` 版本号仍为 `0.1.0`，留待发版时统一 bump |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
 | — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | ✅ **已实现**（2026-09-08）：step 卡 text 超 `TEXT_STEP_CAP=3000` 自动拆溢出卡（`renderOverflowCard` + `chunkText`），不再截断丢弃；reasoning 收紧 200 字；args 改 pretty 打印 2k 上限。见 CHANGELOG「修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送」 |
 
@@ -251,7 +257,7 @@
   - `/reasoning show on|off` 控制是否显示 reasoning 内容
 - **待优化**：
   - reasoning 代码块可折叠（飞书 Card JSON 2.0 支持 `collapsible` 组件）
-  - reasoning 长度截断策略（当前 3000 字符）
+  - reasoning 长度截断策略（当前 200 字预览，可配置与否待定）
 
 ## #19 tool_call / tool_done 顺序问题 —— ✅ 已修复
 
@@ -328,13 +334,13 @@ POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
 ### 本插件现状（截断点，均需改成分段）
 | 位置 | 现在 | 问题 |
 |---|---|---|
-| `feishu-streaming.ts` `renderStepCard`（~792/801） | text/reasoning 各 `slice(0,3000)+'…(truncated)'` | 独立 step 卡直接截断（用户看到的主因） |
+| `feishu-streaming.ts` `renderStepCard` | text 前 3000 字上屏、溢出用 `chunkText` 拆 `Reply (continued N/M)` 卡（**已分段**）；reasoning 只保留 200 字预览（设计如此） | 已无硬截断；reasoning 仍是预览（不展示完整思维链） |
 | `channel.ts` `renderReasoningForReply`（525） | reasoning `slice(0,5000)+'…(truncated)'` | 两阶段 reply 的 thinking 卡截断 |
 | `channel.ts` `renderReplyCards`（546） | `chunkText(displayText, CARD_TEXT_MAX=4000)` 已分卡（≤30 张） | **已分段**，基本安全 |
 | `text-chunk.ts` | `chunkText` 按段落装箱 + `capChunks` | 已具备分段工具，可复用 |
 
-### 结沦 / 改动方向（待实现）
-1. **step 卡 & reasoning 卡**：把 `…(truncated)` 硬截断改为「超限即另起一段/一张卡」——流式 step 卡本身是逐 step 更新，长 step 的 text 可用 `chunkText` 拆多张连续卡，或至少放宽到安全阈值并标注「已分段」。
+### 结论 / 改动方向
+1. **step 卡 text**：✅ 已完成（2026-09-08）——超 3000 字改为拆溢出续卡，不再 `…(truncated)`；reasoning 按设计收紧为 200 字预览。
 2. **阈值选择**：卡片 30KB 请求体（非字符数，中文按 UTF-8 ~3B/字）换算 ≈ **中文约 1 万字**、英文约 3 万字符；单 markdown 元素另有 ~10k 字符隐式上限。`CARD_TEXT_MAX=4000` 是保守安全值，**拆卡阈值宜取 ~6k–8k 字符**，留足 markdown 开销与表头/footer 余量。
 3. **text 消息回退**：超长纯文本可改发 `text` 消息（150KB，上限远高于卡片），或卡片 + 文本混合。
 4. **静默截断防护**：发送前按已知上限（30KB 请求体 / ~10k 元素）本地校验并主动分段，**不要依赖飞书静默截断**。

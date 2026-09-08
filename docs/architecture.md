@@ -26,7 +26,7 @@ Harness Agent (模型、工具、会话日志)
 | `src/index.ts` | 插件入口，注册服务和命令 |
 | `src/channel.ts` | 飞书 Channel 封装，入站图片/文件接收（`admitImagesForMessage`/`admitFilesForMessage`），回复卡片渲染，Turn Complete 卡片 |
 | `src/harness.ts` | Harness 会话服务，session 映射持久化 |
-| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览 + 时长/token footer |
+| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览 + 思考耗时/思考 token）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览；标题带「第 N 轮 · 第 M 步」，footer 两行（时长/token · tok/s/上下文） |
 | `src/card-supersede.ts` | 交互流程「每步发新卡」的配套：把被替换的旧卡片改写成无按钮的失效提示（zh/en 双语，优先 CardKit 实例、best-effort） |
 | `src/feishu-todos.ts` | Todo 进度卡片 |
 | `src/feishu-approvals.ts` | 工具审批处理 |
@@ -38,28 +38,33 @@ Harness Agent (模型、工具、会话日志)
 每个 agent step 的事件流：
 
 ```
-step/start        → 记录开始时间（resetStep 清空本 step 的卡片身份）
-assistant/chunk   → 累积 reasoning/text，记录首 token 时间
-assistant/message → 本 step 还没卡就发卡，已有卡就更新（text 前 3000 字上屏），记录 usage
+step/start        → 记录开始时间与 1-based turn/step（resetStep 清空本 step 的卡片身份）
+assistant/chunk   → 累积 reasoning/text（旧版 DSH；0.1.3 已移除该事件）
+assistant/message → 0.1.3 的唯一来源：用 event.data.stream 经 expandAssistantStream 重建
+                    reasoning/text，并记录 usage、首 token、最后一条 reasoning 的时间
+                    （思考耗时 = 末 - 首），然后发卡/更新卡
 tool/call         → 追加工具调用（状态 ⏳ running），已有卡更新、无卡则发卡
 tool/result       → 追加工具结果和预览（✅/❌），更新卡片，记录完成时间
-turn/end          → flush debounce → 发送溢出文本 continued 卡（如有）→ 发送 Turn Complete footer 卡
+turn/end          → flush 待发卡 + pending debounce → 发送溢出文本 continued 卡（如有）
+                    → 发送 Turn Complete footer 卡
 ```
 
-> **一步一卡**：`assistant/message` 与 `tool/call` 都遵循「`state.stepCardSent` 为真就 `updateStepCard`，否则 `sendStepCard`」。任一分支无条件发新卡都会让 `state.stepCardRef` 改指新卡，**旧卡从此收不到更新**——表现为工具永远停在 `⏳ running…`，或卡片只剩 reasoning。
+> **一步一卡**：`assistant/message` 与 `tool/call` 都遵循「本 step 已有卡就更新，否则排入首发」。首发经 `queueStepCardSend` 防抖 150ms 合并（见下），排入后 `stepCardSent` 为真而 `stepCardRef` 尚空，窗口内的事件只改状态、不触发更新——定时器到点用当时的状态发**一张**卡。任一分支无条件发新卡都会让 `state.stepCardRef` 改指新卡，**旧卡从此收不到更新**——表现为工具永远停在 `⏳ running…`，或卡片只剩 reasoning。
 >
 > **防抖按卡片 ref 键**：`pendingUpdates` 是 `Map<StepCardRef, …>`，不是 `Map<SessionStepState, …>`。一个 state 对象服务该会话所有 step，按 state 键会让下一步骤的更新取消上一步骤尚未触发的 150ms 定时器，上一步的卡片丢掉工具结果。
+>
+> **实例更新必须等消息发出**：飞书在发送引用卡片实体的消息时对内容做快照，`cardkit.v1.card.update` 若发生在 `sendCardByReference` 之前**不会进入该消息**（卡片停在创建时的内容）。故 `executeCardUpdate` 先 `await ref.messageId` 再更新；`sequence` 仍单调递增。
 
 ## 卡片设计
 
-- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化，底部显示时长和 token；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送。发送走 **CardKit 卡片实例**（`createCardInstance` → `sendCardByReference`，更新走 `updateCardInstance` + 单调 `sequence`，通道缺这些方法时回退 `send` + `updateCard`）——step 卡没有按钮，不受「同一条消息就地更新 2–3 次后按钮回调失效」的限制，因此可以持续原地更新
+- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化。标题 `{状态} · 第 N 轮 · 第 M 步`；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）；footer 两行——第一行 `⏱ 时长 · 📥 计费输入 → 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占比`；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送（续卡也带 tok/s）。发送走 **CardKit 卡片实例**（`createCardInstance` → `sendCardByReference`，更新走 `updateCardInstance` + 单调 `sequence`，通道缺这些方法时回退 `send` + `updateCard`）——step 卡没有按钮，不受「同一条消息就地更新 2–3 次后按钮回调失效」的限制，因此可以持续原地更新
 - **Turn Complete 卡片**：turn 结束后发送，绿色，展示性能指标和配置信息
 - **Todo 卡片**：turquoise，含进度条
 - **审批卡片**：orange，含 approve/deny 按钮
 
 ## 技术要点
 
-- **Debounce**：150ms 合并快速更新，减少 API 调用；**表按卡片 ref 键**（见上「防抖按卡片 ref 键」）
+- **Debounce**：`STEP_CARD_DEBOUNCE_MS = 150`。**首发也防抖**——快模型一步内 reasoning→tool/call→tool/result 全落在窗口内时只发一张卡（内容已含结果），不产生 send+update 两次渲染；步骤在窗口内结束或 turn/end 时 `flushPendingSend` 立即补发。**更新防抖表按卡片 ref 键**（见上「防抖按卡片 ref 键」），且实例更新必须等消息发出（见上「实例更新必须等消息发出」）
 - **交互卡片不能就地更新**：飞书对同一条消息的卡片就地更新约 2–3 次后**不再投递按钮回调**（`im.v1.message.patch` 与 `cardkit.v1.card.update` 同样受限）。带按钮的卡片（`/new` 流程、目录浏览器、`/model`、`/session` 面板）**每一步都新建卡片实例 + 发新消息**；旧卡留在聊天里，不做 recall
 - **旧卡改写为失效提示**：每发一张新卡，就用 `src/card-supersede.ts` 把上一张改写为无按钮的灰色提示（顺序 `send → supersedePrevious → note`）；结果/错误卡 `terminal: true` 只改写上一张、自身不进记忆。改写失败只 warn，不阻断流程
 - **Flush 同步**：`turn/end` 时 flush pending debounce，确保卡片更新在 Turn Complete 之前完成
