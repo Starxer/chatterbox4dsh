@@ -238,7 +238,7 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('renders every browser entry as a directly clickable full-width button', async () => {
+  it('renders every browser entry as a clickable borderless row, not a button', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     const entries = [
@@ -260,15 +260,15 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    // No dropdown / form: the list itself is clickable.
+    // No dropdown / form, and the entries are not buttons: each row is a
+    // borderless interactive_container whose markdown shows the full name.
     expect(card.body.elements.some((el: any) => el.tag === 'form')).toBe(false)
-    const entryButtons = card.body.elements
-      .filter((el: any) => el.tag === 'button' && el.behaviors[0].value.kind === 'browse-enter'
+    const rows = card.body.elements
+      .filter((el: any) => el.tag === 'interactive_container' && el.behaviors[0].value.kind === 'browse-enter'
         && String(el.behaviors[0].value.value).startsWith('/g/'))
-    // Every name is shown verbatim and each row is full width — no elision.
-    expect(entryButtons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
-    expect(entryButtons.every((b: any) => b.width === 'fill')).toBe(true)
-    expect(entryButtons.map((b: any) => b.behaviors[0].value.value)).toEqual(entries.map(entry => entry.path))
+    expect(rows.map((row: any) => row.elements[0].content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
+    expect(rows.every((row: any) => row.width === 'fill' && row.has_border === false)).toBe(true)
+    expect(rows.map((row: any) => row.behaviors[0].value.value)).toEqual(entries.map(entry => entry.path))
     handle.dispose()
   })
 

@@ -476,19 +476,22 @@ interface BrowseState {
   page: number
 }
 
-/** One browser entry as a full-width button, so a click enters the folder.
+/** One browser entry as a borderless, fully clickable row.
  *
- *  A card has no clickable list-row component, and a button inside a
- *  `column_set` cannot be made to fill its column (Feishu ignores
- *  `width: 'fill'` there), so a directly clickable list means one full-width
- *  button per row. */
-function browseEntryButton(entry: DirectoryEntry): object {
+ *  Card 2.0's `interactive_container` is a whole clickable region ("适合卡片内
+ *  的列表项"): it carries `behaviors` like a button but renders its child
+ *  markdown, so the entry looks like a list row instead of a button and its
+ *  name is never elided. A plain button could not do this — buttons inside a
+ *  `column_set` ignore `width: 'fill'`, and one full-width button per row adds
+ *  button chrome around every name. */
+function browseEntryRow(entry: DirectoryEntry): object {
   return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: `📁 ${entry.name}` },
-    type: 'default',
+    tag: 'interactive_container',
     width: 'fill',
+    has_border: false,
+    padding: '4px 12px 4px 12px',
     behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+    elements: [{ tag: 'markdown', content: `📁 ${entry.name}` }],
   }
 }
 
@@ -506,7 +509,7 @@ function controlButton(label: string, value: unknown, type: 'default' | 'primary
  *
  *  `width: 'auto'` columns hug their button and the short labels here always
  *  fit, so no budget/packing logic is needed. Folder names never go through
- *  this path — they are listed in the body and chosen from the dropdown. */
+ *  this path — each entry is its own full-width `interactive_container` row. */
 function buttonRow(buttons: readonly object[]): object {
   return {
     tag: 'column_set',
@@ -524,9 +527,10 @@ function buttonRow(buttons: readonly object[]): object {
 /** Folder-browser card: navigate levels, toggle hidden entries, page a large
  *  level, and pick the listed directory as the new session's workspace.
  *
- *  Every entry is a full-width button, so the list is directly clickable and
- *  names are never elided. Short control labels (up / home / hidden / pager)
- *  share an auto-width row. */
+ *  Every entry is a borderless `interactive_container` row, so the list is
+ *  directly clickable, looks like text rather than buttons, and never elides a
+ *  name. Short control labels (up / home / hidden / pager) share an auto-width
+ *  row. */
 function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
   const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
   const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
@@ -557,7 +561,7 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
   if (slice.length === 0) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseEmpty })
   } else {
-    for (const entry of slice) elements.push(browseEntryButton(entry))
+    for (const entry of slice) elements.push(browseEntryRow(entry))
   }
 
   if (totalPages > 1) {

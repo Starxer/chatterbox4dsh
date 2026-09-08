@@ -2,7 +2,16 @@
 
 ## Unreleased
 
+### 变更：目录浏览列表改用 `interactive_container` 整块点击行（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
+
+- **背景**：上一版把每个目录做成整行按钮，虽然可点，但每行都套一层按钮外观。用户指出飞书有「不是按钮、但可以点击互动」的组件，要求查 SDK 文档。
+- **查证**：Card 2.0 的 **`interactive_container`**（整块可点击区域）正是官方给「卡片内的列表项」的组件——`behaviors` 与按钮同款（`callback` / `open_url`），但渲染的是内部子元素（这里放一个 `markdown`），所以**没有按钮外观、整行都能点**，且 `width: 'fill'` 真正撑满。参考：[交互容器 `interactive_container`（larksuite/cli 组件参考）](https://github.com/larksuite/cli/blob/main/skills/lark-im/references/card/components/interactive_container.md)、[配置卡片交互](https://open.feishu.cn/document/feishu-cards/configuring-card-interactions)。
+- **改动**：每个目录渲染为一个 `interactive_container`（`width: 'fill'` / `has_border: false` / `padding: '4px 12px'`，子元素 `markdown` 内容 `📁 名字`），`behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: 绝对路径 } }]`。名字仍**一律不省略**；回调仍走 `parseOnboardingAction` 的 `browse-enter`（按 `action.value` 解析，与元素 tag 无关）。上一级 / 家目录 / 隐藏开关 / 翻页仍是短标签按钮行。
+- **验证**：`npm run typecheck` / `npm run test`（253 passed，改写 1 例：条目是 `interactive_container` 且无边框、名字不省略）/ `npm run build`；`cardkit.v1.card.create` 校验 30 项浏览卡 `code=0 success`，并把预览卡发到真实话题（`im.v1.message.reply` + `reply_in_thread`）确认可渲染。
+
 ### 变更：目录浏览列表改为可直接点击的整行按钮（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
+
+> ⚠️ 本条的「整行按钮」已被上一条取代——改用 `interactive_container`，保留点击区域但去掉按钮外观。
 
 - **背景**：编号下拉框要「先选号、再点进入」两步，实际操作太绕。用户希望**列表本身就能直接点**。
 - **改动**：每个目录渲染成**整行宽按钮**（`width: 'fill'`，文案 `📁 名字`，**名字一律不省略**），点击即进入该目录；删掉 `form` / `select_static` / 「📁 进入这个目录」按钮，以及 `form_value.browse_target` 解析与对应的两个 i18n 键。上一级 / 家目录 / 隐藏开关 / 翻页仍是短标签按钮行（`buttonRow`）。
