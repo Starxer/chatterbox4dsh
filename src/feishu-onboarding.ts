@@ -187,14 +187,6 @@ function parseOnboardingAction(evt: CardActionLike): QueuedAction | undefined {
       if (path !== undefined) return { kind: 'pick-workspace', chatMessage, messageId: evt.messageId, value: path }
       return undefined
     }
-    if (kind === 'browse-enter') {
-      // Submitted by the browser's folder dropdown's "enter" button.
-      const path = typeof formValue.browse_target === 'string' && formValue.browse_target.trim() !== ''
-        ? formValue.browse_target.trim()
-        : undefined
-      if (path !== undefined) return { kind: 'browse-enter', chatMessage, messageId: evt.messageId, value: path }
-      return undefined
-    }
     return undefined
   }
 
@@ -484,15 +476,20 @@ interface BrowseState {
   page: number
 }
 
-/** One browser entry row in the card body: `**1.** 📁 name`, never elided.
+/** One browser entry as a full-width button, so a click enters the folder.
  *
- *  A `select_static` option is a single clipped line, so a long folder name
- *  there is unreadable no matter how it is shortened. The names therefore live
- *  in the body and the dropdown only carries the row NUMBER — the same split as
- *  the workspace picker. The option value still carries the absolute path, so
- *  the pick stays exact. */
-function browseRow(index: number, entry: DirectoryEntry): string {
-  return `**${index + 1}.** 📁 \`${entry.name}\``
+ *  A card has no clickable list-row component, and a button inside a
+ *  `column_set` cannot be made to fill its column (Feishu ignores
+ *  `width: 'fill'` there), so a directly clickable list means one full-width
+ *  button per row. */
+function browseEntryButton(entry: DirectoryEntry): object {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: `📁 ${entry.name}` },
+    type: 'default',
+    width: 'fill',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+  }
 }
 
 /** A plain card button (navigation controls, pager). */
@@ -527,9 +524,9 @@ function buttonRow(buttons: readonly object[]): object {
 /** Folder-browser card: navigate levels, toggle hidden entries, page a large
  *  level, and pick the listed directory as the new session's workspace.
  *
- *  Entries are chosen from a numbered `select_static` (names listed in the body,
- *  never elided) instead of one button per entry, so a level of 30 stays a
- *  compact card and long names remain readable. */
+ *  Every entry is a full-width button, so the list is directly clickable and
+ *  names are never elided. Short control labels (up / home / hidden / pager)
+ *  share an auto-width row. */
 function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
   const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
   const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
@@ -560,35 +557,7 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
   if (slice.length === 0) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseEmpty })
   } else {
-    elements.push({
-      tag: 'markdown',
-      content: slice.map((entry, index) => browseRow(page * BROWSE_PAGE_SIZE + index, entry)).join('\n'),
-    })
-    // One form per card: the submit button belongs to its container.
-    elements.push({
-      tag: 'form',
-      name: 'onboarding_browse_form',
-      elements: [
-        {
-          tag: 'select_static',
-          name: 'browse_target',
-          placeholder: { tag: 'plain_text', content: t.onboardingBrowseSelectPlaceholder },
-          options: slice.map((entry, index) => ({
-            text: { tag: 'plain_text', content: String(page * BROWSE_PAGE_SIZE + index + 1) },
-            value: entry.path,
-          })),
-          value: slice[0]!.path,
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: t.onboardingBrowseEnterButton },
-          type: 'primary',
-          name: 'browse_enter',
-          form_action_type: 'submit',
-          behaviors: [{ type: 'callback', value: { kind: 'browse-enter' } }],
-        },
-      ],
-    })
+    for (const entry of slice) elements.push(browseEntryButton(entry))
   }
 
   if (totalPages > 1) {

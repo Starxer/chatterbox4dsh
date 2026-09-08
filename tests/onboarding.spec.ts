@@ -238,12 +238,11 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('lists browser entries in the body and picks them from a numbered dropdown', async () => {
+  it('renders every browser entry as a directly clickable full-width button', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     const entries = [
       ...Array.from({ length: 6 }, (_, index) => ({ name: `dir-${index}`, path: `/g/dir-${index}`, hidden: false })),
-      // Long enough that a dropdown option would clip it: it must live in the body.
       { name: 'a-really-quite-long-directory-name', path: '/g/long', hidden: false },
     ]
     d.getDirectoryPicker = () => ({
@@ -261,22 +260,19 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    const form = card.body.elements.find((el: any) => el.tag === 'form')
-    const select = form.elements.find((el: any) => el.tag === 'select_static')
-    // The dropdown carries only row numbers; the full paths stay in the values.
-    expect(select.options.map((o: any) => o.text.content)).toEqual(entries.map((_, index) => String(index + 1)))
-    expect(select.options.map((o: any) => o.value)).toEqual(entries.map(entry => entry.path))
-    // Every name is listed verbatim in the body — no elision anywhere.
-    const body = JSON.stringify(card.body.elements)
-    for (const entry of entries) expect(body).toContain(entry.name)
-    // Entering a folder is a form submit, not a per-entry button.
-    const submit = form.elements.find((el: any) => el.tag === 'button')
-    expect(submit.form_action_type).toBe('submit')
-    expect(submit.behaviors[0].value).toEqual({ kind: 'browse-enter' })
+    // No dropdown / form: the list itself is clickable.
+    expect(card.body.elements.some((el: any) => el.tag === 'form')).toBe(false)
+    const entryButtons = card.body.elements
+      .filter((el: any) => el.tag === 'button' && el.behaviors[0].value.kind === 'browse-enter'
+        && String(el.behaviors[0].value.value).startsWith('/g/'))
+    // Every name is shown verbatim and each row is full width — no elision.
+    expect(entryButtons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
+    expect(entryButtons.every((b: any) => b.width === 'fill')).toBe(true)
+    expect(entryButtons.map((b: any) => b.behaviors[0].value.value)).toEqual(entries.map(entry => entry.path))
     handle.dispose()
   })
 
-  it('enters the folder submitted through the browser dropdown', async () => {
+  it('enters the folder clicked in the browser list', async () => {
     const { channel, handlers } = fakeChannel()
     const picker = fakeDirectoryPicker()
     const d = deps(channel, fakeBridge())
@@ -286,8 +282,7 @@ describe('feishu-onboarding', () => {
     await fire(handlers, {
       chatId: 'oc_1',
       messageId: 'm-ref',
-      action: { value: JSON.stringify({ kind: 'browse-enter' }) },
-      raw: { action: { form_value: { browse_target: '/home/me/projects' } } },
+      action: { value: JSON.stringify({ kind: 'browse-enter', value: '/home/me/projects' }) },
     })
     expect(picker.list).toHaveBeenCalledWith('/home/me/projects')
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
