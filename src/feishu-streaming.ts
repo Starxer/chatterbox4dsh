@@ -158,6 +158,12 @@ interface SessionStepState {
   // --- Timing fields (event.time from mux stream) ---
   stepStartTime: number
   firstTokenTime: number
+  /** 1-based turn / step numbers of the current step (from `step/start`). */
+  turnNumber: number
+  stepNumber: number
+  /** First / last reasoning-delta timestamps of the current step. */
+  reasoningStartTime: number
+  reasoningEndTime: number
   /** Time of assistant/message event (LLM inference complete). */
   messageTime: number
   /** Time of last tool/result or assistant/message (step fully complete). */
@@ -193,6 +199,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         lastStepHadContent: false,
         stepStartTime: 0,
         firstTokenTime: 0,
+        turnNumber: 0,
+        stepNumber: 0,
+        reasoningStartTime: 0,
+        reasoningEndTime: 0,
         messageTime: 0,
         completedTime: 0,
         usage: undefined,
@@ -221,6 +231,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // calls from different steps to appear merged on the previous step's card.
     state.stepStartTime = 0
     state.firstTokenTime = 0
+    state.turnNumber = 0
+    state.stepNumber = 0
+    state.reasoningStartTime = 0
+    state.reasoningEndTime = 0
     state.messageTime = 0
     state.completedTime = 0
     state.usage = undefined
@@ -239,7 +253,26 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       ? Date.now() - state.stepStartTime
       : undefined
 
-    return renderStepCard(getTranslations?.() ?? translationsFor('zh'), reasoning, text, tools, state.usage, stepDurationMs, computeStepTps(state), state.contextMeta)
+    // Thinking time of this step: first reasoning delta → last reasoning
+    // delta. Only shown once the reasoning has finished streaming (the card
+    // is built after `assistant/message`, so that always holds).
+    const reasoningMs = state.reasoningEndTime > state.reasoningStartTime
+      ? state.reasoningEndTime - state.reasoningStartTime
+      : undefined
+
+    return renderStepCard(
+      getTranslations?.() ?? translationsFor('zh'),
+      reasoning,
+      text,
+      tools,
+      state.usage,
+      stepDurationMs,
+      computeStepTps(state),
+      state.contextMeta,
+      reasoningMs,
+      state.turnNumber > 0 ? state.turnNumber : undefined,
+      state.stepNumber > 0 ? state.stepNumber : undefined,
+    )
   }
 
   /**
@@ -505,6 +538,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             if (state.firstTokenTime === 0) {
               state.firstTokenTime = event.time ?? Date.now()
             }
+            if (state.reasoningStartTime === 0) state.reasoningStartTime = event.time ?? Date.now()
+            state.reasoningEndTime = event.time ?? Date.now()
           } else if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
             state.text += chunk.text
             // Record first token time for text (if no reasoning came first).
@@ -535,6 +570,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
               if (state.firstTokenTime === 0 && isTokenDelta(chunk)) state.firstTokenTime = timed.time
               if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
                 state.reasoning += chunk.text
+                if (state.reasoningStartTime === 0) state.reasoningStartTime = timed.time
+                state.reasoningEndTime = timed.time
               } else if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
                 state.text += chunk.text
               }
@@ -682,6 +719,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       } else if (event.type === 'step/start') {
         resetStep(state)
         state.stepStartTime = event.time ?? Date.now()
+        state.turnNumber = (event.data?.turn as number | undefined) ?? 0
+        state.stepNumber = (event.data?.step as number | undefined) ?? 0
       } else if (event.type === 'turn/start') {
         resetStep(state)
         lastStepSendPromises.delete(sessionId)
@@ -1053,16 +1092,23 @@ export function renderStepCard(
   stepDurationMs?: number,
   tps?: number,
   contextMeta?: { contextWindow: number; lastInputTokens: number },
+  reasoningMs?: number,
+  turn?: number,
+  step?: number,
 ): object {
   const elements: object[] = []
 
   // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning).
   // Reasoning is a preview only: keep a short window, never the full chain.
+  // Its own duration is appended to the header once thinking has finished.
   if (reasoning !== undefined && reasoning !== '') {
     const displayReasoning = reasoning.length > REASONING_CAP ? reasoning.slice(0, REASONING_CAP) + '\n…(truncated)' : reasoning
+    const header = reasoningMs !== undefined && reasoningMs > 0
+      ? `${t.stepReasoningHeader} · 🧠 ${formatMsShort(reasoningMs)}`
+      : t.stepReasoningHeader
     elements.push({
       tag: 'markdown',
-      content: `${t.stepReasoningHeader}\n\`\`\`\`\`\n${displayReasoning}\n\`\`\`\`\``,
+      content: `${header}\n\`\`\`\`\`\n${displayReasoning}\n\`\`\`\`\``,
     })
   }
 
@@ -1183,15 +1229,26 @@ export function renderStepCard(
     template = 'blue'
   }
 
+  // Append the step's position in the conversation so consecutive step cards
+  // can be told apart at a glance (both numbers are 1-based in DSH).
+  const titleWithPosition = turn !== undefined && step !== undefined
+    ? `${title} · ${t.stepPosition(turn, step)}`
+    : title
+
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: title },
+      title: { tag: 'plain_text', content: titleWithPosition },
       template,
     },
     body: { elements },
   }
+}
+
+/** Compact duration label for the reasoning header (`3.2s` / `850ms`). */
+function formatMsShort(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
 }
 
 /**

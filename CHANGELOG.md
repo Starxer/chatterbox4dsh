@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 变更：步骤卡显示 reasoning 耗时与轮次/步骤位置（`src/feishu-streaming.ts` / `src/i18n.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **reasoning 耗时**：记录本步第一条/最后一条 reasoning-delta 的时间戳（`assistant/chunk` 与 0.1.3 的 `assistant/message.stream` 重建两条路径都记），思考结束后在 reasoning 标题后追加 `· 🧠 4.3s`；只有一条 delta（时长为 0）时不显示。
+- **轮次/步骤**：从 `step/start` 取 DSH 的 1-based `turn` / `step`，拼到卡片标题后面（zh `工具完成 · 第 2 轮 · 第 3 步`，en `Tool Done · Turn 2 · Step 3`）；拿不到时保持原标题。新增 i18n `stepPosition(turn, step)`。
+- **验证**：新增 2 例测试（`renderStepCard` 直出断言标题/耗时、流式层 `step/start` + reasoning 流断言卡片带位置与 `🧠 1.0s`）；`npm run typecheck` / `npm run test`（266 passed）/ `npm run build`，并把样张卡发到真实聊天确认排版。
+
 ### 变更：步骤卡 footer 改为两行（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **改动**：`renderStepCard` 的 footer 由一行拆成两行 notation 文本——第一行 `⏱ 时长 · 📥 计费输入 → 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占比`。缺少某一段时对应行自动省略（只有一行时不补空行）。溢出续卡的 `🚀 tok/s` 与 Turn Complete 卡片不变。

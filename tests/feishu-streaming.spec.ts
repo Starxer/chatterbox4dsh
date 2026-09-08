@@ -206,6 +206,21 @@ describe('renderStepCard reasoning + args budgets', () => {
     expect(footers[1]).toContain('🚀 300 tok/s')
     expect(footers[1]).toContain('📊 500/1K (50%)')
   })
+
+  it('shows the reasoning duration and the turn/step position', () => {
+    const card = renderStepCard(
+      t, 'thinking', undefined, [],
+      undefined, undefined, undefined, undefined,
+      3200, 2, 3,
+    ) as any
+    expect(mdOf(card)).toContain('🧠 3.2s')
+    expect(card.header.title.content).toBe('回复 · 第 2 轮 · 第 3 步')
+
+    // Without timing/position the header stays plain and shows no duration.
+    const plain = renderStepCard(t, 'thinking', undefined, []) as any
+    expect(plain.header.title.content).toBe('回复')
+    expect(mdOf(plain)).not.toContain('🧠')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -459,6 +474,29 @@ describe('turn stats token speed', () => {
     await tick(50)
     expect(sent.length).toBeGreaterThan(0)
     for (const card of sent) expect(mdOf(card)).toContain('tok/s')
+    streaming.stop()
+  })
+
+  it('labels a step card with its turn/step position and reasoning time', async () => {
+    const cards: any[] = []
+    const { streaming, emit } = stepHarness({
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async (card: any) => { cards.push(card); return 'card-1' }),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-1' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    })
+    const startedAt = Date.now() - 5000
+    emit('turn/start')
+    emit('step/start', { turn: 2, step: 3 })
+    emit('assistant/message', {
+      usage: { inputTokens: 10, outputTokens: 100 },
+      stream: [{ type: 'reasoning-chunks', time0: startedAt, index: 0, dt: [1000], texts: ['think ', 'more'] }],
+    })
+    await tick(200)
+    expect(cards.length).toBeGreaterThan(0)
+    expect(cards[0].header.title.content).toContain('第 2 轮 · 第 3 步')
+    expect(mdOf(cards[0])).toContain('🧠 1.0s')
     streaming.stop()
   })
 })

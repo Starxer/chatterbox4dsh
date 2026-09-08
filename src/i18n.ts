@@ -113,6 +113,8 @@ export interface Translations {
   stepCardTitleDone: string
   stepCardTitleCall: string
   stepCardTitleReply: string
+  /** Step position suffix on the card title, e.g. `第 2 轮 · 第 3 步`. */
+  stepPosition: (turn: number, step: number) => string
   turnCompleteTitle: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
@@ -355,6 +357,7 @@ export const zh = {
   stepCardTitleDone: '工具完成',
   stepCardTitleCall: '工具调用',
   stepCardTitleReply: '回复',
+  stepPosition: (turn, step) => `第 ${turn} 轮 · 第 ${step} 步`,
   turnCompleteTitle: '✅ Turn 已完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
@@ -586,6 +589,7 @@ export const en: Translations = {
   stepCardTitleDone: 'Tool Done',
   stepCardTitleCall: 'Tool Call',
   stepCardTitleReply: 'Reply',
+  stepPosition: (turn, step) => `Turn ${turn} · Step ${step}`,
   turnCompleteTitle: '✅ Turn complete',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
