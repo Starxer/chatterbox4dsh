@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### 新增：`/new` 工作区卡片支持「📂 浏览目录」（不知道路径也能从飞书选目录）（`src/feishu-onboarding.ts` / `src/i18n.ts` / `src/index.ts` / `tests/onboarding.spec.ts`）
+
+- **背景**：此前 `/new` 只能选已注册的工作区，或**手输绝对路径/`~` 路径**；人不在电脑前、查不到路径时无解。DSH WebUI 有目录浏览器，插件补上对应能力。
+- **实现**：工作区卡片新增「📂 浏览目录…」按钮 → 打开可导航的浏览卡（CardKit 卡片实例，**无 `im.v1.message.patch` 的编辑次数上限**）：显示当前目录 + 面包屑路径、⬆️ 上一级、🏠 家目录、👁 显示/隐藏 dot 目录、每页 12 项分页、📁 点目录进入、**✅ 用这个目录**（`workspaceRegistry.create` 注册后直接进入预设选择）。
+- **目录来源**：优先用 DSH `ctx.directoryPicker` 的 **`browse` 能力**；但 `directory-picker-auto` 在"看起来有人值守"的主机（loopback 绑定、非 SSH、有显示会话 + zenity/kdialog）会解析为 **`native`**（在主机屏幕上弹 OS 选择框）——对飞书远程用户无用。故 `native` 或服务缺失时**回退到插件自带的只读列举**（`opendir` 一级子目录、名字排序、dot 目录标 hidden、1000 项上限、symlink 仅当其指向目录），与 `browse` 后端同形。**不新增运行时依赖**（`@deepseek-ai/dsh-host-directory-picker` 仅作类型 peer）。
+- **注意**：工作区**不能切换**——DSH 只在新建会话时 `attachSession`，已有会话 `header.cwd` 持久不变。所以浏览器只在 `/new` 流程内，不做独立 `/workspace` 切换命令。
+- **验证**：`npm run typecheck` / `npm run test`（236 passed，新增 5 例：浏览入口恒在、隐藏目录过滤、下钻/注册/返回、native 后端回退到自带列举、列举失败带具体原因）/ `npm run build` 全绿。
+
+### 修复：step 卡片改用 CardKit 卡片实例，避开 `im.v1.message.patch` 的编辑次数上限（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **问题**：per-step 卡片一直用 `updateCard`（= `im.v1.message.patch`）。该接口对同一条消息**有约 20 次编辑上限，超限后静默禁用卡片**（本仓库 `src/index.ts` 早在引入 CardKit 时就记录了这一点，`/model`、`/new` 因此迁到卡片实例）。而 step 卡在一次长 step（多轮工具调用 + 长文字，150ms 防抖合并）里可能远超 20 次更新 → 卡片中途停止刷新。
+- **修复**：`feishu-streaming.ts` 的 step 卡改走 **CardKit 卡片实例**——`cardkit.v1.card.create` 拿 `card_id` → 按 `card_id` 发送 → `cardkit.v1.card.update` 带**单调递增 `sequence`** 更新（`StepCardRef` 统一持有 messageId/cardId/sequence）。三个新方法在 `FeishuStreamingChannel` 上为**可选**：通道未提供时自动回退 `send` + `updateCard`（旧行为，测试与无 CardKit 的部署照常工作）。
+- **验证**：`npm run typecheck` / `npm run test`（236 passed，新增 2 例：有 CardKit 时走实例且 sequence 递增、无 CardKit 时回退 patch）/ `npm run build` 全绿。
+
 ### 修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **问题**：agent 回复正文（text）在 step 卡里被 `slice(0,3000)+'…(truncated)'` 硬截断，超出部分直接丢弃。而 `renderReplyCards` 的 4000 分卡（`CARD_TEXT_MAX`）只在 `intermediateSent=false` 时才走——正常 agent 回复几乎不走这条路，所以用户看到的截断就是 step 卡的 3000 上限。

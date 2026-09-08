@@ -39,6 +39,27 @@ interface BridgeHolder {
 export interface FeishuStreamingChannel {
   send(to: string, input: { card: object }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
   updateCard(messageId: string, card: object): Promise<void>
+  /**
+   * CardKit instance path, preferred for step cards. `im.v1.message.patch`
+   * (behind {@link updateCard}) caps at roughly 20 edits per message and then
+   * silently disables the card, which a long tool-heavy step can exceed; a
+   * card instance updated through `cardkit.v1.card.update` has no such cap.
+   * Optional so tests and non-web deployments fall back to send + patch.
+   */
+  createCardInstance?(card: object): Promise<string>
+  sendCardByReference?(to: string, cardId: string, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
+  updateCardInstance?(cardId: string, card: object, sequence: number): Promise<void>
+}
+
+/**
+ * Identity of one sent step card. `cardId` is present only on the CardKit
+ * instance path; otherwise the card is updated through `messageId` + patch.
+ * `sequence` is the monotonic counter `cardkit.v1.card.update` requires.
+ */
+interface StepCardRef {
+  messageId: Promise<string | undefined>
+  cardId: Promise<string | undefined>
+  sequence: number
 }
 
 /** Public deps for the unified per-step module. */
@@ -109,8 +130,8 @@ interface SessionStepState {
   toolCalls: StepToolCall[]
   /** Whether a step card has been sent for the current step. */
   stepCardSent: boolean
-  /** Message ID of the sent step card (for in-place updates). */
-  stepCardMessageId: Promise<string | undefined> | undefined
+  /** Sent step card identity (message id + optional CardKit instance). */
+  stepCardRef: StepCardRef | undefined
   /** Chat info for the current step. */
   chat: ConversationMessage | undefined
   /** Whether the last assistant/message sent a step card with content. */
@@ -153,7 +174,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         text: '',
         toolCalls: [],
         stepCardSent: false,
-        stepCardMessageId: undefined,
+        stepCardRef: undefined,
         chat: undefined,
         lastStepHadContent: false,
         stepStartTime: 0,
@@ -174,7 +195,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.text = ''
     state.toolCalls = []
     state.stepCardSent = false
-    state.stepCardMessageId = undefined
+    state.stepCardRef = undefined
     // NOTE: do NOT clear state.chat — it is session-level chat coordinates,
     // not per-step data. Clearing it prevents step 2+ from sending cards
     // when the step has only tool calls (no text/reasoning), causing tool
@@ -214,7 +235,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     return renderStepCard(getTranslations?.() ?? translationsFor('zh'), reasoning, text, tools, state.usage, stepDurationMs, tps, state.contextMeta)
   }
 
-  /** Send the initial step card and track its messageId. */
+  /** Send the initial step card and track its identity. */
   const sendStepCard = (chat: ConversationMessage, sessionId: string, state: SessionStepState): void => {
     const card = buildStepCard(state)
     state.stepCardSent = true
@@ -225,23 +246,35 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     if (hasText) {
       bridgeHolder.current?.markIntermediateSent(sessionId)
     }
-    state.stepCardMessageId = channel.send(
-      chat.chatId,
-      { card },
-      chat.threadId !== undefined
-        ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
-        : {},
-    ).then((result) => {
-      console.log(`dsh-feishu: [send] step card sent, messageId=${result?.messageId}`)
-      return result?.messageId
-    }).catch((error: unknown) => {
-      console.log(`dsh-feishu: [send] step card send failed: ${error instanceof Error ? error.message : String(error)}`)
-      logger.warn(`dsh-feishu: step card send failed: ${error instanceof Error ? error.message : String(error)}`)
-      return undefined
+    const opts = chat.threadId !== undefined
+      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
+      : {}
+    // Prefer a CardKit card instance: its update API has no edit cap, unlike
+    // im.v1.message.patch, so a long step cannot silently kill the card.
+    const useInstance = channel.createCardInstance !== undefined && channel.sendCardByReference !== undefined
+    const cardId: Promise<string | undefined> = useInstance
+      ? channel.createCardInstance!(card).catch((error: unknown) => {
+        console.log(`dsh-feishu: [send] card instance create failed: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      })
+      : Promise.resolve(undefined)
+    const messageId = cardId.then((id) => {
+      if (id !== undefined) {
+        return channel.sendCardByReference!(chat.chatId, id, opts).then(r => r.messageId).catch((error: unknown) => {
+          console.log(`dsh-feishu: [send] send by reference failed: ${error instanceof Error ? error.message : String(error)}`)
+          return undefined
+        })
+      }
+      return channel.send(chat.chatId, { card }, opts).then(r => r.messageId).catch((error: unknown) => {
+        console.log(`dsh-feishu: [send] step card send failed: ${error instanceof Error ? error.message : String(error)}`)
+        logger.warn(`dsh-feishu: step card send failed: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      })
     })
+    state.stepCardRef = { messageId, cardId, sequence: 0 }
     // Track the send promise so flushed() can wait for the final step card's
     // message to be created before the Turn Complete footer is sent.
-    lastStepSendPromises.set(sessionId, state.stepCardMessageId)
+    lastStepSendPromises.set(sessionId, messageId)
   }
 
   /**
@@ -253,7 +286,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   const pendingUpdates = new Map<SessionStepState, {
     timer: ReturnType<typeof setTimeout>
-    messageIdPromise: Promise<string | undefined>
+    ref: StepCardRef
     card: object
   }>()
 
@@ -273,12 +306,29 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
   /** Execute a card update (shared by debounce timer and flush). */
   const executeCardUpdate = (
-    messageIdPromise: Promise<string | undefined>,
+    ref: StepCardRef,
     card: object,
   ): Promise<void> => {
-    return messageIdPromise.then((messageId) => {
+    // CardKit instance path: no edit cap, so a long step keeps updating.
+    if (channel.updateCardInstance !== undefined) {
+      return ref.cardId.then((cardId) => {
+        if (cardId !== undefined) {
+          ref.sequence += 1
+          return channel.updateCardInstance!(cardId, card, ref.sequence)
+        }
+        return patchByMessageId(ref, card)
+      }).catch((error: unknown) => {
+        console.log(`dsh-feishu: [update] failed: ${error instanceof Error ? error.message : String(error)}`)
+        logger.warn(`dsh-feishu: step card update failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+    return patchByMessageId(ref, card)
+  }
+
+  /** Fallback update path: im.v1.message.patch on the sent message. */
+  const patchByMessageId = (ref: StepCardRef, card: object): Promise<void> => {
+    return ref.messageId.then((messageId) => {
       if (messageId !== undefined) {
-        console.log(`dsh-feishu: [update] updating card ${messageId}`)
         return channel.updateCard(messageId, card)
       }
       console.log('dsh-feishu: [update] messageId is undefined, skipping')
@@ -294,27 +344,27 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     if (entry !== undefined) {
       clearTimeout(entry.timer)
       pendingUpdates.delete(state)
-      return executeCardUpdate(entry.messageIdPromise, entry.card)
+      return executeCardUpdate(entry.ref, entry.card)
     }
     return Promise.resolve()
   }
 
   /** Update the existing step card with current state (debounced). */
   const updateStepCard = (state: SessionStepState): void => {
-    if (!state.stepCardSent || state.stepCardMessageId === undefined) return
-    // Capture BOTH messageId and card NOW — resetStep may clear state before the timer fires
-    const messageIdPromise = state.stepCardMessageId
+    if (!state.stepCardSent || state.stepCardRef === undefined) return
+    // Capture the ref and card NOW — resetStep may clear state before the timer fires
+    const ref = state.stepCardRef
     const card = buildStepCard(state)
     // Clear previous pending update
     const existing = pendingUpdates.get(state)
     if (existing !== undefined) clearTimeout(existing.timer)
     // Debounce: merge rapid updates into one (150ms threshold)
     pendingUpdates.set(state, {
-      messageIdPromise,
+      ref,
       card,
       timer: setTimeout(() => {
         pendingUpdates.delete(state)
-        executeCardUpdate(messageIdPromise, card).catch((error: unknown) => {
+        executeCardUpdate(ref, card).catch((error: unknown) => {
           console.log(`dsh-feishu: [update] timer callback error: ${error instanceof Error ? error.message : String(error)}`)
         })
       }, 150),

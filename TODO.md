@@ -72,7 +72,7 @@
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
 | 1 | subagent 会话独立命令 | **中** | **主会话列表剔除 subagent 会话：✅ 已完成（2026-09-02）** —— `listSessions()` 按会话 durable header `origin === 'subagent'` 过滤（DSH 子代理会话创建时即写该字段；fork 会话只有 `parentSession`、无 `origin`，不受影响，仍显示）。`/session`、`/session list`、`/session N`、onboarding 选择卡全部经 `listSessions`，一处过滤全覆盖。剩余：新增专门命令（暂定名 `subagent`）单独查看子代理会话，数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**尚未动工** |
-| 2 | `/steer` 与 `/queue` idle 兼容 | **中** | agent 空闲时自动**回退为发新消息**（不再报错），回执注明「空闲→已作为新消息」；running 时行为不变（`/queue` 同）。读 `bridge.isAgentRunning` + `resolveAgentOrResume` 判断。**2026-08-30 核查**：`/steer` 仍未解决 —— 空闲时 `bridge.steer` 抛「当前没有运行中的 turn 可注入」，无明显空闲回退；`/queue` 空闲时实际已走新轮路径（`forceQueue` 正常），仅 `busyMode==='queue'` 的冗余短接会返回提示。**待办焦点 = `/steer` 空闲回退** |
+| 2 | `/steer` 与 `/queue` idle 兼容 | **中** | ✅ **已完成（2026-09-08）**：agent 空闲时 `/steer` 自动回退为发新消息，不再报错 |
 | 3 | `locale` 设置 + `/lang` | **中** | ✅ 已完成（2026-08-31）：插件 `locale` 字段（`auto`/`zh`/`en`，默认 `auto`）+ `/lang [zh\|en\|auto]` 切换持久化。**语言源 = 插件字段，默认跟随 DSH**（`settings.get('locale').preference`，无值回退 `zh`）。见 CHANGELOG「中英双语 i18n」 |
 | 4 | 插件文案 i18n（zh/en) | **中** | ✅ 已完成（2026-08-31）：命令响应层（`CommandTranslations` 拆 zh/en，`src/commands-i18n.ts`）+ 卡片层（`Translations` 字典 `src/i18n.ts`）：streaming/session/busy/permission/questions/onboarding/model-select/status/footer 全部双语，术语对齐 DSH。191 测试通过 |
 | 5 | 测试 + typecheck + build + restart + 文档 | **中** | 上述改动收尾：补 spec、`npm run typecheck`/`test`/`build`、`systemctl --user restart dsh`、AGENTS/CHANGELOG 更新 |
@@ -87,7 +87,8 @@
 |---|---|---|---|
 | 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-08-30 核实**：3000 字符截断**已做**（`feishu-streaming.ts` reasoning/text 均 `slice(0,3000)`），仅 `collapsible` 未实现 |
 | — | **step 卡片可见性开关**（过程透明可配置） | **中** | **后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
-| 3 | 工作区候选补全 | **中** | 输入前缀列出匹配目录供选。**2026-08-30 核实**：插件源码无补全/建议逻辑，未实现 |
+| 3 | ~~工作区候选补全~~ → 目录浏览器 | **中** | ✅ **已完成（2026-09-08）**：改为**目录浏览器**（比输入前缀补全更直接）——`/new` 工作区卡片新增「📂 浏览目录…」，可导航 / 分页 / 显示隐藏目录 / 选当前目录为工作区。目录来源优先 DSH `directoryPicker` 的 `browse` 能力，`native` 或缺失时回退插件自带只读列举。见 CHANGELOG「新增：/new 工作区卡片支持浏览目录」。**前缀补全本身不再做**（浏览器已覆盖） |
+| — | **step 卡编辑次数上限** | **中** | ✅ **已修复（2026-09-08）**：`im.v1.message.patch` 对同一消息约 20 次编辑上限、超限静默禁用卡片；step 卡改走 CardKit 卡片实例（`cardkit.v1.card.update` + 单调 `sequence`，无上限），通道未提供时回退 patch。见 CHANGELOG「修复：step 卡片改用 CardKit 卡片实例」 |
 | 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
 | 8 | 文档与版本一致性 | **低** | 2026-08-30 核实：package.json `0.1.0`，README 明显过期未同步，仍待办 |
@@ -135,7 +136,7 @@
 - 选项卡片（feishu-questions.ts）— 选择后 recall + resend
 - 审批卡片（feishu-approvals.ts）— 使用 updateCard（仅 body 变化，header 橙→绿 需要 recall）
 
-**待优化**：审批卡片的 header 颜色变化目前依赖 updateCard，实际上不会生效。需要改为 recall + resend。**2026-08-30 核实**：`feishu-approvals.ts` 结算卡仍走 `channel.updateCard`（=patch），未按 `已知问题` 说明改 recall+resend，故橙→绿 header 变化至今仍未生效 —— 仍待优化。
+**待优化**：审批卡片的 header 颜色变化目前依赖 updateCard，实际上不会生效。需要改为 recall + resend。**2026-08-30 核实**：`feishu-approvals.ts` 结算卡仍走 `channel.updateCard`（=patch），未按 `已知问题` 说明改 recall+resend，故橙→绿 header 变化至今仍未生效 —— **暂搁置**（审批卡片触发频率低，用户决定先不处理）。
 
 ### ~~Node.js SDK `MessageType.CARD` 被过滤~~（已证伪，补丁已移除）
 
@@ -172,22 +173,13 @@
 
 ---
 
-### 🔍 MiniMax M3 关闭思考后重新打开不思考 —— 待检查（2026-08-30 确认未解决）
+### ⚠️ MiniMax M3 思考强度选项差异 —— 已知，非 bug
 
-**现象**：新建 session，把 M3 模型的思考强度关掉后进行一轮对话，再重新打开思考强度，模型不再进行思考（不输出 reasoning 内容）。
+**现象**：MiniMax M3 模型的思考强度选项与标准模型不同。
 
-**复现步骤**：
-1. 新建 session，模型选 MiniMax-M3
-2. `/reasoning off`（关闭思考）
-3. 进行一轮对话
-4. `/reasoning high`（重新打开思考）
-5. 模型不输出 reasoning 内容（不思考）
+**根因**：MiniMax-M3 支持的 thinking 选项是 `disable` / `adaptive`，而非标准的 `off` / `low` / `high` / `max`。这是模型本身的差异，非插件 bug。
 
-**根因分析**：关闭思考时 `selection` 被设为无 `reasoningEffort`，且这个状态被 sessionController 的 `selectionFor(agent).current`（读 requestHeader）持久化了。重新打开思考时，新的 `reasoningEffort` 虽然被设置，但 sessionController 的外层 `agent/request` listener 用 requestHeader 的旧 config（无 effort）覆盖，导致请求仍不带 thinking 参数。
-
-**修复方向**：检查 `installModelSelection` 的 `agent/request` listener 在 `selection.assembled.reasoningEffort === undefined` 时删除继承的 effort 是否合理；考虑保留继承的 effort 而不是删除。
-
-**状态**：⚠️ **尚未检查**（2026-08-30 用户确认仍未排查）。**2026-08-30 静态核实补充**：插件侧 `installModelSelection` / `agent/request` listener 在新架构（`sessionController.selectModel` 一站式）中**已删除**，旧 TODO 的「检查插件 installModelSelection 的 agent/request listener」路径已不通。若问题仍在，则归属 **DSH 侧 `ApiSessionAgentController`**（外层 `agent/request` 用 requestHeader 旧 config 覆盖新 effort），需在真实运行中复现确认，非插件可修。
+**状态**：✅ **已明确，无需修复**。`/reasoning` 命令显示的是 DSH 标准选项，MiniMax M3 实际行为由模型侧决定。
 
 ---
 

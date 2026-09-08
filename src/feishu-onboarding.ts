@@ -19,8 +19,10 @@
 import type { HarnessConversationService, ChatCreationOptions } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
+import type { DirectoryEntry, DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker'
+import { opendir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -66,6 +68,23 @@ interface WorkspaceRegistryLike {
   create(path: string, title?: string): Promise<unknown>
 }
 
+/**
+ * Narrow view of DSH's `ctx.directoryPicker` browse capability. The service is
+ * read lazily (see {@link FeishuOnboardingDeps.getDirectoryPicker}) because the
+ * `directory-picker-auto` row mounts its backend asynchronously during boot —
+ * a plain `ctx.get` at apply time may still be undefined. Only the `browse`
+ * backend carries `list`/`createDirectory`; a `native` backend renders an OS
+ * chooser on the host display, which is useless for a remote Feishu user, so
+ * the browse affordance is hidden unless the kind matches.
+ */
+export interface DirectoryPickerLike {
+  capability(): {
+    kind: string
+    list?(path?: string, signal?: AbortSignal): Promise<DirectoryListing>
+    createDirectory?(path: string, name: string): Promise<string>
+  }
+}
+
 /** Narrow agentPresets view. */
 interface AgentPresetsLike {
   list(): Promise<Array<{ id: string; title?: string }>>
@@ -95,6 +114,12 @@ export interface FeishuOnboardingDeps {
   config: OnboardingConfig
   /** Return the strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
+  /**
+   * Lazily read DSH's `directoryPicker` service. Absent (or a non-`browse`
+   * capability) hides the folder-browsing affordance; the manual path form
+   * keeps working either way.
+   */
+  getDirectoryPicker?: () => DirectoryPickerLike | undefined
   /** Advance the `/new` flow to the model step. The caller renders the
    *  model-select provider card (reusing feishu-model-select with flow
    *  `new-session`); the model-select handle's onNewSessionConfirm callback
@@ -104,7 +129,10 @@ export interface FeishuOnboardingDeps {
 
 /** A queued onboarding card action. */
 interface QueuedAction {
-  kind: 'attach' | 'new' | 'pick-workspace' | 'pick-preset' | 'create-workspace' | 'cancel'
+  kind:
+    | 'attach' | 'new' | 'pick-workspace' | 'pick-preset' | 'create-workspace' | 'cancel'
+    | 'browse-open' | 'browse-enter' | 'browse-home' | 'browse-hidden' | 'browse-page'
+    | 'browse-pick' | 'browse-back'
   chatMessage: ConversationMessage
   messageId: string | undefined
   sessionId?: string
@@ -177,6 +205,13 @@ function parseOnboardingAction(evt: CardActionLike): QueuedAction | undefined {
   if (kind === 'pick-workspace' && value !== undefined) return { kind: 'pick-workspace', chatMessage, messageId: evt.messageId, value }
   if (kind === 'pick-preset' && value !== undefined) return { kind: 'pick-preset', chatMessage, messageId: evt.messageId, value }
   if (kind === 'cancel') return { kind: 'cancel', chatMessage, messageId: evt.messageId }
+  if (kind === 'browse-open') return { kind: 'browse-open', chatMessage, messageId: evt.messageId }
+  if (kind === 'browse-enter' && value !== undefined) return { kind: 'browse-enter', chatMessage, messageId: evt.messageId, value }
+  if (kind === 'browse-home') return { kind: 'browse-home', chatMessage, messageId: evt.messageId }
+  if (kind === 'browse-hidden') return { kind: 'browse-hidden', chatMessage, messageId: evt.messageId }
+  if (kind === 'browse-page' && value !== undefined) return { kind: 'browse-page', chatMessage, messageId: evt.messageId, value }
+  if (kind === 'browse-pick' && value !== undefined) return { kind: 'browse-pick', chatMessage, messageId: evt.messageId, value }
+  if (kind === 'browse-back') return { kind: 'browse-back', chatMessage, messageId: evt.messageId }
   return undefined
 }
 
@@ -291,6 +326,15 @@ function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWork
     })
   }
   elements.push({ tag: 'hr' })
+  // Folder browsing — the only way to reach a path the operator cannot recall
+  // while away from the host. Backed by DSH's `browse` capability when it is
+  // mounted, otherwise by the plugin's own read-only listing.
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.onboardingBrowseButton },
+    type: 'default',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-open' } }],
+  })
   elements.push({
     tag: 'markdown',
     content: t.onboardingNewWorkspaceHeader,
@@ -326,6 +370,182 @@ function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWork
     config: { wide_screen_mode: true },
     header: {
       title: { tag: 'plain_text', content: t.onboardingNewTitle },
+      template: 'blue',
+    },
+    body: { elements },
+  }
+}
+
+/** Entries per browser page. One card element per entry keeps the card far
+ *  below Feishu's component (200) and 30 KB body limits; larger levels page. */
+const BROWSE_PAGE_SIZE = 12
+
+/** Complete-result bound of one listing level, mirroring the DSH browse
+ *  backend's default so a huge directory never materializes unbounded. */
+const BROWSE_MAX_ENTRIES = 1000
+
+/**
+ * Read-only one-level directory listing used when DSH's `directoryPicker`
+ * cannot serve a remote operator.
+ *
+ * `directory-picker-auto` resolves to the `native` backend whenever the host
+ * looks attended (loopback bind, no SSH, a display session, a chooser binary
+ * on PATH) — the common case for a workstation running `dsh web` locally.
+ * That backend opens an OS chooser on the host display, which is useless for
+ * someone driving the agent from Feishu, so the plugin lists the filesystem
+ * itself with the same shape the `browse` backend reports: absolute child
+ * directories, name-sorted, each flagged hidden by the dot convention, plus
+ * the ancestor chain the card renders as breadcrumbs.
+ *
+ * @param path - absolute directory to list; absent lists the home directory.
+ */
+async function listDirectoryLocally(path?: string): Promise<DirectoryListing> {
+  const home = homedir()
+  const target = path === undefined ? home : resolve(path)
+  const entries: DirectoryEntry[] = []
+  const handle = await opendir(target)
+  for await (const dirent of handle) {
+    let isDirectory = dirent.isDirectory()
+    if (!isDirectory && dirent.isSymbolicLink()) {
+      // A symlink counts as a row only when it resolves to a directory.
+      try {
+        isDirectory = (await stat(join(target, dirent.name))).isDirectory()
+      } catch {
+        isDirectory = false
+      }
+    }
+    if (!isDirectory) continue
+    entries.push({
+      name: dirent.name,
+      path: join(target, dirent.name),
+      hidden: dirent.name.startsWith('.'),
+    })
+    if (entries.length > BROWSE_MAX_ENTRIES) break
+  }
+  entries.sort((left, right) => left.name.localeCompare(right.name))
+  const truncated = entries.length > BROWSE_MAX_ENTRIES
+  const crumbs: DirectoryEntry[] = []
+  for (let current = target; ;) {
+    const parent = dirname(current)
+    crumbs.unshift({ name: parent === current ? current : basename(current), path: current, hidden: false })
+    if (parent === current) break
+    current = parent
+  }
+  return {
+    path: target,
+    home,
+    crumbs,
+    entries: truncated ? entries.slice(0, BROWSE_MAX_ENTRIES) : entries,
+    truncated,
+  }
+}
+
+/** Per-chat folder-browser position. */
+interface BrowseState {
+  /** Absolute path of the level currently listed. */
+  path: string
+  /** Whether dot-prefixed entries are shown. */
+  hidden: boolean
+  /** 0-based page index within the filtered entry list. */
+  page: number
+}
+
+/** Folder-browser card: navigate levels, toggle hidden entries, page a large
+ *  level, and pick the listed directory as the new session's workspace.
+ *
+ *  Every entry is one button (tap = descend) and the current directory is
+ *  committed by a single primary button at the bottom, so a level of N
+ *  entries costs N + 6 elements instead of 2N. */
+function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
+  const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
+  const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
+  const page = Math.min(Math.max(state.page, 0), totalPages - 1)
+  const slice = visible.slice(page * BROWSE_PAGE_SIZE, page * BROWSE_PAGE_SIZE + BROWSE_PAGE_SIZE)
+  // crumbs is root→current inclusive, so the second-to-last crumb is the parent.
+  const parent = listing.crumbs.length >= 2 ? listing.crumbs[listing.crumbs.length - 2] : undefined
+
+  const elements: object[] = [
+    { tag: 'markdown', content: t.onboardingBrowseHeader(listing.path) },
+    { tag: 'hr' },
+  ]
+  if (parent !== undefined) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.onboardingBrowseUp },
+      type: 'default',
+      behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: parent.path } }],
+    })
+  }
+  if (listing.path !== listing.home) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.onboardingBrowseHome },
+      type: 'default',
+      behaviors: [{ type: 'callback', value: { kind: 'browse-home' } }],
+    })
+  }
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: state.hidden ? t.onboardingBrowseHideHidden : t.onboardingBrowseShowHidden },
+    type: 'default',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-hidden' } }],
+  })
+  elements.push({ tag: 'hr' })
+
+  if (slice.length === 0) {
+    elements.push({ tag: 'markdown', content: t.onboardingBrowseEmpty })
+  } else {
+    for (const entry of slice) {
+      elements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: `📁 ${elideMiddle(entry.name, 30)}` },
+        type: 'default',
+        behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+      })
+    }
+  }
+
+  if (totalPages > 1) {
+    elements.push({ tag: 'markdown', content: t.onboardingBrowsePage(page + 1, totalPages) })
+    if (page > 0) {
+      elements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.onboardingBrowsePrev },
+        type: 'default',
+        behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page - 1) } }],
+      })
+    }
+    if (page < totalPages - 1) {
+      elements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.onboardingBrowseNext },
+        type: 'default',
+        behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page + 1) } }],
+      })
+    }
+  }
+  if (listing.truncated) {
+    elements.push({ tag: 'markdown', content: t.onboardingBrowseTruncated })
+  }
+
+  elements.push({ tag: 'hr' })
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.onboardingBrowsePick },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-pick', value: listing.path } }],
+  })
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.onboardingBrowseBack },
+    type: 'default',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-back' } }],
+  })
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: t.onboardingBrowseTitle },
       template: 'blue',
     },
     body: { elements },
@@ -424,13 +644,15 @@ export interface FeishuOnboardingHandle {
 }
 
 export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboardingHandle {
-  const { bridgeHolder, channel, logger, workspaceRegistry, agentPresets, agentDefaultModel, config, getTranslations, onModelStep } = deps
+  const { bridgeHolder, channel, logger, workspaceRegistry, agentPresets, agentDefaultModel, config, getTranslations, onModelStep, getDirectoryPicker } = deps
 
   const cardByMessage = new Map<string, string>()
   const sequenceByCard = new Map<string, number>()
 
   /** Per-chat in-flight `/new` flow state. */
   const newFlow = new Map<string, { workspace?: string; agentPreset?: string }>()
+  /** Per-chat folder-browser position (kept only while the browser is open). */
+  const browseState = new Map<string, BrowseState>()
   /** Topic reply context per chat, so cards sent from button callbacks land
    *  in the same Feishu topic the user clicked from. Keyed by chatId. */
   const chatTopic = new Map<string, { rootId?: string; threadId?: string }>()
@@ -502,6 +724,93 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     return renderWorkspacePicker(workspaceRegistry.list(), config.workspace, getTranslations())
   }
 
+  /**
+   * A one-level directory lister. DSH's `browse` capability is preferred when
+   * it is the mounted backend; the `native` backend (an OS chooser on the host
+   * display) and a deployment without the service both fall back to the
+   * plugin's own read-only listing, because neither can serve a remote user.
+   */
+  function resolveDirectoryLister(): (path?: string) => Promise<DirectoryListing> {
+    const picker = getDirectoryPicker?.()
+    const capability = picker?.capability()
+    if (capability !== undefined && capability.kind === 'browse' && capability.list !== undefined) {
+      const list = capability.list
+      return (path?: string) => list.call(capability, path)
+    }
+    return (path?: string) => listDirectoryLocally(path)
+  }
+
+  /**
+   * Render (or re-render) the folder browser at `path` (absent = the host
+   * home directory) and record the position for later navigation actions.
+   */
+  async function showBrowser(
+    action: QueuedAction,
+    path: string | undefined,
+    overrides?: { hidden?: boolean; page?: number },
+  ): Promise<void> {
+    const list = resolveDirectoryLister()
+    let listing: DirectoryListing
+    try {
+      listing = await list(path)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: directory listing failed: ${msg}`)
+      const card = {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: getTranslations().onboardingBrowseTitle }, template: 'red' },
+        body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path ?? '~', msg) }] },
+      }
+      await sendCard(action.chatMessage, card, action.messageId)
+      return
+    }
+    const previous = browseState.get(action.chatMessage.chatId)
+    const state: BrowseState = {
+      path: listing.path,
+      hidden: overrides?.hidden ?? previous?.hidden ?? false,
+      page: overrides?.page ?? 0,
+    }
+    browseState.set(action.chatMessage.chatId, state)
+    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations()), action.messageId)
+  }
+
+  /** Re-list the current level with updated display options (hidden/page). */
+  async function refreshBrowser(action: QueuedAction, overrides: { hidden?: boolean; page?: number }): Promise<void> {
+    const state = browseState.get(action.chatMessage.chatId)
+    if (state === undefined) {
+      await showBrowser(action, undefined)
+      return
+    }
+    await showBrowser(action, state.path, overrides)
+  }
+
+  /** Register `path` as a workspace and advance to the preset picker. */
+  async function commitWorkspace(action: QueuedAction, path: string): Promise<void> {
+    const chatKey = action.chatMessage.chatId
+    try {
+      await workspaceRegistry.create(path)
+      logger.info(`dsh-feishu: created workspace ${path}`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      const card = {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: getTranslations().onboardingCreateWorkspaceFailTitle }, template: 'red' },
+        body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path, msg) }] },
+      }
+      await sendCard(action.chatMessage, card, action.messageId)
+      return
+    }
+    browseState.delete(chatKey)
+    const flowState = newFlow.get(chatKey) ?? {}
+    flowState.workspace = path
+    newFlow.set(chatKey, flowState)
+    const presets = await agentPresets.list()
+    const card = renderPresetPicker(presets, flowState.agentPreset ?? agentPresets.defaultId, getTranslations())
+    await sendCard(action.chatMessage, card, action.messageId)
+  }
+
   async function handleAttach(action: QueuedAction): Promise<void> {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
@@ -558,34 +867,12 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   }
 
   async function handleCreateWorkspace(action: QueuedAction): Promise<void> {
-    const chatKey = action.chatMessage.chatId
-    const rawPath = action.value ?? ''
-    const path = expandHomePath(rawPath)
-    try {
-      await workspaceRegistry.create(path)
-      logger.info(`dsh-feishu: created workspace ${path}`)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      const card = {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        header: { title: { tag: 'plain_text', content: getTranslations().onboardingCreateWorkspaceFailTitle }, template: 'red' },
-        body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path, msg) }] },
-      }
-      await sendCard(action.chatMessage, card, action.messageId)
-      return
-    }
-    // Created — record it as the flow's workspace and continue to preset picker.
-    const flowState = newFlow.get(chatKey) ?? {}
-    flowState.workspace = path
-    newFlow.set(chatKey, flowState)
-    const presets = await agentPresets.list()
-    const card = renderPresetPicker(presets, flowState.agentPreset ?? agentPresets.defaultId, getTranslations())
-    await sendCard(action.chatMessage, card, action.messageId)
+    await commitWorkspace(action, expandHomePath(action.value ?? ''))
   }
 
   async function handleCancel(action: QueuedAction): Promise<void> {
     newFlow.delete(action.chatMessage.chatId)
+    browseState.delete(action.chatMessage.chatId)
     const card = {
       schema: '2.0',
       config: { wide_screen_mode: true },
@@ -633,6 +920,30 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         case 'create-workspace':
           await handleCreateWorkspace(action)
           break
+        case 'browse-open':
+          await showBrowser(action, undefined)
+          break
+        case 'browse-enter':
+          await showBrowser(action, action.value)
+          break
+        case 'browse-home':
+          await showBrowser(action, undefined)
+          break
+        case 'browse-hidden': {
+          const state = browseState.get(action.chatMessage.chatId)
+          await refreshBrowser(action, { hidden: !(state?.hidden ?? false) })
+          break
+        }
+        case 'browse-page':
+          await refreshBrowser(action, { page: Number(action.value) || 0 })
+          break
+        case 'browse-pick':
+          await commitWorkspace(action, action.value ?? '')
+          break
+        case 'browse-back':
+          browseState.delete(action.chatMessage.chatId)
+          await sendCard(action.chatMessage, await buildWorkspacePicker(action.chatMessage), action.messageId)
+          break
         case 'cancel':
           await handleCancel(action)
           break
@@ -649,6 +960,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     dispose: () => {
       unsubscribe()
       newFlow.clear()
+      browseState.clear()
       cardByMessage.clear()
       sequenceByCard.clear()
       chatTopic.clear()

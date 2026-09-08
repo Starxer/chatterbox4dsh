@@ -4,6 +4,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type { CommandRuntime, CommandResult, CommandExecution } from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-host-directory-picker'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session'
@@ -511,6 +512,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       agentPresets,
       agentDefaultModel: defaultModel,
       getTranslations: () => translationsFor(currentLocale().id),
+      // Read lazily: directory-picker-auto mounts its backend (native or
+      // browse) asynchronously during boot, so the service may not exist yet
+      // when this plugin applies. A missing/native capability just hides the
+      // folder-browsing button; the manual path form keeps working.
+      getDirectoryPicker: () => ctx.get('directoryPicker'),
       config: {
         workspace: currentSettings().workspace,
         agentPreset: currentSettings().agentPreset,

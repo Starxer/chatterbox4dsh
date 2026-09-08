@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { deriveToolSummary, renderStepCard } from '../src/feishu-streaming.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { deriveToolSummary, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
 import { translationsFor } from '../src/i18n.ts'
 
 const t = translationsFor('zh')
@@ -186,5 +186,85 @@ describe('renderStepCard reasoning + args budgets', () => {
     expect(md).not.toContain('a'.repeat(3001))
     // No truncation marker — overflow is handled by separate cards.
     expect(md).not.toContain('…(truncated)')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Step-card delivery path: CardKit instance (no edit cap) vs send + patch
+// ---------------------------------------------------------------------------
+
+interface StepChannel {
+  send: ReturnType<typeof vi.fn>
+  updateCard: ReturnType<typeof vi.fn>
+  createCardInstance?: ReturnType<typeof vi.fn>
+  sendCardByReference?: ReturnType<typeof vi.fn>
+  updateCardInstance?: ReturnType<typeof vi.fn>
+}
+
+function stepHarness(channel: StepChannel) {
+  const listeners: Array<(session: any, event: any) => void> = []
+  const bridge = {
+    resolveChat: () => ({ chatId: 'oc_1', chatType: 'p2p' }),
+    getSessionMeta: async () => ({ contextWindow: 4096, lastInputTokens: 12 }),
+    markIntermediateSent: vi.fn(),
+  }
+  const streaming = startFeishuStreaming({
+    ctx: { on: (_name: string, handler: any) => { listeners.push(handler); return () => undefined } } as any,
+    channel: channel as any,
+    bridgeHolder: { current: bridge as any },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    getTranslations: () => t,
+  })
+  const emit = (type: string, data?: any): void => {
+    for (const handler of listeners) handler({ id: 's-1' }, { type, time: Date.now(), data })
+  }
+  return { streaming, emit }
+}
+
+const tick = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+describe('step card delivery', () => {
+  it('uses a CardKit card instance for send and update when the channel offers it', async () => {
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'hello' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(0)
+    expect(channel.createCardInstance).toHaveBeenCalledOnce()
+    expect(channel.sendCardByReference).toHaveBeenCalledWith('oc_1', 'card-1', {})
+    expect(channel.send).not.toHaveBeenCalled()
+
+    // A tool call re-renders the SAME card instance with a bumped sequence.
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    expect(channel.updateCardInstance).toHaveBeenCalled()
+    expect(channel.updateCard).not.toHaveBeenCalled()
+    expect(channel.updateCardInstance!.mock.calls.at(-1)![2]).toBe(1)
+    streaming.stop()
+  })
+
+  it('falls back to send + im.v1.message.patch when the channel has no CardKit methods', async () => {
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'hello' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(0)
+    expect(channel.send).toHaveBeenCalledOnce()
+
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    expect(channel.updateCard).toHaveBeenCalledWith('m-plain', expect.anything())
+    streaming.stop()
   })
 })

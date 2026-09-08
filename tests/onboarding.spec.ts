@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { startFeishuOnboarding, type FeishuOnboardingDeps } from '../src/feishu-onboarding.ts'
 import { translationsFor } from '../src/i18n.ts'
 
@@ -66,6 +69,39 @@ function deps(channel: FakeChannel, bridgeHolder: { current: any }): FeishuOnboa
 
 function fire(handlers: Array<(evt: any) => void | Promise<void>>, evt: any): Promise<void[]> {
   return Promise.all(handlers.map(h => h(evt)))
+}
+
+/** Fake DSH `directoryPicker` browse backend over a tiny fixed tree. */
+function fakeDirectoryPicker() {
+  const listings: Record<string, any> = {
+    '/home/me': {
+      path: '/home/me',
+      home: '/home/me',
+      crumbs: [{ name: '/', path: '/', hidden: false }, { name: 'me', path: '/home/me', hidden: false }],
+      entries: [
+        { name: 'projects', path: '/home/me/projects', hidden: false },
+        { name: '.cache', path: '/home/me/.cache', hidden: true },
+      ],
+      truncated: false,
+    },
+    '/home/me/projects': {
+      path: '/home/me/projects',
+      home: '/home/me',
+      crumbs: [
+        { name: '/', path: '/', hidden: false },
+        { name: 'me', path: '/home/me', hidden: false },
+        { name: 'projects', path: '/home/me/projects', hidden: false },
+      ],
+      entries: [{ name: 'my-app', path: '/home/me/projects/my-app', hidden: false }],
+      truncated: false,
+    },
+  }
+  const list = vi.fn(async (path?: string) => {
+    const listing = listings[path ?? '/home/me']
+    if (listing === undefined) throw new Error(`ENOENT: ${path}`)
+    return listing
+  })
+  return { list, picker: { capability: () => ({ kind: 'browse', list }) } }
 }
 
 describe('feishu-onboarding', () => {
@@ -196,6 +232,109 @@ describe('feishu-onboarding', () => {
       'm-ref',
       { workspace: '/ws-2', agentPreset: 'researcher' },
     )
+    handle.dispose()
+  })
+
+  it('always offers the browse entry point in the workspace picker', async () => {
+    const { channel, handlers } = fakeChannel()
+    const handle = startFeishuOnboarding(deps(channel, fakeBridge()))
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    expect(JSON.stringify(card)).toContain('浏览目录')
+    handle.dispose()
+  })
+
+  it('falls back to its own filesystem listing when directoryPicker is a native backend', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-browse-'))
+    try {
+      await mkdir(join(root, 'alpha'))
+      await mkdir(join(root, 'beta'))
+      await mkdir(join(root, '.hidden'))
+      await writeFile(join(root, 'file.txt'), 'x')
+      const { channel, handlers } = fakeChannel()
+      const d = deps(channel, fakeBridge())
+      // A `native` picker opens an OS chooser on the host display, which a
+      // remote Feishu user can never see — the plugin must list the fs itself.
+      d.getDirectoryPicker = () => ({ capability: () => ({ kind: 'native' }) })
+      const handle = startFeishuOnboarding(d)
+      // `browse-open` starts at the home directory; navigate to the temp root.
+      await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+      await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: root }) } })
+      const card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+      const text = JSON.stringify(card)
+      expect(text).toContain('alpha')
+      expect(text).toContain('beta')
+      expect(text).not.toContain('.hidden')
+      // Files are not rows — only directories are browsable.
+      expect(text).not.toContain('file.txt')
+      handle.dispose()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('browses from home, filters hidden entries, and picks the listed directory', async () => {
+    const { channel, handlers } = fakeChannel()
+    const create = vi.fn(async () => undefined)
+    const d = deps(channel, fakeBridge())
+    const picker = fakeDirectoryPicker()
+    d.workspaceRegistry = { list: () => [], create }
+    d.getDirectoryPicker = () => picker.picker
+    const handle = startFeishuOnboarding(d)
+
+    // Workspace picker offers the browse entry point.
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('浏览目录')
+
+    // Open the browser at the host home directory.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    expect(picker.list).toHaveBeenLastCalledWith(undefined)
+    let card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    let text = JSON.stringify(card)
+    expect(text).toContain('/home/me')
+    expect(text).toContain('projects')
+    expect(text).not.toContain('.cache')
+
+    // Toggle hidden entries on → the dot directory appears.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-hidden' }) } })
+    expect(picker.list).toHaveBeenLastCalledWith('/home/me')
+    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    expect(JSON.stringify(card)).toContain('.cache')
+
+    // Descend into a child directory.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: '/home/me/projects' }) } })
+    expect(picker.list).toHaveBeenLastCalledWith('/home/me/projects')
+    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    expect(JSON.stringify(card)).toContain('my-app')
+
+    // Commit the listed directory as the workspace → preset picker.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-pick', value: '/home/me/projects' }) } })
+    expect(create).toHaveBeenCalledWith('/home/me/projects')
+    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    expect(JSON.stringify(card)).toContain('选择 Agent 预设')
+    handle.dispose()
+  })
+
+  it('browse-back returns to the workspace picker', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => fakeDirectoryPicker().picker
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-back' }) } })
+    const card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    expect(JSON.stringify(card)).toContain('选择工作区')
+    handle.dispose()
+  })
+
+  it('reports a browse failure with the specific reason instead of a blank card', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => fakeDirectoryPicker().picker
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: '/nope' }) } })
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    expect(JSON.stringify(card)).toContain('ENOENT')
     handle.dispose()
   })
 })

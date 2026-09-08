@@ -239,6 +239,20 @@ export interface Translations {
   onboardingCreateWorkspaceFailBody: (path: string, msg: string) => string
   onboardingCancelTitle: string
   onboardingCancelledBody: string
+  onboardingBrowseButton: string
+  onboardingBrowseTitle: string
+  onboardingBrowseHeader: (path: string) => string
+  onboardingBrowseUp: string
+  onboardingBrowseHome: string
+  onboardingBrowseShowHidden: string
+  onboardingBrowseHideHidden: string
+  onboardingBrowsePrev: string
+  onboardingBrowseNext: string
+  onboardingBrowsePage: (page: number, total: number) => string
+  onboardingBrowseEmpty: string
+  onboardingBrowseTruncated: string
+  onboardingBrowsePick: string
+  onboardingBrowseBack: string
 
   // Questions extras (feishu-questions.ts)
   questionSelectedSuffix: string
@@ -453,6 +467,20 @@ export const zh = {
   onboardingCreateWorkspaceFailBody: (path, msg) => `⚠️ **创建工作区失败**\n\n\`${path}\`\n\n${msg}`,
   onboardingCancelTitle: '🚀 新建会话',
   onboardingCancelledBody: '已取消新建会话。',
+  onboardingBrowseButton: '📂 浏览目录…',
+  onboardingBrowseTitle: '📂 选择工作区目录',
+  onboardingBrowseHeader: path => `**📁 当前目录**\n\n\`${path}\``,
+  onboardingBrowseUp: '⬆️ 上一级',
+  onboardingBrowseHome: '🏠 家目录',
+  onboardingBrowseShowHidden: '👁 显示隐藏目录',
+  onboardingBrowseHideHidden: '🙈 隐藏隐藏目录',
+  onboardingBrowsePrev: '← 上一页',
+  onboardingBrowseNext: '下一页 →',
+  onboardingBrowsePage: (page, total) => `第 ${page} / ${total} 页`,
+  onboardingBrowseEmpty: '（这个目录下没有子目录）',
+  onboardingBrowseTruncated: '…目录项过多，仅列出前一部分，请进入更具体的目录继续浏览。',
+  onboardingBrowsePick: '✅ 用这个目录',
+  onboardingBrowseBack: '← 返回工作区列表',
 
   questionSelectedSuffix: '已选择',
   questionCustomAnswerLabel: '自定义回答：',
@@ -666,6 +694,20 @@ export const en: Translations = {
   onboardingCreateWorkspaceFailBody: (path, msg) => `⚠️ **Failed to create workspace**\n\n\`${path}\`\n\n${msg}`,
   onboardingCancelTitle: '🚀 New session',
   onboardingCancelledBody: 'New session creation was cancelled.',
+  onboardingBrowseButton: '📂 Browse folders…',
+  onboardingBrowseTitle: '📂 Pick a workspace folder',
+  onboardingBrowseHeader: path => `**📁 Current folder**\n\n\`${path}\``,
+  onboardingBrowseUp: '⬆️ Up one level',
+  onboardingBrowseHome: '🏠 Home',
+  onboardingBrowseShowHidden: '👁 Show hidden folders',
+  onboardingBrowseHideHidden: '🙈 Hide hidden folders',
+  onboardingBrowsePrev: '← Previous page',
+  onboardingBrowseNext: 'Next page →',
+  onboardingBrowsePage: (page, total) => `Page ${page} / ${total}`,
+  onboardingBrowseEmpty: '(No subfolders here)',
+  onboardingBrowseTruncated: '…Too many entries; only the first part is listed. Enter a more specific folder to continue.',
+  onboardingBrowsePick: '✅ Use this folder',
+  onboardingBrowseBack: '← Back to workspace list',
 
   questionSelectedSuffix: 'selected',
   questionCustomAnswerLabel: 'Custom answer:',
