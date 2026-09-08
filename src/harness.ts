@@ -228,7 +228,7 @@ export class HarnessConversationService {
     }
   }
 
-  async reply(message: InboundMessage, opts?: { forceQueue?: boolean }): Promise<string> {
+  async reply(message: InboundMessage, opts?: { forceQueue?: boolean; onBusy?: (mode: BusyMode) => void }): Promise<string | undefined> {
     const key = conversationKey(message)
     // Capture the topic root id so streaming/question/approval/todo cards
     // can reply into the same Feishu topic instead of the main chat stream.
@@ -267,24 +267,25 @@ export class HarnessConversationService {
     for (const attachment of imageBlocks) content.push({ type: 'image', attachment })
     for (const file of fileBlocks) content.push({ type: 'file', attachment: file.attachment })
 
-    // Steer mode + running: inject into the live turn immediately (no wait),
-    // then wait for the running turn (including the steered step) to finish.
+    // Steer mode + running: inject into the live turn immediately. The
+    // running turn's OWN reply card answers this message, so we must not wait
+    // and must not produce a second reply — doing so used to send two reply
+    // cards for one turn (the original message's and this one's). Report the
+    // injection through `onBusy` so the caller can acknowledge it in plain
+    // text instead.
     if (runBusyMode === 'steer' && running) {
-      const firstSeq = agent.session.seq
       if (!(await this.dispatchPrompt(agent, 'steer', content))) {
         agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
       }
-      await agent.whenIdle()
-      await this.deps.sessions.flush(agent.session)
-      const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
-      if (!result.ok) throw new Error('Harness turn did not produce a successful assistant response')
-      return result.text
+      opts?.onBusy?.('steer')
+      return undefined
     }
 
     // Queue path (default): wait for the current turn to end, then followup as
     // a new turn. A `/stop` during the wait bumps the generation, so drop the
     // message instead of submitting it — this is what actually discards a
     // message queued while the agent was running.
+    if (running) opts?.onBusy?.('queue')
     await agent.whenIdle()
     if (this.generationOf(key) !== gen) {
       throw new TurnDroppedError('message dropped: session stopped while it was queued')

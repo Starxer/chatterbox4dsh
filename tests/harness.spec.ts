@@ -172,7 +172,7 @@ describe('HarnessConversationService', () => {
     expect(service2.busyMode({ chatId: 'oc_2', chatType: 'p2p' })).toBe('queue')
   })
 
-  it('steer-mode reply injects into a running turn instead of queueing', async () => {
+  it('steer-mode reply injects into a running turn without producing a second reply', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
     service.setBusyMode({ chatId: 'oc_1', chatType: 'p2p' }, 'steer')
@@ -181,10 +181,31 @@ describe('HarnessConversationService', () => {
     agent.followup.mockClear()
     agent.steer.mockClear()
     agent.status = 'running'
-    const out = await service.reply({ chatId: 'oc_1', chatType: 'p2p', content: 'inject' })
+    const busy: string[] = []
+    const out = await service.reply(
+      { chatId: 'oc_1', chatType: 'p2p', content: 'inject' },
+      { onBusy: mode => busy.push(mode) },
+    )
     expect(agent.steer).toHaveBeenCalledTimes(1)
     expect(agent.followup).not.toHaveBeenCalled()
-    expect(out).toBe('answer:inject')
+    // No reply of its own — the running turn's reply card already answers it.
+    expect(out).toBeUndefined()
+    expect(busy).toEqual(['steer'])
+  })
+
+  it('queue-mode reply reports onBusy while waiting for the running turn', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    await service.reply({ chatId: 'oc_1', chatType: 'p2p', content: 'warmup' })
+    const agent = [...f.agents.values()][0] as any
+    agent.status = 'running'
+    const busy: string[] = []
+    const out = await service.reply(
+      { chatId: 'oc_1', chatType: 'p2p', content: 'queued' },
+      { onBusy: mode => busy.push(mode) },
+    )
+    expect(busy).toEqual(['queue'])
+    expect(out).toBe('answer:queued')
   })
 
   it('forceQueue overrides steer mode for one reply (/queue)', async () => {

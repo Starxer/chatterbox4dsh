@@ -107,7 +107,10 @@ describe('startChannel', () => {
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
     await flushAsync()
     expect(channel.addReaction).toHaveBeenCalledWith('om_1', 'THUMBSUP')
-    expect(bridge.reply).toHaveBeenCalledWith(expect.objectContaining({ content: 'hi' }))
+    expect(bridge.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'hi' }),
+      expect.objectContaining({ onBusy: expect.any(Function) }),
+    )
     // Reply card is no longer sent separately — step cards from feishu-streaming handle it.
     await stop()
     expect(channel.disconnect).toHaveBeenCalledOnce()
@@ -214,8 +217,50 @@ describe('startChannel', () => {
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hello world' })
     await flushAsync()
     expect(slashCommand).toHaveBeenCalledOnce()
-    expect(bridge.reply).toHaveBeenCalledWith(expect.objectContaining({ content: 'hello world' }))
+    expect(bridge.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'hello world' }),
+      expect.objectContaining({ onBusy: expect.any(Function) }),
+    )
     // Reply card is no longer sent separately — step cards from feishu-streaming handle it.
+  })
+
+  it('acknowledges a queued message in plain text (no card) while the agent is busy', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async (_message: any, opts?: any) => { opts?.onBusy?.('queue'); return 'agent answer' }),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+    }
+    await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'queued' })
+    await flushAsync()
+    // The busy notice is a plain text message, not a card.
+    expect(channel.send).toHaveBeenCalledWith('oc_1', { text: expect.stringContaining('已排队') }, expect.anything())
+  })
+
+  it('does not send a second reply for a message steered into the running turn', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async (_message: any, opts?: any) => { opts?.onBusy?.('steer'); return undefined }),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+    }
+    await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'inject' })
+    await flushAsync()
+    expect(channel.send).toHaveBeenCalledWith('oc_1', { text: expect.stringContaining('已插入') }, expect.anything())
+    // No reply card of its own — the running turn's reply already answers it.
+    expect(channel.send.mock.calls.some((call: any[]) => call[1]?.card !== undefined)).toBe(false)
   })
 
   it('reports a slash-command failure with the safe fallback and skips the bridge', async () => {
@@ -254,7 +299,7 @@ describe('startChannel', () => {
     expect(bridge.reply).toHaveBeenCalledWith(expect.objectContaining({
       content: '',
       imageBlocks: [expect.objectContaining({ mediaType: 'image/jpeg', bytes: 4 })],
-    }))
+    }), expect.objectContaining({ onBusy: expect.any(Function) }))
     // Reply card is no longer sent separately — step cards from feishu-streaming handle it.
     await stop()
   })
@@ -276,7 +321,7 @@ describe('startChannel', () => {
     expect(attachments.saveImage).toHaveBeenCalledWith(expect.objectContaining({ mediaType: 'image/png' }))
     expect(bridge.reply).toHaveBeenCalledWith(expect.objectContaining({
       imageBlocks: [expect.objectContaining({ mediaType: 'image/png' })],
-    }))
+    }), expect.objectContaining({ onBusy: expect.any(Function) }))
     await stop()
   })
 

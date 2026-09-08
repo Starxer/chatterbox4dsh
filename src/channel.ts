@@ -426,7 +426,25 @@ export async function startChannel(
         const chatId = message.chatId
         const chatType = message.chatType
         const threadId = message.threadId
-        void bridge.reply(inboundMessage).then(async (text) => {
+        void bridge.reply(inboundMessage, {
+          // Plain-text acknowledgement when the agent is busy: steer injects
+          // into the running turn, queue waits for it. Deliberately a text
+          // message, not a card — it is transient feedback, not a result.
+          onBusy: (mode) => {
+            const t = getTranslations?.() ?? translationsFor('zh')
+            const notice = mode === 'steer' ? t.busySteeredNotice : t.busyQueuedNotice
+            void channel.send(chatId, { text: notice }, {
+              replyTo: replyToId,
+              replyInThread,
+            }).catch((error: unknown) => {
+              logError(`dsh-feishu: busy notice failed: ${error instanceof Error ? error.message : String(error)}`)
+            })
+          },
+        }).then(async (text) => {
+          // A steered message produces no reply of its own: the running turn's
+          // reply card already answers it (otherwise the user gets two cards
+          // for one turn).
+          if (text === undefined) return
           const sessionId = bridge.resolveSessionIdFor(inboundMessage)
           const intermediateSent = bridge.consumeIntermediateSent(sessionId)
           const meta = await replyCardMeta?.({ chatId, chatType, ...(threadId !== undefined ? { threadId } : {}) })

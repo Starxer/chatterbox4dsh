@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 变更：运行中发普通消息给出纯文本提示 + 插话不再回两张卡（`src/harness.ts` / `src/channel.ts` / `src/i18n.ts` / `tests/`）
+
+- **背景**：agent 运行中发**普通消息**（不是 `/steer`、`/queue` 命令）时，消息会被静默插入当前轮或排队，用户没有任何反馈；而且 steer 模式下这条被插入的消息在本轮结束时还会**再发一张回复卡**，与最初启动本轮的那条消息的回复卡重复（两张卡回答同一个 turn）。
+- **改动**：
+  - `HarnessConversationService.reply()` 新增 `onBusy?: (mode: 'steer' | 'queue') => void`：运行中被 steer 注入或排队时回调一次；channel 层用它发**纯文本**提示（非卡片）——steer：`🎯 已插入当前运行轮…`，queue：`📥 已排队，当前轮结束后执行…`（zh/en 双语，`i18n.ts` 的 `busySteeredNotice` / `busyQueuedNotice`）。`/steer`、`/queue` 命令本身已有各自的文本回执，不传 `onBusy`，不会重复提示。
+  - **steer 分支不再等待本轮结束、也不再返回文本**（返回 `undefined`）：被插入的消息由当前轮的回复卡回答，channel 层遇到 `undefined` 直接返回、不发第二张卡。queue 路径仍等待并返回新轮的答复（排队消息是独立的一轮，理应各自有回复）。
+- **验证**：新增 4 例测试（steer 注入返回 undefined 且回调 `onBusy('steer')`、queue 回调 `onBusy('queue')` 并仍返回新轮答复、channel 层排队提示是纯文本、steer 消息不发第二张卡）；同步修正 plugin.spec 的 `bridge.reply` 断言（多了 opts 参数）。`npm run typecheck` / `npm run test`（263 passed）/ `npm run build`。
+
 ### 变更：每张助手卡片都显示 token 速度（`src/feishu-streaming.ts` / `src/channel.ts` / `tests/`）
 
 - **背景**：步骤卡片的 footer 一直有 `🚀 tok/s`，但「只调工具、没有思考/文本」的步骤因为没有首 token 锚点而缺失（已由上一条修复）；此外溢出续卡与兜底回复卡没有速度行。
