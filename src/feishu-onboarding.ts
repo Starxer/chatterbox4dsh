@@ -375,7 +375,6 @@ function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWork
       form_action_type: 'submit',
       behaviors: [{ type: 'callback', value: { kind: 'pick-workspace' } }],
     })
-    formElements.push({ tag: 'hr' })
   }
   formElements.push({ tag: 'markdown', content: t.onboardingNewWorkspaceHeader })
   formElements.push({
