@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### 变更：reasoning 标题同时显示思考耗时与思考 token 数（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **改动**：`StepUsage` 增加 `reasoningTokens`（来自 provider 的 `usage.reasoningTokens`，DeepSeek 适配器由 `completion_tokens_details.reasoning_tokens` 翻译而来）；reasoning 标题拼成 `💬 **推理** · 🧠 4.3s · 🪙 1.2K tokens`，两段各自缺失时自动省略。
+- **验证**：改写 2 例测试（`renderStepCard` 直出断言 `🧠 3.2s · 🪙 1.2K tokens`、流式层断言 `🧠 1.0s · 🪙 42 tokens`）；`npm run typecheck` / `npm run test`（266 passed）/ `npm run build`，样张卡已发到真实聊天确认排版。
+
 ### 变更：步骤卡显示 reasoning 耗时与轮次/步骤位置（`src/feishu-streaming.ts` / `src/i18n.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **reasoning 耗时**：记录本步第一条/最后一条 reasoning-delta 的时间戳（`assistant/chunk` 与 0.1.3 的 `assistant/message.stream` 重建两条路径都记），思考结束后在 reasoning 标题后追加 `· 🧠 4.3s`；只有一条 delta（时长为 0）时不显示。

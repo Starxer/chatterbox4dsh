@@ -82,6 +82,8 @@ interface StepUsage {
   cacheWriteTokens?: number | undefined
   /** Full-call billed total (prompt + output) when the adapter reports it. */
   totalTokens?: number | undefined
+  /** Reasoning (thinking) tokens, a subset of {@link outputTokens}, when reported. */
+  reasoningTokens?: number | undefined
 }
 
 /** Aggregated turn stats for the Turn Complete card. */
@@ -592,6 +594,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             cacheReadTokens: (usage.cacheReadTokens as number | undefined),
             cacheWriteTokens: (usage.cacheWriteTokens as number | undefined),
             totalTokens: (usage.totalTokens as number | undefined),
+            reasoningTokens: (usage.reasoningTokens as number | undefined),
           }
         }
         if (state.usage !== undefined) {
@@ -1100,12 +1103,17 @@ export function renderStepCard(
 
   // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning).
   // Reasoning is a preview only: keep a short window, never the full chain.
-  // Its own duration is appended to the header once thinking has finished.
+  // Its own duration and thinking-token count are appended to the header once
+  // thinking has finished (the card is built after `assistant/message`).
   if (reasoning !== undefined && reasoning !== '') {
     const displayReasoning = reasoning.length > REASONING_CAP ? reasoning.slice(0, REASONING_CAP) + '\n…(truncated)' : reasoning
-    const header = reasoningMs !== undefined && reasoningMs > 0
-      ? `${t.stepReasoningHeader} · 🧠 ${formatMsShort(reasoningMs)}`
-      : t.stepReasoningHeader
+    const meta: string[] = []
+    if (reasoningMs !== undefined && reasoningMs > 0) meta.push(`🧠 ${formatMsShort(reasoningMs)}`)
+    const reasoningTokens = usage?.reasoningTokens
+    if (reasoningTokens !== undefined && reasoningTokens > 0) {
+      meta.push(`🪙 ${formatTokenCount(reasoningTokens)} tokens`)
+    }
+    const header = meta.length > 0 ? `${t.stepReasoningHeader} · ${meta.join(' · ')}` : t.stepReasoningHeader
     elements.push({
       tag: 'markdown',
       content: `${header}\n\`\`\`\`\`\n${displayReasoning}\n\`\`\`\`\``,

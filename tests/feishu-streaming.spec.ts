@@ -207,19 +207,20 @@ describe('renderStepCard reasoning + args budgets', () => {
     expect(footers[1]).toContain('📊 500/1K (50%)')
   })
 
-  it('shows the reasoning duration and the turn/step position', () => {
+  it('shows the reasoning duration, thinking tokens and the turn/step position', () => {
     const card = renderStepCard(
       t, 'thinking', undefined, [],
-      undefined, undefined, undefined, undefined,
+      { inputTokens: 10, outputTokens: 2000, reasoningTokens: 1200 }, undefined, undefined, undefined,
       3200, 2, 3,
     ) as any
-    expect(mdOf(card)).toContain('🧠 3.2s')
+    expect(mdOf(card)).toContain('🧠 3.2s · 🪙 1.2K tokens')
     expect(card.header.title.content).toBe('回复 · 第 2 轮 · 第 3 步')
 
-    // Without timing/position the header stays plain and shows no duration.
+    // Without timing/position/usage the header stays plain.
     const plain = renderStepCard(t, 'thinking', undefined, []) as any
     expect(plain.header.title.content).toBe('回复')
     expect(mdOf(plain)).not.toContain('🧠')
+    expect(mdOf(plain)).not.toContain('tokens')
   })
 })
 
@@ -490,13 +491,13 @@ describe('turn stats token speed', () => {
     emit('turn/start')
     emit('step/start', { turn: 2, step: 3 })
     emit('assistant/message', {
-      usage: { inputTokens: 10, outputTokens: 100 },
+      usage: { inputTokens: 10, outputTokens: 100, reasoningTokens: 42 },
       stream: [{ type: 'reasoning-chunks', time0: startedAt, index: 0, dt: [1000], texts: ['think ', 'more'] }],
     })
     await tick(200)
     expect(cards.length).toBeGreaterThan(0)
     expect(cards[0].header.title.content).toContain('第 2 轮 · 第 3 步')
-    expect(mdOf(cards[0])).toContain('🧠 1.0s')
+    expect(mdOf(cards[0])).toContain('🧠 1.0s · 🪙 42 tokens')
     streaming.stop()
   })
 })
