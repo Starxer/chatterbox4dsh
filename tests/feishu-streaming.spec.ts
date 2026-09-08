@@ -187,6 +187,25 @@ describe('renderStepCard reasoning + args budgets', () => {
     // No truncation marker — overflow is handled by separate cards.
     expect(md).not.toContain('…(truncated)')
   })
+
+  it('renders the step footer as two notation lines (timing/tokens, then speed/context)', () => {
+    const card = renderStepCard(
+      t, undefined, undefined, [],
+      { inputTokens: 10, outputTokens: 100 },
+      2000,
+      300,
+      { contextWindow: 1000, lastInputTokens: 500 },
+    ) as any
+    const footers = card.body.elements
+      .filter((el: any) => el.tag === 'markdown' && el.text_size === 'notation')
+      .map((el: any) => el.content)
+    expect(footers).toHaveLength(2)
+    expect(footers[0]).toContain('⏱ 2.0s')
+    expect(footers[0]).toContain('📥 10 → 📤 100')
+    expect(footers[0]).not.toContain('tok/s')
+    expect(footers[1]).toContain('🚀 300 tok/s')
+    expect(footers[1]).toContain('📊 500/1K (50%)')
+  })
 })
 
 // ---------------------------------------------------------------------------

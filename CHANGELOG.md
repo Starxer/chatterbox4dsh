@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### 变更：步骤卡 footer 改为两行（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **改动**：`renderStepCard` 的 footer 由一行拆成两行 notation 文本——第一行 `⏱ 时长 · 📥 计费输入 → 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占比`。缺少某一段时对应行自动省略（只有一行时不补空行）。溢出续卡的 `🚀 tok/s` 与 Turn Complete 卡片不变。
+- **验证**：新增 1 例测试（footer 恰好两个 notation 元素、第一行只有耗时/token、第二行只有速度/上下文）；`npm run typecheck` / `npm run test`（264 passed）/ `npm run build`，并把渲染出的样张卡发到真实聊天确认排版。
+
 ### 变更：运行中发普通消息给出纯文本提示 + 插话不再回两张卡（`src/harness.ts` / `src/channel.ts` / `src/i18n.ts` / `tests/`）
 
 - **背景**：agent 运行中发**普通消息**（不是 `/steer`、`/queue` 命令）时，消息会被静默插入当前轮或排队，用户没有任何反馈；而且 steer 模式下这条被插入的消息在本轮结束时还会**再发一张回复卡**，与最初启动本轮的那条消息的回复卡重复（两张卡回答同一个 turn）。

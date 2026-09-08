@@ -1133,27 +1133,33 @@ export function renderStepCard(
     elements.push({ tag: 'markdown', content: '*(empty)*' })
   }
 
-  // Step footer: duration + token counts + output speed + context %
-  const footerParts: string[] = []
+  // Step footer: two notation lines — timing/tokens, then speed/context.
+  const timingParts: string[] = []
+  const speedParts: string[] = []
   if (stepDurationMs !== undefined && stepDurationMs > 0) {
-    footerParts.push(stepDurationMs >= 1000
+    timingParts.push(stepDurationMs >= 1000
       ? `⏱ ${(stepDurationMs / 1000).toFixed(1)}s`
       : `⏱ ${stepDurationMs}ms`)
   }
   if (usage !== undefined) {
     const billedIn = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
-    footerParts.push(`📥 ${formatTokenCount(billedIn)} → 📤 ${formatTokenCount(usage.outputTokens)}`)
+    timingParts.push(`📥 ${formatTokenCount(billedIn)} → 📤 ${formatTokenCount(usage.outputTokens)}`)
   }
   if (tps !== undefined && tps > 0) {
-    footerParts.push(`🚀 ${tps.toFixed(0)} tok/s`)
+    speedParts.push(`🚀 ${tps.toFixed(0)} tok/s`)
   }
   if (contextMeta !== undefined && contextMeta.contextWindow > 0 && contextMeta.lastInputTokens > 0) {
     const pct = Math.min(100, Math.round(contextMeta.lastInputTokens / contextMeta.contextWindow * 100))
-    footerParts.push(`📊 ${formatTokenCount(contextMeta.lastInputTokens)}/${formatTokenCount(contextMeta.contextWindow)} (${pct}%)`)
+    speedParts.push(`📊 ${formatTokenCount(contextMeta.lastInputTokens)}/${formatTokenCount(contextMeta.contextWindow)} (${pct}%)`)
   }
-  if (footerParts.length > 0) {
+  if (timingParts.length > 0 || speedParts.length > 0) {
     elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: footerParts.join(' · '), text_size: 'notation' })
+    if (timingParts.length > 0) {
+      elements.push({ tag: 'markdown', content: timingParts.join(' · '), text_size: 'notation' })
+    }
+    if (speedParts.length > 0) {
+      elements.push({ tag: 'markdown', content: speedParts.join(' · '), text_size: 'notation' })
+    }
   }
 
   // Card title and color: determined only by tool status, not thinking content
