@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.0 (2026-09-08)
+
+> 首个以 `chatterbox4dsh` 名义独立发布的版本（npm `@starxer/chatterbox4dsh@0.1.0` 之后）。要求 DSH `0.1.3-alpha.x`（`assistant/chunk` 已移除，改由 `assistant/message.stream` 重建；不再向前兼容 0.1.2）。
+>
+> First independent release as `chatterbox4dsh` (after npm `@starxer/chatterbox4dsh@0.1.0`). Requires DSH `0.1.3-alpha.x`; 0.1.2 compatibility was intentionally dropped.
+
+### 构建：依赖范围与锁文件对齐 DSH 0.1.3（`package.json` / `package-lock.json` / `.github/workflows/ci.yml`）
+
+- `peerDependencies` / `devDependencies` 的 `@deepseek-ai/dsh-*` 由 `^0.1.0-rc.5` / `^0.1.0-rc.7` 统一升到 **`^0.1.3-alpha.1`**（锁文件解析到 `0.1.3-alpha.2`），与代码实际要求一致（`assistant/message.stream`、`FileAttachmentRef` / `saveFileStream`）。旧范围会让 CI 与发布流程装到 rc.8，typecheck 直接失败。
+- 重新生成 `package-lock.json`，`npm ci` 可直接安装（429 个包）。
+- CI 的 `latest-harness` 矩阵不再手动列包 + `--legacy-peer-deps`，改为删掉锁文件后 `npm install` 重新解析声明的范围；旧的 `dsh-host-apiproxy` 已随 DSH 0.1.2-alpha.1 移除。
+
 ### 文档：同步全部文档到当前实现，并重写仓库与 npm 包简介（`README.md` / `docs/*` / `TODO.md` / `package.json`）
 
 - **README**：**改为中英文对照**（每个小节先中文后英文，表格与命令表各出一份），修正指向未公开 `AGENTS.md` 的失效链接（改指 `CHANGELOG.md`）；新增「已知问题」小节（步骤卡标题色带在部分客户端不重绘、审批卡结算颜色）；开发节补上「重启会中断运行中的会话」提示。
@@ -745,6 +757,12 @@
 - `harness.ts` 的 `reply` 接受可选 `imageBlocks` 字段，构建 user-turn content 时按顺序追加 `{type:'text', text}` + `{type:'image', attachment}`，符合 `ContentBlockMap` 合并扩展约定。
 - 缺图片附件服务或图片 admission 失败时，回复一条用户可见错误文本（不动 bridge，不把空消息当成普通 turn）。
 - 每条 user turn 的文本前面自动加 `[Feishu] ` 前缀，让模型（和 session log）能区分消息来自 Lark channel 还是 webui 客户端；纯图片消息把 `[Feishu] ` 单独作为一个 text 块放在 image 块之前（而不是塞到 caption 里），保证 LLM 一定能看到来源 tag。
+
+---
+
+> **以下为 fork 前上游 `sugarforever/dsh-lark` 的历史记录**（版本号 0.1.0–0.2.2 属于上游，与本仓库的 `0.2.0` 无关；本仓库的版本从 `0.1.0` 重新起算）。保留仅供追溯。
+>
+> The sections below are the pre-fork history of upstream `sugarforever/dsh-lark`. Their 0.1.0–0.2.2 numbers belong to upstream and are unrelated to this repository's `0.2.0`; this fork restarted versioning at `0.1.0`. Kept for reference only.
 
 ## 0.2.2
 
