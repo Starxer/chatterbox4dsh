@@ -27,6 +27,7 @@ Harness Agent (模型、工具、会话日志)
 | `src/channel.ts` | 飞书 Channel 封装，入站图片/文件接收（`admitImagesForMessage`/`admitFilesForMessage`），回复卡片渲染，Turn Complete 卡片 |
 | `src/harness.ts` | Harness 会话服务，session 映射持久化 |
 | `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览 + 时长/token footer |
+| `src/card-supersede.ts` | 交互流程「每步发新卡」的配套：把被替换的旧卡片改写成无按钮的失效提示（zh/en 双语，优先 CardKit 实例、best-effort） |
 | `src/feishu-todos.ts` | Todo 进度卡片 |
 | `src/feishu-approvals.ts` | 工具审批处理 |
 | `src/feishu-questions.ts` | ask_user_question 卡片 |
@@ -60,6 +61,7 @@ turn/end          → flush debounce → 发送溢出文本 continued 卡（如�
 
 - **Debounce**：150ms 合并快速更新，减少 API 调用；**表按卡片 ref 键**（见上「防抖按卡片 ref 键」）
 - **交互卡片不能就地更新**：飞书对同一条消息的卡片就地更新约 2–3 次后**不再投递按钮回调**（`im.v1.message.patch` 与 `cardkit.v1.card.update` 同样受限）。带按钮的卡片（`/new` 流程、目录浏览器、`/model`、`/session` 面板）**每一步都新建卡片实例 + 发新消息**；旧卡留在聊天里，不做 recall
+- **旧卡改写为失效提示**：每发一张新卡，就用 `src/card-supersede.ts` 把上一张改写为无按钮的灰色提示（顺序 `send → supersedePrevious → note`）；结果/错误卡 `terminal: true` 只改写上一张、自身不进记忆。改写失败只 warn，不阻断流程
 - **Flush 同步**：`turn/end` 时 flush pending debounce，确保卡片更新在 Turn Complete 之前完成
 - **Error-safe**：内层 try/catch 保护 mux 事件处理，防止单个事件错误导致整个流断开
 - **Card JSON 2.0**：所有卡片使用 `schema: '2.0'` + `body.elements`，原生支持 markdown

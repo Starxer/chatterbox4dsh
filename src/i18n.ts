@@ -27,6 +27,10 @@ export type LocaleId = (typeof LOCALE_IDS)[number]
 export type PluginLocale = LocaleId | 'auto'
 
 export interface Translations {
+  // ---- Card lifecycle (card-supersede.ts) ----
+  cardSupersededTitle: string
+  cardSupersededBody: string
+
   // ---- Session panel (feishu-session.ts) ----
   sessionPanelTitle: string
   sessionPanelIntro: string
@@ -268,6 +272,8 @@ export interface Translations {
 
 /** The zh dictionary: terminology aligned with the DSH native UI. */
 export const zh = {
+  cardSupersededTitle: '⬆️ 此卡片已失效',
+  cardSupersededBody: '此卡片已被后续操作替换，请使用下方**最新的卡片**继续。',
   sessionPanelTitle: '📋 会话管理',
   sessionPanelIntro: '选择会话并执行操作。',
   sessionListHeader: '可用会话：',
@@ -495,6 +501,8 @@ export const zh = {
 
 /** The en dictionary, keyed identically to the zh dictionary. */
 export const en: Translations = {
+  cardSupersededTitle: '⬆️ This card is stale',
+  cardSupersededBody: 'This card was replaced by a later step. Use the **newest card** below instead.',
   sessionPanelTitle: '📋 Session',
   sessionPanelIntro: 'Pick a session and run an action.',
   sessionListHeader: 'Available sessions:',

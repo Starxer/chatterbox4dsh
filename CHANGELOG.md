@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### 新增：发新卡片时把被替换的旧卡片改写为「已失效」提示（`src/card-supersede.ts` 新增 / `src/feishu-onboarding.ts` / `src/feishu-model-select.ts` / `src/index.ts` / `src/i18n.ts` / `tests/card-supersede.spec.ts` / `tests/onboarding.spec.ts`）
+
+- **背景**：为了绕开「就地更新约 2–3 次后按钮回调失效」的硬上限（见下条），交互卡片流程改成**每一步发一张新卡片**，旧卡片留在聊天里（用户明确不要 recall）。但旧卡片仍显示着看起来能点的按钮，容易误导。
+- **实现**：新增 `src/card-supersede.ts`——一个共享的「失效卡」标记器：
+  - `renderSupersededCard(t)` 渲染**无按钮**的灰色提示卡（按钮一律不放，避免遗留可点击的旧入口）；
+  - `createCardSuperseder({ channel, logger, getTranslations, sequenceByCard })` 按 chat 记住最后发出的卡片，`supersedePrevious(chatId)` 把它改写成提示卡。优先 `cardkit.v1.card.update`（带单调 `sequence`，与调用方共用同一张 `sequenceByCard` 表，避免序号回退被飞书拒绝），通道没有实例方法时回退 `im.v1.message.patch`。**全程 best-effort**：改写失败只 `warn`，绝不影响已经成功的新卡片流程。
+  - 改写时机 = **新卡片发出之后**（用户不会看到空窗），顺序为 `send → supersedePrevious(旧卡) → note(新卡)`。
+  - 结果/错误卡（`cancel` / `attach` 成功与归档 / 建工作区失败 / 列举失败）标记为 `terminal`，**不进入记忆**，后续流程不会把它们改写成失效提示。
+- **接入点**：
+  - `feishu-onboarding.ts` 的 `sendCard`：`/new` 工作区卡 → 目录浏览每一步 → 预设卡，每一张都会把上一张改写为失效提示；新增 `supersedePrevious(chatId)` 到 handle。
+  - `index.ts` 的 `onModelStep`：模型卡由 `feishu-model-select` 渲染，发完后调用 `onboardingHandle.supersedePrevious(...)` 把预设卡改写为失效提示。
+  - `feishu-model-select.ts` 的 `updateCardInstanceOnMessage` 兜底分支：就地更新失败而改发新卡时，把那张旧卡也改写为失效提示。
+- **多语言**：新增 `cardSupersededTitle` / `cardSupersededBody`（zh/en 双份，`satisfies` 校验），改写时按**当前 locale** 现读现渲染。
+- **验证**：`npm run typecheck` / `npm run test`（248 passed，新增 9 例：失效卡无按钮 + 双语、实例路径单调 sequence、patch 兜底、改写失败只告警、`forget` 不改写、onboarding 连续两次改写、英文文案、terminal 卡不被改写、改写失败不中断流程）/ `npm run build` 全绿。
+
 ### 修复：step 卡片丢失工具状态更新 / 只剩 reasoning（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **现象**：部分 step 卡片的工具状态停在 `⏳ running…` 不更新；部分卡片只剩 reasoning 内容、工具根本不出现。

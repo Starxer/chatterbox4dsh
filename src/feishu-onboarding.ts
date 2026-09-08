@@ -23,6 +23,7 @@ import type { DirectoryEntry, DirectoryListing } from '@deepseek-ai/dsh-host-dir
 import { opendir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { createCardSuperseder, type SupersedeChannel } from './card-supersede.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -52,7 +53,7 @@ interface CardActionLike {
  * (see {@link startFeishuOnboarding}'s `sendCard`), because in-place updates
  * stop delivering button callbacks after a couple of edits.
  */
-export interface OnboardingChannel {
+export interface OnboardingChannel extends SupersedeChannel {
   onCardAction(handler: (evt: CardActionLike) => void | Promise<void>): () => void
   createCardInstance(card: object): Promise<string>
   sendCardByReference(to: string, cardId: string, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
@@ -646,6 +647,13 @@ export interface FeishuOnboardingHandle {
   /** Record topic context from an inbound message (e.g. a slash command in a
    *  topic) so later card actions from that chat recover their thread key. */
   noteTopic(chatMessage: ConversationMessage): void
+  /**
+   * Repaint this chat's last onboarding card as a stale-card notice. Used by
+   * the caller when it posts the model card (which is rendered by
+   * feishu-model-select, not by this module) so the preset card does not keep
+   * showing live-looking buttons.
+   */
+  supersedePrevious(chatId: string): Promise<void>
 }
 
 export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboardingHandle {
@@ -658,6 +666,10 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   /** Topic reply context per chat, so cards sent from button callbacks land
    *  in the same Feishu topic the user clicked from. Keyed by chatId. */
   const chatTopic = new Map<string, { rootId?: string; threadId?: string }>()
+  /** Monotonic CardKit sequence per card instance, shared with the superseder
+   *  so a stale-card repaint never reuses a number. */
+  const sequenceByCard = new Map<string, number>()
+  const superseder = createCardSuperseder({ channel, logger, getTranslations, sequenceByCard })
 
   /** Send opts that land in the chat's topic when it has one. */
   function topicOpts(chatMessage: ConversationMessage): { replyInThread?: boolean; replyTo?: string } {
@@ -688,14 +700,29 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
    * once already in the V1 model selector (`feishu-model-select.ts`), whose
    * fix was exactly this: one fresh card per navigation step, old cards left
    * in the chat (the operator prefers that to a recalled card).
+   *
+   * Once the new card is posted, the previous card for this chat is repainted
+   * as a stale-card notice so its now-dead buttons are visibly retired.
+   *
+   * @param terminal - true for a result/error card that ends a flow; it is not
+   *   remembered, so a later flow will not repaint it.
    */
   async function sendCard(
     chatMessage: ConversationMessage,
     card: object,
+    options?: { terminal?: boolean },
   ): Promise<void> {
     const opts = topicOpts(chatMessage)
     const cardId = await channel.createCardInstance(card)
-    await channel.sendCardByReference(chatMessage.chatId, cardId, opts)
+    const result = await channel.sendCardByReference(chatMessage.chatId, cardId, opts)
+    // Repaint the previous card only AFTER the new one is on screen, and
+    // before remembering the new card (supersedePrevious consumes the note).
+    await superseder.supersedePrevious(chatMessage.chatId)
+    if (options?.terminal === true) {
+      superseder.forget(chatMessage.chatId)
+      return
+    }
+    superseder.note(chatMessage.chatId, { cardId, messageId: result.messageId })
   }
 
   /** Build the workspace picker with the default = deployment config. */
@@ -741,7 +768,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         header: { title: { tag: 'plain_text', content: getTranslations().onboardingBrowseTitle }, template: 'red' },
         body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path ?? '~', msg) }] },
       }
-      await sendCard(action.chatMessage, card)
+      await sendCard(action.chatMessage, card, { terminal: true })
       return
     }
     const previous = browseState.get(action.chatMessage.chatId)
@@ -779,7 +806,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         header: { title: { tag: 'plain_text', content: getTranslations().onboardingCreateWorkspaceFailTitle }, template: 'red' },
         body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path, msg) }] },
       }
-      await sendCard(action.chatMessage, card)
+      await sendCard(action.chatMessage, card, { terminal: true })
       return
     }
     browseState.delete(chatKey)
@@ -803,13 +830,13 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         header: { title: { tag: 'plain_text', content: getTranslations().onboardingAttachArchivedTitle }, template: 'red' },
         body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingAttachArchivedBody }] },
       }
-      await sendCard(action.chatMessage, card)
+      await sendCard(action.chatMessage, card, { terminal: true })
       return
     }
     const ownerKey = bridge.sessionOwnerKey(sessionId)
     const ownerLabel = ownerKey === undefined ? undefined : bridge.describeChatKey(ownerKey)
     const card = renderAttachedCard(sessionId, ownerLabel, getTranslations())
-    await sendCard(action.chatMessage, card)
+    await sendCard(action.chatMessage, card, { terminal: true })
   }
 
   async function handleNew(action: QueuedAction): Promise<void> {
@@ -859,7 +886,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       header: { title: { tag: 'plain_text', content: getTranslations().onboardingCancelTitle }, template: 'grey' },
       body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCancelledBody }] },
     }
-    await sendCard(action.chatMessage, card)
+    await sendCard(action.chatMessage, card, { terminal: true })
   }
 
   /** Card action events carry only chatId + messageId — never the thread id.
@@ -942,6 +969,8 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       newFlow.clear()
       browseState.clear()
       chatTopic.clear()
+      superseder.clear()
+      sequenceByCard.clear()
     },
     sendOnboardingCard: async (chatMessage: ConversationMessage, threadLabel: string): Promise<void> => {
       const bridge = bridgeHolder.current
@@ -965,5 +994,6 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     noteTopic: (chatMessage: ConversationMessage): void => {
       recordTopic(chatMessage)
     },
+    supersedePrevious: (chatId: string): Promise<void> => superseder.supersedePrevious(chatId),
   }
 }

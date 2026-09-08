@@ -18,6 +18,7 @@ interface FakeChannel {
 
 function fakeChannel(): { channel: FakeChannel; handlers: Array<(evt: any) => void | Promise<void>> } {
   const handlers: Array<(evt: any) => void | Promise<void>> = []
+  let instances = 0
   const channel: FakeChannel = {
     send: vi.fn(async () => ({ messageId: 'm-1' })),
     updateCard: vi.fn(async () => undefined),
@@ -28,7 +29,7 @@ function fakeChannel(): { channel: FakeChannel; handlers: Array<(evt: any) => vo
         if (i >= 0) handlers.splice(i, 1)
       }
     }),
-    createCardInstance: vi.fn(async (card: object) => `card-${JSON.stringify(card).length}`),
+    createCardInstance: vi.fn(async () => `card-${++instances}`),
     sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
     updateCardInstance: vi.fn(async () => undefined),
   }
@@ -324,6 +325,71 @@ describe('feishu-onboarding', () => {
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-back' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('选择工作区')
+    handle.dispose()
+  })
+
+  it('repaints the replaced card as a stale-card notice when a new card is posted', async () => {
+    const { channel, handlers } = fakeChannel()
+    const handle = startFeishuOnboarding(deps(channel, fakeBridge()))
+    // First card (workspace picker) — nothing to supersede yet.
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+
+    // Second card (preset picker) — the workspace picker must be retired so its
+    // now-dead buttons are not mistaken for live ones.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    const [cardId, card, sequence] = channel.updateCardInstance.mock.calls[0]! as [string, any, number]
+    expect(cardId).toBe('card-1')
+    expect(sequence).toBe(1)
+    const text = JSON.stringify(card)
+    expect(text).toContain(t.cardSupersededTitle)
+    expect(text).toContain('最新的卡片')
+    // The notice must not keep any live button around.
+    expect(text).not.toContain('callback')
+
+    // A third card retires the second one.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-back' }) } })
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
+    expect((channel.updateCardInstance.mock.calls[1]! as [string, any, number])[0]).toBe('card-2')
+    handle.dispose()
+  })
+
+  it('uses the active locale for the stale-card notice', async () => {
+    const { channel, handlers } = fakeChannel()
+    const handle = startFeishuOnboarding({ ...deps(channel, fakeBridge()), getTranslations: () => translationsFor('en') })
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
+    const text = JSON.stringify((channel.updateCardInstance.mock.calls[0]! as [string, any, number])[1])
+    expect(text).toContain(translationsFor('en').cardSupersededTitle)
+    expect(text).toContain('newest card')
+    handle.dispose()
+  })
+
+  it('does not repaint a terminal result card from a later flow', async () => {
+    const { channel, handlers } = fakeChannel()
+    const handle = startFeishuOnboarding(deps(channel, fakeBridge()))
+    // Cancel ends the flow with a terminal card.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'cancel' }) } })
+    channel.updateCardInstance.mockClear()
+    // A later flow must leave the "cancelled" card readable.
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    handle.dispose()
+  })
+
+  it('keeps the flow alive when repainting the stale card fails', async () => {
+    const { channel, handlers } = fakeChannel()
+    const warn = vi.fn()
+    const d = { ...deps(channel, fakeBridge()), logger: { info: vi.fn(), warn, error: vi.fn() } }
+    channel.updateCardInstance.mockRejectedValue(new Error('card expired'))
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
+    // The preset card still went out; only the retire attempt was logged.
+    const last = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+    expect(last).toContain('选择 Agent 预设')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('card expired'))
     handle.dispose()
   })
 

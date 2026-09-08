@@ -15,6 +15,7 @@ import type { LlmProviderInfo, LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
+import { renderSupersededCard } from './card-supersede.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -481,6 +482,14 @@ export function startFeishuModelSelect(deps: {
       logger.warn(`dsh-feishu: model-select updateCardInstance failed: ${msg} — sending fresh card`)
       const fresh = await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard)
       cardByMessage.set(fresh.messageId, fresh.cardId)
+      // The old card could not be updated — retire it so its buttons do not
+      // keep looking live next to the fresh one. Best-effort.
+      const seq = (sequenceByCard.get(cardId) ?? 0) + 1
+      sequenceByCard.set(cardId, seq)
+      await channel.updateCardInstance(cardId, renderSupersededCard(getTranslations()), seq).catch((retireError: unknown) => {
+        const retireMsg = retireError instanceof Error ? retireError.message : String(retireError)
+        logger.warn(`dsh-feishu: could not mark model-select card ${cardId} as superseded: ${retireMsg}`)
+      })
     }
   }
 

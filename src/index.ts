@@ -551,6 +551,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           modelSelectHandle.cardByMessage.set(sentId, cardId)
           modelSelectHandle.sequenceByCard.set(cardId, 0)
         }
+        // The preset card posted by the onboarding flow is now dead weight —
+        // repaint it as a stale-card notice so its buttons do not look live.
+        await onboardingHandle?.supersedePrevious(chatMessage.chatId)
       },
     })
   }
