@@ -255,15 +255,13 @@ export class HarnessConversationService {
       // the channel layer filters empties out, so this is defensive.
       throw new Error('dsh-feishu: cannot submit an empty user turn')
     }
-    // Tag every Feishu user turn with a leading `[Feishu] ` marker so the
-    // model and any later session-log reader can tell the message originated
-    // from the Lark channel rather than the webui composer. Image/file-only
-    // messages get the tag as a standalone text block because there is no
-    // caption to attach it to.
-    const tag = '[Feishu] '
+    // The user's text reaches the model verbatim — no channel prefix. The
+    // Feishu channel is already recorded by the session↔chat binding, so a
+    // `[Feishu] ` marker would only pollute every turn's model context and
+    // session log, and would leave a stray empty text block on image/file-only
+    // turns (which carry no caption to attach it to).
     const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef } | { type: 'file'; attachment: any }> = []
-    if (hasText) content.push({ type: 'text', text: `${tag}${text}` })
-    else content.push({ type: 'text', text: tag })
+    if (hasText) content.push({ type: 'text', text })
     for (const attachment of imageBlocks) content.push({ type: 'image', attachment })
     for (const file of fileBlocks) content.push({ type: 'file', attachment: file.attachment })
 
@@ -498,10 +496,10 @@ export class HarnessConversationService {
     if (text.trim() === '') {
       throw new Error('steer 内容为空')
     }
-    // Same `[Feishu] ` marker as reply() so the model and session log can tell
-    // the injection came from the Lark channel rather than the webui composer.
+    // Same verbatim-text contract as reply(): no channel prefix. The injection
+    // came from the Lark channel, which the session↔chat binding already says.
     const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: ImageAttachmentRef } | { type: 'file'; attachment: any }> = []
-    content.push({ type: 'text', text: `[Feishu] ${text}` })
+    content.push({ type: 'text', text })
     for (const attachment of (message.imageBlocks ?? [])) content.push({ type: 'image', attachment })
     for (const file of (message.fileBlocks ?? [])) content.push({ type: 'file', attachment: file.attachment })
     if (!(await this.dispatchPrompt(agent, 'steer', content))) {

@@ -15,16 +15,13 @@ function fixture() {
       whenIdle: vi.fn(async () => undefined),
       followup: vi.fn((message: any) => {
         events.push({ seq: seq++, type: 'turn/start', data: {} })
-        // Strip the `[Feishu] ` prefix so existing tests that compare against
-        // raw text values keep working. Newer tests assert the prefix on the
-        // captured user message directly.
-        const echoed = String(message.content[0]?.text ?? '').replace(/^\[Feishu\] /, '')
+        const echoed = String(message.content[0]?.text ?? '')
         events.push({ seq: seq++, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: `answer:${echoed}` }] } } })
         events.push({ seq: seq++, type: 'turn/end', data: { reason: { kind: 'completed' } } })
       }),
       steer: vi.fn((message: any) => {
         events.push({ seq: seq++, type: 'turn/start', data: {} })
-        const echoed = String(message.content[0]?.text ?? '').replace(/^\[Feishu\] /, '')
+        const echoed = String(message.content[0]?.text ?? '')
         events.push({ seq: seq++, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: `answer:${echoed}` }] } } })
         events.push({ seq: seq++, type: 'turn/end', data: { reason: { kind: 'completed' } } })
       }),
@@ -144,7 +141,7 @@ describe('HarnessConversationService', () => {
     expect(agent.followup).not.toHaveBeenCalled()
     expect(agent.steer).toHaveBeenCalledTimes(1)
     const msg = agent.steer.mock.calls[0]![0]
-    expect(msg.content).toEqual([{ type: 'text', text: '[Feishu] inject me' }])
+    expect(msg.content).toEqual([{ type: 'text', text: 'inject me' }])
     expect(msg.source).toEqual({ kind: 'user' })
   })
 
@@ -222,7 +219,7 @@ describe('HarnessConversationService', () => {
     expect(agent.followup).toHaveBeenCalledTimes(1)
     expect(agent.steer).not.toHaveBeenCalled()
     const msg = agent.followup.mock.calls[0]![0]
-    expect(msg.content).toEqual([{ type: 'text', text: '[Feishu] queued' }])
+    expect(msg.content).toEqual([{ type: 'text', text: 'queued' }])
     expect(out).toBe('answer:queued')
   })
 
@@ -561,10 +558,10 @@ describe('HarnessConversationService', () => {
       chatId: 'oc_1', chatType: 'p2p',
       content: 'describe this',
       imageBlocks: [ref],
-    })).resolves.toBe('answer:[Feishu] describe this')
+    })).resolves.toBe('answer:describe this')
     expect(captured).toMatchObject({
       content: [
-        { type: 'text', text: '[Feishu] describe this' },
+        { type: 'text', text: 'describe this' },
         { type: 'image', attachment: ref },
       ],
     })
@@ -607,7 +604,7 @@ describe('HarnessConversationService', () => {
     await expect(service.reply({ chatId: 'oc_3', chatType: 'p2p', content: '' })).rejects.toThrow(/empty user turn/)
   })
 
-  it('prepends [Feishu] to every user turn so the model can see the source', async () => {
+  it('sends the user text verbatim, with no channel prefix', async () => {
     const f = fixture()
     let captured: any
     const original = f.create.getMockImplementation()
@@ -626,10 +623,10 @@ describe('HarnessConversationService', () => {
     })
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', workspace: '/work' })
     await service.reply({ chatId: 'oc_4', chatType: 'p2p', content: 'hello' })
-    expect(captured.content[0]).toEqual({ type: 'text', text: '[Feishu] hello' })
+    expect(captured.content[0]).toEqual({ type: 'text', text: 'hello' })
   })
 
-  it('still tags image-only messages with [Feishu] as a standalone text block', async () => {
+  it('submits image-only messages with no text block at all', async () => {
     const f = fixture()
     let captured: any
     const original = f.create.getMockImplementation()
@@ -650,7 +647,6 @@ describe('HarnessConversationService', () => {
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', workspace: '/work' })
     await service.reply({ chatId: 'oc_5', chatType: 'p2p', content: '', imageBlocks: [ref] })
     expect(captured.content).toEqual([
-      { type: 'text', text: '[Feishu] ' },
       { type: 'image', attachment: ref },
     ])
   })

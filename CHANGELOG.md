@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 变更：去掉用户消息的 `[Feishu] ` 来源前缀（`src/harness.ts` / `tests/harness.spec.ts`）
+
+- **背景**：每条从飞书进来的用户消息都会被加上 `[Feishu] ` 前缀，本意是让模型/日志能区分消息来自飞书还是 WebUI。实际使用中这个信息几乎用不上，代价却是每条 turn 都被污染：模型上下文与 session log 里都带前缀，纯图片/文件消息还会多出一个只有 `[Feishu] ` 的空文本块。
+- **改动**：`reply()` 与 `steer()` 都不再拼前缀，用户文本原样进入模型（通道归属由 session↔chat 绑定记录，回复路由也由插件决定，与文本无关）；纯图片/文件消息的 content 只剩 image/file 块，不再补空文本块。
+- **验证**：更新 5 处测试断言（文本原样、纯图片无 text 块、mixed turn、steer/queue 注入）；`npm run typecheck` / `npm run test`（266 passed）/ `npm run build`。
+
 ### 文档：同步 README / 架构文档 / TODO 到当前实现（`README.md` / `docs/architecture.md` / `TODO.md`）
 
 - **README**：per-step 卡片行补上「标题带轮次/步骤、reasoning 带耗时与思考 token、footer 两行、快步骤只发一张卡」；Turn Complete 行注明吞吐量口径对齐 Web UI；入站/接收文件从过期的 `.feishu-inbox/` 改为 **DSH 原生附件库**；busy 段落补上「运行中发普通消息先回纯文本提示、steer 不再单独回卡」。
