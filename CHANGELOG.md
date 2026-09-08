@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 修复：目录浏览器翻几页后按钮失效 → 每次导航发新卡片（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
+
+- **现象**：`/new` 的目录浏览卡翻到若干页后按钮不再响应（"翻不了了"）。
+- **根因**：**飞书对同一条消息的卡片就地更新次数有硬上限**——大约 2–3 次之后就停止投递按钮回调。这一点本仓库在 V1 模型选择器里已经踩过并记录（`git show 6d68a9e`：*"after 2-3 `im.v1.message.patch` calls the card's buttons stop responding entirely"*），当时的解法就是**每次导航发一张新卡片**。本轮误以为 CardKit 卡片实例（`cardkit.v1.card.update`）能绕开这个限制（`src/index.ts` 的注释也这么写），实测**同样会失效**。
+- **修复**：`feishu-onboarding.ts` 的 `sendCard` 改为**始终新建卡片实例并发送新消息**（不再 `updateCardInstance`），删掉 `cardByMessage`/`sequenceByCard` 两张映射表；`OnboardingChannel` 接口相应收窄到 `onCardAction` / `createCardInstance` / `sendCardByReference`。每页条目数从 12 提到 **30**（每次翻页都是一条新消息，页数越少越好）。另加一行 `browse <kind> → <path> page=N` 日志便于后续排查。
+- **注意**：**无按钮的卡片不受影响**——step 卡只做渲染、没有回调，仍可安全地用卡片实例连续更新（本轮的 step 卡迁移保留）。
+- **验证**：`npm run typecheck` / `npm run test`（237 passed，新增 1 例：100 项目录翻 4 页，每页都是新卡片且内容正确、末页无「下一页」）/ `npm run build` 全绿。
+
 ### 新增：`/new` 工作区卡片支持「📂 浏览目录」（不知道路径也能从飞书选目录）（`src/feishu-onboarding.ts` / `src/i18n.ts` / `src/index.ts` / `tests/onboarding.spec.ts`）
 
 - **背景**：此前 `/new` 只能选已注册的工作区，或**手输绝对路径/`~` 路径**；人不在电脑前、查不到路径时无解。DSH WebUI 有目录浏览器，插件补上对应能力。

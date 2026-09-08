@@ -151,8 +151,8 @@ describe('feishu-onboarding', () => {
     expect(JSON.stringify(card)).toContain('选择工作区')
     // pick workspace → preset picker (updates the referenced card instance)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
-    expect(channel.updateCardInstance).toHaveBeenCalled()
-    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    expect(channel.createCardInstance).toHaveBeenCalled()
+    card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('选择 Agent 预设')
     // pick preset → model step
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-preset', value: 'researcher' }) } })
@@ -260,7 +260,7 @@ describe('feishu-onboarding', () => {
       // `browse-open` starts at the home directory; navigate to the temp root.
       await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
       await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: root }) } })
-      const card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+      const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
       const text = JSON.stringify(card)
       expect(text).toContain('alpha')
       expect(text).toContain('beta')
@@ -289,7 +289,7 @@ describe('feishu-onboarding', () => {
     // Open the browser at the host home directory.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     expect(picker.list).toHaveBeenLastCalledWith(undefined)
-    let card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    let card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     let text = JSON.stringify(card)
     expect(text).toContain('/home/me')
     expect(text).toContain('projects')
@@ -298,19 +298,19 @@ describe('feishu-onboarding', () => {
     // Toggle hidden entries on → the dot directory appears.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-hidden' }) } })
     expect(picker.list).toHaveBeenLastCalledWith('/home/me')
-    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('.cache')
 
     // Descend into a child directory.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: '/home/me/projects' }) } })
     expect(picker.list).toHaveBeenLastCalledWith('/home/me/projects')
-    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('my-app')
 
     // Commit the listed directory as the workspace → preset picker.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-pick', value: '/home/me/projects' }) } })
     expect(create).toHaveBeenCalledWith('/home/me/projects')
-    card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('选择 Agent 预设')
     handle.dispose()
   })
@@ -322,7 +322,7 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-back' }) } })
-    const card = channel.updateCardInstance.mock.calls.at(-1)![1] as any
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('选择工作区')
     handle.dispose()
   })
@@ -335,6 +335,47 @@ describe('feishu-onboarding', () => {
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: '/nope' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('ENOENT')
+    handle.dispose()
+  })
+
+  it('pages a large level by posting a fresh card for every page', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      name: `dir-${String(index).padStart(3, '0')}`,
+      path: `/big/dir-${String(index).padStart(3, '0')}`,
+      hidden: false,
+    }))
+    d.getDirectoryPicker = () => ({
+      capability: () => ({
+        kind: 'browse',
+        list: async (path?: string) => ({
+          path: path ?? '/big',
+          home: '/big',
+          crumbs: [{ name: '/', path: '/', hidden: false }, { name: 'big', path: '/big', hidden: false }],
+          entries,
+          truncated: false,
+        }),
+      }),
+    })
+    const handle = startFeishuOnboarding(d)
+    const cardsBefore = channel.createCardInstance.mock.calls.length
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    let card = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+    expect(card).toContain('dir-000')
+    expect(card).not.toContain('dir-030')
+
+    // Page 2, 3, 4 — every step must produce a NEW card message whose buttons
+    // work (in-place edits stop delivering callbacks after a couple of edits).
+    for (const [pageValue, first, absent] of [['1', 'dir-030', 'dir-000'], ['2', 'dir-060', 'dir-030'], ['3', 'dir-090', 'dir-060']] as const) {
+      await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-page', value: pageValue }) } })
+      card = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+      expect(card).toContain(first)
+      expect(card).not.toContain(absent)
+    }
+    // Last page carries no "next page" button.
+    expect(card).not.toContain('下一页')
+    expect(channel.createCardInstance.mock.calls.length).toBe(cardsBefore + 4)
     handle.dispose()
   })
 })

@@ -45,14 +45,17 @@ interface CardActionLike {
   raw?: { action?: { value?: unknown; tag?: string; option?: string; form_value?: Record<string, unknown> } }
 }
 
-/** Channel adapter — same surface as feishu-model-select.ts. */
+/**
+ * Channel adapter — same surface as feishu-model-select.ts.
+ *
+ * Only the card-instance send path is used: every flow step posts a NEW card
+ * (see {@link startFeishuOnboarding}'s `sendCard`), because in-place updates
+ * stop delivering button callbacks after a couple of edits.
+ */
 export interface OnboardingChannel {
-  send(to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
-  updateCard(messageId: string, card: object): Promise<void>
   onCardAction(handler: (evt: CardActionLike) => void | Promise<void>): () => void
   createCardInstance(card: object): Promise<string>
   sendCardByReference(to: string, cardId: string, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
-  updateCardInstance(cardId: string, card: object, sequence: number): Promise<void>
 }
 
 /** Narrow workspace registry view. */
@@ -377,8 +380,10 @@ function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWork
 }
 
 /** Entries per browser page. One card element per entry keeps the card far
- *  below Feishu's component (200) and 30 KB body limits; larger levels page. */
-const BROWSE_PAGE_SIZE = 12
+ *  below Feishu's component (200) and 30 KB body limits; larger levels page.
+ *  Sized generously (30) because every navigation step posts a NEW card —
+ *  fewer pages means fewer messages left in the chat. */
+const BROWSE_PAGE_SIZE = 30
 
 /** Complete-result bound of one listing level, mirroring the DSH browse
  *  backend's default so a huge directory never materializes unbounded. */
@@ -646,9 +651,6 @@ export interface FeishuOnboardingHandle {
 export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboardingHandle {
   const { bridgeHolder, channel, logger, workspaceRegistry, agentPresets, agentDefaultModel, config, getTranslations, onModelStep, getDirectoryPicker } = deps
 
-  const cardByMessage = new Map<string, string>()
-  const sequenceByCard = new Map<string, number>()
-
   /** Per-chat in-flight `/new` flow state. */
   const newFlow = new Map<string, { workspace?: string; agentPreset?: string }>()
   /** Per-chat folder-browser position (kept only while the browser is open). */
@@ -675,48 +677,25 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     })
   }
 
+  /**
+   * Send one flow card as a NEW message.
+   *
+   * Every step deliberately sends a fresh card instead of editing the previous
+   * one. Feishu stops delivering button callbacks on a card after only a
+   * couple of in-place edits — this is true for `im.v1.message.patch` *and*
+   * for CardKit card instances, so the folder browser died after a few pages
+   * even though it used `cardkit.v1.card.update`. The repository learned this
+   * once already in the V1 model selector (`feishu-model-select.ts`), whose
+   * fix was exactly this: one fresh card per navigation step, old cards left
+   * in the chat (the operator prefers that to a recalled card).
+   */
   async function sendCard(
     chatMessage: ConversationMessage,
     card: object,
-    messageId: string | undefined,
   ): Promise<void> {
     const opts = topicOpts(chatMessage)
-    if (messageId === undefined) {
-      const cardId = await channel.createCardInstance(card)
-      const result = await channel.sendCardByReference(chatMessage.chatId, cardId, opts)
-      const sentId = result.messageId ?? ''
-      if (sentId !== '') {
-        cardByMessage.set(sentId, cardId)
-        sequenceByCard.set(cardId, 0)
-      }
-      return
-    }
-    const cardId = cardByMessage.get(messageId)
-    if (cardId === undefined) {
-      const fresh = await channel.createCardInstance(card)
-      const result = await channel.sendCardByReference(chatMessage.chatId, fresh, opts)
-      const sentId = result.messageId ?? ''
-      if (sentId !== '') {
-        cardByMessage.set(sentId, fresh)
-        sequenceByCard.set(fresh, 0)
-      }
-      return
-    }
-    const seq = (sequenceByCard.get(cardId) ?? 0) + 1
-    sequenceByCard.set(cardId, seq)
-    try {
-      await channel.updateCardInstance(cardId, card, seq)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      logger.warn(`dsh-feishu: onboarding updateCardInstance failed: ${msg} — sending fresh card`)
-      const cardId2 = await channel.createCardInstance(card)
-      const result = await channel.sendCardByReference(chatMessage.chatId, cardId2, opts)
-      const sentId = result.messageId ?? ''
-      if (sentId !== '') {
-        cardByMessage.set(sentId, cardId2)
-        sequenceByCard.set(cardId2, 0)
-      }
-    }
+    const cardId = await channel.createCardInstance(card)
+    await channel.sendCardByReference(chatMessage.chatId, cardId, opts)
   }
 
   /** Build the workspace picker with the default = deployment config. */
@@ -762,7 +741,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         header: { title: { tag: 'plain_text', content: getTranslations().onboardingBrowseTitle }, template: 'red' },
         body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path ?? '~', msg) }] },
       }
-      await sendCard(action.chatMessage, card, action.messageId)
+      await sendCard(action.chatMessage, card)
       return
     }
     const previous = browseState.get(action.chatMessage.chatId)
@@ -772,7 +751,8 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       page: overrides?.page ?? 0,
     }
     browseState.set(action.chatMessage.chatId, state)
-    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations()), action.messageId)
+    logger.info(`dsh-feishu: browse ${action.kind} → ${state.path} page=${state.page} entries=${listing.entries.length} hidden=${state.hidden}`)
+    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations()))
   }
 
   /** Re-list the current level with updated display options (hidden/page). */
@@ -799,7 +779,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         header: { title: { tag: 'plain_text', content: getTranslations().onboardingCreateWorkspaceFailTitle }, template: 'red' },
         body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path, msg) }] },
       }
-      await sendCard(action.chatMessage, card, action.messageId)
+      await sendCard(action.chatMessage, card)
       return
     }
     browseState.delete(chatKey)
@@ -808,7 +788,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     newFlow.set(chatKey, flowState)
     const presets = await agentPresets.list()
     const card = renderPresetPicker(presets, flowState.agentPreset ?? agentPresets.defaultId, getTranslations())
-    await sendCard(action.chatMessage, card, action.messageId)
+    await sendCard(action.chatMessage, card)
   }
 
   async function handleAttach(action: QueuedAction): Promise<void> {
@@ -823,18 +803,18 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         header: { title: { tag: 'plain_text', content: getTranslations().onboardingAttachArchivedTitle }, template: 'red' },
         body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingAttachArchivedBody }] },
       }
-      await sendCard(action.chatMessage, card, action.messageId)
+      await sendCard(action.chatMessage, card)
       return
     }
     const ownerKey = bridge.sessionOwnerKey(sessionId)
     const ownerLabel = ownerKey === undefined ? undefined : bridge.describeChatKey(ownerKey)
     const card = renderAttachedCard(sessionId, ownerLabel, getTranslations())
-    await sendCard(action.chatMessage, card, action.messageId)
+    await sendCard(action.chatMessage, card)
   }
 
   async function handleNew(action: QueuedAction): Promise<void> {
     const card = await buildWorkspacePicker(action.chatMessage)
-    await sendCard(action.chatMessage, card, action.messageId)
+    await sendCard(action.chatMessage, card)
   }
 
   async function handlePickWorkspace(action: QueuedAction): Promise<void> {
@@ -845,7 +825,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     const presets = await agentPresets.list()
     const defaultPreset = flowState.agentPreset ?? agentPresets.defaultId
     const card = renderPresetPicker(presets, defaultPreset, getTranslations())
-    await sendCard(action.chatMessage, card, action.messageId)
+    await sendCard(action.chatMessage, card)
   }
 
   async function handlePickPreset(action: QueuedAction): Promise<void> {
@@ -879,7 +859,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       header: { title: { tag: 'plain_text', content: getTranslations().onboardingCancelTitle }, template: 'grey' },
       body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCancelledBody }] },
     }
-    await sendCard(action.chatMessage, card, action.messageId)
+    await sendCard(action.chatMessage, card)
   }
 
   /** Card action events carry only chatId + messageId — never the thread id.
@@ -942,7 +922,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
           break
         case 'browse-back':
           browseState.delete(action.chatMessage.chatId)
-          await sendCard(action.chatMessage, await buildWorkspacePicker(action.chatMessage), action.messageId)
+          await sendCard(action.chatMessage, await buildWorkspacePicker(action.chatMessage))
           break
         case 'cancel':
           await handleCancel(action)
@@ -961,8 +941,6 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       unsubscribe()
       newFlow.clear()
       browseState.clear()
-      cardByMessage.clear()
-      sequenceByCard.clear()
       chatTopic.clear()
     },
     sendOnboardingCard: async (chatMessage: ConversationMessage, threadLabel: string): Promise<void> => {
@@ -971,12 +949,12 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       recordTopic(chatMessage)
       const sessions = await bridge.listSessions()
       const card = renderOnboardingCard(sessions, key => bridge.describeChatKey(key), threadLabel, getTranslations())
-      await sendCard(chatMessage, card, undefined)
+      await sendCard(chatMessage, card)
     },
     startNewFlow: async (chatMessage: ConversationMessage): Promise<void> => {
       recordTopic(chatMessage)
       const card = await buildWorkspacePicker(chatMessage)
-      await sendCard(chatMessage, card, undefined)
+      await sendCard(chatMessage, card)
     },
     creationOptionsFor: (chatId: string): { workspace?: string; agentPreset?: string } => {
       return newFlow.get(chatId) ?? {}
