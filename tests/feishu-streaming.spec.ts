@@ -267,4 +267,57 @@ describe('step card delivery', () => {
     expect(channel.updateCard).toHaveBeenCalledWith('m-plain', expect.anything())
     streaming.stop()
   })
+
+  it('updates the existing card when assistant/message arrives after a tool call', async () => {
+    // A tool call can open the step card before the assembled message lands.
+    // Sending a SECOND card there stranded the first one with a tool stuck on
+    // "running…", because only the newest ref kept receiving results.
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(0)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'thinking' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    // Still exactly one card — the message updated it instead of posting another.
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    expect(channel.updateCardInstance).toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('does not let the next step cancel the previous card\'s pending update', async () => {
+    let instances = 0
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => `card-${++instances}`),
+      sendCardByReference: vi.fn(async () => ({ messageId: `m-${instances}` })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{}' })
+    await tick(0)
+    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'ok' }] } })
+    // Next step starts (and schedules its own update) BEFORE the previous
+    // step's 150ms debounce has fired.
+    emit('step/start')
+    emit('tool/call', { callId: 'c2', name: 'read', arguments: '{}' })
+    await tick(0)
+    emit('tool/result', { message: { source: { callId: 'c2' }, content: [{ content: 'ok' }] } })
+    await tick(250)
+    // Both step cards were updated — neither debounce cancelled the other.
+    const cardIds = channel.updateCardInstance!.mock.calls.map(call => call[0])
+    expect(new Set(cardIds).size).toBe(2)
+    streaming.stop()
+  })
 })

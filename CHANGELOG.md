@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：step 卡片丢失工具状态更新 / 只剩 reasoning（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **现象**：部分 step 卡片的工具状态停在 `⏳ running…` 不更新；部分卡片只剩 reasoning 内容、工具根本不出现。
+- **根因（两处，均导致"这一步的卡片收不到后续更新"）**：
+  1. **`assistant/message` 无条件新发一张卡片**。一个 step 里工具调用可能先到（先开卡），assembled message 后到；此时旧代码又发了一张新卡，于是 `state.stepCardRef` 指向新卡，**旧卡再也不会被更新**——它的工具永远停在 running，而新卡只带 reasoning（如果工具事件已过去）。改为：本 step 已有卡片时走 `updateStepCard`，不再新发。
+  2. **防抖表按 session state 键**（`Map<SessionStepState, ...>`）。一个 state 对象服务该会话的所有 step，因此下一步骤的更新会**清掉上一步骤尚未触发的 150ms 定时器**——上一步的卡片就此丢掉工具结果。改为**按卡片 ref 键**（`Map<StepCardRef, ...>`），各卡互不干扰；`flushPendingUpdate` 也按 `state.stepCardRef` 查找。
+- **诊断日志**：`[send] instance card=…` / `[send] message=…` / `[update] card=… seq=…` / `[update] skipped: …` / `[message] card already sent … → updating`，便于下次直接从 `journalctl` 定位。
+- **验证**：`npm run typecheck` / `npm run test`（239 passed，新增 2 例：工具先开卡后 assembled message 只更新不新发、下一步骤不会取消上一步骤的待更新）/ `npm run build` 全绿。
+
 ### 修复：目录浏览器翻几页后按钮失效 → 每次导航发新卡片（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
 
 - **现象**：`/new` 的目录浏览卡翻到若干页后按钮不再响应（"翻不了了"）。
