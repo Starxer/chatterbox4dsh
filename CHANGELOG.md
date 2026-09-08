@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 变更：工作区选择也改为可点击行 + 顶部控制按钮窄屏堆叠（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
+
+- **手机端顶部按钮显示不全**：控制行（上一级 / 家目录 / 显示隐藏）用 `column_set` 的 `flex_mode: 'none'`——它是「按比例压缩」，窄屏把三个按钮压到文字被裁。改为 **`flex_mode: 'stretch'`（窄屏变上下堆叠）**，宽屏仍并排；翻页行同款。
+- **已有工作区选择改为与目录浏览相同的样式**：每个工作区渲染为一个 **`interactive_container` 可点击行**（无边框、`width: 'fill'`，内容为 `📁 **名字**` + 完整路径，当前工作区带 ✅），**点整行即选中**；删掉 `select_static` 下拉与「✅ 使用这个工作区」提交按钮（先选号再提交的两步操作没了）。新建工作区的输入框 + 创建按钮仍在自己的 form 里（提交按钮必须归属其容器）。
+- **兼容**：`parseOnboardingAction` 的 `form_value.workspace` 分支保留——聊天里已发出的旧下拉卡片仍能提交；新增卡片只走 `pick-workspace` 回调。
+- **i18n**：删除不再使用的 `onboardingWorkspaceSelectPlaceholder` / `onboardingWorkspaceSelectButton`。
+- **验证**：`npm run typecheck` / `npm run test`（253 passed，改写 2 例：工作区是可点击行且带完整路径、长路径不省略；目录浏览断言控制行 `flex_mode: 'stretch'`）/ `npm run build`；工作区选择卡与目录浏览卡各发一张预览到真实话题，`cardkit.v1.card.create` 均 `code=0 success`。
+
 ### 变更：目录浏览列表改用 `interactive_container` 整块点击行（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
 
 - **背景**：上一版把每个目录做成整行按钮，虽然可点，但每行都套一层按钮外观。用户指出飞书有「不是按钮、但可以点击互动」的组件，要求查 SDK 文档。

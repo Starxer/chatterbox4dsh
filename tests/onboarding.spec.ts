@@ -165,7 +165,7 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('renders workspaces as a numbered dropdown plus the full paths in the body', async () => {
+  it('renders each workspace as a clickable row with its full path', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     d.workspaceRegistry = {
@@ -179,22 +179,26 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const rows = card.body.elements
+      .filter((el: any) => el.tag === 'interactive_container' && el.behaviors[0].value.kind === 'pick-workspace')
+    // Each workspace is one clickable row carrying its FULL path (never a
+    // clipped dropdown option), and the row itself is the pick target.
+    expect(rows.map((row: any) => row.elements[0].content)).toEqual([
+      '📁 `/srv/one/two/three`',
+      '📁 `/srv/one/two/four`',
+      '📁 `/opt/a/b/c/d/e`',
+    ])
+    expect(rows.map((row: any) => row.behaviors[0].value.value))
+      .toEqual(['/srv/one/two/three', '/srv/one/two/four', '/opt/a/b/c/d/e'])
+    expect(rows.every((row: any) => row.width === 'fill' && row.has_border === false)).toBe(true)
+    // No dropdown anymore; the manual-path form still has its input.
+    expect(JSON.stringify(card.body.elements)).not.toContain('select_static')
     const form = card.body.elements.find((el: any) => el.tag === 'form')
-    const select = form.elements.find((el: any) => el.tag === 'select_static')
-    // Dropdown options are only the row numbers — a clipped single line can
-    // never show a long path; the full path stays the option value.
-    expect(select.options.map((o: any) => o.text.content)).toEqual(['1', '2', '3'])
-    expect(select.options.map((o: any) => o.value)).toEqual(['/srv/one/two/three', '/srv/one/two/four', '/opt/a/b/c/d/e'])
-    // The body lists every full path, so nothing is truncated.
-    const body = JSON.stringify(card.body.elements)
-    expect(body).toContain('/srv/one/two/three')
-    expect(body).toContain('/opt/a/b/c/d/e')
-    // One dropdown + submit, one manual-path submit — no per-workspace buttons.
-    expect(form.elements.filter((el: any) => el.tag === 'button')).toHaveLength(2)
+    expect(form.elements.some((el: any) => el.tag === 'input')).toBe(true)
     handle.dispose()
   })
 
-  it('submits the dropdown selection through the workspace form', async () => {
+  it('still accepts a legacy dropdown form submission from an already-sent card', async () => {
     const { channel, handlers } = fakeChannel()
     const bridge = fakeBridge()
     const onModelStep = vi.fn(async () => undefined)
@@ -215,7 +219,7 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('lists long workspace paths in full instead of clipping the dropdown option', async () => {
+  it('lists long workspace paths in full in the clickable rows', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     d.workspaceRegistry = {
@@ -228,13 +232,13 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    const select = card.body.elements
-      .find((el: any) => el.tag === 'form').elements.find((el: any) => el.tag === 'select_static')
-    expect(select.options.map((o: any) => o.text.content)).toEqual(['1', '2'])
-    // The body carries both full paths verbatim — no elision anywhere.
-    const body = JSON.stringify(card.body.elements)
-    expect(body).toContain('/srv/a/verylongprojectdirectoryname')
-    expect(body).toContain('/srv/b/anotherverylongprojectname')
+    const rows = card.body.elements
+      .filter((el: any) => el.tag === 'interactive_container' && el.behaviors[0].value.kind === 'pick-workspace')
+    // Both full paths are shown verbatim in their rows — no elision anywhere.
+    expect(rows.map((row: any) => row.elements[0].content)).toEqual([
+      '📁 `/srv/a/verylongprojectdirectoryname`',
+      '📁 `/srv/b/anotherverylongprojectname`',
+    ])
     handle.dispose()
   })
 
@@ -269,6 +273,10 @@ describe('feishu-onboarding', () => {
     expect(rows.map((row: any) => row.elements[0].content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
     expect(rows.every((row: any) => row.width === 'fill' && row.has_border === false)).toBe(true)
     expect(rows.map((row: any) => row.behaviors[0].value.value)).toEqual(entries.map(entry => entry.path))
+    // The top controls stack vertically on a narrow (mobile) screen instead of
+    // squeezing their labels until they clip.
+    const controlRow = card.body.elements.find((el: any) => el.tag === 'column_set')
+    expect(controlRow.flex_mode).toBe('stretch')
     handle.dispose()
   })
 

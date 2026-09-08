@@ -226,8 +226,6 @@ export interface Translations {
   onboardingIntro: (threadLabel: string) => string
   onboardingWorkspaceHeader: string
   onboardingNoWorkspaces: string
-  onboardingWorkspaceSelectPlaceholder: string
-  onboardingWorkspaceSelectButton: string
   onboardingNewWorkspaceHeader: string
   onboardingWorkspacePlaceholder: string
   onboardingCreateWorkspaceButton: string
@@ -458,8 +456,6 @@ export const zh = {
   onboardingIntro: threadLabel => `**👋 开始使用**\n\n${threadLabel} 还没有绑定任何会话。从下方选择一个已有会话继续，或新建一个会话。`,
   onboardingWorkspaceHeader: '**📁 选择工作区**\n\n新建会话将在这个工作区中运行。',
   onboardingNoWorkspaces: '还没有工作区，请在下方输入路径新建一个。',
-  onboardingWorkspaceSelectPlaceholder: '选择工作区…',
-  onboardingWorkspaceSelectButton: '✅ 使用这个工作区',
   onboardingNewWorkspaceHeader: '**🆕 新建工作区**\n\n输入绝对路径，或 `~` 开头的家目录相对路径。',
   onboardingWorkspacePlaceholder: '如 /home/user/projects/my-app 或 ~/projects/my-app',
   onboardingCreateWorkspaceButton: '✅ 确认新建工作区',
@@ -689,8 +685,6 @@ export const en: Translations = {
   onboardingIntro: threadLabel => `**👋 Getting started**\n\n${threadLabel} is not bound to any session yet. Pick an existing session below to continue, or create a new one.`,
   onboardingWorkspaceHeader: '**📁 Pick a workspace**\n\nThe new session will run in this workspace.',
   onboardingNoWorkspaces: 'No workspaces yet — enter a path below to create one.',
-  onboardingWorkspaceSelectPlaceholder: 'Select workspace…',
-  onboardingWorkspaceSelectButton: '✅ Use this workspace',
   onboardingNewWorkspaceHeader: '**🆕 New workspace**\n\nEnter an absolute path, or a `~`-relative home path.',
   onboardingWorkspacePlaceholder: 'e.g. /home/user/projects/my-app or ~/projects/my-app',
   onboardingCreateWorkspaceButton: '✅ Confirm and create workspace',

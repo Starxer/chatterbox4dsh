@@ -300,95 +300,85 @@ function renderOnboardingCard(
 }
 
 /**
- * One workspace row for the picker's body: `1. \`/full/path\`` plus a ✅ on the
- * current one.
+ * One workspace as a borderless clickable row — the same `interactive_container`
+ * shape the folder browser uses.
  *
  * A `select_static` option is a single clipped line, so a long path there is
- * unreadable no matter how it is shortened. The full paths therefore live in
- * the card body and the dropdown only carries the row NUMBER — the same split
- * the `ask_user_question` card uses (text in the stem, buttons carry the
- * number). The option value still carries the full path, so the pick is exact.
+ * unreadable no matter how it is shortened. As a clickable row the path is
+ * markdown (wraps, never elided) and the whole row is the pick target, so no
+ * "select then submit" step is needed. The current workspace gets a ✅.
  */
-function workspaceRow(index: number, workspace: WorkspaceLike, currentWorkspace: string | undefined): string {
+function workspaceRow(workspace: WorkspaceLike, currentWorkspace: string | undefined): object {
   const mark = workspace.path === currentWorkspace ? ' ✅' : ''
-  return `**${index + 1}.** \`${workspace.path}\`${mark}`
+  const name = workspace.name !== undefined && workspace.name !== '' ? workspace.name : undefined
+  const content = name === undefined
+    ? `📁 \`${workspace.path}\`${mark}`
+    : `📁 **${name}**\n\`${workspace.path}\`${mark}`
+  return {
+    tag: 'interactive_container',
+    width: 'fill',
+    has_border: false,
+    padding: '4px 12px 4px 12px',
+    behaviors: [{ type: 'callback', value: { kind: 'pick-workspace', value: workspace.path } }],
+    elements: [{ tag: 'markdown', content }],
+  }
 }
 
-/** Workspace picker card (step 1 of /new): choose an existing workspace from a
- *  numbered dropdown or create a new one by absolute path or a `~`-relative
- *  path.
+/** Workspace picker card (step 1 of /new): pick an existing workspace with one
+ *  tap, or create a new one by absolute path or a `~`-relative path.
  *
- *  The picker used to render one button per workspace, which grew without bound
- *  as workspaces accumulated. It is now a single `select_static` submitted
- *  through the same form as the manual-path input — one form per card, because
- *  a form submit button belongs to its container. The dropdown lists only row
- *  numbers; the body lists every full path, because a dropdown option clips
- *  long paths. */
+ *  Existing workspaces render as clickable rows (`interactive_container`, same
+ *  as the folder browser) — the earlier numbered dropdown needed two steps
+ *  (choose a number, then submit) and its options clipped long paths. The
+ *  manual-path input and its create button stay in their own form; a form
+ *  submit button must belong to its container. */
 function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWorkspace: string | undefined, t: Translations): object {
-  const formElements: object[] = []
-  if (workspaces.length === 0) {
-    formElements.push({ tag: 'markdown', content: t.onboardingNoWorkspaces })
-  } else {
-    const selectedIndex = Math.max(0, workspaces.findIndex(ws => ws.path === currentWorkspace))
-    formElements.push({
-      tag: 'markdown',
-      content: workspaces.map((ws, index) => workspaceRow(index, ws, currentWorkspace)).join('\n'),
-    })
-    formElements.push({
-      tag: 'select_static',
-      name: 'workspace',
-      placeholder: { tag: 'plain_text', content: t.onboardingWorkspaceSelectPlaceholder },
-      options: workspaces.map((ws, index) => ({
-        text: { tag: 'plain_text', content: `${index + 1}${ws.path === currentWorkspace ? ' ✅' : ''}` },
-        value: ws.path,
-      })),
-      value: workspaces[selectedIndex]!.path,
-    })
-    formElements.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.onboardingWorkspaceSelectButton },
-      type: 'primary',
-      name: 'select_ws',
-      form_action_type: 'submit',
-      behaviors: [{ type: 'callback', value: { kind: 'pick-workspace' } }],
-    })
-  }
-  formElements.push({ tag: 'markdown', content: t.onboardingNewWorkspaceHeader })
-  formElements.push({
-    tag: 'input',
-    name: 'workspace_path',
-    placeholder: { tag: 'plain_text', content: t.onboardingWorkspacePlaceholder },
-    value: { tag: 'plain_text', content: '' },
-  })
-  formElements.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: t.onboardingCreateWorkspaceButton },
-    type: 'primary',
-    name: 'create_ws',
-    form_action_type: 'submit',
-    behaviors: [{ type: 'callback', value: { kind: 'create-workspace' } }],
-  })
-
   const elements: object[] = [
     { tag: 'markdown', content: t.onboardingWorkspaceHeader },
     { tag: 'hr' },
-    { tag: 'form', name: 'onboarding_workspace_form', elements: formElements },
-    // Folder browsing — the only way to reach a path the operator cannot recall
-    // while away from the host. Backed by DSH's `browse` capability when it is
-    // mounted, otherwise by the plugin's own read-only listing.
-    {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.onboardingBrowseButton },
-      type: 'default',
-      behaviors: [{ type: 'callback', value: { kind: 'browse-open' } }],
-    },
-    {
-      tag: 'button',
-      text: { tag: 'plain_text', content: `← ${t.cancel}` },
-      type: 'default',
-      behaviors: [{ type: 'callback', value: { kind: 'cancel' } }],
-    },
   ]
+  if (workspaces.length === 0) {
+    elements.push({ tag: 'markdown', content: t.onboardingNoWorkspaces })
+  } else {
+    for (const workspace of workspaces) elements.push(workspaceRow(workspace, currentWorkspace))
+  }
+  elements.push({ tag: 'hr' })
+  elements.push({ tag: 'markdown', content: t.onboardingNewWorkspaceHeader })
+  elements.push({
+    tag: 'form',
+    name: 'onboarding_workspace_form',
+    elements: [
+      {
+        tag: 'input',
+        name: 'workspace_path',
+        placeholder: { tag: 'plain_text', content: t.onboardingWorkspacePlaceholder },
+        value: { tag: 'plain_text', content: '' },
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.onboardingCreateWorkspaceButton },
+        type: 'primary',
+        name: 'create_ws',
+        form_action_type: 'submit',
+        behaviors: [{ type: 'callback', value: { kind: 'create-workspace' } }],
+      },
+    ],
+  })
+  // Folder browsing — the only way to reach a path the operator cannot recall
+  // while away from the host. Backed by DSH's `browse` capability when it is
+  // mounted, otherwise by the plugin's own read-only listing.
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.onboardingBrowseButton },
+    type: 'default',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-open' } }],
+  })
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: `← ${t.cancel}` },
+    type: 'default',
+    behaviors: [{ type: 'callback', value: { kind: 'cancel' } }],
+  })
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -507,13 +497,16 @@ function controlButton(label: string, value: unknown, type: 'default' | 'primary
 
 /** Lay a handful of short control buttons out in one row.
  *
- *  `width: 'auto'` columns hug their button and the short labels here always
- *  fit, so no budget/packing logic is needed. Folder names never go through
- *  this path — each entry is its own full-width `interactive_container` row. */
+ *  `width: 'auto'` columns hug their button, and `flex_mode: 'stretch'` makes
+ *  Feishu stack them vertically on a narrow (mobile) screen instead of
+ *  squeezing them until the labels clip — `none` compressed the three top
+ *  controls until they were unreadable on a phone. Folder names never go
+ *  through this path — each entry is its own full-width `interactive_container`
+ *  row. */
 function buttonRow(buttons: readonly object[]): object {
   return {
     tag: 'column_set',
-    flex_mode: 'none',
+    flex_mode: 'stretch',
     horizontal_spacing: 'small',
     columns: buttons.map(button => ({
       tag: 'column',
