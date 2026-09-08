@@ -238,14 +238,14 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('flows browser buttons at their natural width without eliding names', async () => {
+  it('packs browser buttons into fitting rows and never elides names', async () => {
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
-    const entries = Array.from({ length: 7 }, (_, index) => ({
-      name: `entry-${index}-somewhat-long`,
-      path: `/g/entry-${index}`,
-      hidden: false,
-    }))
+    const entries = [
+      ...Array.from({ length: 6 }, (_, index) => ({ name: `dir-${index}`, path: `/g/dir-${index}`, hidden: false })),
+      // Too long for the row budget: it must get a row to itself.
+      { name: 'a-really-quite-long-directory-name', path: '/g/long', hidden: false },
+    ]
     d.getDirectoryPicker = () => ({
       capability: () => ({
         kind: 'browse',
@@ -262,17 +262,18 @@ describe('feishu-onboarding', () => {
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     const rows = card.body.elements.filter((el: any) => el.tag === 'column_set')
-    // Controls row + one flowing row for all 7 entries (no manual row packing).
-    expect(rows).toHaveLength(2)
-    const entriesRow = rows[1]
-    expect(entriesRow.flex_mode).toBe('flow')
-    expect(entriesRow.columns).toHaveLength(7)
-    expect(entriesRow.columns.every((col: any) => col.width === 'auto')).toBe(true)
-    const buttons = entriesRow.columns.map((col: any) => col.elements[0])
-    // Names are shown in full — no ellipsis, no fixed-width clipping.
-    expect(buttons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
-    expect(buttons.every((b: any) => b.width === undefined)).toBe(true)
-    expect(buttons[0].behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/entry-0' })
+    // No single-line overflow: several rows instead of one, each a fixed row.
+    expect(rows.length).toBeGreaterThan(2)
+    expect(rows.every((row: any) => row.flex_mode === 'none')).toBe(true)
+    const entryButtons = rows
+      .flatMap((row: any) => row.columns.map((col: any) => col.elements[0]))
+      .filter((el: any) => el.tag === 'button' && el.behaviors[0].value.kind === 'browse-enter' && String(el.behaviors[0].value.value).startsWith('/g/'))
+    // Every name is shown verbatim — no ellipsis anywhere.
+    expect(entryButtons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
+    // The long name occupies a row alone.
+    const longRow = rows.find((row: any) => row.columns.some((col: any) => col.elements[0].text?.content?.includes('a-really-quite-long')))
+    expect(longRow.columns).toHaveLength(1)
+    expect(longRow.columns[0].elements[0].behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/long' })
     handle.dispose()
   })
 

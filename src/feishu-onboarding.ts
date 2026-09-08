@@ -476,45 +476,94 @@ interface BrowseState {
   page: number
 }
 
+/** Rough display width of a label: CJK and full-width glyphs take two columns,
+ *  everything else one. Used only to decide how many buttons fit a row. */
+function displayWidth(text: string): number {
+  let width = 0
+  for (const char of text) width += /[\u1100-\uFFFD]/.test(char) ? 2 : 1
+  return width
+}
+
 /**
- * Lay a list of buttons out as a flowing row: one Card JSON 2.0 `column_set`
- * with `flex_mode: 'flow'` and auto-width columns, so each button keeps its
- * FULL label and the row wraps only when it runs out of width.
- *
- * A fixed three-column grid was tried first and rejected: equal columns force
- * every label into one third of the card, so long directory names had to be
- * elided until they were unreadable. Flow mode lets the widths follow the
- * content — short names pack several per line, long ones take the space they
- * need and wrap.
+ * Character budget for one button row, in {@link displayWidth} units. Feishu
+ * card bodies fit roughly this many half-width glyphs; a row wider than the
+ * budget gets clipped, so the packer wraps before that.
  */
-function flowRow(elements: readonly object[]): object {
-  return {
+const BROWSE_ROW_BUDGET = 32
+
+/**
+ * Pack buttons into `column_set` rows that fit the card, each column weighted
+ * by its own label so short and long names share a row in proportion to what
+ * they need.
+ *
+ * `flex_mode: 'flow'` was tried first and rejected: Feishu rendered every
+ * column on ONE line instead of wrapping, which wrecked the layout. Equal-width
+ * columns were rejected earlier because they force long names to be elided.
+ * Explicit packing keeps labels intact and wraps deterministically — a name too
+ * long for the budget gets a row to itself, where it has the full card width.
+ */
+function packedRows(cells: readonly { label: string; button: object }[]): object[] {
+  const rows: Array<Array<{ label: string; button: object }>> = []
+  let row: Array<{ label: string; button: object }> = []
+  let used = 0
+  for (const cell of cells) {
+    const cost = displayWidth(cell.label) + 2 // padding between buttons
+    if (row.length > 0 && used + cost > BROWSE_ROW_BUDGET) {
+      rows.push(row)
+      row = []
+      used = 0
+    }
+    row.push(cell)
+    used += cost
+  }
+  if (row.length > 0) rows.push(row)
+  return rows.map(cellsInRow => ({
     tag: 'column_set',
-    flex_mode: 'flow',
+    flex_mode: 'none',
     horizontal_spacing: 'small',
-    columns: elements.map(element => ({
+    columns: cellsInRow.map(cell => ({
       tag: 'column',
-      width: 'auto',
+      width: 'weighted',
+      weight: Math.max(1, displayWidth(cell.label)),
       vertical_align: 'top',
-      elements: [element],
+      elements: [cell.button],
     })),
+  }))
+}
+
+/** One browser entry cell: the folder name is never elided. */
+function browseEntryCell(entry: DirectoryEntry): { label: string; button: object } {
+  const label = `📁 ${entry.name}`
+  return {
+    label,
+    button: {
+      tag: 'button',
+      text: { tag: 'plain_text', content: label },
+      type: 'default',
+      width: 'fill',
+      behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+    },
   }
 }
 
-/** One browser entry button: the folder name is never elided. */
-function browseEntryButton(entry: DirectoryEntry): object {
+/** A plain button cell (navigation controls, pager). */
+function plainCell(label: string, value: unknown): { label: string; button: object } {
   return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: `📁 ${entry.name}` },
-    type: 'default',
-    behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+    label,
+    button: {
+      tag: 'button',
+      text: { tag: 'plain_text', content: label },
+      type: 'default',
+      width: 'fill',
+      behaviors: [{ type: 'callback', value }],
+    },
   }
 }
 
 /** Folder-browser card: navigate levels, toggle hidden entries, page a large
  *  level, and pick the listed directory as the new session's workspace.
  *
- *  Buttons flow into rows of their natural width (`flowRow`) instead of one
+ *  Buttons are packed into rows that fit the card (`packedRows`) instead of one
  *  full-width row each, so a level of 30 entries stays a compact card without
  *  truncating any name. */
 function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
@@ -529,59 +578,37 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     { tag: 'markdown', content: t.onboardingBrowseHeader(listing.path) },
     { tag: 'hr' },
   ]
-  // Up / home / hidden share one flowing row.
-  const controls: object[] = []
+  // Up / home / hidden pack into as few rows as fit.
+  const controls: Array<{ label: string; button: object }> = []
   if (parent !== undefined) {
-    controls.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.onboardingBrowseUp },
-      type: 'default',
-      behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: parent.path } }],
-    })
+    controls.push(plainCell(t.onboardingBrowseUp, { kind: 'browse-enter', value: parent.path }))
   }
   if (listing.path !== listing.home) {
-    controls.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.onboardingBrowseHome },
-      type: 'default',
-      behaviors: [{ type: 'callback', value: { kind: 'browse-home' } }],
-    })
+    controls.push(plainCell(t.onboardingBrowseHome, { kind: 'browse-home' }))
   }
-  controls.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: state.hidden ? t.onboardingBrowseHideHidden : t.onboardingBrowseShowHidden },
-    type: 'default',
-    behaviors: [{ type: 'callback', value: { kind: 'browse-hidden' } }],
-  })
-  elements.push(flowRow(controls))
+  controls.push(plainCell(
+    state.hidden ? t.onboardingBrowseHideHidden : t.onboardingBrowseShowHidden,
+    { kind: 'browse-hidden' },
+  ))
+  elements.push(...packedRows(controls))
   elements.push({ tag: 'hr' })
 
   if (slice.length === 0) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseEmpty })
   } else {
-    elements.push(flowRow(slice.map(browseEntryButton)))
+    elements.push(...packedRows(slice.map(browseEntryCell)))
   }
 
   if (totalPages > 1) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowsePage(page + 1, totalPages) })
-    const pager: object[] = []
+    const pager: Array<{ label: string; button: object }> = []
     if (page > 0) {
-      pager.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.onboardingBrowsePrev },
-        type: 'default',
-        behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page - 1) } }],
-      })
+      pager.push(plainCell(t.onboardingBrowsePrev, { kind: 'browse-page', value: String(page - 1) }))
     }
     if (page < totalPages - 1) {
-      pager.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.onboardingBrowseNext },
-        type: 'default',
-        behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page + 1) } }],
-      })
+      pager.push(plainCell(t.onboardingBrowseNext, { kind: 'browse-page', value: String(page + 1) }))
     }
-    elements.push(flowRow(pager))
+    elements.push(...packedRows(pager))
   }
   if (listing.truncated) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseTruncated })
