@@ -37,24 +37,29 @@ Harness Agent (模型、工具、会话日志)
 每个 agent step 的事件流：
 
 ```
-step/start       → 记录开始时间
-assistant/chunk  → 累积 reasoning/text，记录首 token 时间
-assistant/message → 发送 step 卡片（text 前 3000 字上屏），记录 usage
-tool/call        → 追加工具调用信息，更新卡片
-tool/result      → 追加工具结果和预览，更新卡片，记录完成时间
-turn/end         → flush debounce → 发送溢出文本 continued 卡（如有）→ 发送 Turn Complete footer 卡
+step/start        → 记录开始时间（resetStep 清空本 step 的卡片身份）
+assistant/chunk   → 累积 reasoning/text，记录首 token 时间
+assistant/message → 本 step 还没卡就发卡，已有卡就更新（text 前 3000 字上屏），记录 usage
+tool/call         → 追加工具调用（状态 ⏳ running），已有卡更新、无卡则发卡
+tool/result       → 追加工具结果和预览（✅/❌），更新卡片，记录完成时间
+turn/end          → flush debounce → 发送溢出文本 continued 卡（如有）→ 发送 Turn Complete footer 卡
 ```
+
+> **一步一卡**：`assistant/message` 与 `tool/call` 都遵循「`state.stepCardSent` 为真就 `updateStepCard`，否则 `sendStepCard`」。任一分支无条件发新卡都会让 `state.stepCardRef` 改指新卡，**旧卡从此收不到更新**——表现为工具永远停在 `⏳ running…`，或卡片只剩 reasoning。
+>
+> **防抖按卡片 ref 键**：`pendingUpdates` 是 `Map<StepCardRef, …>`，不是 `Map<SessionStepState, …>`。一个 state 对象服务该会话所有 step，按 state 键会让下一步骤的更新取消上一步骤尚未触发的 150ms 定时器，上一步的卡片丢掉工具结果。
 
 ## 卡片设计
 
-- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化，底部显示时长和 token；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送
+- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化，底部显示时长和 token；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送。发送走 **CardKit 卡片实例**（`createCardInstance` → `sendCardByReference`，更新走 `updateCardInstance` + 单调 `sequence`，通道缺这些方法时回退 `send` + `updateCard`）——step 卡没有按钮，不受「同一条消息就地更新 2–3 次后按钮回调失效」的限制，因此可以持续原地更新
 - **Turn Complete 卡片**：turn 结束后发送，绿色，展示性能指标和配置信息
 - **Todo 卡片**：turquoise，含进度条
 - **审批卡片**：orange，含 approve/deny 按钮
 
 ## 技术要点
 
-- **Debounce**：150ms 合并快速更新，减少 API 调用
+- **Debounce**：150ms 合并快速更新，减少 API 调用；**表按卡片 ref 键**（见上「防抖按卡片 ref 键」）
+- **交互卡片不能就地更新**：飞书对同一条消息的卡片就地更新约 2–3 次后**不再投递按钮回调**（`im.v1.message.patch` 与 `cardkit.v1.card.update` 同样受限）。带按钮的卡片（`/new` 流程、目录浏览器、`/model`、`/session` 面板）**每一步都新建卡片实例 + 发新消息**；旧卡留在聊天里，不做 recall
 - **Flush 同步**：`turn/end` 时 flush pending debounce，确保卡片更新在 Turn Complete 之前完成
 - **Error-safe**：内层 try/catch 保护 mux 事件处理，防止单个事件错误导致整个流断开
 - **Card JSON 2.0**：所有卡片使用 `schema: '2.0'` + `body.elements`，原生支持 markdown

@@ -195,10 +195,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     /**
      * Create a Feishu card instance (cardkit.v1.card.create) and return its
-     * `card_id`. The instance can be referenced from messages and updated
-     * unlimited times via {@link updateCardInstance} — unlike
-     * {@link updateCard} (im.v1.message.patch) which caps at ~20 edits per
-     * message and silently disables the card's buttons afterwards.
+     * `card_id`. The instance can be referenced from messages and updated via
+     * {@link updateCardInstance}.
+     *
+     * Beware the in-place update limit: Feishu stops delivering button
+     * callbacks on a message's card after only ~2-3 edits, and that applies to
+     * `cardkit.v1.card.update` just as it does to `im.v1.message.patch`
+     * (verified 2026-09-08 — the folder browser went dead after a few pages
+     * even though it used card instances). Cards WITHOUT buttons (step cards)
+     * are unaffected and may be updated repeatedly. Interactive cards must
+     * post a NEW card per step instead; see `feishu-onboarding.ts` `sendCard`.
      */
     createCardInstance: (card: object): Promise<string> => {
       const ch = channelHolder.current
@@ -261,10 +267,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     /**
      * Full-update a card instance (cardkit.v1.card.update). The message that
-     * references this card_id automatically reflects the new content — no
-     * im.v1.message.patch needed, so there is no 20-edit cap.
+     * references this card_id reflects the new content — no
+     * `im.v1.message.patch` needed.
      *
      * `sequence` must be monotonically increasing per card instance.
+     *
+     * This does NOT lift the button-callback limit described on
+     * {@link createCardInstance}: a card carrying buttons stops delivering
+     * clicks after ~2-3 in-place updates either way.
      */
     updateCardInstance: (cardId: string, card: object, sequence: number): Promise<void> => {
       const ch = channelHolder.current
