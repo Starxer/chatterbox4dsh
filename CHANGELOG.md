@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：Turn Complete 的 tok/s 被高估（分子分母未配对）（`src/feishu-streaming.ts` / `src/channel.ts` / `src/harness.ts` / `tests/`）
+
+- **现象**：Turn Complete 卡片上的 `🚀 xxx tok/s` 有时明显高于 Web UI（实测某个 13 步的 turn：卡片 620 tok/s，按 Web UI 口径应为 363）。
+- **根因（两个叠加）**：
+  1. **首 token 锚点漏了 tool-call-delta**：DSH Web UI 的 `isTokenDelta` 把 `text-delta` / `reasoning-delta` / `tool-call-delta`（带 name 或参数增量）都算作「第一个 token」。插件只在流里找 text/reasoning，于是**只调用工具、没有思考/文本的步骤**（本机日志 565 步里有 76 步，占 13%）`firstTokenTime` 一直是 0。
+  2. **分子分母不配对**：`totalOutputTokens` 对这些步骤照加，但 `totalDecodeMs` 因没有锚点而不加 → tok/s 被抬高（含工具调用的 turn 最高被抬 2 倍）。
+- **修复**：改用 `@deepseek-ai/dsh-llm` 导出的 **`isTokenDelta`** 作为首 token 判定（与 Web UI 同一份实现，含 `assistant/chunk` 与 `assistant/message.stream` 两条路径）；新增 `TurnStats.totalDecodeTokens`，只在**同一批**计入 decode 时间的步骤里累加输出 token；`renderFooterCard` 用 `totalDecodeTokens / totalDecodeMs` 计算 tok/s（与 Web UI `deriveTurnMetrics` 的配对口径一致）。`📤 out` 仍显示全部输出 token，不受影响。
+- **验证**：真实会话日志按新口径重算——整体 88 tok/s（原 89），此前偏差最大的 turn 从 620 → 363，与 Web UI 一致。新增 3 例测试：tool-call-only 步骤仍能锚定并计入、无 token delta 的步骤只计 token 不计 tok/s、footer 用配对 token 计算（20 tokens / 0.5s = 40 tok/s，未配对时不出 tok/s 行）。`npm run typecheck` / `npm run test`（258 passed）/ `npm run build`。
+
 ### 优化：步骤卡片首发合并（快模型一步一张卡，不再「先发再更新」）（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **背景**：快模型下 reasoning → tool/call → tool/result 常常在毫秒内完成。原实现只要第一个事件到达就立刻发卡，随后再更新一次，于是一个本来可以一次成型的步骤也要渲染两次（多发一次卡片实体 + 一次 `cardkit.v1.card.update`）。

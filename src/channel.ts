@@ -671,8 +671,11 @@ export function renderFooterCard(
     if (turnStats.firstStepTtftMs !== null && turnStats.firstStepTtftMs > 0) {
       perfParts.push(`⚡ TTFT ${formatMs(turnStats.firstStepTtftMs)}`)
     }
-    if (turnStats.totalDecodeMs > 0 && turnStats.totalOutputTokens > 0) {
-      const tps = turnStats.totalOutputTokens / (turnStats.totalDecodeMs / 1000)
+    if (turnStats.totalDecodeMs > 0 && turnStats.totalDecodeTokens > 0) {
+      // Pair tokens and decode time over the SAME steps (the Web UI does the
+      // same): a step with no timed first token contributes neither, otherwise
+      // tok/s is inflated.
+      const tps = turnStats.totalDecodeTokens / (turnStats.totalDecodeMs / 1000)
       perfParts.push(`🚀 ${tps.toFixed(0)} tok/s`)
     }
     if (turnStats.stepCount > 0) {

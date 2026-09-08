@@ -22,6 +22,7 @@ const turnStats = {
   totalBilledTokens: 30,
   firstStepTtftMs: 100,
   totalDecodeMs: 500,
+  totalDecodeTokens: 20,
   totalStepMs: 600,
   totalToolMs: 300,
   totalTurnMs: 900,
@@ -47,6 +48,22 @@ describe('renderFooterCard (Turn Complete)', () => {
   it('returns undefined when there is nothing to render', () => {
     expect(renderFooterCard(t, undefined, undefined)).toBeUndefined()
     expect(renderFooterCard(t, {}, undefined)).toBeUndefined()
+  })
+
+  it('computes tok/s from the paired decode tokens, not all output tokens', () => {
+    const card = renderFooterCard(t, {}, turnStats) as any
+    // 20 decode tokens / 0.5s — even though 20 output tokens were reported,
+    // the numerator is the paired set, matching the Web UI.
+    expect(markdownOf(card)).toContain('🚀 40 tok/s')
+
+    // A step whose tokens could not be paired with decode time must not
+    // contribute to throughput at all.
+    const unpaired = renderFooterCard(t, {}, {
+      ...turnStats,
+      totalOutputTokens: 900,
+      totalDecodeTokens: 0,
+    }) as any
+    expect(markdownOf(unpaired)).not.toContain('tok/s')
   })
 
   it('reports billed total and cache-inclusive input like the Web UI', () => {

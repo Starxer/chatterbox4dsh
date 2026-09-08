@@ -20,7 +20,7 @@ import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
-import { expandAssistantStream, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
+import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { chunkText } from './text-chunk.ts'
 
 /** Minimal logger surface. */
@@ -98,6 +98,14 @@ export interface TurnStats {
   firstStepTtftMs: number | null
   /** Sum of (firstToken → message) across steps — pure LLM decode time for throughput. */
   totalDecodeMs: number
+  /**
+   * Output tokens of the SAME steps counted in {@link totalDecodeMs}. Kept
+   * separate from {@link totalOutputTokens}: a step whose first token could
+   * not be timed (no token delta) has no decode time, and counting its tokens
+   * in the throughput numerator without its decode time inflates tok/s. The
+   * Web UI pairs the two the same way.
+   */
+  totalDecodeTokens: number
   /** Sum of (stepStart → assistant/message) across steps — LLM-only time. */
   totalStepMs: number
   /** Sum of tool elapsed times. */
@@ -161,12 +169,6 @@ interface SessionStepState {
   turnStats: TurnStats | undefined
 }
 
-/**
- * Subscribe to the apiproxy mux stream and render per-step assistant cards
- * in Feishu — one card per step containing reasoning, text, and tool calls.
- *
- * Returns a disposer, consumeReasoning, and consumeLastStepHadContent.
- */
 export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   stop: () => void
   consumeReasoning: (sessionId: string) => string | undefined
@@ -505,6 +507,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             if (state.firstTokenTime === 0) {
               state.firstTokenTime = event.time ?? Date.now()
             }
+          } else if (state.firstTokenTime === 0 && isTokenDelta(chunk)) {
+            // Tool-call-only step: anchor on the first tool-call delta.
+            state.firstTokenTime = event.time ?? Date.now()
           }
         }
       } else if (event.type === 'assistant/message') {
@@ -523,12 +528,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           try {
             for (const timed of expandAssistantStream(rawStream)) {
               const chunk = timed.chunk
+              if (state.firstTokenTime === 0 && isTokenDelta(chunk)) state.firstTokenTime = timed.time
               if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
                 state.reasoning += chunk.text
-                if (state.firstTokenTime === 0) state.firstTokenTime = timed.time
               } else if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
                 state.text += chunk.text
-                if (state.firstTokenTime === 0) state.firstTokenTime = timed.time
               }
             }
           } catch (streamError: unknown) {
@@ -582,6 +586,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
           if (state.firstTokenTime > 0 && state.messageTime > state.firstTokenTime) {
             ts.totalDecodeMs += state.messageTime - state.firstTokenTime
+            // Pair the numerator with the denominator: only tokens from steps
+            // that contributed decode time count toward tok/s.
+            ts.totalDecodeTokens += state.usage?.outputTokens ?? 0
           }
           if (state.stepStartTime > 0 && state.messageTime > state.stepStartTime) {
             ts.totalStepMs += state.messageTime - state.stepStartTime
@@ -685,6 +692,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           totalBilledTokens: 0,
           firstStepTtftMs: null,
           totalDecodeMs: 0,
+          totalDecodeTokens: 0,
           totalStepMs: 0,
           totalToolMs: 0,
           totalTurnMs: 0,

@@ -381,3 +381,42 @@ describe('step card delivery', () => {
     streaming.stop()
   })
 })
+
+describe('turn stats token speed', () => {
+  const channel: StepChannel = {
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+  }
+
+  it('anchors a tool-call-only step and pairs its tokens with its decode time', async () => {
+    // No text and no reasoning: without anchoring on the first tool-call delta
+    // the step's output tokens were counted while its decode time was not,
+    // which inflated the reported tok/s (observed up to 2x on real turns).
+    const { streaming, emit } = stepHarness({ ...channel })
+    const startedAt = Date.now() - 500
+    emit('turn/start')
+    emit('assistant/message', {
+      usage: { inputTokens: 10, outputTokens: 100 },
+      stream: [{ type: 'tool-call-chunks', time0: startedAt, index: 0, dt: [], id: 'c1', name: 'bash', args: ['{"command":"ls"}'] }],
+    })
+    emit('turn/end')
+    const stats = await streaming.flushed('s-1')
+    expect(stats?.totalOutputTokens).toBe(100)
+    expect(stats?.totalDecodeTokens).toBe(100)
+    expect(stats?.totalDecodeMs).toBeGreaterThan(0)
+    streaming.stop()
+  })
+
+  it('does not count output tokens that have no recorded decode time', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    // No token deltas at all → no first-token anchor, no decode time.
+    emit('assistant/message', { usage: { inputTokens: 10, outputTokens: 100 }, stream: [] })
+    emit('turn/end')
+    const stats = await streaming.flushed('s-1')
+    expect(stats?.totalOutputTokens).toBe(100)
+    expect(stats?.totalDecodeTokens).toBe(0)
+    expect(stats?.totalDecodeMs).toBe(0)
+    streaming.stop()
+  })
+})

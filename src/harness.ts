@@ -1,6 +1,6 @@
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage, expandAssistantStream, type ReasoningEffortId, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, expandAssistantStream, isTokenDelta, type ReasoningEffortId, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
@@ -1103,6 +1103,8 @@ export class HarnessConversationService {
         const chunk = event.data?.chunk
         if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.length > 0 && firstTokenTime === 0) {
           firstTokenTime = t
+        } else if (firstTokenTime === 0 && chunk !== undefined && chunk !== null && isTokenDelta(chunk)) {
+          firstTokenTime = t
         }
       } else if (event.type === 'tool/call') {
         toolCalls++
@@ -1155,8 +1157,7 @@ export class HarnessConversationService {
               try {
                 for (const timed of expandAssistantStream(rawStream)) {
                   const chunk = timed.chunk
-                  if ((chunk.type === 'reasoning-delta' || chunk.type === 'text-delta')
-                    && typeof chunk.text === 'string' && chunk.text !== '') {
+                  if (isTokenDelta(chunk)) {
                     firstTokenTime = timed.time
                     break
                   }
