@@ -62,13 +62,6 @@ jobs:
           test -f "dist/$tarball"
           echo "path=dist/$tarball" >> "$GITHUB_OUTPUT"
 
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: npm-package-${{ github.ref_name }}
-          path: ${{ steps.pack.outputs.path }}
-          if-no-files-found: error
-
       - name: Attach tarball to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
