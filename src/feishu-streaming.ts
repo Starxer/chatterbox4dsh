@@ -1108,10 +1108,10 @@ export function renderStepCard(
   if (reasoning !== undefined && reasoning !== '') {
     const displayReasoning = reasoning.length > REASONING_CAP ? reasoning.slice(0, REASONING_CAP) + '\n…(truncated)' : reasoning
     const meta: string[] = []
-    if (reasoningMs !== undefined && reasoningMs > 0) meta.push(`🧠 ${formatMsShort(reasoningMs)}`)
+    if (reasoningMs !== undefined && reasoningMs > 0) meta.push(formatMsShort(reasoningMs))
     const reasoningTokens = usage?.reasoningTokens
     if (reasoningTokens !== undefined && reasoningTokens > 0) {
-      meta.push(`🪙 ${formatTokenCount(reasoningTokens)} tokens`)
+      meta.push(`${formatTokenCount(reasoningTokens)} tokens`)
     }
     const header = meta.length > 0 ? `${t.stepReasoningHeader} · ${meta.join(' · ')}` : t.stepReasoningHeader
     elements.push({

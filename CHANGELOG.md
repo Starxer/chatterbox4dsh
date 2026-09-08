@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### 变更：reasoning 标题去掉两个指标的 emoji（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **改动**：reasoning 标题由 `💬 **推理** · 🧠 4.3s · 🪙 1.2K tokens` 改为 `💬 **推理** · 4.3s · 1.2K tokens`（只保留「推理」前的 💬，去掉耗时与 token 两处 emoji）。
+- **验证**：同步更新 2 例断言；`npm run typecheck` / `npm run test`（266 passed）/ `npm run build`。
+
 ### 变更：reasoning 标题同时显示思考耗时与思考 token 数（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **改动**：`StepUsage` 增加 `reasoningTokens`（来自 provider 的 `usage.reasoningTokens`，DeepSeek 适配器由 `completion_tokens_details.reasoning_tokens` 翻译而来）；reasoning 标题拼成 `💬 **推理** · 🧠 4.3s · 🪙 1.2K tokens`，两段各自缺失时自动省略。

@@ -213,13 +213,13 @@ describe('renderStepCard reasoning + args budgets', () => {
       { inputTokens: 10, outputTokens: 2000, reasoningTokens: 1200 }, undefined, undefined, undefined,
       3200, 2, 3,
     ) as any
-    expect(mdOf(card)).toContain('🧠 3.2s · 🪙 1.2K tokens')
+    expect(mdOf(card)).toContain('3.2s · 1.2K tokens')
     expect(card.header.title.content).toBe('回复 · 第 2 轮 · 第 3 步')
 
     // Without timing/position/usage the header stays plain.
     const plain = renderStepCard(t, 'thinking', undefined, []) as any
     expect(plain.header.title.content).toBe('回复')
-    expect(mdOf(plain)).not.toContain('🧠')
+    expect(mdOf(plain)).not.toContain('3.2s')
     expect(mdOf(plain)).not.toContain('tokens')
   })
 })
@@ -497,7 +497,7 @@ describe('turn stats token speed', () => {
     await tick(200)
     expect(cards.length).toBeGreaterThan(0)
     expect(cards[0].header.title.content).toContain('第 2 轮 · 第 3 步')
-    expect(mdOf(cards[0])).toContain('🧠 1.0s · 🪙 42 tokens')
+    expect(mdOf(cards[0])).toContain('1.0s · 42 tokens')
     streaming.stop()
   })
 })
