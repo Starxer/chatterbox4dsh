@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 优化：步骤卡片首发合并（快模型一步一张卡，不再「先发再更新」）（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **背景**：快模型下 reasoning → tool/call → tool/result 常常在毫秒内完成。原实现只要第一个事件到达就立刻发卡，随后再更新一次，于是一个本来可以一次成型的步骤也要渲染两次（多发一次卡片实体 + 一次 `cardkit.v1.card.update`）。
+- **改动**：新增 `STEP_CARD_DEBOUNCE_MS = 150`，把**首发也纳入同一个防抖窗口**（与更新防抖共用一个常量）。`queueStepCardSend` 在第一个有内容的事件时排一个 150ms 定时器并预留卡片身份（`stepCardSent=true`、`stepCardRef` 仍为空），窗口内到达的事件不再触发更新；定时器到点用**当时累积的完整状态**建卡并发送一次。慢工具不受影响——卡片仍在步骤开始约 150ms 后出现并显示 `⏳ running…`，工具结束时再更新一次。
+- **边界处理**：步骤在窗口内就结束（`step/start`）或整轮结束（`turn/end`）时，`resetStep` / turn/end 会 `flushPendingSend` 立即把这张卡发出去（否则会丢卡）；`stop()` 清理未触发的定时器。
+- **测试**：新增「快步骤只发一张卡」用例（窗口内 reasoning+call+result → 仅 1 次 create + 1 次 send、0 次 update，且卡片内容已含结果）；原「更新必须等消息发出」用例改为在 send 进行中再产生结果，断言更新被推迟到 send resolve 之后。其余涉及发卡时序的用例相应等过 150ms 窗口。
+- **验证**：`npm run typecheck` / `npm run test`（255 passed）/ `npm run build`。
+
 ### 修复：步骤卡片的卡片实例更新必须等消息发出（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
 - **现象**：部分中间步骤卡片只显示 reasoning（看不出有没有工具调用）；部分卡片的工具行停在 `⏳ running…` 或没有结果。

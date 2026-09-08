@@ -132,6 +132,17 @@ interface SessionStepState {
   stepCardSent: boolean
   /** Sent step card identity (message id + optional CardKit instance). */
   stepCardRef: StepCardRef | undefined
+  /**
+   * Debounced-but-not-yet-sent first card for the current step. While this is
+   * set, `stepCardSent` is already true but `stepCardRef` is still undefined,
+   * so later events skip the update path — the pending send rebuilds the card
+   * from the latest state and posts it once (see `queueStepCardSend`).
+   */
+  pendingSend: {
+    chat: ConversationMessage
+    sessionId: string
+    timer: ReturnType<typeof setTimeout>
+  } | undefined
   /** Chat info for the current step. */
   chat: ConversationMessage | undefined
   /** Whether the last assistant/message sent a step card with content. */
@@ -175,6 +186,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         toolCalls: [],
         stepCardSent: false,
         stepCardRef: undefined,
+        pendingSend: undefined,
         chat: undefined,
         lastStepHadContent: false,
         stepStartTime: 0,
@@ -191,11 +203,16 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   const resetStep = (state: SessionStepState): void => {
+    // A step can end inside the send debounce window (fast reasoning → tool →
+    // result, then the next step/start). Post that card now, with the final
+    // state, before clearing the fields it is built from.
+    flushPendingSend(state)
     state.reasoning = ''
     state.text = ''
     state.toolCalls = []
     state.stepCardSent = false
     state.stepCardRef = undefined
+    state.pendingSend = undefined
     // NOTE: do NOT clear state.chat — it is session-level chat coordinates,
     // not per-step data. Clearing it prevents step 2+ from sending cards
     // when the step has only tool calls (no text/reasoning), causing tool
@@ -235,8 +252,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     return renderStepCard(getTranslations?.() ?? translationsFor('zh'), reasoning, text, tools, state.usage, stepDurationMs, tps, state.contextMeta)
   }
 
-  /** Send the initial step card and track its identity. */
-  const sendStepCard = (chat: ConversationMessage, sessionId: string, state: SessionStepState): void => {
+  /**
+   * Post the step card immediately, built from the CURRENT state, and track
+   * its identity. Only `queueStepCardSend` / `flushPendingSend` call this —
+   * never the event handlers directly.
+   */
+  const actuallySendStepCard = (chat: ConversationMessage, sessionId: string, state: SessionStepState): void => {
     const card = buildStepCard(state)
     state.stepCardSent = true
     state.chat = chat
@@ -284,6 +305,48 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Track the send promise so flushed() can wait for the final step card's
     // message to be created before the Turn Complete footer is sent.
     lastStepSendPromises.set(sessionId, messageId)
+  }
+
+  /**
+   * Queue the step's FIRST card, debounced.
+   *
+   * A fast model can emit reasoning → tool/call → tool/result within a few
+   * milliseconds. Sending the card at the first event and then updating it
+   * would render the step twice (and burn two CardKit calls) for no reason,
+   * so the first send is coalesced over {@link STEP_CARD_DEBOUNCE_MS}: the
+   * timer fires once, builds the card from the state accumulated so far, and
+   * posts a single card. Events arriving during the window need no update —
+   * `stepCardRef` is still undefined, so `updateStepCard` is a no-op and the
+   * pending send already carries the latest state.
+   *
+   * Slow tools are unaffected in practice: the card still appears ~150ms
+   * after the step starts, showing `⏳ running…`, and the result update lands
+   * when the tool finishes.
+   */
+  const queueStepCardSend = (chat: ConversationMessage, sessionId: string, state: SessionStepState): void => {
+    if (state.stepCardSent || state.pendingSend !== undefined) return
+    // Reserve the step's card now so a second event cannot queue another one.
+    state.stepCardSent = true
+    state.chat = chat
+    state.pendingSend = {
+      chat,
+      sessionId,
+      timer: setTimeout(() => {
+        const pending = state.pendingSend
+        if (pending === undefined) return
+        state.pendingSend = undefined
+        actuallySendStepCard(pending.chat, pending.sessionId, state)
+      }, STEP_CARD_DEBOUNCE_MS),
+    }
+  }
+
+  /** Post a queued-but-unsent card immediately (step boundary / turn end). */
+  const flushPendingSend = (state: SessionStepState): void => {
+    const pending = state.pendingSend
+    if (pending === undefined) return
+    clearTimeout(pending.timer)
+    state.pendingSend = undefined
+    actuallySendStepCard(pending.chat, pending.sessionId, state)
   }
 
   /**
@@ -392,7 +455,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // update must survive — see the map's comment).
     const existing = pendingUpdates.get(ref)
     if (existing !== undefined) clearTimeout(existing.timer)
-    // Debounce: merge rapid updates into one (150ms threshold)
+    // Debounce: merge rapid updates into one
     pendingUpdates.set(ref, {
       card,
       timer: setTimeout(() => {
@@ -400,7 +463,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         executeCardUpdate(ref, card).catch((error: unknown) => {
           console.log(`dsh-feishu: [update] timer callback error: ${error instanceof Error ? error.message : String(error)}`)
         })
-      }, 150),
+      }, STEP_CARD_DEBOUNCE_MS),
     })
   }
 
@@ -536,7 +599,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             console.log('dsh-feishu: [message] card already sent for this step → updating')
             updateStepCard(state)
           } else {
-            sendStepCard(chat, sessionId, state)
+            queueStepCardSend(chat, sessionId, state)
           }
         }
         state.lastStepHadContent = hasContent
@@ -560,7 +623,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (state.stepCardSent) {
           updateStepCard(state)
         } else {
-          sendStepCard(chat, sessionId, state)
+          queueStepCardSend(chat, sessionId, state)
         }
       } else if (event.type === 'tool/result') {
         const toolCallId = String(event.data?.message?.source?.callId ?? '')
@@ -653,6 +716,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           turnStatsMap.set(sessionId, turnStats)
         }
 
+        // A very short final step can end inside the send debounce window;
+        // post its card before anything else so it precedes the overflow and
+        // Turn Complete cards in the chat.
+        flushPendingSend(state)
+
         // Capture overflow data BEFORE resetStep clears state.
         const fullText = state.text.trim()
         const overflowText = fullText.length > TEXT_STEP_CAP ? fullText.slice(TEXT_STEP_CAP).trim() : undefined
@@ -731,6 +799,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       disposeListener()
       for (const entry of pendingUpdates.values()) clearTimeout(entry.timer)
       pendingUpdates.clear()
+      for (const state of sessionStates.values()) {
+        if (state.pendingSend !== undefined) clearTimeout(state.pendingSend.timer)
+      }
       sessionStates.clear()
       turnStatsMap.clear()
       lastStepSendPromises.clear()
@@ -745,6 +816,17 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
 /** Cap for one tool call's kept raw result content (characters). */
 const RESULT_CONTENT_CAP = 1500
+
+/**
+ * Coalescing window (ms) for step-card work.
+ *
+ * Used for both the first send and later updates: a fast model can finish
+ * reasoning → tool/call → tool/result inside this window, and one card is
+ * then posted with the final state instead of send + update. Slow tools are
+ * unaffected — the card is still posted (with `⏳ running…`) shortly after
+ * the step starts, and updated when the tool finishes.
+ */
+const STEP_CARD_DEBOUNCE_MS = 150
 
 /** Cap for one tool result preview rendered into the card (characters). */
 const RESULT_PREVIEW_CAP = 1500

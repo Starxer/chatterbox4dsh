@@ -236,7 +236,7 @@ describe('step card delivery', () => {
     emit('turn/start')
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'hello' } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await tick(0)
+    await tick(200)
     expect(channel.createCardInstance).toHaveBeenCalledOnce()
     expect(channel.sendCardByReference).toHaveBeenCalledWith('oc_1', 'card-1', {})
     expect(channel.send).not.toHaveBeenCalled()
@@ -259,7 +259,7 @@ describe('step card delivery', () => {
     emit('turn/start')
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'hello' } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await tick(0)
+    await tick(200)
     expect(channel.send).toHaveBeenCalledOnce()
 
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
@@ -282,7 +282,7 @@ describe('step card delivery', () => {
     const { streaming, emit } = stepHarness(channel)
     emit('turn/start')
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
-    await tick(0)
+    await tick(200)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
 
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'thinking' } })
@@ -294,7 +294,33 @@ describe('step card delivery', () => {
     streaming.stop()
   })
 
-  it('waits for the card message to be sent before the first instance update', async () => {
+  it('coalesces a fast step into a single card (no send + update pair)', async () => {
+    // Fast model: reasoning → tool/call → tool/result all land inside the
+    // coalescing window. The step must post ONE card carrying the final
+    // state, not a card plus a follow-up update.
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'thinking' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'out.txt' }] } })
+    await tick(250)
+    expect(channel.createCardInstance).toHaveBeenCalledOnce()
+    expect(channel.sendCardByReference).toHaveBeenCalledOnce()
+    // The single card already carries the tool result.
+    expect(mdOf(channel.createCardInstance!.mock.calls[0]![0])).toContain('out.txt')
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('waits for the card message to be sent before an update', async () => {
     // Feishu snapshots the card entity when the referencing message is created:
     // an update issued BEFORE the send is dropped and the message keeps showing
     // the create-time content (reasoning-only card, or a tool stuck on
@@ -310,10 +336,12 @@ describe('step card delivery', () => {
     const { streaming, emit } = stepHarness(channel)
     emit('turn/start')
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
-    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'out.txt' }] } })
-    // The debounce fires while the send is still in flight.
-    await tick(250)
+    // Let the coalescing window elapse so the card is created and the send is
+    // in flight — then the result arrives and schedules an update.
+    await tick(200)
     expect(channel.sendCardByReference).toHaveBeenCalledOnce()
+    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'out.txt' }] } })
+    await tick(250)
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
 
     resolveSend({ messageId: 'm-ref' })
@@ -338,13 +366,13 @@ describe('step card delivery', () => {
     const { streaming, emit } = stepHarness(channel)
     emit('turn/start')
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{}' })
-    await tick(0)
+    await tick(200)
     emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'ok' }] } })
     // Next step starts (and schedules its own update) BEFORE the previous
     // step's 150ms debounce has fired.
     emit('step/start')
     emit('tool/call', { callId: 'c2', name: 'read', arguments: '{}' })
-    await tick(0)
+    await tick(200)
     emit('tool/result', { message: { source: { callId: 'c2' }, content: [{ content: 'ok' }] } })
     await tick(250)
     // Both step cards were updated — neither debounce cancelled the other.
