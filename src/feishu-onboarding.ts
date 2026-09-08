@@ -325,21 +325,39 @@ function tailSegments(path: string, levels: number): string {
   return more < 0 ? clean : `…${clean.slice(index)}`
 }
 
+/** Longest dropdown option text. A `select_static` option is a single line and
+ *  Feishu clips it, so a label has to stay short to remain readable — the
+ *  three-segment form alone still overflowed for long directory names. */
+const WORKSPACE_LABEL_MAX = 24
+
 /**
- * Dropdown labels for the workspace picker: the last three path segments.
+ * Dropdown labels for the workspace picker: the last three path segments,
+ * shortened when they do not fit and deepened when two workspaces would render
+ * the same tail.
  *
- * A `select_static` option is a single line, so a deep absolute path overflows
- * it; showing the tail keeps the row readable. When two workspaces would render
- * the same tail (e.g. `/a/x/y/z` vs `/b/x/y/z`), the suffix is deepened until
- * every option is distinct — an ambiguous picker is worse than a long label.
+ * A `select_static` option is a single clipped line, so the label must stay
+ * short. Preference order:
+ *   1. three trailing segments, deepened one level at a time while two
+ *      workspaces collide (`/a/x/y/z` vs `/b/x/y/z`);
+ *   2. if even three segments are too long, drop to two, then one, as long as
+ *      the labels stay unique;
+ *   3. otherwise elide the three-segment form (keeps the tail, which is the
+ *      part that tells workspaces apart).
  */
 function workspaceLabels(workspaces: readonly WorkspaceLike[]): string[] {
   const maxLevels = Math.max(3, ...workspaces.map(ws => ws.path.split(/[\\/]/).filter(Boolean).length))
+  const unique = (labels: readonly string[]): boolean => new Set(labels).size === labels.length
+  const fits = (labels: readonly string[]): boolean => labels.every(label => label.length <= WORKSPACE_LABEL_MAX)
   for (let levels = 3; levels <= maxLevels; levels++) {
     const labels = workspaces.map(ws => tailSegments(ws.path, levels))
-    if (new Set(labels).size === labels.length) return labels
+    if (!fits(labels)) break
+    if (unique(labels)) return labels
   }
-  return workspaces.map(ws => ws.path)
+  for (let levels = 2; levels >= 1; levels--) {
+    const labels = workspaces.map(ws => tailSegments(ws.path, levels))
+    if (fits(labels) && unique(labels)) return labels
+  }
+  return workspaces.map(ws => elideMiddle(tailSegments(ws.path, 3), WORKSPACE_LABEL_MAX))
 }
 
 /** Workspace picker card (step 1 of /new): choose an existing workspace from a
@@ -362,7 +380,7 @@ function renderWorkspacePicker(workspaces: readonly WorkspaceLike[], currentWork
       name: 'workspace',
       placeholder: { tag: 'plain_text', content: t.onboardingWorkspaceSelectPlaceholder },
       options: workspaces.map((ws, index) => ({
-        text: { tag: 'plain_text', content: `${elideMiddle(labels[index]!, 48)}${ws.path === currentWorkspace ? ' ✅' : ''}` },
+        text: { tag: 'plain_text', content: `${labels[index]!}${ws.path === currentWorkspace ? ' ✅' : ''}` },
         value: ws.path,
       })),
       value: workspaces[selectedIndex]!.path,
@@ -499,12 +517,54 @@ interface BrowseState {
   page: number
 }
 
+/** Columns per browser row. Three keeps entry names legible at phone width
+ *  while cutting the card's height to roughly a third of one-button-per-row. */
+const BROWSE_GRID_COLUMNS = 3
+
+/**
+ * Wrap elements in Card JSON 2.0 `column_set`s of equal-width columns, so a
+ * list of buttons renders as a grid instead of one full-width row each.
+ *
+ * Short rows are padded with blank markdown cells so every cell keeps the same
+ * width — a ragged last row reads as a layout bug. One element per column.
+ */
+function gridRows(cells: readonly object[], columns: number): object[] {
+  const rows: object[] = []
+  for (let start = 0; start < cells.length; start += columns) {
+    const row = [...cells.slice(start, start + columns)]
+    while (row.length < columns) row.push({ tag: 'markdown', content: ' ' })
+    rows.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: row.map(element => ({
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'top',
+        elements: [element],
+      })),
+    })
+  }
+  return rows
+}
+
+/** One browser grid cell: a folder button that fills its column. */
+function browseEntryButton(entry: DirectoryEntry): object {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: `📁 ${elideMiddle(entry.name, 12)}` },
+    type: 'default',
+    width: 'fill',
+    behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+  }
+}
+
 /** Folder-browser card: navigate levels, toggle hidden entries, page a large
  *  level, and pick the listed directory as the new session's workspace.
  *
- *  Every entry is one button (tap = descend) and the current directory is
- *  committed by a single primary button at the bottom, so a level of N
- *  entries costs N + 6 elements instead of 2N. */
+ *  Buttons are laid out in a three-column grid (`column_set`) instead of one
+ *  full-width row each, so a level of 30 entries stays a compact card. */
 function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
   const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
   const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
@@ -517,61 +577,64 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     { tag: 'markdown', content: t.onboardingBrowseHeader(listing.path) },
     { tag: 'hr' },
   ]
+  // Up / home / hidden share one grid row.
+  const controls: object[] = []
   if (parent !== undefined) {
-    elements.push({
+    controls.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t.onboardingBrowseUp },
       type: 'default',
+      width: 'fill',
       behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: parent.path } }],
     })
   }
   if (listing.path !== listing.home) {
-    elements.push({
+    controls.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t.onboardingBrowseHome },
       type: 'default',
+      width: 'fill',
       behaviors: [{ type: 'callback', value: { kind: 'browse-home' } }],
     })
   }
-  elements.push({
+  controls.push({
     tag: 'button',
     text: { tag: 'plain_text', content: state.hidden ? t.onboardingBrowseHideHidden : t.onboardingBrowseShowHidden },
     type: 'default',
+    width: 'fill',
     behaviors: [{ type: 'callback', value: { kind: 'browse-hidden' } }],
   })
+  elements.push(...gridRows(controls, BROWSE_GRID_COLUMNS))
   elements.push({ tag: 'hr' })
 
   if (slice.length === 0) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseEmpty })
   } else {
-    for (const entry of slice) {
-      elements.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: `📁 ${elideMiddle(entry.name, 30)}` },
-        type: 'default',
-        behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
-      })
-    }
+    elements.push(...gridRows(slice.map(browseEntryButton), BROWSE_GRID_COLUMNS))
   }
 
   if (totalPages > 1) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowsePage(page + 1, totalPages) })
+    const pager: object[] = []
     if (page > 0) {
-      elements.push({
+      pager.push({
         tag: 'button',
         text: { tag: 'plain_text', content: t.onboardingBrowsePrev },
         type: 'default',
+        width: 'fill',
         behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page - 1) } }],
       })
     }
     if (page < totalPages - 1) {
-      elements.push({
+      pager.push({
         tag: 'button',
         text: { tag: 'plain_text', content: t.onboardingBrowseNext },
         type: 'default',
+        width: 'fill',
         behaviors: [{ type: 'callback', value: { kind: 'browse-page', value: String(page + 1) } }],
       })
     }
+    elements.push(...(pager.length === 1 ? pager : gridRows(pager, 2)))
   }
   if (listing.truncated) {
     elements.push({ tag: 'markdown', content: t.onboardingBrowseTruncated })
@@ -582,12 +645,14 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     tag: 'button',
     text: { tag: 'plain_text', content: t.onboardingBrowsePick },
     type: 'primary',
+    width: 'fill',
     behaviors: [{ type: 'callback', value: { kind: 'browse-pick', value: listing.path } }],
   })
   elements.push({
     tag: 'button',
     text: { tag: 'plain_text', content: t.onboardingBrowseBack },
     type: 'default',
+    width: 'fill',
     behaviors: [{ type: 'callback', value: { kind: 'browse-back' } }],
   })
   return {

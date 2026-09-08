@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 变更：工作区下拉标签自适应收窄 + 目录浏览改宫格排列（`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`）
+
+- **下拉标签有时仍放不下三级路径**：`select_static` 的选项是单行且会被飞书裁切，上一版固定「最后三级 + 上限 48 字」在目录名较长时依然溢出。改为自适应：
+  1. 优先**最后三级**，两个工作区尾部相同时逐级**加深**直到唯一；
+  2. 若三级仍超过 `WORKSPACE_LABEL_MAX = 24` 字，**降为两级、再降为一级**，只要仍能互相区分；
+  3. 都放不下时，对三级形式做 `elideMiddle(…, 24)`（保留尾部——尾部才是区分度所在）。
+- **目录浏览改宫格**：条目按钮由「每个占一整行」改为 **`column_set` 三列宫格**（`gridRows`），30 项一页的卡片高度降到约三分之一；行尾用空白 `markdown` 补齐，保证每格等宽。⬆️ 上一级 / 🏠 家目录 / 👁 隐藏 三个控制按钮同样排成一行，上一页/下一页排成两列（只剩一个时占满整行）。按钮加 `width: 'fill'` 填满所在列，条目名 `elideMiddle(…, 12)`。
+- **实机校验**：用 profile 凭据调飞书 `cardkit.v1.card.create` 验证生成的**工作区选择卡**与**目录浏览卡**，均 `code=0 success`——`column_set` / `flex_mode: 'none'` / `column.width: 'weighted'` / `button.width: 'fill'` 的写法被飞书接受（不只是本地测试通过）。
+- **验证**：`npm run typecheck` / `npm run test`（253 passed，新增 2 例：超长标签收窄到 ≤24 字且互不相同、7 个条目排成 4 行宫格且行尾补齐）/ `npm run build` 全绿。
+
 ### 变更：`/new` 工作区选择改为下拉框，只显示最后三级目录（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
 
 - **背景**：工作区越来越多时，工作区卡片按「每个工作区一行 markdown + 一个按钮」渲染，按钮数量随工作区线性增长，卡片越滚越长。

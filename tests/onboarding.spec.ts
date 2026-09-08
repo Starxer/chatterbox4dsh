@@ -225,6 +225,65 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
+  it('shortens dropdown labels that would overflow the option line', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.workspaceRegistry = {
+      list: () => [
+        { path: '/srv/a/verylongprojectdirectoryname' },
+        { path: '/srv/b/anotherverylongprojectname' },
+      ],
+      create: vi.fn(async () => undefined),
+    }
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
+    const select = (channel.createCardInstance.mock.calls.at(-1)![0] as any).body.elements
+      .find((el: any) => el.tag === 'form').elements.find((el: any) => el.tag === 'select_static')
+    const labels = select.options.map((o: any) => o.text.content) as string[]
+    expect(labels.every(label => label.length <= 24)).toBe(true)
+    expect(new Set(labels).size).toBe(2)
+    handle.dispose()
+  })
+
+  it('lays the browser out in a three-column grid with padded rows', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    const entries = Array.from({ length: 7 }, (_, index) => ({
+      name: `entry-${index}-somewhat-long`,
+      path: `/g/entry-${index}`,
+      hidden: false,
+    }))
+    d.getDirectoryPicker = () => ({
+      capability: () => ({
+        kind: 'browse',
+        list: async () => ({
+          path: '/g',
+          home: '/g',
+          crumbs: [{ name: '/', path: '/', hidden: false }, { name: 'g', path: '/g', hidden: false }],
+          entries,
+          truncated: false,
+        }),
+      }),
+    })
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const grids = card.body.elements.filter((el: any) => el.tag === 'column_set')
+    // One controls row (up + hidden, padded to 3) + 7 entries in rows of 3.
+    expect(grids).toHaveLength(4)
+    expect(grids.map((grid: any) => grid.columns.length)).toEqual([3, 3, 3, 3])
+    expect(grids.every((grid: any) => grid.columns.every((col: any) => col.width === 'weighted' && col.weight === 1))).toBe(true)
+    const cells = grids.slice(1).flatMap((grid: any) => grid.columns.map((col: any) => col.elements[0]))
+    expect(cells.filter((el: any) => el.tag === 'button')).toHaveLength(7)
+    // The last row is padded so every cell keeps the same width.
+    expect(cells.filter((el: any) => el.tag === 'markdown')).toHaveLength(2)
+    // Entry buttons fill their column and carry the full path.
+    const entry = cells.find((el: any) => el.tag === 'button')
+    expect(entry.width).toBe('fill')
+    expect(entry.behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/entry-0' })
+    handle.dispose()
+  })
+
   it('create-workspace form creates the workspace and advances to preset picker', async () => {
     const { channel, handlers } = fakeChannel()
     const bridge = fakeBridge()
