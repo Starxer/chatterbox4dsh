@@ -265,15 +265,22 @@ describe('feishu-onboarding', () => {
     // No single-line overflow: several rows instead of one, each a fixed row.
     expect(rows.length).toBeGreaterThan(2)
     expect(rows.every((row: any) => row.flex_mode === 'none')).toBe(true)
+    // Every row is padded to the same total width, so a short name alone on a
+    // row cannot stretch to the full card width and look widest.
+    const totals = rows.map((row: any) => row.columns.reduce((sum: number, col: any) => sum + col.weight, 0))
+    expect(totals.slice(0, -1).every((total: number) => total === 32)).toBe(true)
+    // The padding is an empty markdown column.
+    expect(rows.some((row: any) => row.columns.some((col: any) => col.elements[0].tag === 'markdown'))).toBe(true)
     const entryButtons = rows
       .flatMap((row: any) => row.columns.map((col: any) => col.elements[0]))
       .filter((el: any) => el.tag === 'button' && el.behaviors[0].value.kind === 'browse-enter' && String(el.behaviors[0].value.value).startsWith('/g/'))
     // Every name is shown verbatim — no ellipsis anywhere.
     expect(entryButtons.map((b: any) => b.text.content)).toEqual(entries.map(entry => `📁 ${entry.name}`))
-    // The long name occupies a row alone.
-    const longRow = rows.find((row: any) => row.columns.some((col: any) => col.elements[0].text?.content?.includes('a-really-quite-long')))
-    expect(longRow.columns).toHaveLength(1)
-    expect(longRow.columns[0].elements[0].behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/long' })
+    // The long name is the only one that gets a row to itself.
+    const singleColumnRows = rows.filter((row: any) => row.columns.length === 1)
+    expect(singleColumnRows).toHaveLength(1)
+    expect(singleColumnRows[0].columns[0].elements[0].text.content).toContain('a-really-quite-long')
+    expect(singleColumnRows[0].columns[0].elements[0].behaviors[0].value).toEqual({ kind: 'browse-enter', value: '/g/long' })
     handle.dispose()
   })
 

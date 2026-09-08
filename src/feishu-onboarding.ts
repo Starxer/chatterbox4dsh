@@ -476,59 +476,81 @@ interface BrowseState {
   page: number
 }
 
-/** Rough display width of a label: CJK and full-width glyphs take two columns,
- *  everything else one. Used only to decide how many buttons fit a row. */
+/** Rough display width of a label: CJK, emoji and full-width glyphs take two
+ *  columns, everything else one. Used only to decide how many buttons fit a
+ *  row. */
 function displayWidth(text: string): number {
   let width = 0
-  for (const char of text) width += /[\u1100-\uFFFD]/.test(char) ? 2 : 1
+  for (const char of text) width += (char.codePointAt(0) ?? 0) >= 0x1100 ? 2 : 1
   return width
 }
 
 /**
  * Character budget for one button row, in {@link displayWidth} units. Feishu
- * card bodies fit roughly this many half-width glyphs; a row wider than the
- * budget gets clipped, so the packer wraps before that.
+ * card bodies fit roughly this many half-width glyphs; a button narrower than
+ * its label gets clipped, so the packer never puts more than
+ * `floor(BUDGET / labelWidth)` equal columns on a row.
  */
 const BROWSE_ROW_BUDGET = 32
 
+/** Never squeeze a row into more than this many columns. */
+const BROWSE_MAX_COLUMNS = 4
+
 /**
- * Pack buttons into `column_set` rows that fit the card, each column weighted
- * by its own label so short and long names share a row in proportion to what
- * they need.
+ * Pack buttons into `column_set` rows, weighting each column by its label and
+ * padding every row out to the full {@link BROWSE_ROW_BUDGET} with an empty
+ * filler column.
  *
- * `flex_mode: 'flow'` was tried first and rejected: Feishu rendered every
- * column on ONE line instead of wrapping, which wrecked the layout. Equal-width
- * columns were rejected earlier because they force long names to be elided.
- * Explicit packing keeps labels intact and wraps deterministically — a name too
- * long for the budget gets a row to itself, where it has the full card width.
+ * The padding is what keeps short names from looking widest: a short name that
+ * lands alone on a row would otherwise take 100% of the card width. With the
+ * filler, every button gets a share proportional to its label, and every row
+ * spans the same width.
+ *
+ * Rows are grouped by what fits: as many equal columns as the WIDEST label on
+ * the row allows, so a long name drops to a two-column row or a full-width row
+ * of its own rather than being squeezed. `flex_mode: 'flow'` was tried and
+ * rejected — Feishu rendered every column on ONE line instead of wrapping.
  */
 function packedRows(cells: readonly { label: string; button: object }[]): object[] {
   const rows: Array<Array<{ label: string; button: object }>> = []
-  let row: Array<{ label: string; button: object }> = []
-  let used = 0
-  for (const cell of cells) {
-    const cost = displayWidth(cell.label) + 2 // padding between buttons
-    if (row.length > 0 && used + cost > BROWSE_ROW_BUDGET) {
-      rows.push(row)
-      row = []
-      used = 0
+  let index = 0
+  while (index < cells.length) {
+    let count = 1
+    while (index + count < cells.length && count < BROWSE_MAX_COLUMNS) {
+      const candidate = cells.slice(index, index + count + 1)
+      const widest = Math.max(...candidate.map(cell => displayWidth(cell.label)))
+      if (widest > Math.floor(BROWSE_ROW_BUDGET / (count + 1))) break
+      count++
     }
-    row.push(cell)
-    used += cost
+    rows.push(cells.slice(index, index + count))
+    index += count
   }
-  if (row.length > 0) rows.push(row)
-  return rows.map(cellsInRow => ({
-    tag: 'column_set',
-    flex_mode: 'none',
-    horizontal_spacing: 'small',
-    columns: cellsInRow.map(cell => ({
+  return rows.map(cellsInRow => {
+    const weights = cellsInRow.map(cell => Math.max(1, displayWidth(cell.label)))
+    const columns = cellsInRow.map((cell, position) => ({
       tag: 'column',
       width: 'weighted',
-      weight: Math.max(1, displayWidth(cell.label)),
+      weight: weights[position]!,
       vertical_align: 'top',
       elements: [cell.button],
-    })),
-  }))
+    }))
+    const used = weights.reduce((total, weight) => total + weight, 0)
+    if (used < BROWSE_ROW_BUDGET) {
+      columns.push({
+        tag: 'column',
+        width: 'weighted',
+        weight: BROWSE_ROW_BUDGET - used,
+        vertical_align: 'top',
+        elements: [{ tag: 'markdown', content: ' ' }],
+      })
+    }
+    return {
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns,
+    }
+  })
 }
 
 /** One browser entry cell: the folder name is never elided. */
