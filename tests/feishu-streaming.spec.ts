@@ -294,6 +294,38 @@ describe('step card delivery', () => {
     streaming.stop()
   })
 
+  it('waits for the card message to be sent before the first instance update', async () => {
+    // Feishu snapshots the card entity when the referencing message is created:
+    // an update issued BEFORE the send is dropped and the message keeps showing
+    // the create-time content (reasoning-only card, or a tool stuck on
+    // "running…"). Every instance update must be serialized behind the send.
+    let resolveSend!: (value: { messageId: string }) => void
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(() => new Promise<{ messageId: string }>((resolve) => { resolveSend = resolve })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'out.txt' }] } })
+    // The debounce fires while the send is still in flight.
+    await tick(250)
+    expect(channel.sendCardByReference).toHaveBeenCalledOnce()
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+
+    resolveSend({ messageId: 'm-ref' })
+    await tick(0)
+    expect(channel.updateCardInstance).toHaveBeenCalledOnce()
+    expect(channel.updateCardInstance!.mock.calls[0]![0]).toBe('card-1')
+    expect(channel.updateCardInstance!.mock.calls[0]![2]).toBe(1)
+    // The deferred update carries the tool result, not the create-time snapshot.
+    expect(mdOf(channel.updateCardInstance!.mock.calls[0]![1])).toContain('out.txt')
+    streaming.stop()
+  })
+
   it('does not let the next step cancel the previous card\'s pending update', async () => {
     let instances = 0
     const channel: StepChannel = {

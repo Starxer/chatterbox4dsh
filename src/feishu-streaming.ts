@@ -324,9 +324,22 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     if (channel.updateCardInstance !== undefined) {
       return ref.cardId.then((cardId) => {
         if (cardId !== undefined) {
-          ref.sequence += 1
-          console.log(`dsh-feishu: [update] card=${cardId} seq=${ref.sequence}`)
-          return channel.updateCardInstance!(cardId, card, ref.sequence)
+          // Serialize behind the message send. Feishu snapshots the card
+          // entity when the referencing message is created: an update issued
+          // before that message exists is NOT reflected in it, so the card
+          // would keep rendering its create-time content forever (observed
+          // 2026-09-08 — reasoning-only step cards whose tool call was lost,
+          // and "⏳ running…" cards whose result was lost). Every update must
+          // therefore wait for `ref.messageId`, not just for the card id.
+          return ref.messageId.then((messageId) => {
+            if (messageId === undefined) {
+              console.log('dsh-feishu: [update] message not sent yet, skipping instance update')
+              return
+            }
+            ref.sequence += 1
+            console.log(`dsh-feishu: [update] card=${cardId} seq=${ref.sequence}`)
+            return channel.updateCardInstance!(cardId, card, ref.sequence)
+          })
         }
         console.log('dsh-feishu: [update] no card instance, falling back to patch')
         return patchByMessageId(ref, card)

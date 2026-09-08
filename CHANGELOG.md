@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 修复：步骤卡片的卡片实例更新必须等消息发出（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **现象**：部分中间步骤卡片只显示 reasoning（看不出有没有工具调用）；部分卡片的工具行停在 `⏳ running…` 或没有结果。
+- **根因（实测确认）**：飞书在**发送引用该卡片实体的消息时对卡片内容做快照**——在消息创建之前调用 `cardkit.v1.card.update` 的更新**不会进入该消息**，消息永远渲染创建时的内容。用 `im.v1.message.list` 的 `card_msg_content_type: 'user_card_content'` 拉回真实渲染内容比对：`[update] seq=1/2` 全部发生在 `[send] message=… via card=…` **之前**的卡片，内容都停在创建那一刻（reasoning-only / 工具 running）；只要有一次更新落在 send 之后，卡片就是正确的 Tool Done + 结果。本机日志里约四成步骤卡片属于前者。
+- **修复**：`executeCardUpdate` 的 CardKit 分支在调用 `cardkit.v1.card.update` 前先 `await ref.messageId`（即 `sendCardByReference` 的完成），**所有实例更新都排在消息发出之后**；`sequence` 仍单调递增。消息发送失败（`messageId === undefined`）时跳过更新并打日志。
+- **回归测试**：新增 1 例——`sendCardByReference` 挂起时先触发 `tool/call` + `tool/result`，断言 250ms 内**不调用** `updateCardInstance`，resolve 后才调用一次，且更新内容含工具结果（不是创建时的快照）。
+- **验证**：`npm run typecheck` / `npm run test`（254 passed）/ `npm run build`。
+
 ### 变更：工作区选择也改为可点击行 + 顶部控制按钮窄屏堆叠（`src/feishu-onboarding.ts` / `src/i18n.ts` / `tests/onboarding.spec.ts`）
 
 - **手机端顶部按钮显示不全**：控制行（上一级 / 家目录 / 显示隐藏）用 `column_set` 的 `flex_mode: 'none'`——它是「按比例压缩」，窄屏把三个按钮压到文字被裁。改为 **`flex_mode: 'stretch'`（窄屏变上下堆叠）**，宽屏仍并排；翻页行同款。
