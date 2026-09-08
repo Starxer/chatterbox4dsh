@@ -26,7 +26,7 @@ Harness Agent (模型、工具、会话日志)
 | `src/index.ts` | 插件入口，注册服务和命令 |
 | `src/channel.ts` | 飞书 Channel 封装，入站图片/文件接收（`admitImagesForMessage`/`admitFilesForMessage`），回复卡片渲染，Turn Complete 卡片 |
 | `src/harness.ts` | Harness 会话服务，session 映射持久化 |
-| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning + text + 工具调用 + 结果预览 + 时长/token footer |
+| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览 + 时长/token footer |
 | `src/feishu-todos.ts` | Todo 进度卡片 |
 | `src/feishu-approvals.ts` | 工具审批处理 |
 | `src/feishu-questions.ts` | ask_user_question 卡片 |
@@ -39,15 +39,15 @@ Harness Agent (模型、工具、会话日志)
 ```
 step/start       → 记录开始时间
 assistant/chunk  → 累积 reasoning/text，记录首 token 时间
-assistant/message → 发送 step 卡片，记录 usage
+assistant/message → 发送 step 卡片（text 前 3000 字上屏），记录 usage
 tool/call        → 追加工具调用信息，更新卡片
 tool/result      → 追加工具结果和预览，更新卡片，记录完成时间
-turn/end         → flush debounce，发送 Turn Complete 卡片
+turn/end         → flush debounce → 发送溢出文本 continued 卡（如有）→ 发送 Turn Complete footer 卡
 ```
 
 ## 卡片设计
 
-- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化，底部显示时长和 token
+- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化，底部显示时长和 token；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送
 - **Turn Complete 卡片**：turn 结束后发送，绿色，展示性能指标和配置信息
 - **Todo 卡片**：turquoise，含进度条
 - **审批卡片**：orange，含 approve/deny 按钮
