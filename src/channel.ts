@@ -224,6 +224,8 @@ export interface ReplyCardMeta {
   reasoningEffort?: string
   contextWindow?: number
   lastInputTokens?: number
+  /** Paired decode throughput of the turn (output tokens ÷ decode time). */
+  tokensPerSecond?: number
   /** Per-chat Enter-behavior-while-busy mode (Queue / Steer), shown in the Turn Complete footer. */
   busyMode?: BusyMode
 }
@@ -443,7 +445,11 @@ export async function startChannel(
           } else {
             // No intermediate card was sent — send the full reply, split across
             // multiple cards if the output exceeds one card's content budget.
-            const cards = renderReplyCards(text, meta)
+            // Carry the turn's decode throughput so this fallback card shows a
+            // tok/s line like every other assistant card.
+            const turnStats = await flushed?.(sessionId)
+            const tps = turnTokensPerSecond(turnStats)
+            const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
             for (const card of cards) {
               await channel.send(chatId, { card }, {
                 replyTo: replyToId,
@@ -624,6 +630,9 @@ function buildReplyFooter(meta?: ReplyCardMeta): object[] {
     const pct = Math.min(100, Math.round(meta.lastInputTokens / meta.contextWindow * 100))
     line2.push(`📊 ${formatTokenCount(meta.lastInputTokens)}/${formatTokenCount(meta.contextWindow)} (${pct}%)`)
   }
+  if (meta?.tokensPerSecond !== undefined && meta.tokensPerSecond > 0) {
+    line2.push(`🚀 ${meta.tokensPerSecond.toFixed(0)} tok/s`)
+  }
   const noteElements: object[] = []
   if (line1.length > 0) noteElements.push({ tag: 'lark_md', content: line1.join(' · ') })
   if (line2.length > 0) noteElements.push({ tag: 'lark_md', content: line2.join(' · ') })
@@ -640,6 +649,16 @@ function buildReplyFooter(meta?: ReplyCardMeta): object[] {
     }
   }
   return elements
+}
+
+/**
+ * Paired decode throughput of a turn: output tokens ÷ decode time over the
+ * SAME steps (a step with no timed first token contributes neither). Mirrors
+ * the Web UI's `deriveTurnMetrics`; returns undefined when not computable.
+ */
+export function turnTokensPerSecond(turnStats?: TurnStats): number | undefined {
+  if (turnStats === undefined || turnStats.totalDecodeMs <= 0 || turnStats.totalDecodeTokens <= 0) return undefined
+  return turnStats.totalDecodeTokens / (turnStats.totalDecodeMs / 1000)
 }
 
 /**
@@ -675,8 +694,8 @@ export function renderFooterCard(
       // Pair tokens and decode time over the SAME steps (the Web UI does the
       // same): a step with no timed first token contributes neither, otherwise
       // tok/s is inflated.
-      const tps = turnStats.totalDecodeTokens / (turnStats.totalDecodeMs / 1000)
-      perfParts.push(`🚀 ${tps.toFixed(0)} tok/s`)
+      const tps = turnTokensPerSecond(turnStats)
+      if (tps !== undefined) perfParts.push(`🚀 ${tps.toFixed(0)} tok/s`)
     }
     if (turnStats.stepCount > 0) {
       perfParts.push(`🔄 ${turnStats.stepCount} steps`)

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：每张助手卡片都显示 token 速度（`src/feishu-streaming.ts` / `src/channel.ts` / `tests/`）
+
+- **背景**：步骤卡片的 footer 一直有 `🚀 tok/s`，但「只调工具、没有思考/文本」的步骤因为没有首 token 锚点而缺失（已由上一条修复）；此外溢出续卡与兜底回复卡没有速度行。
+- **改动**：
+  - 抽出 `computeStepTps(state)`（步骤级 tok/s），步骤卡与溢出续卡共用；
+  - **溢出续卡**（`Reply (continued N/M)`，正文超过 3000 字时产生）也带一行 `🚀 N tok/s`；
+  - **兜底回复卡**（`renderReplyCards`，仅在流式模块没有发出步骤卡时使用）footer 增加 `tokensPerSecond`，由 `flushed()` 的 turn 统计经新的 `turnTokensPerSecond()` 注入（与 Turn Complete 同一套配对口径）。
+- **验证**：用真实会话日志回放了一个 13 步的 turn（含 5 个「只有工具调用」的步骤），**13 张步骤卡全部带 tok/s**；新增 2 例测试（溢出续卡带速度、兜底回复卡 footer 带速度）。`npm run typecheck` / `npm run test`（260 passed）/ `npm run build`。
+
 ### 修复：Turn Complete 的 tok/s 被高估（分子分母未配对）（`src/feishu-streaming.ts` / `src/channel.ts` / `src/harness.ts` / `tests/`）
 
 - **现象**：Turn Complete 卡片上的 `🚀 xxx tok/s` 有时明显高于 Web UI（实测某个 13 步的 turn：卡片 620 tok/s，按 Web UI 口径应为 363）。

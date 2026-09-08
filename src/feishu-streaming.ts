@@ -239,19 +239,23 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       ? Date.now() - state.stepStartTime
       : undefined
 
-    // Token output speed: output tokens ÷ LLM decode time (first token →
-    // assembled message). TTFT and tool time are excluded — the same
-    // semantics as the Turn Complete card and /status. Only computed once
-    // the assembled message's timestamp is known: falling back to Date.now()
-    // here would keep growing while tools run and show a misleadingly low
-    // tok/s on every refresh.
-    let tps: number | undefined
-    if (state.usage !== undefined && state.usage.outputTokens > 0 && state.firstTokenTime > 0 && state.messageTime > state.firstTokenTime) {
-      const decodeMs = state.messageTime - state.firstTokenTime
-      if (decodeMs > 0) tps = state.usage.outputTokens / (decodeMs / 1000)
-    }
+    return renderStepCard(getTranslations?.() ?? translationsFor('zh'), reasoning, text, tools, state.usage, stepDurationMs, computeStepTps(state), state.contextMeta)
+  }
 
-    return renderStepCard(getTranslations?.() ?? translationsFor('zh'), reasoning, text, tools, state.usage, stepDurationMs, tps, state.contextMeta)
+  /**
+   * Output speed of the current step: output tokens ÷ LLM decode time (first
+   * token → assembled message). TTFT and tool time are excluded — the same
+   * semantics as the Turn Complete card and /status. Only computed once the
+   * assembled message's timestamp is known: falling back to Date.now() would
+   * keep growing while tools run and show a misleadingly low tok/s on every
+   * refresh. Returns undefined when the step has no usable timing (then the
+   * card simply omits the speed).
+   */
+  const computeStepTps = (state: SessionStepState): number | undefined => {
+    if (state.usage === undefined || state.usage.outputTokens <= 0) return undefined
+    if (state.firstTokenTime <= 0 || state.messageTime <= state.firstTokenTime) return undefined
+    const decodeMs = state.messageTime - state.firstTokenTime
+    return decodeMs > 0 ? state.usage.outputTokens / (decodeMs / 1000) : undefined
   }
 
   /**
@@ -741,6 +745,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
         const hasOverflow = overflowText !== undefined && overflowText !== '' && overflowChat !== undefined && overflowOpts !== undefined
         const overflowChunks = hasOverflow ? chunkText(overflowText!, TEXT_STEP_CAP) : []
+        // The continuation cards carry the same step's speed so every card in
+        // the reply stream shows one.
+        const overflowTps = computeStepTps(state)
 
         flushPendingUpdate(state).then(async () => {
           // Step card is now on screen with the first TEXT_STEP_CAP chars.
@@ -748,7 +755,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           // reply is delivered without silent truncation.
           if (overflowChunks.length > 0 && overflowChat !== undefined && overflowOpts !== undefined) {
             for (let i = 0; i < overflowChunks.length; i++) {
-              await channel.send(overflowChat.chatId, { card: renderOverflowCard(overflowChunks[i]!, i + 1, overflowChunks.length) }, overflowOpts)
+              await channel.send(overflowChat.chatId, { card: renderOverflowCard(overflowChunks[i]!, i + 1, overflowChunks.length, overflowTps) }, overflowOpts)
             }
           }
           const entry = flushPromises.get(sessionId)
@@ -893,10 +900,15 @@ function sanitizeCodeblock(text: string): string {
 
 /**
  * Render a follow-up "continued" card for overflow text that exceeded the step
- * card's TEXT_STEP_CAP. No reasoning (already shown on the step card), no
- * footer (footer is sent separately by channel.ts).
+ * card's TEXT_STEP_CAP. No reasoning (already shown on the step card) and no
+ * full footer (that is sent separately by channel.ts), but the step's output
+ * speed is repeated so every card in the reply stream shows one.
  */
-function renderOverflowCard(text: string, part: number, total: number): object {
+function renderOverflowCard(text: string, part: number, total: number, tps?: number): object {
+  const elements: object[] = [{ tag: 'markdown', content: text }]
+  if (tps !== undefined && tps > 0) {
+    elements.push({ tag: 'markdown', content: `🚀 ${tps.toFixed(0)} tok/s`, text_size: 'notation' })
+  }
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -904,9 +916,7 @@ function renderOverflowCard(text: string, part: number, total: number): object {
       title: { tag: 'plain_text', content: total > 1 ? `Reply (continued ${part}/${total})` : 'Reply (continued)' },
       template: 'blue',
     },
-    body: {
-      elements: [{ tag: 'markdown', content: text }],
-    },
+    body: { elements },
   }
 }
 

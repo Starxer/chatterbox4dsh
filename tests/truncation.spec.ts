@@ -102,4 +102,11 @@ describe('renderReplyCards', () => {
     expect(md).toContain(`${'r'.repeat(200)}\n…(truncated)`)
     expect(md).not.toContain('r'.repeat(201))
   })
+
+  it('shows the turn tok/s in the reply footer when provided', () => {
+    const cards = renderReplyCards('short reply', { tokensPerSecond: 300 })
+    expect(markdownOf(cards[0])).toContain('🚀 300 tok/s')
+    // Absent when the turn has no computable throughput.
+    expect(markdownOf(renderReplyCards('short reply', {})[0])).not.toContain('tok/s')
+  })
 })

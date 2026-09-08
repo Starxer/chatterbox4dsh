@@ -419,4 +419,27 @@ describe('turn stats token speed', () => {
     expect(stats?.totalDecodeMs).toBe(0)
     streaming.stop()
   })
+
+  it('puts the step tok/s on every overflow continuation card too', async () => {
+    const sent: any[] = []
+    const { streaming, emit } = stepHarness({
+      send: vi.fn(async (_to: string, input: any) => { sent.push(input.card); return { messageId: 'm' } }),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-1' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    })
+    const startedAt = Date.now() - 500
+    emit('turn/start')
+    emit('assistant/message', {
+      usage: { inputTokens: 10, outputTokens: 100 },
+      stream: [{ type: 'text-chunks', time0: startedAt, index: 0, dt: [], texts: ['a'.repeat(7000)] }],
+    })
+    await tick(200)
+    emit('turn/end')
+    await tick(50)
+    expect(sent.length).toBeGreaterThan(0)
+    for (const card of sent) expect(mdOf(card)).toContain('tok/s')
+    streaming.stop()
+  })
 })
