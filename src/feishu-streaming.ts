@@ -49,6 +49,14 @@ export interface FeishuStreamingChannel {
   createCardInstance?(card: object): Promise<string>
   sendCardByReference?(to: string, cardId: string, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
   updateCardInstance?(cardId: string, card: object, sequence: number): Promise<void>
+  /**
+   * Register a callback the channel awaits before it posts any other card or
+   * text to a chat. Streaming uses it to flush a step card that is still
+   * inside its coalescing window, so a card raised by that step's own tool
+   * call (question / approval) cannot overtake it. Optional so tests and
+   * non-web deployments keep the plain send path.
+   */
+  registerPendingCardFlush?(flush: (chatId: string) => Promise<void>): void
 }
 
 /**
@@ -294,6 +302,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /**
+   * Per-chat chain of step-card message creations. Each card's message is
+   * only created after the previous card's message exists, so step cards keep
+   * their chat order even when Feishu's CardKit create/send takes longer than
+   * the gap between two fast steps (observed 2026-09-09: a later card
+   * overtaking an earlier one).
+   */
+  const lastCardSendByChat = new Map<string, Promise<unknown>>()
+
+  /**
    * Post the step card immediately, built from the CURRENT state, and track
    * its identity. Only `queueStepCardSend` / `flushPendingSend` call this —
    * never the event handlers directly.
@@ -323,7 +340,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         return undefined
       })
       : Promise.resolve(undefined)
-    const messageId = cardId.then((id) => {
+    const sendMessage = (id: string | undefined): Promise<string | undefined> => {
       if (id !== undefined) {
         return channel.sendCardByReference!(chat.chatId, id, opts).then((r) => {
           console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via card=${id}`)
@@ -341,7 +358,14 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         logger.warn(`dsh-feishu: step card send failed: ${error instanceof Error ? error.message : String(error)}`)
         return undefined
       })
-    })
+    }
+    // Reserve this card's place in the chat BEFORE the message is created:
+    // wait for the previous card's message, then await this card's instance
+    // (created in parallel above) and send it. A failed earlier send must not
+    // stall the chain, hence the catch.
+    const previousSend = lastCardSendByChat.get(chat.chatId) ?? Promise.resolve()
+    const messageId = previousSend.catch(() => undefined).then(() => cardId).then(sendMessage)
+    lastCardSendByChat.set(chat.chatId, messageId.catch(() => undefined))
     state.stepCardRef = { messageId, cardId, sequence: 0 }
     // Track the send promise so flushed() can wait for the final step card's
     // message to be created before the Turn Complete footer is sent.
@@ -389,6 +413,31 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.pendingSend = undefined
     actuallySendStepCard(pending.chat, pending.sessionId, state)
   }
+
+  /**
+   * Flush every step card still inside its coalescing window for one chat and
+   * resolve once those cards' messages exist.
+   *
+   * Registered on the channel so ANY other outbound card/text to that chat
+   * (the question/approval card raised by the step's own tool call, the
+   * overflow "continued" cards at turn/end, the Turn Complete footer) is
+   * posted AFTER the step card it follows. Without this a step card whose
+   * first send is still debounced (or whose CardKit create+send is still in
+   * flight) is overtaken by the card that logically comes later — observed
+   * 2026-09-09: the question card landed before the step card that called
+   * `ask_user_question`.
+   */
+  const flushPendingSendsForBarrier = async (chatId: string): Promise<void> => {
+    for (const state of sessionStates.values()) {
+      if (state.pendingSend !== undefined && state.pendingSend.chat.chatId === chatId) {
+        flushPendingSend(state)
+      }
+    }
+    // Await the per-chat chain, not just the flush: an earlier card may still
+    // be having its message created.
+    await lastCardSendByChat.get(chatId)
+  }
+  channel.registerPendingCardFlush?.(flushPendingSendsForBarrier)
 
   /**
    * Pending debounce entries keyed by the card ref they belong to.
@@ -774,6 +823,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // post its card before anything else so it precedes the overflow and
         // Turn Complete cards in the chat.
         flushPendingSend(state)
+        // The final step card's message may still be in flight (CardKit create
+        // → send). Capture its promise now — resetStep clears the ref — and
+        // await it before the overflow cards so they cannot be created first.
+        const lastStepSend = lastStepSendPromises.get(sessionId)
 
         // Capture overflow data BEFORE resetStep clears state.
         const fullText = state.text.trim()
@@ -792,7 +845,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         const overflowTps = computeStepTps(state)
 
         flushPendingUpdate(state).then(async () => {
-          // Step card is now on screen with the first TEXT_STEP_CAP chars.
+          // The step card is now on screen with the first TEXT_STEP_CAP chars.
+          // Wait for its message before posting overflow, otherwise the
+          // "continued" cards are created first and appear above the step card
+          // (observed 2026-09-09). The barrier handles the real channel; this
+          // await also covers channels that do not register one.
+          if (lastStepSend !== undefined) await lastStepSend
           // Send overflow text as follow-up "continued" cards so the full
           // reply is delivered without silent truncation.
           if (overflowChunks.length > 0 && overflowChat !== undefined && overflowOpts !== undefined) {
@@ -862,6 +920,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       sessionStates.clear()
       turnStatsMap.clear()
       lastStepSendPromises.clear()
+      lastCardSendByChat.clear()
       for (const entry of flushPromises.values()) entry.resolve()
       flushPromises.clear()
     },

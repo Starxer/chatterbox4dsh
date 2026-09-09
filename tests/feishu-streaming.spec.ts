@@ -234,6 +234,7 @@ interface StepChannel {
   createCardInstance?: ReturnType<typeof vi.fn>
   sendCardByReference?: ReturnType<typeof vi.fn>
   updateCardInstance?: ReturnType<typeof vi.fn>
+  registerPendingCardFlush?: ReturnType<typeof vi.fn>
 }
 
 function stepHarness(channel: StepChannel) {
@@ -413,6 +414,99 @@ describe('step card delivery', () => {
     // Both step cards were updated — neither debounce cancelled the other.
     const cardIds = channel.updateCardInstance!.mock.calls.map(call => call[0])
     expect(new Set(cardIds).size).toBe(2)
+    streaming.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Chat ordering: step cards must precede the cards that logically follow them
+// ---------------------------------------------------------------------------
+
+describe('step card chat ordering', () => {
+  it('flushes a debounced step card before another card is posted (barrier)', async () => {
+    // The step's first card sits in the 150ms coalescing window. A question
+    // card raised by the step's own tool call used to be posted first because
+    // the channel had no way to flush the pending step card.
+    let flush: ((chatId: string) => Promise<void>) | undefined
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+      registerPendingCardFlush: vi.fn((fn: (chatId: string) => Promise<void>) => { flush = fn }),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    expect(channel.registerPendingCardFlush).toHaveBeenCalledOnce()
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'ask_user_question', arguments: '{}' })
+    // Still inside the coalescing window: no card yet.
+    expect(channel.sendCardByReference).not.toHaveBeenCalled()
+    await flush!('oc_1')
+    // The barrier posted the step card and waited for its message.
+    expect(channel.sendCardByReference).toHaveBeenCalledOnce()
+    streaming.stop()
+  })
+
+  it('serializes step-card messages per chat so a fast next step cannot overtake', async () => {
+    let instances = 0
+    let resolveFirst!: (value: { messageId: string }) => void
+    const sends: string[] = []
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => `card-${++instances}`),
+      sendCardByReference: vi.fn((_to: string, cardId: string) => {
+        sends.push(cardId)
+        if (cardId === 'card-1') return new Promise<{ messageId: string }>((resolve) => { resolveFirst = resolve })
+        return Promise.resolve({ messageId: 'm-2' })
+      }),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{}' })
+    await tick(200)
+    expect(sends).toEqual(['card-1'])
+    // Next step opens its card while card-1's message is still in flight.
+    emit('step/start')
+    emit('tool/call', { callId: 'c2', name: 'bash', arguments: '{}' })
+    await tick(200)
+    // card-2's instance is created, but its message must wait for card-1.
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
+    expect(sends).toEqual(['card-1'])
+    resolveFirst({ messageId: 'm-1' })
+    await tick(0)
+    expect(sends).toEqual(['card-1', 'card-2'])
+    streaming.stop()
+  })
+
+  it('posts overflow continuation cards only after the last step card message exists', async () => {
+    const sent: any[] = []
+    let resolveSend!: (value: { messageId: string }) => void
+    const channel: StepChannel = {
+      send: vi.fn(async (_to: string, input: any) => { sent.push(input.card); return { messageId: 'm-plain' } }),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(() => new Promise<{ messageId: string }>((resolve) => { resolveSend = resolve })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    const startedAt = Date.now() - 500
+    emit('turn/start')
+    emit('assistant/message', {
+      usage: { inputTokens: 10, outputTokens: 100 },
+      stream: [{ type: 'text-chunks', time0: startedAt, index: 0, dt: [], texts: ['a'.repeat(7000)] }],
+    })
+    await tick(200)
+    expect(channel.sendCardByReference).toHaveBeenCalledOnce()
+    emit('turn/end')
+    await tick(50)
+    // The step card's message is still being created — no overflow yet.
+    expect(sent).toHaveLength(0)
+    resolveSend({ messageId: 'm-1' })
+    await tick(50)
+    expect(sent.length).toBeGreaterThan(0)
     streaming.stop()
   })
 })

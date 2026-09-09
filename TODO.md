@@ -44,6 +44,7 @@
 | — | Turn Complete 卡片 | ✅ 显示轮次时长、TTFT、吞吐量、输入输出 token、缓存命中率 |
 | — | Step token footer | ✅ 每个 step 卡片底部显示时长 + 输入输出 token |
 | — | Debounce + flush 同步 | ✅ 150ms debounce 合并快速更新，turn/end 时 flush 确保 footer 在 card update 之后发送 |
+| — | 卡片顺序（步骤卡优先） | ✅ 每 chat 步骤卡消息串行链 + 发卡前屏障（问题卡/审批卡/溢出续卡前先刷出并等待步骤卡消息）+ 溢出续卡显式 `await lastStepSend`；修「续卡排到更早步骤卡前」与「问题卡先于步骤卡」 |
 | — | 防止卡片消失 | ✅ 内层 try/catch 保护 mux 事件处理，timer 回调 error-safe |
 | — | 不同步骤工具调用分离 | ✅ `resetStep` 不清除 `state.chat`（session 级坐标），每个 step 独立卡片 |
 | — | 审批按钮反馈 | ✅ 点击后卡片更新为 ✅ Approved / ❌ Rejected，移除按钮 |

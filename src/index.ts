@@ -187,11 +187,43 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   }
   const cardActionHandlers = new Set<(evt: CardActionEvent) => void | Promise<void>>()
   const attachedChannels = new Set<LarkChannel>()
+  // ── Outbound card ordering barrier ───────────────────────────────────────
+  // A step card is posted after a 150ms coalescing window and, on the CardKit
+  // path, via two calls (create instance → send message referencing it). Any
+  // other card sent in that window — the question/approval card raised by the
+  // step's own tool call, or the overflow "continued" cards at turn/end —
+  // would be created first and appear above the step card it follows
+  // (observed 2026-09-09). Streaming registers a flush here; every card/text
+  // send first lets it post any debounced step card for that chat and waits
+  // until its message exists. `cardSendDepth` guards re-entrancy: the step
+  // card itself may go through `send` on the non-CardKit fallback and must
+  // not wait on the flush that is producing it.
+  let pendingCardFlush: ((chatId: string) => Promise<void>) | undefined
+  let cardSendDepth = 0
   const cardChannel = {
-    send: (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean }): Promise<{ messageId?: string }> => {
+    send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean }): Promise<{ messageId?: string }> => {
+      if (('card' in input || 'text' in input) && cardSendDepth === 0 && pendingCardFlush !== undefined) {
+        cardSendDepth += 1
+        try {
+          await pendingCardFlush(to)
+        } catch (error: unknown) {
+          // Ordering is best-effort: a failed flush must not block the card
+          // the user is actually waiting for.
+          console.log(`dsh-feishu: pending card flush failed: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+          cardSendDepth -= 1
+        }
+      }
       const ch = channelHolder.current
-      if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
+      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
       return ch.send(to, input, opts) as Promise<{ messageId?: string }>
+    },
+    /**
+     * Register the streaming module's step-card flush. Called once at boot;
+     * absent in tests and deployments that do not run the streaming module.
+     */
+    registerPendingCardFlush: (flush: (chatId: string) => Promise<void>): void => {
+      pendingCardFlush = flush
     },
     /**
      * Create a Feishu card instance (cardkit.v1.card.create) and return its

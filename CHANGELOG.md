@@ -2,9 +2,19 @@
 
 ## Unreleased
 
-> 对齐 DSH `0.1.5-alpha.1`。插件**无需改代码**：typecheck / 266 tests / build 全绿，全部 `@deepseek-ai/dsh-*` 依赖的公开 API 逐项 diff 无变化。
+> 对齐 DSH `0.1.5-alpha.1`。插件**无需改代码**：typecheck / tests / build 全绿，全部 `@deepseek-ai/dsh-*` 依赖的公开 API 逐项 diff 无变化。
 >
-> Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / 266 tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
+> Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
+
+### 修复：卡片顺序——溢出续卡与问题卡不再抢在步骤卡前面（`src/feishu-streaming.ts` / `src/index.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **现象**：① 文本超过 3000 字的溢出续卡（`Reply (continued N/M)`）有时排在**更早的步骤卡**前面；② `ask_user_question` 的问题卡比**同一步的步骤卡**先弹出。
+- **根因**：所有出站消息都是各发各的，没有任何顺序约束。步骤卡走 CardKit 两步（`cardkit.v1.card.create` → `im.v1.message.create/reply`），首发还要过 `STEP_CARD_DEBOUNCE_MS = 150` 的合并窗口；而问题卡、溢出续卡都走 `im.v1.message.create` 一步就发出。日志实测（`tool/call ask_user_question` → `[q] card sent` → 才出现 `[send] instance card=…`）确认问题卡的消息先于步骤卡创建，飞书按服务端创建时间排序，于是显示反了。溢出续卡同理：`turn/end` 只 `flushPendingSend` 发起了步骤卡，没等它的 `messageId`，续卡就抢先创建。
+- **修复**（三条互相配合）：
+  1. **每会话（按 chat）串行链** `lastCardSendByChat`：一张步骤卡的消息必须等前一张的消息创建完成后才创建，快步骤连续出卡也不会倒序（`createCardInstance` 仍并行预取，只串行最后的 message create）。
+  2. **发卡前屏障**：streaming 通过新的可选 `channel.registerPendingCardFlush()` 注册 `flushPendingSendsForBarrier(chatId)`——把该 chat 还在合并窗口里的步骤卡立即发出，并等到它的消息存在。`index.ts` 的 `cardChannel.send` 在发任何 card/text 前先 `await` 这个屏障；用 `cardSendDepth` 防重入（非 CardKit 兜底路径下步骤卡自身也会走 `send`，不能等自己）。
+  3. **溢出续卡显式等待**：`turn/end` 在 `resetStep` 清引用前先捕获 `lastStepSendPromises`，发续卡前 `await`，覆盖没有注册屏障的通道（含测试桩）。
+- **验证**：新增 3 例测试（屏障刷出合并窗口内的步骤卡、同 chat 步骤卡消息串行、步骤卡消息未创建前不发续卡）；`npm run typecheck` / `npm run test`（269 passed）/ `npm run build`；重启后真实聊天确认问题卡已排在步骤卡之后。
 
 ### 构建：依赖范围与锁文件对齐 DSH 0.1.5（`package.json` / `package-lock.json`）
 
