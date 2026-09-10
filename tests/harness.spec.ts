@@ -567,17 +567,18 @@ describe('HarnessConversationService', () => {
     })
   })
 
-  it('submits image-only messages without a text payload', async () => {
+  it('submits image-only messages with no text block at all', async () => {
     const f = fixture()
+    let captured: any
     const original = f.create.getMockImplementation()
     f.create.mockImplementationOnce(async (input: any) => {
       const handle = await original!(input)
       handle.agent.followup = vi.fn((message: any) => {
+        captured = message
         const seq = handle.agent.session.events.length
-        const images = message.content.filter((c: any) => c.type === 'image').length
         handle.agent.session.events.push(
           { seq, type: 'turn/start', data: {} },
-          { seq: seq + 1, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: `images:${images}` }] } } },
+          { seq: seq + 1, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'ok' }] } } },
           { seq: seq + 2, type: 'turn/end', data: { reason: { kind: 'completed' } } },
         )
       })
@@ -595,7 +596,11 @@ describe('HarnessConversationService', () => {
       chatId: 'oc_2', chatType: 'p2p',
       content: '',
       imageBlocks: [ref, ref],
-    })).resolves.toBe('images:2')
+    })).resolves.toBe('ok')
+    expect(captured.content).toEqual([
+      { type: 'image', attachment: ref },
+      { type: 'image', attachment: ref },
+    ])
   })
 
   it('rejects an inbound message that carries neither text nor images', async () => {
@@ -624,31 +629,6 @@ describe('HarnessConversationService', () => {
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', workspace: '/work' })
     await service.reply({ chatId: 'oc_4', chatType: 'p2p', content: 'hello' })
     expect(captured.content[0]).toEqual({ type: 'text', text: 'hello' })
-  })
-
-  it('submits image-only messages with no text block at all', async () => {
-    const f = fixture()
-    let captured: any
-    const original = f.create.getMockImplementation()
-    f.create.mockImplementationOnce(async (input: any) => {
-      const handle = await original!(input)
-      handle.agent.followup = vi.fn((message: any) => {
-        captured = message
-        const seq = handle.agent.session.events.length
-        handle.agent.session.events.push(
-          { seq, type: 'turn/start', data: {} },
-          { seq: seq + 1, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'ok' }] } } },
-          { seq: seq + 2, type: 'turn/end', data: { reason: { kind: 'completed' } } },
-        )
-      })
-      return handle
-    })
-    const ref = { attachmentId: 'att_x' as never, mediaType: 'image/png' as const, bytes: 1, width: 1, height: 1 }
-    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', workspace: '/work' })
-    await service.reply({ chatId: 'oc_5', chatType: 'p2p', content: '', imageBlocks: [ref] })
-    expect(captured.content).toEqual([
-      { type: 'image', attachment: ref },
-    ])
   })
 
   it('needsOnboarding is true for a chat with no session history and false after /new', async () => {
