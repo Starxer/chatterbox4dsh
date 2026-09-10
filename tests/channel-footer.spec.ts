@@ -103,6 +103,22 @@ describe('renderFooterCard deliverables', () => {
     expect(markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: [] }) as any)).not.toContain('Deliverables')
   })
 
+  it('leads the card, with a divider before the metrics', () => {
+    const card = renderFooterCard(t, {}, {
+      ...turnStats,
+      deliverables: [{ path: 'reports/summary.md', description: 'Monthly rollup' }],
+    }) as any
+    const elements = card.body.elements
+    // First element is the deliverable list, second is the divider that
+    // separates it from the turn stats.
+    expect(elements[0].tag).toBe('markdown')
+    expect(elements[0].content).toContain('📦 **Deliverables**')
+    expect(elements[1].tag).toBe('hr')
+    // The stats lines follow the divider, not the other way round.
+    const firstStat = elements.findIndex((el: any) => el.tag === 'markdown' && el.text_size === 'notation')
+    expect(firstStat).toBeGreaterThan(1)
+  })
+
   it('caps the list and reports the remainder', () => {
     const many = Array.from({ length: 9 }, (_, index) => ({ path: `out/file-${index}.txt` }))
     const md = markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: many }) as any)

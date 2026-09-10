@@ -712,6 +712,26 @@ export function renderFooterCard(
 ): object | undefined {
   const elements: object[] = []
 
+  // Deliverables lead the card: they are the one part the user may want to act
+  // on, so they must not sit underneath the metrics. A divider separates them
+  // from the stats that follow. The list IS the Feishu deliverable surface —
+  // the bytes are never pushed automatically, because a chat has no workspace
+  // browser to open them from and most deliveries are files the user can
+  // already reach. Asking for one sends it through `feishu_send_file`.
+  const deliverables = turnStats?.deliverables ?? []
+  if (deliverables.length > 0) {
+    const shown = deliverables.slice(0, DELIVERABLE_DISPLAY_CAP)
+    const lines = shown.map((file) => {
+      const description = file.description === undefined ? '' : ` — ${capDeliverableNote(file.description)}`
+      return `• ${inlineCodeSpan(file.path)}${description}`
+    })
+    if (deliverables.length > shown.length) {
+      lines.push(t.deliverablesMore(deliverables.length - shown.length))
+    }
+    elements.push({ tag: 'markdown', content: `${t.deliverablesTitle(deliverables.length)}\n${lines.join('\n')}` })
+    elements.push({ tag: 'hr' })
+  }
+
   // Turn stats section — all notation size
   if (turnStats !== undefined) {
     // Duration: total (wall-clock) / LLM / tools
@@ -762,24 +782,6 @@ export function renderFooterCard(
     }
     if (tokenParts.length > 0) {
       elements.push({ tag: 'markdown', content: tokenParts.join(' · '), text_size: 'notation' })
-    }
-
-    // Deliverables declared by DSH's own `present` tool this turn. The list IS
-    // the Feishu deliverable surface — the bytes are never pushed automatically,
-    // because a chat has no workspace browser to open them from and most
-    // deliveries are files the user can already reach. Asking for one sends it
-    // through `feishu_send_file`.
-    const deliverables = turnStats.deliverables ?? []
-    if (deliverables.length > 0) {
-      const shown = deliverables.slice(0, DELIVERABLE_DISPLAY_CAP)
-      const lines = shown.map((file) => {
-        const description = file.description === undefined ? '' : ` — ${capDeliverableNote(file.description)}`
-        return `• ${inlineCodeSpan(file.path)}${description}`
-      })
-      if (deliverables.length > shown.length) {
-        lines.push(t.deliverablesMore(deliverables.length - shown.length))
-      }
-      elements.push({ tag: 'markdown', content: `${t.deliverablesTitle(deliverables.length)}\n${lines.join('\n')}` })
     }
   }
 

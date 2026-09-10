@@ -40,7 +40,7 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | 单聊 / 群聊 / 话题群 | 单聊和群聊按聊天复用 Session；话题群按线程独立 Session |
 | 统一 per-step 卡片 | 每个 agent step 一张卡片，包含推理、文本、工具调用、结果预览；标题带「第 N 轮 · 第 M 步」，reasoning 标题带思考耗时与思考 token，footer 两行（`⏱ 时长 · 📥 本步新输入 → 📤 输出` / `🚀 tok/s · 📊 上下文占用/窗口`）。**📥 只算本步真正处理的输入**（未缓存 + 缓存写入，命中读取不算），有命中时附带 `♻️ NN%`；上下文总量只出现在 📊 一处，避免与 📥 重复。快步骤（思考→工具调用→结果落在 150ms 内）只发**一张**卡 |
 | 工具调用展示 | 工具名内联代码 + args（独立 fenced 代码块防溢出）+ 结果预览（terminal/web/search/read/diff），原地更新 wathet→green/red |
-| Turn Complete 卡片 | turn 结束后展示总时长/LLM 时间/工具时间、TTFT/吞吐量、token/缓存命中率，footer 另显示 **Enter while busy**；吞吐量口径与 DSH Web UI `deriveTurnMetrics` 对齐（首 token 判定含 tool-call delta，token 与 decode 时间同批配对）。模型用 DSH `present` 工具声明的**交付物**也会列在这里（`📦 交付物`，路径 + 描述）：**只列清单、不推送文件**，需要时让模型发即可 |
+| Turn Complete 卡片 | turn 结束后展示总时长/LLM 时间/工具时间、TTFT/吞吐量、token/缓存命中率，footer 另显示 **Enter while busy**；吞吐量口径与 DSH Web UI `deriveTurnMetrics` 对齐（首 token 判定含 tool-call delta，token 与 decode 时间同批配对）。模型用 DSH `present` 工具声明的**交付物**列在**卡片最前面**（`📦 交付物`，路径 + 描述，之后用分隔线接指标）：**只列清单、不推送文件**，需要时让模型发即可 |
 | 会话管理面板 | `/session`：交互式卡片下拉选会话 + 切换/detach/归档/fork/改名/列表/刷新；`/session list` 表格卡；`/session N` 快速切换 |
 | 斜杠命令 | `/model` `/new` `/session` `/status` `/stop` `/steer` `/queue` `/busy` `/permission` `/reasoning` `/display` `/approve` `/deny` `/help` 等 |
 | 审批 | 与 DSH Web UI 共享同一份 pending 审批状态；审批卡片 **Approve 在上 / Reject 在下**，并显示 `Reason:` 原因 |

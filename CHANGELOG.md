@@ -44,7 +44,18 @@
 
 ### 新增：Turn Complete 卡片列出本轮「交付物」（`src/feishu-streaming.ts` / `src/channel.ts` / `src/i18n.ts`）
 
-- DSH `0.1.5-rc.1` 起，随附 Web 的 `standard` / `ptc` / `cordis` preset 带有 **`present` 工具**，其指引要求模型对用户要接收的文件显式调用它；成功后往会话日志写 `deliverables/presented`（`{ turn, callId, files: [{ path, description? }] }`）。插件此前完全忽略这个事件——**模型声明交付了文件，飞书聊天里却什么都没有**。现在把它收进本轮统计，渲染在既有 Turn Complete 卡片的 stats 与元信息之间：
+- DSH `0.1.5-rc.1` 起，随附 Web 的 `standard` / `ptc` / `cordis` preset 带有 **`present` 工具**，其指引要求模型对用户要接收的文件显式调用它；成功后往会话日志写 `deliverables/presented`（`{ turn, callId, files: [{ path, description? }] }`）。插件此前完全忽略这个事件——**模型声明交付了文件，飞书聊天里却什么都没有**。现在把它收进本轮统计，渲染在 **Turn Complete 卡片的最前面**，其后紧跟一条分隔线，再才是耗时/token 等指标：
+
+  ```
+  📦 交付物（2）
+  • `reports/summary.md` — 月度汇总
+  • `assets/chart.png`
+  ─────────────────────
+  ⏱ 12.3s · 🧠 LLM 8.1s · 🔧 Tools 2.4s
+  ...
+  ```
+
+  放在最前是因为**用户可能真的要动手拿文件**，而指标只是读一眼的数字；起初放在 stats 与元信息之间，使用者在真机上指出位置不合理（2026-09-10）后前移。
 
   ```
   📦 交付物（2）
@@ -55,7 +66,7 @@
 - **只列清单，不推送文件**。飞书没有工作区浏览器，Web 那套「交付物卡片行 + 点开在侧栏预览」在这里没有等价物；而把文件直接推进聊天既噪音大，又会让模型同时调 `present` 与 `feishu_send_file` 造成重复发送。清单保留了 `present` 的全部价值——**模型筛过的成品 + 描述**——用户真要文件时说一句即可，仍走已有的 `feishu_send_file`。
 - 细节：按 `path` 去重、**后声明的描述覆盖先前的**（对齐 Web UI `ui-deliverables`）；单轮上限 16 条；卡片最多列 6 条，其余折成 `…另有 N 个`；路径里的反引号/换行会被压平，避免破坏卡片 markdown；不做图片内联。
 - `deriveToolSummary` 为 `present` 增加分支（`交付物：a.txt +2`），不再落到 `present · files` 的兜底文案。
-- **验证**：新增 4 例测试（收集与去重、后声明描述优先、非法载荷忽略、跨轮清空）+ `deriveToolSummary` 的 `present` 用例。
+- **验证**：新增 4 例测试（收集与去重、后声明描述优先、非法载荷忽略、跨轮清空）+ `deriveToolSummary` 的 `present` 用例 + `renderFooterCard` 的「交付物在首位、其后是分隔线」用例。
 
 ### 文档：DSH 0.1.5-alpha.1 → 0.1.5-rc.1 升级评估（`docs/migration-0.1.5-alpha.1-to-rc.1.md`）
 
