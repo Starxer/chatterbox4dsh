@@ -1,4 +1,4 @@
-import { resolveRuntimeConfig } from './config.ts'
+import { connectionFingerprint, resolveRuntimeConfig } from './config.ts'
 import type { RuntimeConfig, SettingsConfig } from './config.ts'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 
@@ -51,7 +51,7 @@ export class LarkRuntime {
           invalidConfig = true
           throw error
         }
-        const fingerprint = JSON.stringify(config)
+        const fingerprint = connectionFingerprint(config)
         if (this.current?.fingerprint === fingerprint) return
         await this.stopCurrent()
         this.snapshot = { state: 'connecting' }

@@ -8,6 +8,20 @@
 >
 > 另已评估 DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
 
+### 修复：改设置会把整个飞书运行时推倒重建，进而杀掉正在跑的 turn（`src/config.ts` / `src/runtime.ts`）
+
+- **现象**：agent 正在跑时点 `/display` 卡片（或执行 `/display <开关> on|off`、`/lang zh`），聊天里回一条 `处理这条消息时出错：session "…": flush on a closed handle`，**Agent 随即变成空闲**。
+- **根因链**（日志证据：点一次卡就出现一对 `[ws] ws client closed manually` → `ws client ready`）：
+  1. `index.ts` 的 `settingsScope.watch(...)` 在设置变化时调 `runtime.reconcile()`；
+  2. `reconcile()` 用 **`JSON.stringify(config)` 整个 settings 对象**当指纹，而 `resolveRuntimeConfig` 返回的就是 `{ ...config, appSecret }`——于是**改动任意一个设置字段（含四个显示开关、`locale`、`session` 默认值）都会让指纹变化**，被当成「连接配置变了」；
+  3. `reconcile()` 于是 `stopCurrent()` → 断开 WebSocket + **`bridge.dispose()`**；
+  4. `bridge.dispose()` 会 dispose 掉 `handles` 里的**每一个 agent** → agent-loop 关闭该 session 的写句柄；
+  5. 此时若有一个 turn 在跑或有一条消息排在 `await agent.whenIdle()` 上，它的 `sessions.flush(agent.session)` 就打在一个已关闭的句柄上 → `flush on a closed handle`，turn 直接失败、agent 变空闲。
+  - 影响面不止新卡片：`/display <开关> on|off`（文本路径）与 `/reasoning show on|off`、`/lang` 从加入起就有同样的问题；WebUI 面板因为外面包了 `beginUpdate`/`endUpdate`（`apiUpdateDepth`）才没暴露。
+- **修复**：新增 `connectionFingerprint(config)`，指纹只覆盖**通道构造时真正捕获的字段**（`appId` / `appSecret` / `domain` / `requireMention` / `dmMode` / `groupAllowlist` / `dmAllowlist` / `reactEmoji`），`reconcile()` 改用它比较。显示开关、`locale`、`workspace`/`agentPreset`/`provider`/`model`、`errorMessage` 都不再触发重建——它们要么被其它子系统**实时读取**，要么（`errorMessage`）只是兜底文案、不值得为它重连一次。
+- **验证**：`tests/config.spec.ts` 断言「非连接字段不改变指纹、连接字段改变指纹」；`tests/runtime.spec.ts` 新增一例——连续改显示开关/`locale`/`errorMessage`/会话默认值后，`start` 只调用一次且旧运行时**从未被 stop**。`npm run typecheck` / `npm run test`（305 passed）/ `npm run build` 全绿。
+
+
 ### 新增：`/display` 无参改为交互式开关卡片（`src/feishu-display.ts` / `src/index.ts` / `src/i18n.ts`）
 
 - 无参 `/display` 现在发一张 **📇 卡片显示** 卡片：四个开关各一个按钮，文案直接带状态（`✅ 工具调用：开` / `⬜ 结果：关`），点一下取反并立即持久化——不用再记命令语法。带参 `/display <开关> on|off` 保持不变。卡片发送失败时自动回退到原来的文本列表，`/display` 永远有回应。

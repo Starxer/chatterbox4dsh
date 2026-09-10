@@ -114,6 +114,40 @@ export function resolveRuntimeConfig(config: SettingsConfig, resolvedSecret?: st
   return { ...config, appSecret }
 }
 
+/**
+ * Fingerprint of the fields that decide what the Feishu connection actually IS.
+ * `LarkRuntime.reconcile()` compares it to decide whether the runtime must be
+ * rebuilt, so it must cover exactly what the channel captures at construction
+ * (credentials, domain, and the inbound access policy).
+ *
+ * Everything else in the settings section is deliberately absent. In
+ * particular the card-display switches (`showReasoning` / `showToolCalls` /
+ * `showToolArgs` / `showToolResults`), `locale`, and the new-session defaults
+ * (`workspace` / `agentPreset` / `provider` / `model`) are read live by other
+ * subsystems. Letting any of them into the fingerprint makes a `/display`,
+ * `/reasoning show`, or `/lang` write look like a channel change: reconcile
+ * then calls `stopCurrent()`, which disconnects the WebSocket and runs
+ * `bridge.dispose()` — disposing EVERY live agent and closing its session write
+ * handle. Landing that during a turn kills it with
+ * `session "…": flush on a closed handle` (observed 2026-09-10, toggling the
+ * display card while the agent was running).
+ *
+ * `errorMessage` is excluded too: it is only a fallback string, never worth a
+ * reconnect, and the previous text simply stays until the next real restart.
+ */
+export function connectionFingerprint(config: RuntimeConfig): string {
+  return JSON.stringify({
+    appId: config.appId,
+    appSecret: config.appSecret,
+    domain: config.domain,
+    requireMention: config.requireMention,
+    dmMode: config.dmMode,
+    groupAllowlist: config.groupAllowlist,
+    dmAllowlist: config.dmAllowlist,
+    reactEmoji: config.reactEmoji,
+  })
+}
+
 /** @deprecated Use resolveSettingsConfig and resolveRuntimeConfig. */
 export function resolveConfig(config: Config): RuntimeConfig {
   const settings = resolveSettingsConfig(config)

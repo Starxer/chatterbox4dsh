@@ -41,6 +41,35 @@ describe('LarkRuntime', () => {
     expect(runtime.status()).toMatchObject({ state: 'connected' })
   })
 
+  it('keeps the live channel when only a non-connection setting changes', async () => {
+    // Toggling a card-display switch must NOT rebuild the runtime: rebuilding
+    // disconnects the WebSocket and disposes every live agent session. Doing
+    // that mid-turn killed the turn with "flush on a closed handle"
+    // (2026-09-10, /display while the agent was running).
+    let config = resolveSettingsConfig({ appId: 'id' })
+    const stops: Array<ReturnType<typeof vi.fn>> = []
+    const start = vi.fn(async () => {
+      const stop = vi.fn(async () => undefined)
+      stops.push(stop)
+      return fakeStart(stop)
+    })
+    const runtime = new LarkRuntime({ settings: () => config, resolveSecret: async () => 'secret', start })
+    await runtime.reconcile()
+
+    config = { ...config, showToolCalls: false, showReasoning: false, showToolArgs: false, showToolResults: false }
+    await runtime.reconcile()
+    config = { ...config, locale: 'en', errorMessage: 'nope' }
+    await runtime.reconcile()
+    config = { ...config, workspace: '/other', agentPreset: 'other', provider: 'p', model: 'm' }
+    await runtime.reconcile()
+
+    expect(start).toHaveBeenCalledOnce()
+    // The one started runtime is still the live one: nothing stopped it.
+    expect(stops).toHaveLength(1)
+    expect(stops[0]).not.toHaveBeenCalled()
+    expect(runtime.status()).toMatchObject({ state: 'connected' })
+  })
+
   it('replaces the channel after the credential value changes', async () => {
     let secret = 'first'
     const stop = vi.fn(async () => undefined)

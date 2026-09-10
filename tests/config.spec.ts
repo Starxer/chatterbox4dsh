@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LARK_APP_SECRET_REF, resolveRuntimeConfig, resolveSettingsConfig } from '../src/config.ts'
+import { LARK_APP_SECRET_REF, connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig } from '../src/config.ts'
 
 describe('resolveSettingsConfig', () => {
   it('allows an installed plugin to remain unconfigured', () => {
@@ -44,5 +44,34 @@ describe('resolveRuntimeConfig', () => {
     expect(() => resolveRuntimeConfig(config, 'secret')).toThrow(/appId/)
     expect(() => resolveRuntimeConfig({ ...config, appId: 'id' }, '')).toThrow(/appSecret/)
     expect(resolveRuntimeConfig({ ...config, appId: 'id' }, 'secret')).toMatchObject({ appId: 'id', appSecret: 'secret' })
+  })
+})
+
+describe('connectionFingerprint', () => {
+  const base = resolveRuntimeConfig({ ...resolveSettingsConfig({ appId: 'id' }), appSecret: 'secret' })
+
+  it('ignores settings that do not describe the connection', () => {
+    // A `/display`, `/lang`, or session-default write must not look like a
+    // channel change — reconcile would then tear down every live agent session.
+    const same = connectionFingerprint({
+      ...base,
+      showReasoning: false, showToolCalls: false, showToolArgs: false, showToolResults: false,
+      locale: 'en',
+      errorMessage: 'changed',
+      workspace: '/other', agentPreset: 'other', provider: 'p', model: 'm',
+    })
+    expect(same).toBe(connectionFingerprint(base))
+  })
+
+  it('changes when anything the channel captures at construction changes', () => {
+    const baseline = connectionFingerprint(base)
+    expect(connectionFingerprint({ ...base, appId: 'other' })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, appSecret: 'other' })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, domain: 'lark' })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, requireMention: false })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, dmMode: 'disabled' })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, groupAllowlist: ['oc_a'] })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, dmAllowlist: ['ou_a'] })).not.toBe(baseline)
+    expect(connectionFingerprint({ ...base, reactEmoji: '' })).not.toBe(baseline)
   })
 })
