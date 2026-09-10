@@ -78,6 +78,12 @@ export interface FeishuStreamingDeps {
   logger: PluginLogger
   /** Whether to show reasoning content. */
   showReasoning?: () => boolean
+  /** Whether to show tool calls at all; false hides the section and suppresses tool-only cards. */
+  showToolCalls?: () => boolean
+  /** Whether to show each tool call's arguments block. */
+  showToolArgs?: () => boolean
+  /** Whether to show each tool call's result preview. */
+  showToolResults?: () => boolean
   /** Current translations for the user's language. */
   getTranslations?: () => Translations
 }
@@ -92,6 +98,16 @@ interface StepUsage {
   totalTokens?: number | undefined
   /** Reasoning (thinking) tokens, a subset of {@link outputTokens}, when reported. */
   reasoningTokens?: number | undefined
+}
+
+/**
+ * One file the model declared as a deliverable through DSH's own `present`
+ * tool (`deliverables/presented`). Paths arrive exactly as the model wrote
+ * them — usually relative to the session cwd.
+ */
+export interface PresentedFile {
+  path: string
+  description?: string
 }
 
 /** Aggregated turn stats for the Turn Complete card. */
@@ -122,6 +138,14 @@ export interface TurnStats {
   totalToolMs: number
   /** Full wall-clock turn duration (turnStart → turnEnd), includes LLM + tools + gaps. */
   totalTurnMs: number
+  /**
+   * Files this turn declared as final deliverables (DSH's `present` tool, via
+   * the `deliverables/presented` event). Listed on the Turn Complete card and
+   * deliberately NOT pushed to the chat: Feishu has no workspace browser, so
+   * the list is the whole surface, and a file is sent only when the user
+   * actually asks for it (`feishu_send_file`).
+   */
+  deliverables?: PresentedFile[]
 }
 
 /** One tool call tracked within a step. */
@@ -191,7 +215,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, getTranslations } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -250,12 +274,32 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.usage = undefined
   }
 
+  /** Whether reasoning content is rendered on cards. */
+  const reasoningShown = (): boolean => showReasoning?.() !== false
+
+  /** Whether tool calls are rendered at all. */
+  const toolsShown = (): boolean => showToolCalls?.() !== false
+
+  /**
+   * Whether this step has anything visible to render. A step whose only
+   * output is tool calls posts NO card while tool display is off — an empty
+   * shell card would be pure noise. Text and reasoning always count when
+   * their own toggle allows them.
+   */
+  const stepHasVisibleContent = (state: SessionStepState): boolean =>
+    state.text.trim() !== ''
+    || (reasoningShown() && state.reasoning.trim() !== '')
+    || (toolsShown() && state.toolCalls.length > 0)
+
   /** Build the unified card content for the current step state. */
   const buildStepCard = (state: SessionStepState): object => {
-    const showR = showReasoning?.() !== false && state.reasoning.trim() !== ''
+    const showR = reasoningShown() && state.reasoning.trim() !== ''
     const reasoning = showR ? state.reasoning.trim() : undefined
     const text = state.text.trim() !== '' ? state.text.trim() : undefined
-    const tools = state.toolCalls
+    // Hiding tool calls also drops the tool-derived title/status: a step that
+    // only did tool work never renders, and a step with text renders as a
+    // plain reply card with no trace of the tools behind it.
+    const tools = toolsShown() ? state.toolCalls : []
 
     // Use real-time elapsed duration so the card always shows accurate time,
     // even while tools are still running.
@@ -282,6 +326,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       reasoningMs,
       state.turnNumber > 0 ? state.turnNumber : undefined,
       state.stepNumber > 0 ? state.stepNumber : undefined,
+      {
+        showToolArgs: showToolArgs?.() !== false,
+        showToolResults: showToolResults?.() !== false,
+      },
     )
   }
 
@@ -689,7 +737,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         }
 
         const hasContent = state.reasoning.trim() !== '' || state.text.trim() !== ''
-        if (hasContent) {
+        // A step that rendered nothing visible posts no card (see
+        // `stepHasVisibleContent`). `lastStepHadContent` stays raw so it keeps
+        // meaning "the model produced something", independent of display.
+        if (stepHasVisibleContent(state)) {
           // Reuse this step's existing card when one is already on screen (a
           // tool call can open the card before the assembled message arrives,
           // and a step can emit more than one assistant/message). Sending a
@@ -720,10 +771,14 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // the tool name and arguments.
         state.toolCalls.push(toolCall)
 
-        if (state.stepCardSent) {
-          updateStepCard(state)
-        } else {
-          queueStepCardSend(chat, sessionId, state)
+        // With tool display off a tool call changes nothing on screen, so it
+        // neither opens a card nor refreshes one.
+        if (toolsShown()) {
+          if (state.stepCardSent) {
+            updateStepCard(state)
+          } else {
+            queueStepCardSend(chat, sessionId, state)
+          }
         }
       } else if (event.type === 'tool/result') {
         const toolCallId = String(event.data?.message?.source?.callId ?? '')
@@ -760,7 +815,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             toolCall.resultView = event.data.meta
           }
 
-          if (state.stepCardSent) {
+          // Only refresh an existing card when the result is actually visible;
+          // with tool display off this step's card (if any) is text/reasoning
+          // only and the result changes nothing on it.
+          if (toolsShown() && state.stepCardSent) {
             updateStepCard(state)
           }
           state.completedTime = event.time ?? Date.now()
@@ -791,6 +849,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           totalStepMs: 0,
           totalToolMs: 0,
           totalTurnMs: 0,
+          deliverables: [],
         }
         let resolve!: () => void
         const promise = new Promise<void>((r) => { resolve = r })
@@ -802,6 +861,26 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
           if (state.stepCardSent) updateStepCard(state)
         }).catch(() => undefined)
+      } else if (event.type === 'deliverables/presented') {
+        // DSH's `present` tool declares the turn's final deliverables (Web UI
+        // renders them as a card row). Collect them for the Turn Complete
+        // card. Re-declaring a path replaces its entry, so the LATEST
+        // description wins — the same rule as `ui-deliverables`.
+        const files = event.data?.files as Array<{ path?: unknown; description?: unknown }> | undefined
+        const deliverables = state.turnStats?.deliverables
+        if (Array.isArray(files) && deliverables !== undefined) {
+          for (const file of files) {
+            const path = typeof file?.path === 'string' ? file.path.trim() : ''
+            if (path === '') continue
+            const description = typeof file.description === 'string' && file.description.trim() !== ''
+              ? file.description.trim()
+              : undefined
+            const entry: PresentedFile = description === undefined ? { path } : { path, description }
+            const existing = deliverables.findIndex(item => item.path === path)
+            if (existing >= 0) deliverables[existing] = entry
+            else if (deliverables.length < DELIVERABLE_CAP) deliverables.push(entry)
+          }
+        }
       } else if (event.type === 'request/context') {
         const cw = event.data?.contextWindow as number | undefined
         if (cw !== undefined && cw > 0) {
@@ -932,6 +1011,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
 /** Cap for one tool call's kept raw result content (characters). */
 const RESULT_CONTENT_CAP = 1500
+
+/**
+ * Cap on remembered deliverables per turn. DSH's `present` tool already caps a
+ * single call at 8 files; this bounds the total when the model calls it more
+ * than once so the Turn Complete card cannot grow without limit.
+ */
+const DELIVERABLE_CAP = 16
 
 /**
  * Coalescing window (ms) for step-card work.
@@ -1134,6 +1220,21 @@ function deriveToolSummaryValue(variant: ToolSummaryVariant, argsRaw: string): s
  * `toolName · <first field>` unless the tool owns a title.
  */
 export function deriveToolSummary(toolName: string, argsRaw: string): string {
+  // DSH's `present` takes a `files` array, so the generic "first field" rule
+  // would render `present · files`. Summarize by the delivered paths instead.
+  if (toolName === 'present') {
+    const parsed = parseToolArgs(argsRaw)
+    const files = typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as { files?: unknown }).files)
+      ? (parsed as { files: unknown[] }).files
+      : undefined
+    if (files !== undefined) {
+      const first = files.find((item): item is { path: string } =>
+        typeof (item as { path?: unknown } | null)?.path === 'string')
+      const named = first === undefined ? `${files.length}` : firstLine(first.path)
+      const extra = files.length > 1 ? ` +${files.length - 1}` : ''
+      return `交付物：${named}${extra}`
+    }
+  }
   const variant = classifyToolSummary(toolName)
   const base = deriveToolSummaryValue(variant, argsRaw)
   const titled = TOOL_SUMMARY_TITLED.has(toolName)
@@ -1144,6 +1245,9 @@ export function deriveToolSummary(toolName: string, argsRaw: string): string {
 
 /**
  * Render a unified per-step card with reasoning, text, and tool calls.
+ * `options.showToolArgs` / `options.showToolResults` only gate the per-tool
+ * detail blocks; the tool section itself is omitted upstream by passing an
+ * empty `tools` array when tool display is off.
  */
 export function renderStepCard(
   t: Translations,
@@ -1157,6 +1261,7 @@ export function renderStepCard(
   reasoningMs?: number,
   turn?: number,
   step?: number,
+  options?: { showToolArgs?: boolean; showToolResults?: boolean },
 ): object {
   const elements: object[] = []
 
@@ -1223,15 +1328,19 @@ export function renderStepCard(
       // break the inline `...` formatting. Label it so it is not confused
       // with the tool result block below. Args are shown in full detail
       // (pretty-printed JSON) up to a generous cap so the reader can see the
-      // actual parameters, not an ellipsized digest.
-      const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments))
-      if (argsCode !== '') {
-        elements.push({ tag: 'markdown', content: `${t.stepToolArgsHeader}\n\`\`\`\n${argsCode}\n\`\`\`` })
+      // actual parameters, not an ellipsized digest. Suppressed when the
+      // `showToolArgs` display toggle is off.
+      if (options?.showToolArgs !== false) {
+        const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments))
+        if (argsCode !== '') {
+          elements.push({ tag: 'markdown', content: `${t.stepToolArgsHeader}\n\`\`\`\n${argsCode}\n\`\`\`` })
+        }
       }
 
       // Result preview: dispatch on resultView.card type. Label the emitted
       // block(s) as the tool result so it is not confused with the args block.
-      if (tool.result !== undefined) {
+      // Suppressed when the `showToolResults` display toggle is off.
+      if (tool.result !== undefined && options?.showToolResults !== false) {
         const resultElements = renderResultPreview(tool)
         if (resultElements.length > 0) {
           elements.push({ tag: 'markdown', content: t.stepToolResultHeader })

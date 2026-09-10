@@ -40,9 +40,9 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | 单聊 / 群聊 / 话题群 | 单聊和群聊按聊天复用 Session；话题群按线程独立 Session |
 | 统一 per-step 卡片 | 每个 agent step 一张卡片，包含推理、文本、工具调用、结果预览；标题带「第 N 轮 · 第 M 步」，reasoning 标题带思考耗时与思考 token，footer 两行（`⏱ 时长 · 📥 in → 📤 out` / `🚀 tok/s · 📊 上下文`）。快步骤（思考→工具调用→结果落在 150ms 内）只发**一张**卡 |
 | 工具调用展示 | 工具名内联代码 + args（独立 fenced 代码块防溢出）+ 结果预览（terminal/web/search/read/diff），原地更新 wathet→green/red |
-| Turn Complete 卡片 | turn 结束后展示总时长/LLM 时间/工具时间、TTFT/吞吐量、token/缓存命中率，footer 另显示 **Enter while busy**；吞吐量口径与 DSH Web UI `deriveTurnMetrics` 对齐（首 token 判定含 tool-call delta，token 与 decode 时间同批配对） |
+| Turn Complete 卡片 | turn 结束后展示总时长/LLM 时间/工具时间、TTFT/吞吐量、token/缓存命中率，footer 另显示 **Enter while busy**；吞吐量口径与 DSH Web UI `deriveTurnMetrics` 对齐（首 token 判定含 tool-call delta，token 与 decode 时间同批配对）。模型用 DSH `present` 工具声明的**交付物**也会列在这里（`📦 交付物`，路径 + 描述）：**只列清单、不推送文件**，需要时让模型发即可 |
 | 会话管理面板 | `/session`：交互式卡片下拉选会话 + 切换/detach/归档/fork/改名/列表/刷新；`/session list` 表格卡；`/session N` 快速切换 |
-| 斜杠命令 | `/model` `/new` `/session` `/status` `/stop` `/steer` `/queue` `/busy` `/permission` `/reasoning` `/approve` `/deny` `/help` 等 |
+| 斜杠命令 | `/model` `/new` `/session` `/status` `/stop` `/steer` `/queue` `/busy` `/permission` `/reasoning` `/display` `/approve` `/deny` `/help` 等 |
 | 审批 | 与 DSH Web UI 共享同一份 pending 审批状态；审批卡片 **Approve 在上 / Reject 在下**，并显示 `Reason:` 原因 |
 | `ask_user_question` 卡片 | 问题卡片（选项/自定义输入/跳过），一次多问时**顺序迭代**、整批返回答案 |
 | 图片 / 文件接收 | 图片按**真实字节判型**（PNG/JPEG/WebP/GIF）经 attachment store 落盘；文件下载到 **DSH 原生附件库**（`~/.dsh/attachments/v1/files/…`）并附 `fileHostPath` 给 agent 读取 |
@@ -62,9 +62,9 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | DM / group / topic group | DMs and groups reuse one Session per chat; a topic group gives each thread its own Session |
 | Unified per-step card | One card per agent step with reasoning, text, tool calls and result previews; the title carries "turn N · step M", the reasoning header shows thinking time and thinking tokens, and the footer is two lines (`⏱ duration · 📥 in → 📤 out` / `🚀 tok/s · 📊 context`). A fast step (thinking → tool call → result inside 150 ms) sends only **one** card |
 | Tool call display | Tool name in inline code + args (its own fenced block to avoid overflow) + result preview (terminal/web/search/read/diff), updated in place wathet→green/red |
-| Turn Complete card | After a turn: total / LLM / tool time, TTFT, throughput, tokens, cache hit rate, plus **Enter while busy** in the footer. Throughput matches the DSH Web UI's `deriveTurnMetrics` (first-token detection includes tool-call deltas; tokens and decode time are paired) |
+| Turn Complete card | After a turn: total / LLM / tool time, TTFT, throughput, tokens, cache hit rate, plus **Enter while busy** in the footer. Throughput matches the DSH Web UI's `deriveTurnMetrics` (first-token detection includes tool-call deltas; tokens and decode time are paired). Files the model declared through DSH's `present` tool are listed here too (`📦 Deliverables`, path + description): **listed only, never pushed** — ask for one when you want it |
 | Session panel | `/session`: an interactive card with a session dropdown plus switch / detach / archive / fork / rename / list / refresh; `/session list` renders a table card; `/session N` switches by index |
-| Slash commands | `/model`, `/new`, `/session`, `/status`, `/stop`, `/steer`, `/queue`, `/busy`, `/permission`, `/reasoning`, `/approve`, `/deny`, `/help` and more |
+| Slash commands | `/model`, `/new`, `/session`, `/status`, `/stop`, `/steer`, `/queue`, `/busy`, `/permission`, `/reasoning`, `/display`, `/approve`, `/deny`, `/help` and more |
 | Approvals | Shares the same pending approvals as the DSH Web UI; the card puts **Approve on top / Reject below** and shows the `Reason:` |
 | `ask_user_question` card | Question cards with options, free-form input and a skip button; multiple questions are asked **one at a time** and returned as one batch |
 | Image / file intake | Images are typed from their **real bytes** (PNG/JPEG/WebP/GIF) and stored via the attachment store; files are downloaded into the **native DSH attachment store** (`~/.dsh/attachments/v1/files/…`) and exposed to the agent as `fileHostPath` |
@@ -121,7 +121,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/new [--workspace <path>] [--preset <id>]` | 新建会话（可指定工作区和 preset） |
 | `/session [N\|list]` | 无参：交互式会话管理面板；`list`：表格；`N`：按下标快速切换 |
 | `/status` | 展示会话状态（token/TTFT/吞吐量/缓存命中率/权限模式/Enter while busy 等） |
-| `/reasoning [off\|low\|high\|max]` | 设置推理强度 |
+| `/reasoning [off\|low\|high\|max]` | 设置推理强度（`show on\|off` 切换思考过程显示） |
+| `/display [reasoning\|tools\|args\|results] [on\|off]` | 查看/切换卡片显示开关（思考过程 / 工具调用 / 参数 / 结果）。**无参时发交互卡片**，点按钮即可切换 |
 | `/stop` | 中止当前轮次并丢弃排队消息（不再进入下一 turn） |
 | `/steer <内容>` | agent 运行中，把一条消息注入当前 turn；**空闲时自动回退为发新消息** |
 | `/queue <内容>` | /steer 的共轭：强制把消息排队为新轮（即使处于 steer 模式）；空闲时回退为发新消息 |
@@ -138,7 +139,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/new [--workspace <path>] [--preset <id>]` | Create a session (optionally with a workspace and preset) |
 | `/session [N\|list]` | No args: interactive session panel; `list`: table; `N`: switch by index |
 | `/status` | Session status (tokens / TTFT / throughput / cache hit rate / permission mode / Enter while busy) |
-| `/reasoning [off\|low\|high\|max]` | Set the reasoning effort |
+| `/reasoning [off\|low\|high\|max]` | Set the reasoning effort (`show on\|off` toggles reasoning display) |
+| `/display [reasoning\|tools\|args\|results] [on\|off]` | View / toggle the card display switches (reasoning / tool calls / arguments / results). With no argument it posts an **interactive card** — just tap a switch |
 | `/stop` | Abort the current turn and drop queued messages (they no longer run as the next turn) |
 | `/steer <text>` | While the agent runs, inject a message into the current turn; **falls back to a new message when idle** |
 | `/queue <text>` | The counterpart of `/steer`: force the message to queue as a new turn (even in steer mode); falls back to a new message when idle |
@@ -169,6 +171,11 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
     dmMode: open                 # open / allowlist / disabled
     workspace: /path/to/project  # 默认工作区 · default workspace
     agentPreset: coding          # 默认 agent preset · default agent preset
+    showReasoning: true          # 卡片显示：思考过程 · card display: reasoning
+    showToolCalls: true          # 卡片显示：工具调用 · card display: tool calls
+    showToolArgs: true           # 卡片显示：工具参数 · card display: tool args
+    showToolResults: true        # 卡片显示：工具结果 · card display: tool results
+    locale: auto                 # auto / zh / en
 ```
 
 **中文**
@@ -186,6 +193,11 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `workspace` | 第一个注册的 Workspace | Agent 工作目录 |
 | `agentPreset` | Harness 默认 Preset | Agent preset |
 | `reactEmoji` | `THUMBSUP` | 收到消息时的表情回应（空字符串关闭） |
+| `showReasoning` | `true` | 步骤卡是否展示模型思考过程（200 字预览） |
+| `showToolCalls` | `true` | 是否展示工具调用；关闭后只有工具的步骤不再发卡 |
+| `showToolArgs` | `true` | 是否展示工具调用的参数块（需 `showToolCalls`） |
+| `showToolResults` | `true` | 是否展示工具结果预览（需 `showToolCalls`） |
+| `locale` | `auto` | 插件语言：`auto`（跟随 Harness）/ `zh` / `en` |
 
 **English**
 
@@ -202,6 +214,11 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `workspace` | First registered workspace | Agent working directory |
 | `agentPreset` | Harness default preset | Agent preset |
 | `reactEmoji` | `THUMBSUP` | Reaction added on incoming messages (empty string disables it) |
+| `showReasoning` | `true` | Show the model reasoning preview on step cards (200-char window) |
+| `showToolCalls` | `true` | Show tool calls; when off, tool-only steps post no card |
+| `showToolArgs` | `true` | Show each tool call's argument block (requires `showToolCalls`) |
+| `showToolResults` | `true` | Show each tool call's result preview (requires `showToolCalls`) |
+| `locale` | `auto` | Plugin language: `auto` (follow Harness) / `zh` / `en` |
 
 ---
 

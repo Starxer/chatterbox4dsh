@@ -125,6 +125,14 @@ describe('deriveToolSummary', () => {
     expect(deriveToolSummary('run_code', JSON.stringify({ code: 'console.log(1)', description: 'print one' }))).toBe('print one')
   })
 
+  it('summarizes DSH present by its delivered paths, not the raw files array', () => {
+    expect(deriveToolSummary('present', JSON.stringify({ files: [{ path: 'out/report.md' }] }))).toBe('交付物：out/report.md')
+    expect(deriveToolSummary('present', JSON.stringify({ files: [{ path: 'a.txt' }, { path: 'b.txt' }, { path: 'c.txt' }] }))).toBe('交付物：a.txt +2')
+    // Empty/garbled args fall back to the generic rule rather than throwing.
+    expect(deriveToolSummary('present', JSON.stringify({ files: [] }))).toBe('交付物：0')
+    expect(deriveToolSummary('present', 'not-json')).toBe('present · not-json')
+  })
+
   it('unknown tools prefix the tool name with the first string field', () => {
     expect(deriveToolSummary('my_custom_tool', JSON.stringify({ what: 'do the thing' }))).toBe('my_custom_tool · do the thing')
   })
@@ -224,6 +232,38 @@ describe('renderStepCard reasoning + args budgets', () => {
   })
 })
 
+describe('renderStepCard display toggles', () => {
+  const tool = {
+    toolName: 'bash', callId: 'c1', arguments: '{"command":"ls"}', startedAt: 0,
+    result: { isError: false, content: 'out.txt', inline: 'out.txt', elapsed: 5 },
+    resultView: { card: 'terminal', output: 'out.txt' },
+  }
+
+  it('renders args and result blocks by default', () => {
+    const md = mdOf(renderStepCard(t, undefined, undefined, [tool]) as any)
+    expect(md).toContain('**⚙️ 参数**')
+    expect(md).toContain('**📤 结果**')
+  })
+
+  it('drops only the args block when showToolArgs is false', () => {
+    const md = mdOf(renderStepCard(
+      t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { showToolArgs: false },
+    ) as any)
+    expect(md).not.toContain('**⚙️ 参数**')
+    expect(md).toContain('**📤 结果**')
+  })
+
+  it('drops only the result block when showToolResults is false', () => {
+    const md = mdOf(renderStepCard(
+      t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { showToolResults: false },
+    ) as any)
+    expect(md).toContain('**⚙️ 参数**')
+    expect(md).not.toContain('**📤 结果**')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Step-card delivery path: CardKit instance (no edit cap) vs send + patch
 // ---------------------------------------------------------------------------
@@ -237,7 +277,15 @@ interface StepChannel {
   registerPendingCardFlush?: ReturnType<typeof vi.fn>
 }
 
-function stepHarness(channel: StepChannel) {
+function stepHarness(
+  channel: StepChannel,
+  display: {
+    showReasoning?: () => boolean
+    showToolCalls?: () => boolean
+    showToolArgs?: () => boolean
+    showToolResults?: () => boolean
+  } = {},
+) {
   const listeners: Array<(session: any, event: any) => void> = []
   const bridge = {
     resolveChat: () => ({ chatId: 'oc_1', chatType: 'p2p' }),
@@ -250,6 +298,7 @@ function stepHarness(channel: StepChannel) {
     bridgeHolder: { current: bridge as any },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     getTranslations: () => t,
+    ...display,
   })
   const emit = (type: string, data?: any): void => {
     for (const handler of listeners) handler({ id: 's-1' }, { type, time: Date.now(), data })
@@ -592,6 +641,107 @@ describe('turn stats token speed', () => {
     expect(cards.length).toBeGreaterThan(0)
     expect(cards[0].header.title.content).toContain('第 2 轮 · 第 3 步')
     expect(mdOf(cards[0])).toContain('1.0s · 42 tokens')
+    streaming.stop()
+  })
+})
+
+describe('display toggles', () => {
+  function cardKitChannel() {
+    const cards: any[] = []
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async (card: any) => { cards.push(card); return 'card-1' }),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-1' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    return { channel, cards }
+  }
+
+  it('posts no card for a tool-only step while tool calls are hidden', async () => {
+    const { channel, cards } = cardKitChannel()
+    const { streaming, emit } = stepHarness(channel, { showToolCalls: () => false })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    emit('tool/result', {
+      message: { source: { callId: 'c1' }, content: [{ type: 'tool-result', content: [{ type: 'text', text: 'ok' }] }] },
+    })
+    await tick(250)
+    expect(cards).toHaveLength(0)
+    expect(channel.send).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('still renders a step that has text, but with no tool trace', async () => {
+    const { channel, cards } = cardKitChannel()
+    const { streaming, emit } = stepHarness(channel, { showToolCalls: () => false })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'done' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(250)
+    expect(cards).toHaveLength(1)
+    expect(mdOf(cards[0])).toContain('done')
+    expect(mdOf(cards[0])).not.toContain('bash')
+    streaming.stop()
+  })
+
+  it('hides reasoning while keeping the step text', async () => {
+    const { channel, cards } = cardKitChannel()
+    const { streaming, emit } = stepHarness(channel, { showReasoning: () => false })
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: 'secret-thought' } })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(250)
+    expect(cards).toHaveLength(1)
+    expect(mdOf(cards[0])).not.toContain('secret-thought')
+    expect(mdOf(cards[0])).toContain('answer')
+    streaming.stop()
+  })
+})
+
+describe('turn deliverables (DSH present tool)', () => {
+  const channel: StepChannel = {
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+  }
+
+  it('collects declared deliverables for the Turn Complete card', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('deliverables/presented', { turn: 1, callId: 'p1', files: [{ path: 'out/a.txt', description: ' first ' }, { path: 'out/b.png' }] })
+    emit('turn/end')
+    const stats = await streaming.flushed('s-1')
+    expect(stats?.deliverables).toEqual([
+      { path: 'out/a.txt', description: 'first' },
+      { path: 'out/b.png' },
+    ])
+    streaming.stop()
+  })
+
+  it('keeps the latest description when a path is declared twice', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('deliverables/presented', { turn: 1, callId: 'p1', files: [{ path: 'out/a.txt', description: 'draft' }] })
+    emit('deliverables/presented', { turn: 1, callId: 'p2', files: [{ path: 'out/a.txt', description: 'final' }] })
+    emit('turn/end')
+    const stats = await streaming.flushed('s-1')
+    expect(stats?.deliverables).toEqual([{ path: 'out/a.txt', description: 'final' }])
+    streaming.stop()
+  })
+
+  it('ignores malformed payloads and starts each turn clean', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('deliverables/presented', { turn: 1, callId: 'p1', files: [{ description: 'no path' }, { path: '' }, null] })
+    emit('deliverables/presented', { turn: 1, callId: 'p2', files: 'nope' })
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.deliverables).toEqual([])
+
+    emit('turn/start')
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.deliverables).toEqual([])
     streaming.stop()
   })
 })

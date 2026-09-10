@@ -52,6 +52,22 @@ async function buildModelCatalog(
   return lines.join('\n')
 }
 
+/** The four card-display switches `/display` manages (see `showReasoning`,
+ *  `showToolCalls`, `showToolArgs`, `showToolResults` in the config schema). */
+export type DisplayToggleKey = 'reasoning' | 'tools' | 'args' | 'results'
+
+/** Read/write face for the card-display switches, shared by the `/display`
+ *  command and the WebUI settings panel (both persist the same config fields). */
+export interface DisplayControl {
+  get: () => Record<DisplayToggleKey, boolean>
+  /**
+   * Persist one switch. Persisting is asynchronous, and the readable snapshot
+   * only changes once it lands — a caller that re-reads {@link get} afterwards
+   * (the interactive card repaints itself) MUST await this.
+   */
+  set: (key: DisplayToggleKey, value: boolean) => void | Promise<void>
+}
+
 export interface CommandTranslations {
   readonly modelDescription: string
   readonly modelCurrentHeader: string
@@ -127,6 +143,13 @@ export interface CommandTranslations {
   readonly reasoningLevelsFrom: (effortIds: readonly string[]) => string
   readonly reasoningUnknown: (level: string) => string
   readonly reasoningShowToggled: (enabled: boolean) => string
+  readonly displayDescription: string
+  readonly displayHeader: string
+  readonly displayUsage: string
+  readonly displayLabel: (key: DisplayToggleKey) => string
+  readonly displayState: (label: string, enabled: boolean) => string
+  readonly displaySet: (label: string, enabled: boolean) => string
+  readonly displayUnknown: (value: string) => string
 }
 
 /**
@@ -216,6 +239,7 @@ export function registerLarkCommands(
   commands: Pick<CommandRuntime, 'list'>,
   approvals: ApprovalControl,
   showReasoning: { get: () => boolean; toggle: () => void },
+  display: DisplayControl,
   sessionController: SessionControllerLike,
 ): void {
   ctx.effect(function* () {
@@ -300,7 +324,12 @@ export function registerLarkCommands(
         sessionController,
       ),
     })
-  }, 'dsh-feishu: /model /new /session /detach /help /approve /deny /approvals /status /reasoning commands')
+    yield ctx.commands.register({
+      name: 'display',
+      description: t.displayDescription,
+      handler: invocation => handleDisplayCommand(invocation, t, display),
+    })
+  }, 'dsh-feishu: /model /new /session /detach /help /approve /deny /approvals /status /reasoning /display commands')
 }
 
 export async function handleModelCommand(
@@ -491,6 +520,68 @@ export async function handleReasoningCommand(
   return { kind: 'success', text: t.reasoningSwitched(level) }
 }
 
+/** Accepted aliases for a `/display` target key. */
+const DISPLAY_KEY_ALIASES: Record<string, DisplayToggleKey> = {
+  reasoning: 'reasoning',
+  think: 'reasoning',
+  thinking: 'reasoning',
+  tools: 'tools',
+  tool: 'tools',
+  args: 'args',
+  arguments: 'args',
+  params: 'args',
+  parameters: 'args',
+  results: 'results',
+  result: 'results',
+}
+
+/** Resolve a `/display` target token to its key, or `undefined` when unknown. */
+function resolveDisplayKey(value: string | undefined): DisplayToggleKey | undefined {
+  return value === undefined ? undefined : DISPLAY_KEY_ALIASES[value]
+}
+
+/** Parse an on/off token (`on|off`, `true|false`, `1|0`, `开|关`). */
+function parseDisplayValue(value: string | undefined): boolean | undefined {
+  switch (value) {
+    case 'on': case 'true': case '1': case '开': return true
+    case 'off': case 'false': case '0': case '关': return false
+    default: return undefined
+  }
+}
+
+const DISPLAY_KEYS: readonly DisplayToggleKey[] = ['reasoning', 'tools', 'args', 'results']
+
+/**
+ * Handle `/display [reasoning|tools|args|results] [on|off]`. With no argument
+ * it reports all four card-display switches; with a key and value it flips
+ * that one. The values are the same config fields the WebUI settings panel
+ * writes (`showReasoning` / `showToolCalls` / `showToolArgs` /
+ * `showToolResults`), so the two surfaces always agree.
+ */
+export function handleDisplayCommand(
+  invocation: CommandInvocation,
+  t: CommandTranslations,
+  display: DisplayControl,
+): CommandResult {
+  const raw = invocation.rawInput.trim().toLowerCase()
+  if (raw === '') {
+    const state = display.get()
+    const lines = DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key]))
+    return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
+  }
+  const [rawKey, rawValue] = raw.split(/\s+/u)
+  const key = resolveDisplayKey(rawKey)
+  if (key === undefined) {
+    return { kind: 'error', text: `${t.displayUnknown(rawKey ?? raw)}\n${t.displayUsage}` }
+  }
+  const value = parseDisplayValue(rawValue)
+  if (value === undefined) {
+    return { kind: 'error', text: t.displayUsage }
+  }
+  display.set(key, value)
+  return { kind: 'success', text: t.displaySet(t.displayLabel(key), value) }
+}
+
 /**
  * Handle `/new`. Since the card flow (workspace → preset → model) is the
  * primary path and is started by the channel-level handler, the command
@@ -600,7 +691,7 @@ async function handleDetachCommand(
  */
 const FEISHU_OWNED_COMMANDS = new Set<string>([
   'model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals',
-  'status', 'reasoning', 'busy', 'steer', 'queue', 'permission', 'stop',
+  'status', 'reasoning', 'display', 'busy', 'steer', 'queue', 'permission', 'stop',
 ])
 export { FEISHU_OWNED_COMMANDS }
 
@@ -682,6 +773,7 @@ export function renderFeishuCommandsOnly(t: CommandTranslations): string {
     { name: 'model', description: t.modelDescription, hint: '[list|provider/model]' },
     { name: 'status', description: t.statusDescription },
     { name: 'reasoning', description: t.reasoningDescription, hint: '[off|low|high|max]' },
+    { name: 'display', description: t.displayDescription, hint: '[reasoning|tools|args|results] [on|off]' },
     { name: 'new', description: t.newDescription },
     { name: 'session', description: t.threadDescription, hint: '[N]' },
     { name: 'detach', description: t.detachDescription, hint: '<N>' },

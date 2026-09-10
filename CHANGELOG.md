@@ -5,6 +5,49 @@
 > 对齐 DSH `0.1.5-alpha.1`。插件**无需改代码**：typecheck / tests / build 全绿，全部 `@deepseek-ai/dsh-*` 依赖的公开 API 逐项 diff 无变化。
 >
 > Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
+>
+> 另已评估 DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
+
+### 新增：`/display` 无参改为交互式开关卡片（`src/feishu-display.ts` / `src/index.ts` / `src/i18n.ts`）
+
+- 无参 `/display` 现在发一张 **📇 卡片显示** 卡片：四个开关各一个按钮，文案直接带状态（`✅ 工具调用：开` / `⬜ 结果：关`），点一下取反并立即持久化——不用再记命令语法。带参 `/display <开关> on|off` 保持不变。卡片发送失败时自动回退到原来的文本列表，`/display` 永远有回应。
+- **每次点击都发新卡，并把上一张改写成「已失效」提示**（复用 `card-supersede.ts`）。这不是保守选择：飞书对同一条消息的卡片**就地更新约 2–3 次后就不再投递按钮回调**（`im.v1.message.patch` 与 `cardkit.v1.card.update` 同样受限），而这张卡天然会被连点四次。按钮的回调载荷带的是**目标值**而非「切换」标记，因此即使同一次点击被重复投递也不会翻转两次。
+- **卡片跟随原话题**：`cardAction` 事件不带话题信息，所以 `open()` 把 `ConversationMessage` 按 `messageId` 记下来，刷新出的新卡仍落在同一话题（与 `feishu-busy.ts` 同一套做法）。
+- 写的是和 WebUI 设置面板、`/display` 文本命令**完全相同**的四个配置字段，三处永远一致。
+- **首次上线后修掉的两个「点了没反应」**（2026-09-10，真机复现）：
+  1. **按钮回调必须用 `behaviors`**。这张卡走 CardKit 卡片实例（`createCardInstance` + `sendCardByReference`），而**实例卡片只认 `behaviors: [{ type: 'callback', value }]`，顶层 `value` 会被静默丢弃**（内嵌卡片两种都吃，所以 `feishu-busy.ts` / `feishu-permission.ts` 的写法在这里不适用）。`value` 传普通对象即可，不需要 `JSON.stringify`。
+  2. **写设置必须 `await` 之后再重读**。`settings.mutate()` 是排队的异步写，`settingsScope.get()` 只在它持久化完成后才更新；原先「先 `set` 再 `get` 重渲染」读到的是旧值。为此 `DisplayControl.set` 的返回类型改为 `void | Promise<void>`，`index.ts` 返回 `settings.mutate(...)` 的 promise（并挂一个 detached `.catch`，供忽略返回值的 `/display` 文本路径使用），卡片路径 `await` 它。
+- 顺带补了诊断日志：点击命中我方载荷但卡片未知 / 载荷非法时打印一行（`[display] action for unknown card …` / `[display] ignored malformed action …`），下次同类问题不用再靠猜——**没有日志正是这次排查绕了一圈的原因**。
+- **验证**：`tests/feishu-display.spec.ts`（11 例：渲染/本地化/幂等目标值/`behaviors` 形态回归/**写落地后才重绘**/发新卡+失效改写/话题保持/非法载荷忽略/stop 后不响应/发送失败不破坏点击）。
+
+### 新增：Turn Complete 卡片列出本轮「交付物」（`src/feishu-streaming.ts` / `src/channel.ts` / `src/i18n.ts`）
+
+- DSH `0.1.5-rc.1` 起，随附 Web 的 `standard` / `ptc` / `cordis` preset 带有 **`present` 工具**，其指引要求模型对用户要接收的文件显式调用它；成功后往会话日志写 `deliverables/presented`（`{ turn, callId, files: [{ path, description? }] }`）。插件此前完全忽略这个事件——**模型声明交付了文件，飞书聊天里却什么都没有**。现在把它收进本轮统计，渲染在既有 Turn Complete 卡片的 stats 与元信息之间：
+
+  ```
+  📦 交付物（2）
+  • `reports/summary.md` — 月度汇总
+  • `assets/chart.png`
+  ```
+
+- **只列清单，不推送文件**。飞书没有工作区浏览器，Web 那套「交付物卡片行 + 点开在侧栏预览」在这里没有等价物；而把文件直接推进聊天既噪音大，又会让模型同时调 `present` 与 `feishu_send_file` 造成重复发送。清单保留了 `present` 的全部价值——**模型筛过的成品 + 描述**——用户真要文件时说一句即可，仍走已有的 `feishu_send_file`。
+- 细节：按 `path` 去重、**后声明的描述覆盖先前的**（对齐 Web UI `ui-deliverables`）；单轮上限 16 条；卡片最多列 6 条，其余折成 `…另有 N 个`；路径里的反引号/换行会被压平，避免破坏卡片 markdown；不做图片内联。
+- `deriveToolSummary` 为 `present` 增加分支（`交付物：a.txt +2`），不再落到 `present · files` 的兜底文案。
+- **验证**：新增 4 例测试（收集与去重、后声明描述优先、非法载荷忽略、跨轮清空）+ `deriveToolSummary` 的 `present` 用例。
+
+### 文档：DSH 0.1.5-alpha.1 → 0.1.5-rc.1 升级评估（`docs/migration-0.1.5-alpha.1-to-rc.1.md`）
+
+- 记录 279 个 commit 的逐包 API diff（17 个包的 `exports` 零差异、19 个宿主服务名全在、发行说明里的破坏性变更逐条不碰插件）、依赖范围无需修改的原因（同 `0.1.5` tuple），以及 rc.1 暴露的一处**开发/CI 环境坑**（`dsh-client-ui-primitives` 把运行时依赖降为 `devDependencies`，重新生成 lockfile 后 `tests/client.spec.ts` 会解析不到 `clsx`）与改进机会清单。
+
+### 新增：卡片显示粒度开关 + 精简 WebUI 面板（`src/config.ts` / `src/settings-api.ts` / `src/index.ts` / `src/feishu-streaming.ts` / `src/client/*`）
+
+- **新配置（均为布尔，默认 `true`，不写即保持现状）**：`showToolCalls`（工具调用总开关）、`showToolArgs`（参数块）、`showToolResults`（结果预览）。连同已有的 `showReasoning`，四个开关分别对应步骤卡上的思考过程、工具段落、`⚙️ 参数`、`📤 结果`。
+- **语义**：`showToolCalls=false` 时步骤卡不显示任何工具信息（含标题的工具状态色，回落到普通回复标题）；**只有工具调用、没有文字/思考的步骤不再发卡**（`stepHasVisibleContent` 门控 `queueStepCardSend`/`updateStepCard`，不产生空壳卡）。`showToolArgs`/`showToolResults` 只在 `showToolCalls=true` 时生效，面板上置灰并提示。文字回复不受任何开关影响，始终完整显示（超出 3000 字仍走溢出续卡）。
+- **修复隐藏缺陷**：`settings-api.ts` 的 `SETTINGS_KEYS` 之前漏收 `showReasoning`——面板/接口写这个字段会被 `unknown settings field` 拒绝；本次连同三个新键一起补上。
+- **斜杠命令**：新增 `/display [reasoning|tools|args|results] [on|off]`——无参列出四个开关状态，带参切换其中一个（接受 `on/off`、`true/false`、`1/0`、`开/关`，以及 `tool`/`arguments`/`result` 等别名）；与 WebUI 面板写同一批配置字段，两处始终一致。`/reasoning show on|off` 保留为 `showReasoning` 的别名。命令走 `executeSlashCommand` 的 conversation-free 分支，**没有 live agent 时也能用**（与 `/reasoning`、`/lang` 同级），并计入 `/help` 的 chatterbox4dsh 分组。
+- **WebUI 面板精简重排**（`src/client/LarkSettingsSection.tsx`）：由「应用凭据 / 访问策略 / Agent 配置」改为 **「应用凭据 / 访问策略 / 卡片显示」** 三卡。移除 Provider、Model、Workspace、Agent Preset、失败提示五项（新会话的模型/工作区/预设由 `/new` 流程在建会话时指定，不再用面板做全局默认）；新增「卡片显示」卡承载四个开关与插件语言 `locale`。布尔改用原生 `Switch`，字段带一行说明；工具参数/结果开关在总开关关闭时置灰。面板不再依赖 `connection` / `llm.models`，客户端 `inject` 相应缩减为 `['slots', 'locale']`。
+- **对齐说明**：DSH Web UI 自身只有「对话显示 = Normal/Compact」一个粗粒度开关（`ui-chat` 的 `TranscriptViewRow`），没有按 reasoning/工具/参数/结果分级的设置——这四个开关是本插件为飞书卡片做的扩展，非原生能力。
+- **验证**：`npm run typecheck` / `npm run test`（281 passed）/ `npm run build`。
 
 ### 修复：卡片顺序——溢出续卡与问题卡不再抢在步骤卡前面（`src/feishu-streaming.ts` / `src/index.ts` / `tests/feishu-streaming.spec.ts`）
 

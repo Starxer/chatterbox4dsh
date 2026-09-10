@@ -18,6 +18,21 @@
 
 ---
 
+## DSH 0.1.5-rc.1 适配（已评估，2026-09-10）
+
+> 完整评估见 [`docs/migration-0.1.5-alpha.1-to-rc.1.md`](./docs/migration-0.1.5-alpha.1-to-rc.1.md)（279 commits）。
+
+- ✅ **插件运行时代码零改动**；依赖范围 `^0.1.5-alpha.1` **无需修改**（与 rc.1 同属 `0.1.5` tuple，semver 预发布范围自动命中）。
+- ✅ 17 个被 import 的 `dsh-*` 包 `exports` map 零差异，仅 5 个包源码有变动且全为增量/注释；19 个宿主服务名全在。
+- 🔲 **测试环境坑（发版前必修）**：`dsh-client-ui-primitives@rc.1` 把运行时依赖降为 `devDependencies`，全新安装后 `tests/client.spec.ts` 报 `Failed to resolve import "clsx"`。修法二选一（见评估文档「问题 B」）：**推荐 B1** = vitest `resolve.alias` 指向本地测试替身；B2 = 把 18 个传递依赖写进 `devDependencies`。
+- ✅ **C1（高）已实现（2026-09-10）——接管 `deliverables/presented`**。但结论与最初设想不同：**只把交付物列进 Turn Complete 卡片，不推送文件**。飞书没有工作区浏览器，推送既噪音大、又会与 `feishu_send_file` 重复；清单保留了 `present` 的全部信息（模型筛过的成品 + 描述），用户真要文件时说一句即可。实现落在 `feishu-streaming.ts`（收集）+ `channel.ts` `renderFooterCard`（渲染），**没有新建 `src/feishu-deliverables.ts`**。
+- 🔲 **C2（中）`/subagents` 子代理卡片**：rc.1 有 `subagent/catalog` 事件 + 子代理排队/steer/stop，插件目前完全隐藏子代理会话。
+- ✅ **C4（低）已实现（2026-09-10）**：`deriveToolSummary` 补了 `present` 分支，显示 `交付物：a.txt +2`，不再落到「工具名 · 首字段」的 `present · files` 兜底。
+- 📋 **C5（记录）代理环境**：入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；暂不处理。
+- ✅ **C3 `/feedback` 无需改动**：它是宿主 `commands` 注册表命令，插件的 `commands.execute` 兜底路径已自动转发，且会出现在 `/help` 的「DSH 内置」分组。
+
+---
+
 ## 已完成
 
 | # | 功能 | 说明 |
@@ -45,6 +60,7 @@
 | — | Step token footer | ✅ 每个 step 卡片底部显示时长 + 输入输出 token |
 | — | Debounce + flush 同步 | ✅ 150ms debounce 合并快速更新，turn/end 时 flush 确保 footer 在 card update 之后发送 |
 | — | 卡片顺序（步骤卡优先） | ✅ 每 chat 步骤卡消息串行链 + 发卡前屏障（问题卡/审批卡/溢出续卡前先刷出并等待步骤卡消息）+ 溢出续卡显式 `await lastStepSend`；修「续卡排到更早步骤卡前」与「问题卡先于步骤卡」 |
+| — | 卡片显示粒度开关 + 面板精简 | ✅ **已完成（2026-09-09）**：`showToolCalls` / `showToolArgs` / `showToolResults`（+ 已有 `showReasoning`）四个开关；工具总开关关闭时纯工具步骤不发卡；WebUI 面板改为「应用凭据 / 访问策略 / 卡片显示」三卡，移除 Provider/Model/Workspace/Agent Preset/失败提示；修 `SETTINGS_KEYS` 漏收 `showReasoning`；新增 `/display` 斜杠命令覆盖四个开关 |
 | — | 防止卡片消失 | ✅ 内层 try/catch 保护 mux 事件处理，timer 回调 error-safe |
 | — | 不同步骤工具调用分离 | ✅ `resetStep` 不清除 `state.chat`（session 级坐标），每个 step 独立卡片 |
 | — | 审批按钮反馈 | ✅ 点击后卡片更新为 ✅ Approved / ❌ Rejected，移除按钮 |
@@ -92,12 +108,13 @@
 
 > ⚠️ 状态已刷新（2026-08-30）：`#16 权限系统接入`、`/thread→/session` 改名均已**完成**，从本表移除。
 >
-> 下表是**条目状态归档**（含已完成项，保留以便追溯）。真正还没动工的只有两条：**#18 reasoning 代码块折叠**、**step 卡片可见性开关**。
+> 下表是**条目状态归档**（含已完成项，保留以便追溯）。真正还没动工的只剩一条：**#18 reasoning 代码块折叠**。
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
+| — | **`/display` 交互卡片**（卡片内设置显示开关） | **中** | ✅ **已完成（2026-09-10）**：按方案 A 落地，`src/feishu-display.ts`。无参 `/display` 发「📇 卡片显示」卡片，四个开关各一个按钮（`✅ 工具调用：开` / `⬜ 结果：关`），点击取反即持久化；**每次点击发新卡 + 上一张改写成「已失效」**（绕开「就地更新 2–3 次后按钮回调失效」）；按钮 `value` 带目标值，重复投递幂等；按 `messageId` 记住话题坐标让新卡留在原话题；发卡失败回退文本列表。测试 `tests/feishu-display.spec.ts`（9 例）。设计依据与实现差异见 [`docs/display-card-design.md`](./docs/display-card-design.md)。**未采用**方案 B 的 `checker` 多选（无需真机验证）。 |
 | 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-09-08 核实**：reasoning 已收紧为 **200 字预览**（`REASONING_CAP`，不展示完整思维链）、text 超 3000 字改为拆溢出续卡；仅 `collapsible` 未实现 |
-| — | **step 卡片可见性开关**（过程透明可配置） | **中** | **后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
+| — | **step 卡片可见性开关**（过程透明可配置） | **中** | ✅ **已完成（2026-09-09）**：新增 `showToolCalls` / `showToolArgs` / `showToolResults` 三个布尔配置（连同已有的 `showReasoning`，默认全 `true`），分别门控工具段落、`⚙️ 参数`、`📤 结果`、思考过程；`showToolCalls=false` 时工具段落整体不渲染、且**只有工具、无文字/思考的步骤不发卡**；WebUI 面板新增「卡片显示」卡承载四个 `Switch` + 插件语言。见 CHANGELOG「新增：卡片显示粒度开关 + 精简 WebUI 面板」。原记录：**后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
 | 3 | ~~工作区候选补全~~ → 目录浏览器 | **中** | ✅ **已完成（2026-09-08）**：改为**目录浏览器**（比输入前缀补全更直接）——`/new` 工作区卡片新增「📂 浏览目录…」，可导航 / 分页 / 显示隐藏目录 / 选当前目录为工作区。目录来源优先 DSH `directoryPicker` 的 `browse` 能力，`native` 或缺失时回退插件自带只读列举。见 CHANGELOG「新增：/new 工作区卡片支持浏览目录」。**前缀补全本身不再做**（浏览器已覆盖）。**2026-09-08 追加**：工作区列表与目录浏览最终统一用 **`interactive_container`**（Card 2.0 整块可点击区域，官方定位就是「卡片内的列表项」）：每个工作区 / 目录一整行可点、无按钮外观、名字与路径不省略——按钮宫格 / 按内容宽度分行（飞书不认列内 `width: 'fill'`）、编号下拉框（要先选号再提交，太绕）、整行按钮（有多余按钮外观）均已弃用。控制按钮行用 `column_set` + `flex_mode: 'stretch'`（窄屏堆叠，避免手机端被压缩截断） |
 | — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查**：`feishu-session.ts` 面板仍是就地更新（未改成发新卡，故无失效提示可写） |
 | — | **交互卡片就地更新上限** | **高** | ✅ **已修复（2026-09-08）**：飞书对同一条消息的卡片**就地更新约 2–3 次后停止投递按钮回调**（patch 与 CardKit 实例**同样**受限）。目录浏览器改「每次导航发新卡片」；`sendCard` 已不再用 `updateCardInstance`。**仍待排查**：`feishu-session.ts` 面板（切换/列表/刷新多次点击）、`feishu-model-select.ts`（provider→model→confirm 2–3 次）仍在就地更新，可能同样会失效 |

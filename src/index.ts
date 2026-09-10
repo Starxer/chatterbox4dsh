@@ -24,7 +24,7 @@ import { LarkRuntime } from './runtime.ts'
 import { createSettingsApi } from './settings-api.ts'
 import { renderTerminalQr } from './provision.ts'
 import { ProvisionManager } from './provision-manager.ts'
-import { registerLarkCommands, formatRelativeTime, handleHelpCommand, handleModelCommand, handleReasoningCommand, handleApprovalCommand, handleListApprovalsCommand, renderFeishuCommandsOnly, type ApprovalControl, type CommandTranslations } from './commands.ts'
+import { registerLarkCommands, formatRelativeTime, handleDisplayCommand, handleHelpCommand, handleModelCommand, handleReasoningCommand, handleApprovalCommand, handleListApprovalsCommand, renderFeishuCommandsOnly, type ApprovalControl, type CommandTranslations, type DisplayControl } from './commands.ts'
 import { commandTranslationsFor } from './commands-i18n.ts'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { handleProvisionRequest, handleSettingsRequest, PROVISION_PATH, SETTINGS_PATH } from './web.ts'
@@ -50,6 +50,7 @@ import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
 import { startFeishuModelSelect, renderProviderSelectCard, sendModelCardV2, type ModelSelectChannel } from './feishu-model-select.ts'
 import { startFeishuPermission, SANDBOX_MODES, PERMISSION_LABELS, type FeishuPermissionHandle } from './feishu-permission.ts'
 import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
+import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
 import { startFeishuSession, renderSessionListCard, renderSessionResultCard, type FeishuSessionHandle } from './feishu-session.ts'
 import { startFeishuOnboarding, type FeishuOnboardingHandle } from './feishu-onboarding.ts'
 import type { ChatCreationOptions } from './harness.ts'
@@ -156,6 +157,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let onboardingHandle: FeishuOnboardingHandle | undefined = undefined
   let permissionHandle: FeishuPermissionHandle | undefined = undefined
   let busyHandle: FeishuBusyHandle | undefined = undefined
+  let displayHandle: FeishuDisplayHandle | undefined = undefined
   let sessionHandle: FeishuSessionHandle | undefined = undefined
   const channelHolder: { current: LarkChannel | undefined } = { current: undefined }
   // The approvals handle IS the ApprovalControl surface; the new
@@ -388,7 +390,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         message => executeSlashCommand(message, bridge, commands, bridgeHolder, sessionController, agents, sandboxPolicy, permissionHandle, llm, defaultModel, cardChannel,
         busyHandle,
         modelSelectHandle !== undefined ? { cardByMessage: modelSelectHandle.cardByMessage, sequenceByCard: modelSelectHandle.sequenceByCard } : undefined,
-        onboardingHandle, workspaceRegistry, agentPresets, approvalControl, showReasoningControl, sessionHandle,
+        onboardingHandle, workspaceRegistry, agentPresets, approvalControl, showReasoningControl, displayControl, displayHandle, sessionHandle,
         { current: currentLocale, set: setPluginLocale },
         permissionPresets),
         attachments,
@@ -515,6 +517,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
       showReasoning: () => currentSettings().showReasoning,
+      showToolCalls: () => currentSettings().showToolCalls,
+      showToolArgs: () => currentSettings().showToolArgs,
+      showToolResults: () => currentSettings().showToolResults,
       getTranslations: () => translationsFor(currentLocale().id),
     })
     stopStreaming = streamingResult.stop
@@ -600,6 +605,42 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       void settings.mutate(namespace, [{ op: 'set', path: ['showReasoning'], value: !current }], currentRevision())
     },
   }
+  // `/display` reads and writes the same four config fields the WebUI settings
+  // panel uses, so both surfaces stay in sync. `showReasoning` keeps its own
+  // `/reasoning show on|off` alias for backwards compatibility.
+  const displayControl: DisplayControl = {
+    get: () => {
+      const current = currentSettings()
+      return {
+        reasoning: current.showReasoning,
+        tools: current.showToolCalls,
+        args: current.showToolArgs,
+        results: current.showToolResults,
+      }
+    },
+    set: (key, value) => {
+      const field = key === 'reasoning'
+        ? 'showReasoning'
+        : key === 'tools' ? 'showToolCalls' : key === 'args' ? 'showToolArgs' : 'showToolResults'
+      // Return the promise (not `void`): the interactive card repaints from a
+      // re-read, and `settings` only publishes the new snapshot once the write
+      // has persisted. The text path ignores the result, so keep a detached
+      // catch to avoid an unhandled rejection there.
+      const write = settings.mutate(namespace, [{ op: 'set', path: [field], value }], currentRevision())
+      write.catch((error: unknown) => {
+        console.log(`dsh-feishu: /display write failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return write
+    },
+  }
+  // Interactive `/display` switch card. Independent of the questions/approvals
+  // seams; only needs the live card channel + the display control it writes.
+  displayHandle = startFeishuDisplay({
+    channel: cardChannel,
+    display: displayControl,
+    logger: ctx.logger('dsh-feishu'),
+    getTranslations: () => translationsFor(currentLocale().id),
+  })
   registerLarkCommands(
     ctx,
     llm,
@@ -626,6 +667,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     commands,
     approvalControl,
     showReasoningControl,
+    displayControl,
     sessionController,
   )
   ctx.effect(() => () => {
@@ -638,8 +680,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     modelSelectHandle?.dispose()
     permissionHandle?.stop()
     busyHandle?.stop()
+    displayHandle?.stop()
     sessionHandle?.stop()
-  }, 'dsh-feishu: feishu questions + approvals + todos + streaming + send-file + model-select + permission + busy + session listeners')
+  }, 'dsh-feishu: feishu questions + approvals + todos + streaming + send-file + model-select + permission + busy + display + session listeners')
 
   let lastPrintedQrUrl: string | undefined
   const provisionManager = new ProvisionManager({
@@ -916,6 +959,8 @@ async function executeSlashCommand(
   agentPresets?: { list(): Promise<Array<{ id: string; title?: string }>> },
   approvals?: ApprovalControl,
   showReasoning?: { get: () => boolean; toggle: () => void },
+  display?: DisplayControl,
+  displayCard?: FeishuDisplayHandle,
   sessionCard?: FeishuSessionHandle,
   localeControl?: {
     current: () => { id: LocaleId; plugin: 'zh' | 'en' | 'auto'; dsh: string | undefined }
@@ -1345,6 +1390,21 @@ async function executeSlashCommand(
   }
   if (parsed.name === 'reasoning' && agentDefaultModel !== undefined && llm !== undefined) {
     return toEcho(await handleReasoningCommand(freeInvocation(parsed.rawInput), llm, agentDefaultModel, bridge, freeChatMessageFor, activeCommandTranslations, showReasoning ?? { get: () => false, toggle: () => {} }, (sessionController ?? {}) as never))
+  }
+  if (parsed.name === 'display' && display !== undefined) {
+    // No argument → interactive switch card (tap instead of remembering the
+    // syntax). Any failure falls back to the text listing, so `/display` always
+    // answers.
+    if (parsed.rawInput.trim() === '' && displayCard !== undefined) {
+      try {
+        await displayCard.open(chatMessage)
+        return { kind: 'consumed' }
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        console.log(`dsh-feishu: /display card failed, falling back to text: ${msg}`)
+      }
+    }
+    return toEcho(handleDisplayCommand(freeInvocation(parsed.rawInput), activeCommandTranslations, display))
   }
   if (parsed.name === 'approvals' && approvals !== undefined) {
     return toEcho(await handleListApprovalsCommand(freeInvocation(parsed.rawInput), approvals, activeCommandTranslations))

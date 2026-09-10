@@ -1,4 +1,4 @@
-import type { CommandTranslations } from './commands.ts'
+import type { CommandTranslations, DisplayToggleKey } from './commands.ts'
 
 /** Format a token count as a compact human-readable number (e.g. 12.3K). */
 function formatTokenCount(n: number): string {
@@ -127,6 +127,13 @@ export const zhCommandTranslations: CommandTranslations = {
   reasoningLevelsFrom: (effortIds: readonly string[]) => `可用档位：${effortIds.map(id => `\`${id}\``).join(' · ')}\n使用 \`/reasoning show on|off\` 切换推理内容显示。`,
   reasoningUnknown: (level: string) => `未知推理档位 "${level}"。`,
   reasoningShowToggled: (enabled: boolean) => `🧠 推理内容显示：**${enabled ? 'on' : 'off'}**。跨重启持久化。`,
+  displayDescription: '查看或切换卡片显示开关（思考过程 / 工具调用 / 参数 / 结果）',
+  displayHeader: '📇 卡片显示',
+  displayUsage: '用法：/display [reasoning|tools|args|results] [on|off]',
+  displayLabel: (key: DisplayToggleKey) => ({ reasoning: '思考过程', tools: '工具调用', args: '参数', results: '结果' })[key],
+  displayState: (label: string, enabled: boolean) => `• ${label}：**${enabled ? '开' : '关'}**`,
+  displaySet: (label: string, enabled: boolean) => `📇 「${label}」已设为 **${enabled ? '开' : '关'}**。跨重启持久化。`,
+  displayUnknown: (value: string) => `未知显示开关 "${value}"。`,
 }
 
 /** English implementation of `CommandTranslations`. */
@@ -240,6 +247,13 @@ export const enCommandTranslations: CommandTranslations = {
   reasoningLevelsFrom: (effortIds: readonly string[]) => `Available levels: ${effortIds.map(id => `\`${id}\``).join(' · ')}\nUse \`/reasoning show on|off\` to toggle reasoning content display.`,
   reasoningUnknown: (level: string) => `Unknown reasoning level "${level}".`,
   reasoningShowToggled: (enabled: boolean) => `🧠 Reasoning content display: **${enabled ? 'on' : 'off'}**. Persisted across restarts.`,
+  displayDescription: 'Show or change the card display switches (reasoning / tool calls / arguments / results)',
+  displayHeader: '📇 Card display',
+  displayUsage: 'Usage: /display [reasoning|tools|args|results] [on|off]',
+  displayLabel: (key: DisplayToggleKey) => ({ reasoning: 'Reasoning', tools: 'Tool calls', args: 'Arguments', results: 'Results' })[key],
+  displayState: (label: string, enabled: boolean) => `• ${label}: **${enabled ? 'on' : 'off'}**`,
+  displaySet: (label: string, enabled: boolean) => `📇 "${label}" is now **${enabled ? 'on' : 'off'}**. Persisted across restarts.`,
+  displayUnknown: (value: string) => `Unknown display switch "${value}".`,
 }
 
 /**

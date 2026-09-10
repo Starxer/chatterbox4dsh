@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { registerLarkCommands, type ApprovalControl, type CommandTranslations } from '../src/commands.ts'
+import { registerLarkCommands, handleDisplayCommand, type ApprovalControl, type CommandTranslations, type DisplayControl } from '../src/commands.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -75,6 +75,13 @@ const translations: CommandTranslations = {
   reasoningLevelsFrom: (effortIds: readonly string[]) => `Levels: ${effortIds.join(', ')}`,
   reasoningUnknown: (level: string) => `Unknown: ${level}`,
   reasoningShowToggled: (enabled: boolean) => `Reasoning display: ${enabled ? 'on' : 'off'}`,
+  displayDescription: 'Show or change card display switches',
+  displayHeader: 'Card display',
+  displayUsage: 'Usage: /display [reasoning|tools|args|results] [on|off]',
+  displayLabel: key => key,
+  displayState: (label: string, enabled: boolean) => `${label}: ${enabled ? 'on' : 'off'}`,
+  displaySet: (label: string, enabled: boolean) => `${label} set to ${enabled ? 'on' : 'off'}`,
+  displayUnknown: (value: string) => `Unknown: ${value}`,
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -86,6 +93,11 @@ const stubApprovalControl: ApprovalControl = {
 const stubShowReasoning = {
   get: () => true,
   toggle: () => { /* noop */ },
+}
+
+const stubDisplay: DisplayControl = {
+  get: () => ({ reasoning: true, tools: true, args: true, results: true }),
+  set: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -216,16 +228,66 @@ function fakeCommands(descriptors: ReadonlyArray<{ name: string; description: st
 describe('registerLarkCommands', () => {
   it('registers the /model, /new, /session, and /help commands on the registry', () => {
     const fake = fakeContext()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
-    expect(fake.registered.map(item => item.name)).toEqual(['model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals', 'status', 'reasoning'])
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
+    expect(fake.registered.map(item => item.name)).toEqual(['model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals', 'status', 'reasoning', 'display'])
     fake.dispose()
+  })
+})
+
+describe('/display command', () => {
+  const invocation = (rawInput: string) => ({ name: 'display', rawInput } as never)
+
+  it('reports all four switches when invoked without arguments', () => {
+    const display: DisplayControl = {
+      get: () => ({ reasoning: true, tools: false, args: true, results: false }),
+      set: vi.fn(),
+    }
+    const result = handleDisplayCommand(invocation(''), translations, display)
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('Card display')
+    expect(result.text).toContain('reasoning: on')
+    expect(result.text).toContain('tools: off')
+    expect(result.text).toContain('results: off')
+  })
+
+  it('writes the requested switch through the control', () => {
+    const set = vi.fn()
+    const display: DisplayControl = {
+      get: () => ({ reasoning: true, tools: true, args: true, results: true }),
+      set,
+    }
+    const result = handleDisplayCommand(invocation('tools off'), translations, display)
+    expect(set).toHaveBeenCalledWith('tools', false)
+    expect(result.text).toContain('tools set to off')
+  })
+
+  it('accepts aliases and on/off spellings', () => {
+    const set = vi.fn()
+    const display: DisplayControl = {
+      get: () => ({ reasoning: true, tools: true, args: true, results: true }),
+      set,
+    }
+    handleDisplayCommand(invocation('arguments 0'), translations, display)
+    handleDisplayCommand(invocation('thinking 1'), translations, display)
+    expect(set).toHaveBeenNthCalledWith(1, 'args', false)
+    expect(set).toHaveBeenNthCalledWith(2, 'reasoning', true)
+  })
+
+  it('rejects an unknown switch and a missing value', () => {
+    const display: DisplayControl = {
+      get: () => ({ reasoning: true, tools: true, args: true, results: true }),
+      set: vi.fn(),
+    }
+    expect(handleDisplayCommand(invocation('nope on'), translations, display).kind).toBe('error')
+    expect(handleDisplayCommand(invocation('tools'), translations, display).kind).toBe('error')
+    expect(display.set).not.toHaveBeenCalled()
   })
 })
 
 describe('/model command', () => {
   it('reports the current selection when invoked without arguments', async () => {
     const fake = fakeContext()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation(''))
     expect(result).toEqual({ kind: 'success', text: 'Current:\n• `p/m`' })
@@ -240,7 +302,7 @@ describe('/model command', () => {
         p2: [{ provider: 'p2', id: 'm3', name: 'M3' }],
       },
     })
-    registerLarkCommands(fake.ctx, llm, fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, llm, fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation('list'))
     expect(result).toMatchObject({ kind: 'success' })
@@ -251,7 +313,7 @@ describe('/model command', () => {
 
   it('reports an empty catalog when no providers are registered', async () => {
     const fake = fakeContext()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory({ providers: [] }), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory({ providers: [] }), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation('list'))
     expect(result).toEqual({ kind: 'success', text: 'none' })
@@ -260,7 +322,7 @@ describe('/model command', () => {
   it('switches the default selection for a known provider/model', async () => {
     const fake = fakeContext()
     const model = fakeDefaultModel()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation('p1/m1'))
     expect(model.saveSelection).toHaveBeenCalledWith({ provider: 'p1', model: 'm1' })
@@ -270,7 +332,7 @@ describe('/model command', () => {
   it('passes the reasoning-effort suffix through to saveSelection', async () => {
     const fake = fakeContext()
     const model = fakeDefaultModel()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     await handler(fakeInvocation('p1/m1:high'))
     expect(model.saveSelection).toHaveBeenCalledWith({ provider: 'p1', model: 'm1', reasoningEffort: 'high' })
@@ -282,7 +344,7 @@ describe('/model command', () => {
     const selectModel = vi.fn(async () => undefined)
     const sessionController = { selectModel }
     const { bridge, chatMessageFor } = fakeBridge()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, sessionController)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, sessionController)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation('p1/m1'))
     expect(selectModel).toHaveBeenCalledWith({
@@ -301,7 +363,7 @@ describe('/model command', () => {
     const selectModel = vi.fn(async () => undefined)
     const sessionController = { selectModel }
     const { bridge, chatMessageFor } = fakeBridge()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, sessionController)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, sessionController)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     await handler(fakeInvocation('unknown/x'))
     expect(selectModel).not.toHaveBeenCalled()
@@ -310,7 +372,7 @@ describe('/model command', () => {
   it('rejects an unknown provider', async () => {
     const fake = fakeContext()
     const model = fakeDefaultModel()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation('unknown/x'))
     expect(result).toEqual({ kind: 'error', text: 'unknown unknown/x\nUsage: /model' })
@@ -320,7 +382,7 @@ describe('/model command', () => {
   it('rejects a malformed provider/model argument', async () => {
     const fake = fakeContext()
     const model = fakeDefaultModel()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), model, fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'model')!.handler
     const result = await handler(fakeInvocation('p1/m1/extra'))
     expect(result).toMatchObject({ kind: 'error' })
@@ -333,7 +395,7 @@ describe('/new command', () => {
     const fake = fakeContext()
     const startNewSession = vi.fn(() => 'new-session-id')
     const { bridge, chatMessageFor } = fakeBridge({ startNewSession })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'new')!.handler
     const noArgs = await handler(fakeInvocation(''))
     expect(noArgs).toEqual({ kind: 'error', text: 'Usage: /new <workspace> <preset> [model]' })
@@ -355,7 +417,7 @@ describe('/session command', () => {
         { id: 'session-B', updatedAt: now - 3 * 3_600_000, title: 'Second chat' },
       ])
       const { bridge, chatMessageFor } = fakeBridge({ listSessions })
-      registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+      registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
       const handler = fake.registered.find(item => item.name === 'session')!.handler
       const result = await handler(fakeInvocation(''))
       expect(listSessions).toHaveBeenCalled()
@@ -378,7 +440,7 @@ describe('/session command', () => {
         { id: 'session-A', updatedAt: now, title: '' },
       ])
       const { bridge, chatMessageFor } = fakeBridge({ listSessions })
-      registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+      registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
       const handler = fake.registered.find(item => item.name === 'session')!.handler
       const result = await handler(fakeInvocation(''))
       expect((result as { text: string }).text).toContain('1. (idle:session-A) - just now (session-A)')
@@ -400,7 +462,7 @@ describe('/session command', () => {
         { id: 's-?', updatedAt: 0, title: '?' },
       ])
       const { bridge, chatMessageFor } = fakeBridge({ listSessions })
-      registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+      registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
       const handler = fake.registered.find(item => item.name === 'session')!.handler
       const result = await handler(fakeInvocation(''))
       const text = (result as { text: string }).text
@@ -416,7 +478,7 @@ describe('/session command', () => {
   it('reports an empty catalog when no persisted sessions exist', async () => {
     const fake = fakeContext()
     const { bridge, chatMessageFor } = fakeBridge({ listSessions: vi.fn(async () => []) })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation(''))
     expect(result).toEqual({ kind: 'success', text: 'empty' })
@@ -430,7 +492,7 @@ describe('/session command', () => {
     ]
     const switchToSession = vi.fn(() => 'ok' as const)
     const { bridge, chatMessageFor } = fakeBridge({ listSessions: vi.fn(async () => sessions), switchToSession })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation('2'))
     expect(switchToSession).toHaveBeenCalledWith(expect.objectContaining({ chatId: 'oc_1' }), 'session-B')
@@ -444,7 +506,7 @@ describe('/session command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a' }]),
       switchToSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation('1'))
     expect(switchToSession).toHaveBeenCalledWith(expect.objectContaining({ chatId: 'oc_1' }), 'session-A')
@@ -458,7 +520,7 @@ describe('/session command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a', ownedBy: 'thread:oc_9:t_123' }]),
       switchToSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation('1'))
     expect(switchToSession).toHaveBeenCalledWith(expect.objectContaining({ chatId: 'oc_1' }), 'session-A')
@@ -474,7 +536,7 @@ describe('/session command', () => {
         { id: 'session-B', updatedAt: now, title: 'theirs', ownedBy: 'thread:oc_9:t_123' },
       ]),
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation(''))
     expect(result).toEqual({
@@ -495,7 +557,7 @@ describe('/session command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a' }]),
       switchToSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation('9'))
     expect(result).toMatchObject({ kind: 'error' })
@@ -509,7 +571,7 @@ describe('/session command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a' }]),
       switchToSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'session')!.handler
     const result = await handler(fakeInvocation('abc'))
     expect(result).toMatchObject({ kind: 'error' })
@@ -525,7 +587,7 @@ describe('/detach command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a', ownedBy: 'thread:oc_9:t_123' }]),
       detachSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'detach')!.handler
     const result = await handler(fakeInvocation('1'))
     expect(detachSession).toHaveBeenCalledWith('session-A')
@@ -539,7 +601,7 @@ describe('/detach command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a' }]),
       detachSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'detach')!.handler
     const result = await handler(fakeInvocation('1'))
     expect(detachSession).toHaveBeenCalledWith('session-A')
@@ -553,7 +615,7 @@ describe('/detach command', () => {
       listSessions: vi.fn(async () => [{ id: 'session-A', updatedAt: 1, title: 'a' }]),
       detachSession,
     })
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), bridge, chatMessageFor, translations, fakeCommands(), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'detach')!.handler
     const result = await handler(fakeInvocation('9'))
     expect(result).toMatchObject({ kind: 'error' })
@@ -570,7 +632,7 @@ describe('/help command', () => {
       { name: 'model', description: 'Show, list, or switch the active model' },
     ]
     const cmds = fakeCommands(descriptors)
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, cmds, stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, cmds, stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'help')!.handler
     const result = await handler(fakeInvocation(''))
     expect(cmds.list).toHaveBeenCalledWith(expect.objectContaining({ session: { id: 'a' } }))
@@ -600,7 +662,7 @@ describe('/help command', () => {
         input: { hint: '[<objective>|clear|edit <objective>|pause|resume]' },
       },
     ]
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(descriptors), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands(descriptors), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'help')!.handler
     const result = await handler(fakeInvocation(''))
     const text = (result as { text: string }).text
@@ -609,7 +671,7 @@ describe('/help command', () => {
 
   it('still lists the Feishu-only (intercepted) commands when the runtime has none', async () => {
     const fake = fakeContext()
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands([]), stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, fakeCommands([]), stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'help')!.handler
     const result = await handler(fakeInvocation(''))
     const text = (result as { text: string }).text
@@ -623,7 +685,7 @@ describe('/help command', () => {
   it('ignores extra raw input', async () => {
     const fake = fakeContext()
     const cmds = fakeCommands([{ name: 'compact', description: 'Compact older conversation history' }])
-    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, cmds, stubApprovalControl, stubShowReasoning, fakeSessionController() as never)
+    registerLarkCommands(fake.ctx, fakeLlmDirectory(), fakeDefaultModel(), fakeBridge().bridge, fakeBridge().chatMessageFor, translations, cmds, stubApprovalControl, stubShowReasoning, stubDisplay, fakeSessionController() as never)
     const handler = fake.registered.find(item => item.name === 'help')!.handler
     const result = await handler(fakeInvocation('anything here'))
     expect(result).toMatchObject({ kind: 'success' })

@@ -1,10 +1,11 @@
 import * as React from 'react'
-import { Button, Input, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, StateDot, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import { QRCodeSVG } from 'qrcode.react'
 
 type Translate = (key: string) => string
 type RuntimeState = 'unconfigured' | 'connecting' | 'connected' | 'error' | 'stopped'
 type ProvisionPhase = 'idle' | 'waiting' | 'configuring' | 'done' | 'error'
+type PluginLocale = 'auto' | 'zh' | 'en'
 
 interface ProvisionState {
   phase: ProvisionPhase
@@ -22,12 +23,12 @@ interface SettingsPayload {
     dmMode: 'open' | 'allowlist' | 'disabled'
     groupAllowlist: string[]
     dmAllowlist: string[]
-    provider?: string
-    model?: string
-    workspace?: string
-    agentPreset?: string
-    errorMessage: string
     reactEmoji: string
+    showReasoning: boolean
+    showToolCalls: boolean
+    showToolArgs: boolean
+    showToolResults: boolean
+    locale: PluginLocale
   }
   credential: { configured: boolean; source?: string; writable: boolean }
   runtime: { state: RuntimeState; message?: string }
@@ -42,47 +43,27 @@ interface FormState {
   dmMode: 'open' | 'allowlist' | 'disabled'
   groupAllowlist: string
   dmAllowlist: string
-  provider: string
-  model: string
-  workspace: string
-  agentPreset: string
-  errorMessage: string
   reactEmoji: string
-}
-
-export interface ModelCatalogModel {
-  id: string
-  name: string
-  description?: string
-  reasoning?: boolean
-}
-
-export interface ModelProviderGroup {
-  id: string
-  name: string
-  models: ModelCatalogModel[]
-}
-
-export interface ModelCatalog {
-  groups: ModelProviderGroup[]
-  failures: unknown[]
+  showReasoning: boolean
+  showToolCalls: boolean
+  showToolArgs: boolean
+  showToolResults: boolean
+  locale: PluginLocale
 }
 
 interface LarkSettingsSectionProps {
   t: Translate
-  loadModels?: () => Promise<ModelCatalog>
 }
 
 const EMPTY_FORM: FormState = {
   appId: '', appSecret: '', domain: 'feishu', requireMention: true, dmMode: 'open',
-  groupAllowlist: '', dmAllowlist: '', provider: '', model: '', workspace: '', agentPreset: '', errorMessage: '', reactEmoji: '',
+  groupAllowlist: '', dmAllowlist: '', reactEmoji: '',
+  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, locale: 'auto',
 }
 
-export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps): JSX.Element {
+export function LarkSettingsSection({ t }: LarkSettingsSectionProps): JSX.Element {
   const [payload, setPayload] = React.useState<SettingsPayload | null>(null)
   const [form, setForm] = React.useState<FormState>(EMPTY_FORM)
-  const [modelCatalog, setModelCatalog] = React.useState<ModelCatalog | null>(null)
-  const [modelCatalogFailed, setModelCatalogFailed] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [notice, setNotice] = React.useState('')
   const [provision, setProvision] = React.useState<ProvisionState | null>(null)
@@ -107,12 +88,12 @@ export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps)
       dmMode: next.settings.dmMode,
       groupAllowlist: next.settings.groupAllowlist.join('\n'),
       dmAllowlist: next.settings.dmAllowlist.join('\n'),
-      provider: next.settings.provider ?? '',
-      model: next.settings.model ?? '',
-      workspace: next.settings.workspace ?? '',
-      agentPreset: next.settings.agentPreset ?? '',
-      errorMessage: next.settings.errorMessage,
       reactEmoji: next.settings.reactEmoji,
+      showReasoning: next.settings.showReasoning ?? true,
+      showToolCalls: next.settings.showToolCalls ?? true,
+      showToolArgs: next.settings.showToolArgs ?? true,
+      showToolResults: next.settings.showToolResults ?? true,
+      locale: next.settings.locale ?? 'auto',
     })
   }, [])
 
@@ -132,20 +113,6 @@ export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps)
   }, [loadSettings])
 
   React.useEffect(() => () => stopPolling(), [stopPolling])
-
-  React.useEffect(() => {
-    if (loadModels === undefined) return
-    let active = true
-    setModelCatalogFailed(false)
-    loadModels()
-      .then(value => {
-        if (active) setModelCatalog(value)
-      })
-      .catch(() => {
-        if (active) setModelCatalogFailed(true)
-      })
-    return () => { active = false }
-  }, [loadModels])
 
   const beginPolling = React.useCallback(() => {
     stopPolling()
@@ -193,11 +160,9 @@ export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps)
     const body: Record<string, unknown> = {
       expectedRevision: payload?.revision,
       appId: form.appId.trim(), domain: form.domain, requireMention: form.requireMention, dmMode: form.dmMode,
-      groupAllowlist: lines(form.groupAllowlist), dmAllowlist: lines(form.dmAllowlist), errorMessage: form.errorMessage,
-      reactEmoji: form.reactEmoji,
-    }
-    for (const key of ['provider', 'model', 'workspace', 'agentPreset'] as const) {
-      body[key] = form[key].trim() === '' ? null : form[key].trim()
+      groupAllowlist: lines(form.groupAllowlist), dmAllowlist: lines(form.dmAllowlist), reactEmoji: form.reactEmoji,
+      showReasoning: form.showReasoning, showToolCalls: form.showToolCalls,
+      showToolArgs: form.showToolArgs, showToolResults: form.showToolResults, locale: form.locale,
     }
     if (form.appSecret !== '') body.appSecret = form.appSecret
     try {
@@ -233,10 +198,28 @@ export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps)
 
   const runtimeState = payload?.runtime.state ?? 'connecting'
   const dotState = runtimeState === 'connected' ? 'done' : runtimeState === 'error' ? 'error' : runtimeState === 'connecting' ? 'ongoing' : 'warning'
-  const providerGroup = modelCatalog?.groups.find(group => group.id === form.provider)
-  const providerIsUnknown = form.provider !== '' && modelCatalog !== null && providerGroup === undefined
-  const modelIsUnknown = form.model !== '' && modelCatalog !== null && providerGroup?.models.some(model => model.id === form.model) !== true
-  const useModelSelects = loadModels !== undefined && !modelCatalogFailed
+  const toolsOff = !form.showToolCalls
+
+  /** One labelled toggle row: title + one-line hint, control on the right. */
+  const toggleRow = (options: {
+    label: string
+    hint: string
+    checked: boolean
+    onToggle: (next: boolean) => void
+    disabled?: boolean
+    nested?: boolean
+  }) => <div className={options.nested === true ? 'dsh-feishu-toggle dsh-feishu-toggle-nested' : 'dsh-feishu-toggle'}>
+    <span className="dsh-feishu-toggle-text">
+      <span className="dsh-feishu-toggle-label">{options.label}</span>
+      <span className="dsh-feishu-toggle-hint">{options.hint}</span>
+    </span>
+    <Switch
+      checked={options.checked}
+      onChange={options.onToggle}
+      label={options.label}
+      {...options.disabled === true ? { disabled: true, title: t('requiresToolCalls') } : {}}
+    />
+  </div>
 
   return <section className="dsh-feishu-settings" aria-labelledby="dsh-feishu-title">
     <header className="dsh-feishu-header">
@@ -289,7 +272,12 @@ export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps)
 
       <div className="dsh-feishu-card">
         <h3>{t('access')}</h3>
-        <label className="dsh-feishu-check"><input type="checkbox" checked={form.requireMention} onChange={event => update('requireMention', event.target.checked)} /><span>{t('requireMention')}</span></label>
+        {toggleRow({
+          label: t('requireMention'),
+          hint: t('requireMentionHint'),
+          checked: form.requireMention,
+          onToggle: next => update('requireMention', next),
+        })}
         <label><span>{t('dmMode')}</span><select value={form.dmMode} onChange={event => update('dmMode', event.target.value as FormState['dmMode'])}><option value="open">{t('open')}</option><option value="allowlist">{t('allowlist')}</option><option value="disabled">{t('disabled')}</option></select></label>
         <div className="dsh-feishu-grid">
           <label><span>{t('groupAllowlist')}</span><textarea value={form.groupAllowlist} onChange={event => update('groupAllowlist', event.target.value)} placeholder={t('onePerLine')} /></label>
@@ -299,22 +287,40 @@ export function LarkSettingsSection({ t, loadModels }: LarkSettingsSectionProps)
       </div>
 
       <div className="dsh-feishu-card">
-        <h3>{t('agent')}</h3>
-        <div className="dsh-feishu-grid">
-          <label><span>{t('provider')}</span>{useModelSelects ? <select aria-label={t('provider')} disabled={modelCatalog === null} value={form.provider} onChange={event => setForm(current => ({ ...current, provider: event.target.value, model: '' }))}>
-            <option value="">{modelCatalog === null ? t('modelCatalogLoading') : t('harnessDefault')}</option>
-            {providerIsUnknown ? <option value={form.provider}>{form.provider} ({t('notInCatalog')})</option> : null}
-            {modelCatalog?.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
-          </select> : <Input aria-label={t('provider')} value={form.provider} onChange={event => update('provider', event.target.value)} />}</label>
-          <label><span>{t('model')}</span>{useModelSelects ? <select aria-label={t('model')} disabled={modelCatalog === null || form.provider === ''} value={form.model} onChange={event => update('model', event.target.value)}>
-            <option value="">{form.provider === '' ? t('selectProviderFirst') : t('harnessDefault')}</option>
-            {modelIsUnknown ? <option value={form.model}>{form.model} ({t('notInCatalog')})</option> : null}
-            {providerGroup?.models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
-          </select> : <Input aria-label={t('model')} value={form.model} onChange={event => update('model', event.target.value)} />}</label>
-          <label><span>{t('workspace')}</span><Input value={form.workspace} onChange={event => update('workspace', event.target.value)} /></label>
-          <label><span>{t('agentPreset')}</span><Input value={form.agentPreset} onChange={event => update('agentPreset', event.target.value)} /></label>
-        </div>
-        <label><span>{t('errorMessage')}</span><textarea maxLength={500} value={form.errorMessage} onChange={event => update('errorMessage', event.target.value)} /></label>
+        <h3>{t('display')}</h3>
+        {toggleRow({
+          label: t('showReasoning'),
+          hint: t('showReasoningHint'),
+          checked: form.showReasoning,
+          onToggle: next => update('showReasoning', next),
+        })}
+        {toggleRow({
+          label: t('showToolCalls'),
+          hint: t('showToolCallsHint'),
+          checked: form.showToolCalls,
+          onToggle: next => update('showToolCalls', next),
+        })}
+        {toggleRow({
+          label: t('showToolArgs'),
+          hint: t('showToolArgsHint'),
+          checked: form.showToolArgs,
+          onToggle: next => update('showToolArgs', next),
+          disabled: toolsOff,
+          nested: true,
+        })}
+        {toggleRow({
+          label: t('showToolResults'),
+          hint: t('showToolResultsHint'),
+          checked: form.showToolResults,
+          onToggle: next => update('showToolResults', next),
+          disabled: toolsOff,
+          nested: true,
+        })}
+        <label><span>{t('locale')}</span><select aria-label={t('locale')} value={form.locale} onChange={event => update('locale', event.target.value as PluginLocale)}>
+          <option value="auto">{t('localeAuto')}</option>
+          <option value="zh">{t('localeZh')}</option>
+          <option value="en">{t('localeEn')}</option>
+        </select></label>
       </div>
 
       <footer className="dsh-feishu-actions">

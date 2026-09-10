@@ -157,6 +157,18 @@ export interface Translations {
   // Permission extras (feishu-permission.ts)
   permissionNoSession: string
 
+  // Turn Complete deliverables (channel.ts, from `deliverables/presented`)
+  deliverablesTitle: (count: number) => string
+  deliverablesMore: (count: number) => string
+
+  // Display switch card (feishu-display.ts)
+  displayCardTitle: string
+  displayCardHint: string
+  displayCardLabel: (key: 'reasoning' | 'tools' | 'args' | 'results') => string
+  displayCardButton: (label: string, enabled: boolean) => string
+  displayCardHiddenByTools: string
+  displayCardNote: string
+
   // Model select extras (feishu-model-select.ts)
   modelSelectProviderLabel: (label: string) => string
   modelSelectBack: string
@@ -391,6 +403,20 @@ export const zh = {
   busyQueueDesc: '当前轮结束后作为新轮运行（默认）',
   busySteerDesc: '注入当前运行轮立即响应',
 
+  // Turn Complete 交付物清单（channel.ts；来自 DSH `present` 工具的
+  // `deliverables/presented` 事件）。只列清单，不推送文件。
+  deliverablesTitle: (count: number) => `📦 **交付物**（${count}）`,
+  deliverablesMore: (count: number) => `_…另有 ${count} 个_`,
+
+  // 卡片显示开关卡片（feishu-display.ts）
+  displayCardTitle: '📇 卡片显示',
+  displayCardHint: '_点击按钮切换，立即持久化，与 WebUI 设置面板同源。_',
+  displayCardLabel: (key: 'reasoning' | 'tools' | 'args' | 'results') =>
+    ({ reasoning: '思考过程', tools: '工具调用', args: '参数', results: '结果' })[key],
+  displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
+  displayCardHiddenByTools: '_「参数」「结果」随「工具调用」一起隐藏；重新开启工具调用后会回来。_',
+  displayCardNote: '也支持 `/display <开关> on|off`。',
+
   permissionNoSession: '当前 chat 还没有会话，请先发一条消息再执行 /permission',
 
   modelSelectProviderLabel: label => `**Provider**　\`${label}\``,
@@ -622,6 +648,20 @@ export const en: Translations = {
   busySteerWord: 'Steer',
   busyQueueDesc: 'Runs as a new round after the current one (default)',
   busySteerDesc: 'Injects into the current running round to respond immediately',
+
+  // Turn Complete deliverables list (channel.ts; from DSH's `present` tool via
+  // `deliverables/presented`). Listed only — files are never pushed.
+  deliverablesTitle: (count: number) => `📦 **Deliverables** (${count})`,
+  deliverablesMore: (count: number) => `_…and ${count} more_`,
+
+  // Display switch card (feishu-display.ts)
+  displayCardTitle: '📇 Card display',
+  displayCardHint: '_Click a button to toggle; saved immediately and shared with the WebUI settings panel._',
+  displayCardLabel: (key: 'reasoning' | 'tools' | 'args' | 'results') =>
+    ({ reasoning: 'Reasoning', tools: 'Tool calls', args: 'Arguments', results: 'Results' })[key],
+  displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,
+  displayCardHiddenByTools: '_Arguments and results are hidden together with tool calls; they come back when tool calls are re-enabled._',
+  displayCardNote: 'Also available as `/display <switch> on|off`.',
 
   permissionNoSession: 'This chat has no session yet — send a message first, then run /permission',
 

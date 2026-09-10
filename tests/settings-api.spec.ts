@@ -80,6 +80,17 @@ describe('settings API', () => {
     expect(update).toHaveBeenCalledWith({ reactEmoji: 'OK' }, [], 7)
   })
 
+  it('forwards the card display toggles and the plugin locale', async () => {
+    const { api, update } = setup()
+    await api.update({
+      showReasoning: false, showToolCalls: false, showToolArgs: false, showToolResults: false,
+      locale: 'en', expectedRevision: 7,
+    })
+    expect(update).toHaveBeenCalledWith({
+      showReasoning: false, showToolCalls: false, showToolArgs: false, showToolResults: false, locale: 'en',
+    }, [], 7)
+  })
+
   it('does not write a secret when the settings revision is stale', async () => {
     const updateSettings = vi.fn(async () => { throw new Error('settings conflict') })
     const { api, credentials } = setup({ updateSettings })

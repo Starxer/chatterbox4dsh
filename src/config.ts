@@ -29,13 +29,20 @@ export interface Config {
   reactEmoji?: string
   /** Show model reasoning/thinking content in tool call cards and final reply. */
   showReasoning?: boolean
+  /** Show tool calls on step cards; when false a tool-only step sends no card. */
+  showToolCalls?: boolean
+  /** Show each tool call's arguments block (requires `showToolCalls`). */
+  showToolArgs?: boolean
+  /** Show each tool call's result preview (requires `showToolCalls`). */
+  showToolResults?: boolean
   /** Plugin language; `auto` (default) follows the DSH browser-language preference. */
   locale?: PluginLocale
 }
 
 export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
-  'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning'>> {
+  'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
+  'showToolArgs' | 'showToolResults'>> {
   appSecret?: string
   provider?: string
   model?: string
@@ -66,6 +73,9 @@ export const ConfigSchema: z<Config> = z.object({
   errorMessage: z.string().default(DEFAULT_ERROR_MESSAGE),
   reactEmoji: z.string().default(DEFAULT_REACTION_EMOJI).description('Emoji reaction added to each inbound message; empty string disables it'),
   showReasoning: z.boolean().default(true).description('Show model reasoning/thinking content in tool call cards and final reply'),
+  showToolCalls: z.boolean().default(true).description('Show tool calls on step cards; when false a tool-only step sends no card'),
+  showToolArgs: z.boolean().default(true).description('Show each tool call\'s arguments block'),
+  showToolResults: z.boolean().default(true).description('Show each tool call\'s result preview'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').description('Plugin language; auto follows the DSH browser-language preference'),
 })
 
@@ -85,6 +95,9 @@ export function resolveSettingsConfig(config: Config): SettingsConfig {
     errorMessage,
     reactEmoji: config.reactEmoji ?? DEFAULT_REACTION_EMOJI,
     showReasoning: config.showReasoning ?? true,
+    showToolCalls: config.showToolCalls ?? true,
+    showToolArgs: config.showToolArgs ?? true,
+    showToolResults: config.showToolResults ?? true,
     ...(config.appSecret === undefined ? {} : { appSecret: config.appSecret }),
     ...(config.provider === undefined ? {} : { provider: config.provider }),
     ...(config.model === undefined ? {} : { model: config.model }),

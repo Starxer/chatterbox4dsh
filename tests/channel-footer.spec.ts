@@ -82,3 +82,42 @@ describe('renderFooterCard (Turn Complete)', () => {
     expect(md).toContain('💾 cache 60%')
   })
 })
+
+describe('renderFooterCard deliverables', () => {
+  it('lists the paths and descriptions DSH declared through present', () => {
+    const card = renderFooterCard(t, {}, {
+      ...turnStats,
+      deliverables: [
+        { path: 'reports/summary.md', description: 'Monthly rollup' },
+        { path: 'assets/chart.png' },
+      ],
+    }) as any
+    const md = markdownOf(card)
+    expect(md).toContain('📦 **Deliverables** (2)')
+    expect(md).toContain('• `reports/summary.md` — Monthly rollup')
+    expect(md).toContain('• `assets/chart.png`')
+  })
+
+  it('omits the section when nothing was declared', () => {
+    expect(markdownOf(renderFooterCard(t, {}, turnStats) as any)).not.toContain('Deliverables')
+    expect(markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: [] }) as any)).not.toContain('Deliverables')
+  })
+
+  it('caps the list and reports the remainder', () => {
+    const many = Array.from({ length: 9 }, (_, index) => ({ path: `out/file-${index}.txt` }))
+    const md = markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: many }) as any)
+    // Headline keeps the real total; the body shows the cap.
+    expect(md).toContain('📦 **Deliverables** (9)')
+    expect(md).toContain('• `out/file-5.txt`')
+    expect(md).not.toContain('file-6.txt')
+    expect(md).toContain('…and 3 more')
+  })
+
+  it('keeps a backtick inside a path from breaking the surrounding markdown', () => {
+    const md = markdownOf(renderFooterCard(t, {}, {
+      ...turnStats,
+      deliverables: [{ path: 'we`ird/name.txt' }],
+    }) as any)
+    expect(md).toContain("• `we'ird/name.txt`")
+  })
+})

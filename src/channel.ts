@@ -679,6 +679,28 @@ export function turnTokensPerSecond(turnStats?: TurnStats): number | undefined {
   return turnStats.totalDecodeTokens / (turnStats.totalDecodeMs / 1000)
 }
 
+/** How many deliverables the Turn Complete card lists before collapsing. */
+const DELIVERABLE_DISPLAY_CAP = 6
+
+/** Cap for one deliverable's description on the card (characters). */
+const DELIVERABLE_NOTE_CAP = 60
+
+/**
+ * Wrap a value in a single markdown code span, flattening newlines and
+ * dropping backticks (an embedded one would end the span early and mangle the
+ * rest of the card).
+ */
+function inlineCodeSpan(value: string): string {
+  const flat = value.replace(/[\r\n]+/gu, ' ').replace(/`/gu, "'").trim()
+  return `\`${flat}\``
+}
+
+/** Shorten a deliverable description so one long note cannot dominate the card. */
+function capDeliverableNote(value: string): string {
+  const flat = value.replace(/[\r\n]+/gu, ' ').trim()
+  return flat.length <= DELIVERABLE_NOTE_CAP ? flat : `${flat.slice(0, DELIVERABLE_NOTE_CAP - 1)}…`
+}
+
 /**
  * Render a Turn Complete card with turn stats and optional session metadata.
  * Returns undefined when there's nothing to show.
@@ -740,6 +762,24 @@ export function renderFooterCard(
     }
     if (tokenParts.length > 0) {
       elements.push({ tag: 'markdown', content: tokenParts.join(' · '), text_size: 'notation' })
+    }
+
+    // Deliverables declared by DSH's own `present` tool this turn. The list IS
+    // the Feishu deliverable surface — the bytes are never pushed automatically,
+    // because a chat has no workspace browser to open them from and most
+    // deliveries are files the user can already reach. Asking for one sends it
+    // through `feishu_send_file`.
+    const deliverables = turnStats.deliverables ?? []
+    if (deliverables.length > 0) {
+      const shown = deliverables.slice(0, DELIVERABLE_DISPLAY_CAP)
+      const lines = shown.map((file) => {
+        const description = file.description === undefined ? '' : ` — ${capDeliverableNote(file.description)}`
+        return `• ${inlineCodeSpan(file.path)}${description}`
+      })
+      if (deliverables.length > shown.length) {
+        lines.push(t.deliverablesMore(deliverables.length - shown.length))
+      }
+      elements.push({ tag: 'markdown', content: `${t.deliverablesTitle(deliverables.length)}\n${lines.join('\n')}` })
     }
   }
 

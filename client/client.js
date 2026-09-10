@@ -1221,18 +1221,16 @@ const EMPTY_FORM = {
 	dmMode: "open",
 	groupAllowlist: "",
 	dmAllowlist: "",
-	provider: "",
-	model: "",
-	workspace: "",
-	agentPreset: "",
-	errorMessage: "",
-	reactEmoji: ""
+	reactEmoji: "",
+	showReasoning: true,
+	showToolCalls: true,
+	showToolArgs: true,
+	showToolResults: true,
+	locale: "auto"
 };
-function LarkSettingsSection({ t, loadModels }) {
+function LarkSettingsSection({ t }) {
 	const [payload, setPayload] = react.useState(null);
 	const [form, setForm] = react.useState(EMPTY_FORM);
-	const [modelCatalog, setModelCatalog] = react.useState(null);
-	const [modelCatalogFailed, setModelCatalogFailed] = react.useState(false);
 	const [busy, setBusy] = react.useState(false);
 	const [notice, setNotice] = react.useState("");
 	const [provision, setProvision] = react.useState(null);
@@ -1255,12 +1253,12 @@ function LarkSettingsSection({ t, loadModels }) {
 			dmMode: next.settings.dmMode,
 			groupAllowlist: next.settings.groupAllowlist.join("\n"),
 			dmAllowlist: next.settings.dmAllowlist.join("\n"),
-			provider: next.settings.provider ?? "",
-			model: next.settings.model ?? "",
-			workspace: next.settings.workspace ?? "",
-			agentPreset: next.settings.agentPreset ?? "",
-			errorMessage: next.settings.errorMessage,
-			reactEmoji: next.settings.reactEmoji
+			reactEmoji: next.settings.reactEmoji,
+			showReasoning: next.settings.showReasoning ?? true,
+			showToolCalls: next.settings.showToolCalls ?? true,
+			showToolArgs: next.settings.showToolArgs ?? true,
+			showToolResults: next.settings.showToolResults ?? true,
+			locale: next.settings.locale ?? "auto"
 		});
 	}, []);
 	const loadSettings = react.useCallback(async () => {
@@ -1280,19 +1278,6 @@ function LarkSettingsSection({ t, loadModels }) {
 		loadSettings();
 	}, [loadSettings]);
 	react.useEffect(() => () => stopPolling(), [stopPolling]);
-	react.useEffect(() => {
-		if (loadModels === void 0) return;
-		let active = true;
-		setModelCatalogFailed(false);
-		loadModels().then((value) => {
-			if (active) setModelCatalog(value);
-		}).catch(() => {
-			if (active) setModelCatalogFailed(true);
-		});
-		return () => {
-			active = false;
-		};
-	}, [loadModels]);
 	const beginPolling = react.useCallback(() => {
 		stopPolling();
 		provisionPoll.current = setInterval(() => {
@@ -1354,15 +1339,13 @@ function LarkSettingsSection({ t, loadModels }) {
 			dmMode: form.dmMode,
 			groupAllowlist: lines(form.groupAllowlist),
 			dmAllowlist: lines(form.dmAllowlist),
-			errorMessage: form.errorMessage,
-			reactEmoji: form.reactEmoji
+			reactEmoji: form.reactEmoji,
+			showReasoning: form.showReasoning,
+			showToolCalls: form.showToolCalls,
+			showToolArgs: form.showToolArgs,
+			showToolResults: form.showToolResults,
+			locale: form.locale
 		};
-		for (const key of [
-			"provider",
-			"model",
-			"workspace",
-			"agentPreset"
-		]) body[key] = form[key].trim() === "" ? null : form[key].trim();
 		if (form.appSecret !== "") body.appSecret = form.appSecret;
 		try {
 			const response = await fetch("/dsh-feishu/settings", {
@@ -1403,10 +1386,29 @@ function LarkSettingsSection({ t, loadModels }) {
 	};
 	const runtimeState = payload?.runtime.state ?? "connecting";
 	const dotState = runtimeState === "connected" ? "done" : runtimeState === "error" ? "error" : runtimeState === "connecting" ? "ongoing" : "warning";
-	const providerGroup = modelCatalog?.groups.find((group) => group.id === form.provider);
-	const providerIsUnknown = form.provider !== "" && modelCatalog !== null && providerGroup === void 0;
-	const modelIsUnknown = form.model !== "" && modelCatalog !== null && providerGroup?.models.some((model) => model.id === form.model) !== true;
-	const useModelSelects = loadModels !== void 0 && !modelCatalogFailed;
+	const toolsOff = !form.showToolCalls;
+	/** One labelled toggle row: title + one-line hint, control on the right. */
+	const toggleRow = (options) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+		className: options.nested === true ? "dsh-feishu-toggle dsh-feishu-toggle-nested" : "dsh-feishu-toggle",
+		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+			className: "dsh-feishu-toggle-text",
+			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: "dsh-feishu-toggle-label",
+				children: options.label
+			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: "dsh-feishu-toggle-hint",
+				children: options.hint
+			})]
+		}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Switch, {
+			checked: options.checked,
+			onChange: options.onToggle,
+			label: options.label,
+			...options.disabled === true ? {
+				disabled: true,
+				title: t("requiresToolCalls")
+			} : {}
+		})]
+	});
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 		className: "dsh-feishu-settings",
 		"aria-labelledby": "dsh-feishu-title",
@@ -1522,13 +1524,11 @@ function LarkSettingsSection({ t, loadModels }) {
 						className: "dsh-feishu-card",
 						children: [
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("access") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-								className: "dsh-feishu-check",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-									type: "checkbox",
-									checked: form.requireMention,
-									onChange: (event) => update("requireMention", event.target.checked)
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("requireMention") })]
+							toggleRow({
+								label: t("requireMention"),
+								hint: t("requireMentionHint"),
+								checked: form.requireMention,
+								onToggle: (next) => update("requireMention", next)
 							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("dmMode") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 								value: form.dmMode,
@@ -1571,86 +1571,53 @@ function LarkSettingsSection({ t, loadModels }) {
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "dsh-feishu-card",
 						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("agent") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dsh-feishu-grid",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("provider") }), useModelSelects ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-										"aria-label": t("provider"),
-										disabled: modelCatalog === null,
-										value: form.provider,
-										onChange: (event) => setForm((current) => ({
-											...current,
-											provider: event.target.value,
-											model: ""
-										})),
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-												value: "",
-												children: modelCatalog === null ? t("modelCatalogLoading") : t("harnessDefault")
-											}),
-											providerIsUnknown ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
-												value: form.provider,
-												children: [
-													form.provider,
-													" (",
-													t("notInCatalog"),
-													")"
-												]
-											}) : null,
-											modelCatalog?.groups.map((group) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-												value: group.id,
-												children: group.name
-											}, group.id))
-										]
-									}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-										"aria-label": t("provider"),
-										value: form.provider,
-										onChange: (event) => update("provider", event.target.value)
-									})] }),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("model") }), useModelSelects ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-										"aria-label": t("model"),
-										disabled: modelCatalog === null || form.provider === "",
-										value: form.model,
-										onChange: (event) => update("model", event.target.value),
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-												value: "",
-												children: form.provider === "" ? t("selectProviderFirst") : t("harnessDefault")
-											}),
-											modelIsUnknown ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
-												value: form.model,
-												children: [
-													form.model,
-													" (",
-													t("notInCatalog"),
-													")"
-												]
-											}) : null,
-											providerGroup?.models.map((model) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-												value: model.id,
-												children: model.name
-											}, model.id))
-										]
-									}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-										"aria-label": t("model"),
-										value: form.model,
-										onChange: (event) => update("model", event.target.value)
-									})] }),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("workspace") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-										value: form.workspace,
-										onChange: (event) => update("workspace", event.target.value)
-									})] }),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("agentPreset") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-										value: form.agentPreset,
-										onChange: (event) => update("agentPreset", event.target.value)
-									})] })
-								]
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("display") }),
+							toggleRow({
+								label: t("showReasoning"),
+								hint: t("showReasoningHint"),
+								checked: form.showReasoning,
+								onToggle: (next) => update("showReasoning", next)
 							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("errorMessage") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-								maxLength: 500,
-								value: form.errorMessage,
-								onChange: (event) => update("errorMessage", event.target.value)
+							toggleRow({
+								label: t("showToolCalls"),
+								hint: t("showToolCallsHint"),
+								checked: form.showToolCalls,
+								onToggle: (next) => update("showToolCalls", next)
+							}),
+							toggleRow({
+								label: t("showToolArgs"),
+								hint: t("showToolArgsHint"),
+								checked: form.showToolArgs,
+								onToggle: (next) => update("showToolArgs", next),
+								disabled: toolsOff,
+								nested: true
+							}),
+							toggleRow({
+								label: t("showToolResults"),
+								hint: t("showToolResultsHint"),
+								checked: form.showToolResults,
+								onToggle: (next) => update("showToolResults", next),
+								disabled: toolsOff,
+								nested: true
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+								"aria-label": t("locale"),
+								value: form.locale,
+								onChange: (event) => update("locale", event.target.value),
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "auto",
+										children: t("localeAuto")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "zh",
+										children: t("localeZh")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "en",
+										children: t("localeEn")
+									})
+								]
 							})] })
 						]
 					}),
@@ -1695,7 +1662,13 @@ const CLIENT_CSS = `
 .dsh-feishu-runtime{display:flex;align-items:center;gap:8px;border:1px solid var(--border-subtle,#dfe3ea);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:600;white-space:nowrap}
 .dsh-feishu-card{display:grid;gap:16px;margin:0 0 14px;padding:20px;border:1px solid var(--border-subtle,#dfe3ea);border-radius:12px;background:var(--surface-primary,#fff)}.dsh-feishu-card h3{margin:0;font-size:15px}
 .dsh-feishu-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.dsh-feishu-card label{display:grid;gap:7px;font-size:13px;font-weight:600}.dsh-feishu-card select,.dsh-feishu-card textarea{box-sizing:border-box;width:100%;border:1px solid var(--border-default,#cbd1dc);border-radius:8px;background:var(--surface-primary,#fff);color:inherit;font:inherit;padding:9px 11px}.dsh-feishu-card textarea{min-height:82px;resize:vertical}.dsh-feishu-card select:focus-visible,.dsh-feishu-card textarea:focus-visible{outline:2px solid var(--accent-primary,#3b72e8);outline-offset:2px}
-.dsh-feishu-check{display:flex!important;align-items:center;gap:9px}.dsh-feishu-check input{width:16px;height:16px}.dsh-feishu-credential{display:flex;align-items:center;gap:9px;color:var(--text-secondary,#586174);font-size:12px}.dsh-feishu-credential-badge{display:inline-flex;align-items:center;gap:7px;border:1px solid currentColor;border-radius:999px;padding:4px 9px;font-weight:700}.dsh-feishu-credential[data-state=configured] .dsh-feishu-credential-badge{color:var(--success-text,#137333);background:var(--success-surface,#e8f5e9)}.dsh-feishu-credential[data-state=missing] .dsh-feishu-credential-badge{color:var(--warning-text,#9a6700);background:var(--warning-surface,#fff4ce)}.dsh-feishu-credential-dot{width:7px;height:7px;border-radius:50%;background:currentColor}.dsh-feishu-credential code{padding:2px 6px;border-radius:5px;background:var(--surface-secondary,#f2f4f7)}
+.dsh-feishu-check{display:flex!important;align-items:center;gap:9px}.dsh-feishu-check input{width:16px;height:16px}
+.dsh-feishu-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:2px 0}
+.dsh-feishu-toggle-nested{margin-left:18px;padding-left:14px;border-left:2px solid var(--border-subtle,#dfe3ea)}
+.dsh-feishu-toggle-text{display:grid;gap:3px;min-width:0}
+.dsh-feishu-toggle-label{font-size:13px;font-weight:600}
+.dsh-feishu-toggle-hint{font-size:12px;font-weight:400;color:var(--text-secondary,#586174);line-height:1.45}
+.dsh-feishu-toggle button{flex:none;margin-top:2px}.dsh-feishu-credential{display:flex;align-items:center;gap:9px;color:var(--text-secondary,#586174);font-size:12px}.dsh-feishu-credential-badge{display:inline-flex;align-items:center;gap:7px;border:1px solid currentColor;border-radius:999px;padding:4px 9px;font-weight:700}.dsh-feishu-credential[data-state=configured] .dsh-feishu-credential-badge{color:var(--success-text,#137333);background:var(--success-surface,#e8f5e9)}.dsh-feishu-credential[data-state=missing] .dsh-feishu-credential-badge{color:var(--warning-text,#9a6700);background:var(--warning-surface,#fff4ce)}.dsh-feishu-credential-dot{width:7px;height:7px;border-radius:50%;background:currentColor}.dsh-feishu-credential code{padding:2px 6px;border-radius:5px;background:var(--surface-secondary,#f2f4f7)}
 .dsh-feishu-actions{display:flex;align-items:center;gap:10px;min-height:36px}.dsh-feishu-actions [role=status]{font-size:13px;color:var(--text-secondary,#586174)}.dsh-feishu-detail,.dsh-feishu-loading{color:var(--text-secondary,#586174);font-size:13px}
 .dsh-feishu-provision{display:grid;gap:12px;align-items:start}.dsh-feishu-provision>button{justify-self:start}.dsh-feishu-qr{display:grid;gap:8px;justify-items:center;padding:14px;border:1px dashed var(--border-default,#cbd1dc);border-radius:10px;background:var(--surface-secondary,#f2f4f7)}.dsh-feishu-qr svg{display:block}.dsh-feishu-qr p{margin:0;color:var(--text-secondary,#586174);font-size:13px}.dsh-feishu-qr-link{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-secondary,#586174)}.dsh-feishu-error{color:var(--danger-text,#b3261e)}
 @media(max-width:680px){.dsh-feishu-header{align-items:stretch;flex-direction:column}.dsh-feishu-runtime{align-self:flex-start}.dsh-feishu-grid{grid-template-columns:1fr}.dsh-feishu-actions{align-items:stretch;flex-direction:column}.dsh-feishu-actions button{width:100%}}
@@ -1709,7 +1682,7 @@ const dictionaries = {
 	zh: {
 		nav: "飞书与 Lark",
 		title: "飞书与 Lark",
-		subtitle: "配置消息渠道，保存后无需重启 Harness",
+		subtitle: "配置消息渠道与卡片显示，保存后无需重启 Harness",
 		runtimeStatus: "运行状态",
 		loading: "正在读取配置......",
 		application: "应用凭据",
@@ -1727,6 +1700,7 @@ const dictionaries = {
 		provisionFailed: "配置失败",
 		access: "访问策略",
 		requireMention: "群聊中必须 @机器人",
+		requireMentionHint: "关闭后群聊里任何消息都会触发",
 		dmMode: "单聊策略",
 		open: "开放",
 		allowlist: "仅白名单",
@@ -1736,16 +1710,20 @@ const dictionaries = {
 		onePerLine: "每行一个 ID",
 		reactEmoji: "表情回应",
 		reactEmojiHint: "留空表示不添加（默认 THUMBSUP）",
-		agent: "Agent 配置",
-		provider: "Provider",
-		model: "Model",
-		workspace: "Workspace",
-		agentPreset: "Agent Preset",
-		errorMessage: "失败提示",
-		modelCatalogLoading: "正在加载模型目录......",
-		harnessDefault: "跟随 Harness 默认配置",
-		selectProviderFirst: "请先选择 Provider",
-		notInCatalog: "当前目录中不可见",
+		display: "卡片显示",
+		showReasoning: "显示思考过程",
+		showReasoningHint: "步骤卡上展示模型的 reasoning 预览（最多 200 字）",
+		showToolCalls: "显示工具调用",
+		showToolCallsHint: "关闭后步骤卡不显示任何工具信息，只有工具的步骤不再发卡",
+		showToolArgs: "显示参数",
+		showToolArgsHint: "展示每个工具调用的入参 JSON",
+		showToolResults: "显示结果",
+		showToolResultsHint: "展示每个工具调用的结果预览",
+		requiresToolCalls: "需先开启「显示工具调用」",
+		locale: "插件语言",
+		localeAuto: "跟随 Harness",
+		localeZh: "中文",
+		localeEn: "English",
 		save: "保存并重新连接",
 		saving: "正在保存......",
 		saved: "已保存",
@@ -1759,7 +1737,7 @@ const dictionaries = {
 	en: {
 		nav: "Lark",
 		title: "Feishu & Lark",
-		subtitle: "Configure the message channel without restarting Harness",
+		subtitle: "Configure the message channel and card display without restarting Harness",
 		runtimeStatus: "Runtime status",
 		loading: "Loading settings...",
 		application: "Application credentials",
@@ -1777,6 +1755,7 @@ const dictionaries = {
 		provisionFailed: "Configuration failed",
 		access: "Access policy",
 		requireMention: "Require @mention in group chats",
+		requireMentionHint: "When off, any group message triggers the bot",
 		dmMode: "Direct messages",
 		open: "Open",
 		allowlist: "Allowlist only",
@@ -1786,16 +1765,20 @@ const dictionaries = {
 		onePerLine: "One ID per line",
 		reactEmoji: "Emoji reaction",
 		reactEmojiHint: "Leave empty to disable (default THUMBSUP)",
-		agent: "Agent configuration",
-		provider: "Provider",
-		model: "Model",
-		workspace: "Workspace",
-		agentPreset: "Agent Preset",
-		errorMessage: "Failure message",
-		modelCatalogLoading: "Loading model catalog...",
-		harnessDefault: "Use Harness default",
-		selectProviderFirst: "Select a provider first",
-		notInCatalog: "Not in current catalog",
+		display: "Card display",
+		showReasoning: "Show reasoning",
+		showReasoningHint: "Show the model reasoning preview on step cards (up to 200 chars)",
+		showToolCalls: "Show tool calls",
+		showToolCallsHint: "When off, step cards show no tool details and tool-only steps post no card",
+		showToolArgs: "Show arguments",
+		showToolArgsHint: "Show each tool call's argument JSON",
+		showToolResults: "Show results",
+		showToolResultsHint: "Show each tool call's result preview",
+		requiresToolCalls: "Enable \"Show tool calls\" first",
+		locale: "Plugin language",
+		localeAuto: "Follow Harness",
+		localeZh: "中文",
+		localeEn: "English",
 		save: "Save and reconnect",
 		saving: "Saving...",
 		saved: "Saved",
@@ -1808,11 +1791,7 @@ const dictionaries = {
 	}
 };
 const name = "dsh-feishu";
-const inject = [
-	"slots",
-	"locale",
-	"connection"
-];
+const inject = ["slots", "locale"];
 function apply(ctx) {
 	ctx.effect(() => ctx.locale.register(NS, dictionaries), "dsh-feishu: client dictionaries");
 	ctx.effect(() => {
@@ -1823,11 +1802,6 @@ function apply(ctx) {
 		return () => style.remove();
 	}, "dsh-feishu: client styles");
 	const t = ctx.locale.bind(NS);
-	const loadModels = async () => {
-		const response = await ctx.connection.api.llm.models({});
-		if (!response.result.ok) throw new Error(`${response.result.error.code}: ${response.result.error.message}`);
-		return response.result.value;
-	};
 	ctx.slots.inject("settings.action", () => ctx.slots.register({
 		name: "settings.action",
 		id: "open-document",
@@ -1839,10 +1813,7 @@ function apply(ctx) {
 		order: 45,
 		label: () => t("nav"),
 		locale: NS
-	}, () => (0, react.createElement)(LarkSettingsSection, {
-		t,
-		loadModels
-	})));
+	}, () => (0, react.createElement)(LarkSettingsSection, { t })));
 }
 
 //#endregion

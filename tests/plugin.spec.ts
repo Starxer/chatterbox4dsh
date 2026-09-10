@@ -100,7 +100,7 @@ describe('startChannel', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, factory, logger)
     expect(logger.info).toHaveBeenCalledWith('dsh-feishu: WebSocket connected')
     expect(factory).toHaveBeenCalledWith(expect.objectContaining({ transport: 'websocket', policy: expect.objectContaining({ requireMention: true, dmMode: 'open' }), wsConfig: expect.objectContaining({ pingTimeout: expect.any(Number) }) }))
@@ -124,7 +124,7 @@ describe('startChannel', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, logger)
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
     await flushAsync()
@@ -140,7 +140,7 @@ describe('startChannel', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, logger)
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
     await flushAsync()
@@ -153,7 +153,7 @@ describe('startChannel', () => {
     const channel = fakeChannel()
     const bridge = { reply: vi.fn(async () => { throw new Error('secret stack') }), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false) }
     const terminal = { error: vi.fn() }
-    await startChannel({ appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open', groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, terminal)
+    await startChannel({ appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open', groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, terminal)
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', content: 'hi' })
     await flushAsync()
     expect(terminal.error).toHaveBeenCalledWith('dsh-feishu: message handling failed: secret stack')
@@ -166,7 +166,7 @@ describe('startChannel', () => {
     const bridge = { reply: vi.fn(async () => ''), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false) }
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
     await expect(stop()).rejects.toThrow('disconnect failed')
     expect(bridge.dispose).toHaveBeenCalledOnce()
@@ -181,7 +181,7 @@ describe('startChannel', () => {
 
     await expect(startChannel({
       appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, logger, terminal)).rejects.toThrow('authentication failed for secret')
 
     expect(logger.error).toHaveBeenCalledWith('dsh-feishu: WebSocket connection failed: authentication failed for [redacted]')
@@ -196,7 +196,7 @@ describe('startChannel', () => {
     const slashCommand = vi.fn(async () => ({ kind: 'success' as const, text: 'command answer' }))
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, logger, undefined, slashCommand)
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: '/model list' })
     expect(slashCommand).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'om_1', content: '/model list' }))
@@ -212,7 +212,7 @@ describe('startChannel', () => {
     const slashCommand = vi.fn(async () => undefined)
     await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, logger, undefined, slashCommand)
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hello world' })
     await flushAsync()
@@ -235,7 +235,7 @@ describe('startChannel', () => {
     }
     await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'queued' })
     await flushAsync()
@@ -254,7 +254,7 @@ describe('startChannel', () => {
     }
     await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'inject' })
     await flushAsync()
@@ -270,7 +270,7 @@ describe('startChannel', () => {
     const slashCommand = vi.fn(async () => { throw new Error('boom') })
     await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, terminal, slashCommand)
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: '/model' })
     expect(bridge.reply).not.toHaveBeenCalled()
@@ -284,7 +284,7 @@ describe('startChannel', () => {
     const attachments = fakeAttachments()
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
       messageId: 'om_2', chatId: 'oc_2', chatType: 'p2p', content: '',
@@ -311,7 +311,7 @@ describe('startChannel', () => {
     const attachments = fakeAttachments()
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
       messageId: 'om_png', chatId: 'oc_png', chatType: 'p2p', content: '',
@@ -330,7 +330,7 @@ describe('startChannel', () => {
     const bridge = { reply: vi.fn(async () => 'should not happen'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false) }
     await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
     await channel.handlers.get('message')!({
       messageId: 'om_3', chatId: 'oc_3', chatType: 'p2p', content: '',
@@ -353,7 +353,7 @@ describe('startChannel', () => {
     })
     await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, terminal, undefined, attachments)
     await channel.handlers.get('message')!({
       messageId: 'om_4', chatId: 'oc_4', chatType: 'p2p', content: '',
@@ -370,7 +370,7 @@ describe('startChannel', () => {
     const attachments = await fakeFileHost()
     const { stop } = await startChannel({
       appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
-      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true,
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
       messageId: 'om_file', chatId: 'oc_file', chatType: 'p2p', content: '',

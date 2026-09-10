@@ -60,6 +60,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 | **按钮** | `button` | 点击按钮，触发 `cardAction` | ✅ 审批卡片 | 通用操作 |
 | **单选下拉** | `select_static` | 下拉单选，选项列表 | ✅ `/session` 会话选择 | `/model` 选模型、选 workspace、选 preset |
 | **多选下拉** | `multi_select_static` | 下拉多选 | ❌ 未使用 | 批量操作选项 |
+| **复选组** | `checker` | 勾选组（Card JSON 2.0 有官方文档，本插件未用过） | ❌ 未使用 | `/display` 交互卡片的一次性多开关提交（见 [`display-card-design.md`](./display-card-design.md)） |
 | **日期选择** | `date_picker` | 日期选择器 | ❌ 未使用 | — |
 | **时间选择** | `time_picker` | 时间选择器 | ❌ 未使用 | — |
 | **人员选择** | `select_person` | 选择人员 | ❌ 未使用 | 多人协作 |
