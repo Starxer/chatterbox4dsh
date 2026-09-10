@@ -25,7 +25,7 @@
 - ✅ **插件运行时代码零改动**；依赖范围 `^0.1.5-alpha.1` **无需修改**（与 rc.1 同属 `0.1.5` tuple，semver 预发布范围自动命中）。
 - ✅ 17 个被 import 的 `dsh-*` 包 `exports` map 零差异，仅 5 个包源码有变动且全为增量/注释；19 个宿主服务名全在。
 - 🔲 **测试环境坑（发版前必修）**：`dsh-client-ui-primitives@rc.1` 把运行时依赖降为 `devDependencies`，全新安装后 `tests/client.spec.ts` 报 `Failed to resolve import "clsx"`。修法二选一（见评估文档「问题 B」）：**推荐 B1** = vitest `resolve.alias` 指向本地测试替身；B2 = 把 18 个传递依赖写进 `devDependencies`。
-- ✅ **C1（高）已实现（2026-09-10）——接管 `deliverables/presented`**。但结论与最初设想不同：**只把交付物列进 Turn Complete 卡片，不推送文件**。飞书没有工作区浏览器，推送既噪音大、又会与 `feishu_send_file` 重复；清单保留了 `present` 的全部信息（模型筛过的成品 + 描述），用户真要文件时说一句即可。实现落在 `feishu-streaming.ts`（收集）+ `channel.ts` `renderFooterCard`（渲染），**没有新建 `src/feishu-deliverables.ts`**。
+- ✅ **C1（高）已实现（2026-09-10）——接管 `deliverables/presented`**。但结论与最初设想不同：**只把交付物列进 Turn Complete 卡片，不推送文件**。飞书没有工作区浏览器，推送既噪音大、又会与 `feishu_send_file` 重复；清单保留了 `present` 的全部信息（模型筛过的成品 + 描述），用户真要文件时说一句即可。实现落在 `feishu-streaming.ts`（收集）+ `channel.ts` `renderFooterCard`（渲染），**没有新建 `src/feishu-deliverables.ts`**。清单排在**卡片最前面**并用分隔线与指标隔开（2026-09-10 真机反馈修正，原先夹在 stats 与元信息之间）。
 - 🔲 **C2（中）`/subagents` 子代理卡片**：rc.1 有 `subagent/catalog` 事件 + 子代理排队/steer/stop，插件目前完全隐藏子代理会话。
 - ✅ **C4（低）已实现（2026-09-10）**：`deriveToolSummary` 补了 `present` 分支，显示 `交付物：a.txt +2`，不再落到「工具名 · 首字段」的 `present · files` 兜底。
 - 📋 **C5（记录）代理环境**：入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；暂不处理。
@@ -85,7 +85,7 @@
 | — | 快步骤首发合并 | ✅ **已优化（2026-09-08）**：`STEP_CARD_DEBOUNCE_MS = 150`，首发也防抖——一步内 reasoning→call→result 全落窗口内时只发一张卡（内容已含结果）；步骤在窗口内结束或 turn/end 时 `flushPendingSend` 补发 |
 | — | Turn Complete tok/s 口径 | ✅ **已修复（2026-09-08）**：首 token 判定改用 dsh-llm `isTokenDelta`（含 tool-call delta），新增 `totalDecodeTokens` 与 decode 时间同批配对，对齐 Web UI `deriveTurnMetrics`（此前「只调工具」的步骤会虚高，实测最高 2×） |
 | — | 每张助手卡都带 tok/s | ✅ **已完成（2026-09-08）**：步骤卡 footer、溢出续卡、兜底回复卡 footer 均显示速度 |
-| — | 步骤卡 footer 两行 + 定位信息 | ✅ **已完成（2026-09-08）**：footer 拆两行（`⏱ 时长 · 📥 in → 📤 out` / `🚀 tok/s · 📊 上下文`）；卡片标题带「第 N 轮 · 第 M 步」；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`） |
+| — | 步骤卡 footer 两行 + 定位信息 | ✅ **已完成（2026-09-08）**：footer 拆两行；卡片标题带「第 N 轮 · 第 M 步」；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）。**token 口径 2026-09-10 修订**：第一行 `⏱ 时长 · 📥 本步新输入（未缓存+缓存写入，有命中带 ♻️ NN%）→ 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占用/窗口 (百分比)`——📥 不再用整段 prompt（那与 📊 是同一个数，会重复显示） |
 | — | 运行中发消息提示 + steer 去重 | ✅ **已完成（2026-09-08）**：运行中发普通消息立即回一条**纯文本**提示（steer 已插入 / queue 已排队）；steer 分支不再等待本轮、不返回文本，避免同一 turn 出现两张回复卡 |
 | — | 去掉用户消息的 `[Feishu] ` 前缀 | ✅ **已完成（2026-09-08）**：`reply()`/`steer()` 都不再拼通道前缀，用户文本原样进模型；纯图片/文件消息只带 image/file 块（不再补空文本块）。通道归属由 session↔chat 绑定记录，回复路由由插件决定，与文本无关。见 CHANGELOG |
 | — | 步骤卡标题色带"变白底"定性 | ✅ **已定性（2026-09-08）**：插件发出的 `header.template` 始终正确，飞书服务端实体也是正确颜色；**部分客户端在卡片更新后不重绘标题背景**，属飞书客户端渲染问题，非插件 bug。取证方法：`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`。不再往代码里查（详见下方「已知问题」） |

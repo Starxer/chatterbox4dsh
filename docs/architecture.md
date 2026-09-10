@@ -57,8 +57,8 @@ turn/end          → flush 待发卡 + pending debounce → 发送溢出文本 
 
 ## 卡片设计
 
-- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化。标题 `{状态} · 第 N 轮 · 第 M 步`；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）；footer 两行——第一行 `⏱ 时长 · 📥 计费输入 → 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占比`；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送（续卡也带 tok/s）。发送走 **CardKit 卡片实例**（`createCardInstance` → `sendCardByReference`，更新走 `updateCardInstance` + 单调 `sequence`，通道缺这些方法时回退 `send` + `updateCard`）——step 卡没有按钮，不受「同一条消息就地更新 2–3 次后按钮回调失效」的限制，因此可以持续原地更新
-- **Turn Complete 卡片**：turn 结束后发送，绿色，展示性能指标和配置信息
+- **Step 卡片**：每个 agent step 一张，wathet→green/red 颜色变化。标题 `{状态} · 第 N 轮 · 第 M 步`；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）；footer 两行——第一行 `⏱ 时长 · 📥 本步新输入（有缓存命中时带 ♻️ NN%）→ 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占用/窗口 (百分比)`。**📥 只算本步真正处理的输入**（`inputTokens + cacheWriteTokens`，命中读取是复用、不计入），所以它**不再**和 📊 的上下文总量重复——后者是最近一次请求的完整 prompt，只出现在这一处；text 超 3000 字自动拆 `Reply (continued N/M)` 卡发送（续卡也带 tok/s）。发送走 **CardKit 卡片实例**（`createCardInstance` → `sendCardByReference`，更新走 `updateCardInstance` + 单调 `sequence`，通道缺这些方法时回退 `send` + `updateCard`）——step 卡没有按钮，不受「同一条消息就地更新 2–3 次后按钮回调失效」的限制，因此可以持续原地更新
+- **Turn Complete 卡片**：turn 结束后发送，绿色。若本轮有交付物，`📦 交付物（N）` 清单**排在卡片最前面**，其后以分隔线接性能指标（耗时 / LLM / 工具、TTFT / tok/s / 步数、token 明细与缓存命中率），再一条分隔线接配置信息（工作区 / 模型 / 推理强度 / 上下文占用 / Enter while busy）
 - **Todo 卡片**：turquoise，含进度条
 - **审批卡片**：orange，含 approve/deny 按钮
 

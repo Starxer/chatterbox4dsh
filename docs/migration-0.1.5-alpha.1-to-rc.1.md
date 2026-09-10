@@ -82,7 +82,7 @@ Error: Failed to resolve import "clsx" from
 
 ## 改进机会
 
-### C1（高）把 `present` / `deliverables/presented` 接到飞书文件推送
+### C1（高）接管 `deliverables/presented` ✅ 已实现，但结论与原设想相反
 
 rc.1 给 Web 的 `standard` / `ptc` / `cordis` preset 加了 `@deepseek-ai/dsh-tool-present`，它的工具描述**要求模型「用户要的文件必须调 `present`」**，并在成功后往会话日志 append：
 
@@ -93,16 +93,18 @@ session.append('deliverables/presented', {
 })
 ```
 
-Web UI 用它渲染「本轮交付物」卡片行。**飞书侧目前什么都不发生**——`deliverables/presented` 不在 `feishu-streaming.ts` 处理的事件列表里，被静默忽略；文件永远不会到达聊天。使用者在飞书看到的只有一张 `present` 工具卡，然后被告知「文件已交付」，但聊天里没有文件。
+Web UI 用它渲染「本轮交付物」卡片行；评估时飞书侧**什么都不发生**——事件不在 `feishu-streaming.ts` 的处理列表里，被静默忽略，使用者在飞书只看到一张 `present` 工具卡被告知「文件已交付」。
 
-**建议**：新增 `src/feishu-deliverables.ts`，订阅 `deliverables/presented` →
-1. 用 `event.data.files[].path` 按会话 `header.cwd` 解析成绝对路径；
-2. 复用 `feishu-send-file.ts` 的校验 + 发送路径（`bridge.resolveChat(sessionId)` → `channel.send`，图片内联预览、非图 30MB 上限）；
-3. **去重**：同一次执行里模型可能既调 `feishu_send_file` 又调 `present`，需要按「会话 + 绝对路径 + turn」记已发送集合；
-4. 数量/大小上限（`present` 单次 ≤8 个，飞书 30MB/个）；
-5. 建议做成开关（新配置项，默认可与 `showToolCalls` 无关联，独立 `autoSendPresented`）。
+> ~~**原始建议**：新增 `src/feishu-deliverables.ts` 订阅事件，按会话 `header.cwd` 解析路径后**复用 `feishu_send_file` 的推送路径自动把文件发进聊天**（去重 / 上限 / 独立开关 `autoSendPresented`）。~~
 
-这是 rc.1 带来的**唯一一处实打实的功能对齐缺口**：Web 用户拿到交付物，飞书用户拿不到。
+**实际实现（2026-09-10）与原建议相反：只列清单，不推送文件。**
+
+- 落点：`src/feishu-streaming.ts` 收集（按 `path` 去重、后声明的描述覆盖先前的、单轮上限 16）+ `src/channel.ts` 的 `renderFooterCard` 渲染（最多 6 条，其余折成「…另有 N 个」）。**没有新建 `src/feishu-deliverables.ts`**。
+- 位置：`📦 交付物（N）` 是 **Turn Complete 卡片的第一个元素**，紧跟一条分隔线再接指标——使用者真机反馈放在 stats 与元信息之间「位置不合理」（2026-09-10）。
+- **为什么不推送**：飞书没有工作区浏览器，Web 那套「交付物卡片行 + 点开在侧栏预览」在这里没有等价物；而自动把文件推进聊天既噪音大，又会让模型同时调 `present` 与 `feishu_send_file` 造成重复发送。清单保留了 `present` 的全部价值——**模型筛过的成品 + 描述**——用户真要文件时说一句即可，仍走已有的 `feishu_send_file`。
+- 因此这里**不再是功能对齐缺口**：rc.1 带来的唯一实打实缺口已闭环。
+
+**注意**：`present` 工具随 rc.1 的 shipped preset 走，**自建 preset 必须手动补 `- id: present / name: '@deepseek-ai/dsh-tool-present'`**（本机 `persistent` 已补），否则清单永远是空的——与「关键坑 #13」同类的 preset 漂移问题。
 
 ### C2（中）子代理可见性 / 控制
 
