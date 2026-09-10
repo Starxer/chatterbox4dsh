@@ -6,7 +6,15 @@
 >
 > Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
 >
-> 另已评估 DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
+> 另已评估 **并已升级到** DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
+
+### 变更：步骤卡 footer 的 token 口径——📥 只报「本步新输入」，不再与上下文重复（`src/feishu-streaming.ts`）
+
+- **问题**：第一行 `📥 in` 用的是**计费输入**（未缓存 + 缓存读 + 缓存写 = 完整 prompt），而第二行 `📊` 的分子也是同一个值（`contextMeta.lastInputTokens` 就是那次请求的计费 prompt）。于是每一步卡片上同一个数字出现两次，看起来像重复统计。
+- **原委**：LLM 每次请求都重发整个上下文，所以「本步输入」与「上下文占用」本来就是同一个量的两种说法；📊 唯一多出来的信息是窗口容量与百分比。
+- **改法**：📥 改为**本步真正处理的输入** = `inputTokens + cacheWriteTokens`（未命中处理 + 写入缓存），**排除 `cacheReadTokens`**（命中是复用、没有重算）；命中存在时附 `♻️ NN%`（`cacheRead / 全部 prompt`）。上下文总量此后**只**出现在 📊 一处。
+- **口径依据**：DeepSeek / OpenAI 系只报「命中 / 未命中」，`inputTokens` 即未命中部分，故 📥 与适配器数值一致；Anthropic 系显式缓存会单独报 cache write，加上它才是"本步新增"。DSH Web UI 的 Trajectory 用量面板把三个桶分行显示（输入 / 缓存读取 / 缓存写入 / 其他），卡片宽度有限，才合成「新输入 + 复用率」。
+- **验证**：`tests/feishu-streaming.spec.ts` 新增一例覆盖三种形态（DeepSeek 无 cache write、Anthropic 有 cache write、完全没有缓存活动时不出现 ♻️）。
 
 ### 修复：改设置会把整个飞书运行时推倒重建，进而杀掉正在跑的 turn（`src/config.ts` / `src/runtime.ts`）
 

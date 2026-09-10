@@ -1364,13 +1364,37 @@ export function renderStepCard(
       : `⏱ ${stepDurationMs}ms`)
   }
   if (usage !== undefined) {
-    const billedIn = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
-    timingParts.push(`📥 ${formatTokenCount(billedIn)} → 📤 ${formatTokenCount(usage.outputTokens)}`)
+    // 📥 is the work THIS step did: the uncached prompt plus whatever was
+    // written into the provider cache. Cache READS are excluded on purpose —
+    // they are reused rather than processed again, and adding them back would
+    // only restate the context occupancy on the next line (the full prompt is
+    // the context). The Web UI shows the same three buckets in its trajectory
+    // usage panel (input / cached / cache created); a card cannot afford the
+    // full breakdown, so this collapses it to "new + reuse rate".
+    //
+    // DeepSeek reports no cache-write bucket, so there `📥` is exactly the
+    // adapter's `inputTokens` (its cache misses); OpenAI-compatible routes
+    // behave the same. Anthropic-style explicit caching reports writes
+    // separately, and those are real work too, hence the addition above.
+    const cacheRead = usage.cacheReadTokens ?? 0
+    const freshIn = usage.inputTokens + (usage.cacheWriteTokens ?? 0)
+    const promptTotal = freshIn + cacheRead
+    const hitRate = cacheRead > 0 && promptTotal > 0 ? Math.round(cacheRead / promptTotal * 100) : undefined
+    const output = formatTokenCount(usage.outputTokens)
+    timingParts.push(hitRate === undefined
+      ? `📥 ${formatTokenCount(freshIn)} → 📤 ${output}`
+      : `📥 ${formatTokenCount(freshIn)} (♻️ ${hitRate}%) → 📤 ${output}`)
   }
   if (tps !== undefined && tps > 0) {
     speedParts.push(`🚀 ${tps.toFixed(0)} tok/s`)
   }
   if (contextMeta !== undefined && contextMeta.contextWindow > 0 && contextMeta.lastInputTokens > 0) {
+    // The ONLY place the full prompt size appears: with `📥` now reporting the
+    // step's new input, this line owns "how big is the context and how full is
+    // the window". The numerator is the last request's billed prompt (uncached
+    // + cache reads + cache writes), which is exactly what the provider was
+    // sent — the Web UI's context meter reads the same quantity from the
+    // token-meter projection.
     const pct = Math.min(100, Math.round(contextMeta.lastInputTokens / contextMeta.contextWindow * 100))
     speedParts.push(`📊 ${formatTokenCount(contextMeta.lastInputTokens)}/${formatTokenCount(contextMeta.contextWindow)} (${pct}%)`)
   }

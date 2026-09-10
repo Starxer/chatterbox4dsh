@@ -215,6 +215,27 @@ describe('renderStepCard reasoning + args budgets', () => {
     expect(footers[1]).toContain('📊 500/1K (50%)')
   })
 
+  it('reports new input (uncached + cache write) with a reuse rate, never the whole prompt', () => {
+    const footerOf = (usage: object): string => {
+      const card = renderStepCard(t, undefined, undefined, [], usage as any) as any
+      return card.body.elements
+        .filter((el: any) => el.tag === 'markdown' && el.text_size === 'notation')
+        .map((el: any) => el.content)[0]
+    }
+    // DeepSeek-style route: no cache-write bucket, so 📥 is the cache miss and
+    // the rest of the 50K prompt is reuse.
+    expect(footerOf({ inputTokens: 800, outputTokens: 320, cacheReadTokens: 49200 }))
+      .toContain('📥 800 (♻️ 98%) → 📤 320')
+    // Anthropic-style route: cache writes are new work too and must be counted.
+    expect(footerOf({ inputTokens: 100, outputTokens: 10, cacheWriteTokens: 900, cacheReadTokens: 9000 }))
+      .toContain('📥 1K (♻️ 90%) → 📤 10')
+    // No cache activity at all: plain arrow, no reuse marker.
+    expect(footerOf({ inputTokens: 700, outputTokens: 100, cacheWriteTokens: 100 }))
+      .toContain('📥 800 → 📤 100')
+    expect(footerOf({ inputTokens: 700, outputTokens: 100, cacheWriteTokens: 100 }))
+      .not.toContain('♻️')
+  })
+
   it('shows the reasoning duration, thinking tokens and the turn/step position', () => {
     const card = renderStepCard(
       t, 'thinking', undefined, [],
