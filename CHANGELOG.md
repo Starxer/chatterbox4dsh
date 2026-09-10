@@ -7,6 +7,8 @@
 > Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
 >
 > 另已评估 **并已升级到** DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
+>
+> 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
 ### 修复：rc.1 的 `dsh-client-ui-primitives` 打包变更让插件测试加载不了组件库（`vitest.config.ts` / `tests/stubs/ui-primitives.tsx`）
 

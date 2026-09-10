@@ -33,6 +33,17 @@
 
 ---
 
+## DSH 0.1.5-rc.2 适配（已评估并升级，2026-09-10）
+
+> rc.2 距 rc.1 仅 **4 commits**（`dsh-v0.1.5-rc.1...dsh-v0.1.5-rc.2`），其中 2 个是 release/version bump，实质改动只有 1 个 Web 回移提交。
+
+- ✅ **插件运行时代码零改动、依赖范围不变**（与 rc.1 同属 `0.1.5` tuple，`^0.1.5-alpha.1` 自动命中；实测 `semver.satisfies('0.1.5-rc.2','^0.1.5-alpha.1') === true`）。
+- ✅ **17 个被插件 import 的宿主包一个都没变**：rc.2 仅改动 Web 客户端包 `ui-message-feedback`（点赞/点踩改弹窗确认）、`ui-deliverables`（产物卡片排版与间距）、`ui-primitives`（`CodeFileIcon` 重构为 artwork manifest）。`SESSION_FORMAT_VERSION` 仍为 **3**，无会话日志迁移，随时可退回 rc.1。
+- ✅ `ui-primitives` 的 `Button` / `Input` / `Switch` / `StateDot` 公开契约未变（只动 `CodeFileIcon`），且 **rc.2 仍未把运行时依赖放回 `dependencies`**，故 B1 测试替身继续有效、无需调整。
+- 🔲 飞书侧可受益的 rc.2 新特性：**无**（纯 Web 显示层改进，无对应聊天端口能力）。
+
+---
+
 ## 已完成
 
 | # | 功能 | 说明 |
