@@ -24,7 +24,7 @@
 
 - ✅ **插件运行时代码零改动**；依赖范围 `^0.1.5-alpha.1` **无需修改**（与 rc.1 同属 `0.1.5` tuple，semver 预发布范围自动命中）。
 - ✅ 17 个被 import 的 `dsh-*` 包 `exports` map 零差异，仅 5 个包源码有变动且全为增量/注释；19 个宿主服务名全在。
-- 🔲 **测试环境坑（发版前必修）**：`dsh-client-ui-primitives@rc.1` 把运行时依赖降为 `devDependencies`，全新安装后 `tests/client.spec.ts` 报 `Failed to resolve import "clsx"`。修法二选一（见评估文档「问题 B」）：**推荐 B1** = vitest `resolve.alias` 指向本地测试替身；B2 = 把 18 个传递依赖写进 `devDependencies`。
+- ✅ **测试环境坑（发版阻塞，已修 2026-09-10）**：`dsh-client-ui-primitives@rc.1` 把运行时依赖降为 `devDependencies`，全新安装后 `tests/client.spec.ts` 报 `Failed to resolve import "clsx"`。**采用 B1**：`vitest.config.ts` 加 `resolve.alias` 指向 `tests/stubs/ui-primitives.tsx`（按真组件可观测契约实现的四个替身），**零新增依赖、断言一条未删**。验证＝真模拟（移走 `node_modules/clsx`）：无 alias ❌ `Cannot find package 'clsx'`，有 alias ✅ 307 passed。完整记录见评估文档「问题 B」。
 - ✅ **C1（高）已实现（2026-09-10）——接管 `deliverables/presented`**。但结论与最初设想不同：**只把交付物列进 Turn Complete 卡片，不推送文件**。飞书没有工作区浏览器，推送既噪音大、又会与 `feishu_send_file` 重复；清单保留了 `present` 的全部信息（模型筛过的成品 + 描述），用户真要文件时说一句即可。实现落在 `feishu-streaming.ts`（收集）+ `channel.ts` `renderFooterCard`（渲染），**没有新建 `src/feishu-deliverables.ts`**。清单排在**卡片最前面**并用分隔线与指标隔开（2026-09-10 真机反馈修正，原先夹在 stats 与元信息之间）。
 - 🔲 **C2（中）`/subagents` 子代理卡片**：rc.1 有 `subagent/catalog` 事件 + 子代理排队/steer/stop，插件目前完全隐藏子代理会话。
 - ✅ **C4（低）已实现（2026-09-10）**：`deriveToolSummary` 补了 `present` 分支，显示 `交付物：a.txt +2`，不再落到「工具名 · 首字段」的 `present · files` 兜底。
@@ -122,7 +122,7 @@
 | — | **step 卡丢失更新（工具状态不刷新 / 卡片只剩 reasoning）** | **高** | ✅ **已修复（2026-09-08）**：① `assistant/message` 曾无条件发新卡 → 工具先开卡时旧卡被弃、再也收不到结果；改为「已有卡就更新」。② 防抖表按 session state 键 → 下一步骤的更新取消上一步骤待触发的定时器；改为按卡片 ref 键。另加 `[send]`/`[update]` 诊断日志。见 CHANGELOG「修复：step 卡片丢失工具状态更新 / 只剩 reasoning」 |
 | 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
-| 8 | 文档与版本一致性 | **低** | **README / docs/architecture.md / TODO / CHANGELOG 已同步（2026-09-08 二轮）**：per-step 卡片/footer/定位信息、reasoning 耗时与思考 token、原生附件库、busy 提示、`[Feishu] ` 前缀移除、标题色带客户端问题均已写入；README/TODO 里指向未公开 `AGENTS.md` 的链接已改指 `CHANGELOG.md`/`README.md`。剩余：`package.json` 版本号仍为 `0.1.0`，留待发版时统一 bump |
+| 8 | 文档与版本一致性 | **低** | **README / docs/architecture.md / TODO / CHANGELOG 已同步（2026-09-08 二轮）**：per-step 卡片/footer/定位信息、reasoning 耗时与思考 token、原生附件库、busy 提示、`[Feishu] ` 前缀移除、标题色带客户端问题均已写入；README/TODO 里指向未公开 `AGENTS.md` 的链接已改指 `CHANGELOG.md`/`README.md`。版本号 `package.json` 已是 **`0.2.0`**（旧记录误写 0.1.0），发版时统一 bump |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
 | — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | ✅ **已实现**（2026-09-08）：step 卡 text 超 `TEXT_STEP_CAP=3000` 自动拆溢出卡（`renderOverflowCard` + `chunkText`），不再截断丢弃；reasoning 收紧 200 字；args 改 pretty 打印 2k 上限。见 CHANGELOG「修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送」 |
 
@@ -347,7 +347,7 @@ POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
 | 位置 | 现在 | 问题 |
 |---|---|---|
 | `feishu-streaming.ts` `renderStepCard` | text 前 3000 字上屏、溢出用 `chunkText` 拆 `Reply (continued N/M)` 卡（**已分段**）；reasoning 只保留 200 字预览（设计如此） | 已无硬截断；reasoning 仍是预览（不展示完整思维链） |
-| `channel.ts` `renderReasoningForReply`（525） | reasoning `slice(0,5000)+'…(truncated)'` | 两阶段 reply 的 thinking 卡截断 |
+| `channel.ts` `renderReasoningForReply` | reasoning 超过 `REASONING_CAP = 200` 时截断加 `…(truncated)`（2026-09-10 核实：此处早已统一到和步骤卡同一个 200 字常量，不再是最初的 5000） | 两阶段 reply 的 thinking 卡按设计只做预览 |
 | `channel.ts` `renderReplyCards`（546） | `chunkText(displayText, CARD_TEXT_MAX=4000)` 已分卡（≤30 张） | **已分段**，基本安全 |
 | `text-chunk.ts` | `chunkText` 按段落装箱 + `capChunks` | 已具备分段工具，可复用 |
 

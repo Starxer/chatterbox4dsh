@@ -8,6 +8,14 @@
 >
 > 另已评估 **并已升级到** DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
 
+### 修复：rc.1 的 `dsh-client-ui-primitives` 打包变更让插件测试加载不了组件库（`vitest.config.ts` / `tests/stubs/ui-primitives.tsx`）
+
+- **现象**：DSH `0.1.5-rc.1` 的全新安装下跑 `npm run test`，`tests/client.spec.ts` 报 `Cannot find package 'clsx' imported from .../dsh-client-ui-primitives/lib/index.js`（Vite 另会报 `Failed to resolve import "clsx"`）。
+- **根因**：`dsh-client-ui-primitives` 在 alpha.1 里把 `clsx` / `anser` / `katex` / `shiki` / `micromark-*` / `mdast-util-*` 声明在 `dependencies`，rc.1 把它们**整体降为 `devDependencies`**（发行时这些依赖由宿主 Web 应用提供），但构建产物 `lib/index.js` 仍然静态 `import` 它们。插件独立 `npm install` 不会安装依赖的 devDependencies，于是 vitest 解析 `ui-primitives` 的模块图时找不到这些包。
+- **影响面**：**仅单元测试**。`typecheck` / `build` / 线上运行都不受影响——client bundle 早就把该包标为 external，由 DSH Web 运行时提供，插件从不自带这份代码。隐患在于：`package-lock.json` 一旦重新生成（任何一次依赖变更、CI 全新 `npm ci`）就会踩到。
+- **改法（采纳 B1，而非"补依赖"）**：既然该包由宿主提供、插件从不需要在自己的 `node_modules` 里拥有它，测试就不应从插件的 node_modules 解析真包。`vitest.config.ts` 加 `resolve.alias` 把 `@deepseek-ai/dsh-client-ui-primitives` 指向 `tests/stubs/ui-primitives.tsx`——按真组件的**可观测契约**实现 `Button` / `Input` / `StateDot` / `Switch`（`role="switch"` + 来自 `label` 的 `aria-label`、原生 `disabled`、受控 `input`、`data-state`）。**原有测试断言一条未删**，零新增依赖。另一条路（把 18 个传递依赖写进 `devDependencies`）被否：依赖清单臃肿，且 DSH 下次给 primitives 加一个依赖就会再红。
+- **验证**（真模拟，而不是移走整个 primitives 包）：移走 `node_modules/clsx` 时——无 alias ❌ 报 `Cannot find package 'clsx'`；有 alias ✅ `tests/client.spec.ts` 10 passed。再把整个 primitives 包移走 ✅ 全套 307 passed（26 files）。还原后 `npm run typecheck` 0 error、`npx vitest run` 307 passed。
+
 ### 变更：步骤卡 footer 的 token 口径——📥 只报「本步新输入」，不再与上下文重复（`src/feishu-streaming.ts`）
 
 - **问题**：第一行 `📥 in` 用的是**计费输入**（未缓存 + 缓存读 + 缓存写 = 完整 prompt），而第二行 `📊` 的分子也是同一个值（`contextMeta.lastInputTokens` 就是那次请求的计费 prompt）。于是每一步卡片上同一个数字出现两次，看起来像重复统计。

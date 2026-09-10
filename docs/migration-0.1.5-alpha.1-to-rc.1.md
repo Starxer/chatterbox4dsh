@@ -5,7 +5,7 @@
 > **结论**：
 > 1. **插件运行时代码零改动**。typecheck / build 全绿；插件 import 的 **17 个 `@deepseek-ai/dsh-*` 包**里只有 5 个源码有变动，且**全部是增量（新增字段/新事件类型/新图标）或纯注释**，无一破坏性。
 > 2. **依赖范围也不用改**。`^0.1.5-alpha.1` 与 rc.1 **同属 `0.1.5` tuple**，npm semver 的预发布匹配规则下自动命中 rc.1（实测 `npm install` 装到的就是 `0.1.5-rc.1`）。这与 0.1.3→0.1.5 那次跳跃不同（那次 tuple 变了，必须改范围，见 [migration-0.1.3-to-0.1.5.md](./migration-0.1.3-to-0.1.5.md)）。
-> 3. **有一个真实但只在开发/CI 环境暴露的坑**：`@deepseek-ai/dsh-client-ui-primitives@0.1.5-rc.1` 把全部运行时依赖从 `dependencies` 降为 `devDependencies`，导致插件全新安装后 `tests/client.spec.ts` 无法解析 `clsx`。见「问题 B」。
+> 3. **有一个真实但只在开发/CI 环境暴露的坑**：`@deepseek-ai/dsh-client-ui-primitives@0.1.5-rc.1` 把全部运行时依赖从 `dependencies` 降为 `devDependencies`，导致插件全新安装后 `tests/client.spec.ts` 无法解析 `clsx`。**已按 B1 修复（2026-09-10）**。见「问题 B」。
 > 4. **rc.1 带来了一个高价值对齐机会**：Web 的 `standard`/`ptc`/`cordis` preset 新增 `present` 工具 + `deliverables/presented` 事件，飞书侧目前完全没接。见「改进机会 C1」。
 >
 > **English**: DSH `0.1.5-alpha.1` → `0.1.5-rc.1` (279 commits). The plugin needs **no runtime code changes** and **no dependency-range change** (same `0.1.5` tuple). One dev/CI-only breakage was found in `dsh-client-ui-primitives` packaging, plus one high-value feature-alignment opportunity (`present` / `deliverables/presented`).
@@ -28,7 +28,7 @@
 | `dsh-llm` | `LlmConfigurableProvider` 新增可选 `error?: string` | 纯增量。插件只用 `errorChain` / `isTokenDelta` / 类型 |
 | `dsh-session` | 已知事件类型新增 `deliverables/presented`、`subagent/catalog`；注释措辞 | 增量。插件不认识的类型直接忽略，不会炸 |
 | `dsh-session-persistence` | 仅注释/文档措辞（`assertVersion` 语义说明） | 无影响 |
-| `dsh-client-ui-primitives` | 新增 `CodeFileIcon` / `FileTypeIcon` / `code-file-types`，改 `LinkIcon` / `Menu` / `CodeBlock`；**包元数据把运行时依赖降为 devDependencies** | 运行时零影响（插件 client bundle 把它 external，由 DSH Web 提供）；**测试环境受影响 → 问题 B** |
+| `dsh-client-ui-primitives` | 新增 `CodeFileIcon` / `FileTypeIcon` / `code-file-types`，改 `LinkIcon` / `Menu` / `CodeBlock`；**包元数据把运行时依赖降为 devDependencies** | 运行时零影响（插件 client bundle 把它 external，由 DSH Web 提供）；测试环境受影响 → **问题 B（已修）** |
 
 其余 12 个包（`dsh-agent` / `agent-default-model` / `agent-presets` / `attachment` / `commands` / `credentials` / `host-directory-picker` / `host-webserver` / `settings` / `tools` / `user-approval` / `user-questions` / `workspace`）**源码 0 变动**。
 
@@ -75,10 +75,19 @@ Error: Failed to resolve import "clsx" from
 
 | 方案 | 做法 | 优点 | 缺点 |
 |---|---|---|---|
-| **B1（推荐）** | 在 `vitest.config.ts` 加 `resolve.alias`，把 `@deepseek-ai/dsh-client-ui-primitives` 指向一个本地测试替身（只导出 `Button` / `Input` / `StateDot` / `Switch`） | 零新增依赖、CI 自洽；**符合事实**——该包本来就是宿主提供的（client bundle 已 external） | 失去「真实 `Switch` 是否还接受我们的 props」这层覆盖（可以接受：真正的渲染在浏览器里由 DSH 提供） |
+| **B1 ✅ 已采用（2026-09-10）** | 在 `vitest.config.ts` 加 `resolve.alias`，把 `@deepseek-ai/dsh-client-ui-primitives` 指向一个本地测试替身（只导出 `Button` / `Input` / `StateDot` / `Switch`，见 `tests/stubs/ui-primitives.tsx`） | 零新增依赖、CI 自洽；**符合事实**——该包本来就是宿主提供的（client bundle 已 external） | 失去「真实 `Switch` 是否还接受我们的 props」这层覆盖（可以接受：这些 a11y 契约归 DSH 自己的组件库所有，且 props 类型仍由 `typecheck` 拿真包 `.d.ts` 校验） |
 | **B2** | 把上面 18 个包写进 `devDependencies` | 一行配置都不用改，测试继续跑真实组件 | 依赖清单臃肿且**易碎**——DSH 下次给 primitives 加一个新依赖，这里又会红 |
 
-**触发时机**：当前 `package-lock.json` 仍锁在 alpha.1，`npm ci` 暂时不会红；但**任何一次重新生成 lockfile 的依赖变更都会踩到**，发版前应先修。
+**B1 落地情况（2026-09-10）**：`tests/stubs/ui-primitives.tsx` 按真组件的可观测契约实现四个替身（`role="switch"` + `aria-label` / 原生 `disabled` / 受控 `input` / `data-state`），**原有测试断言一条未删**；`vitest.config.ts` 的 `server.deps.inline` 保留不变（替身后该规则对该包已无实际作用，留着不影响）。验证方式是**真模拟**：把 `node_modules/clsx` 移走（而不是移走整个 primitives 包）。
+
+| 场景 | 结果 |
+|---|---|
+| 移走 `clsx` + 无 alias（对照） | ❌ `Cannot find package 'clsx' imported from .../dsh-client-ui-primitives/lib/index.js` —— 与预判一致 |
+| 移走 `clsx` + 新 alias | ✅ `tests/client.spec.ts` **10 passed** |
+| 移走整个 primitives 包 + 新 alias | ✅ 全套 **307 passed（26 files）** |
+| 还原后 `npm run typecheck` / `npx vitest run` | ✅ 0 error / 307 passed |
+
+**触发时机**：当前 `package-lock.json` 仍锁在 alpha.1，`npm ci` 暂时不会红；但**任何一次重新生成 lockfile 的依赖变更都会踩到**——现已消除该隐患。
 
 ## 改进机会
 
