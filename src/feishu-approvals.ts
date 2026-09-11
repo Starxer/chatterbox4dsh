@@ -23,6 +23,9 @@ import type { ApprovalRequest, ApprovalOutcome } from '@deepseek-ai/dsh-user-app
 import '@deepseek-ai/dsh-user-approval'
 import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
+import type { Translations } from './i18n.ts'
+import { firstDefined, installSignalGate, type AnswererResult } from './dual-answerer.ts'
+import { renderAnsweredElsewhereCard } from './card-supersede.ts'
 
 /** Minimal logger surface the listener needs; matches ctx.logger's call style. */
 interface PluginLogger {
@@ -82,6 +85,8 @@ export interface FeishuApprovalsDeps {
   channel: FeishuApprovalsChannel
   bridgeHolder: BridgeHolder
   logger: PluginLogger
+  /** Return the strings for the ACTIVE locale, read at render time. */
+  getTranslations: () => Translations
 }
 
 /** Outcome kinds accepted by apiproxy's `ApprovalResponsePayload.outcome`. */
@@ -117,7 +122,7 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
    *  paths.  Updates the approval card to show the final outcome. */
   settle: (pendingId: string, outcome: 'allowed-once' | 'rejected') => Promise<void>
 } {
-  const { ctx, channel, bridgeHolder, logger } = deps
+  const { ctx, channel, bridgeHolder, logger, getTranslations } = deps
   const pending = new Map<string, PendingApproval>()
 
   const settle = async (
@@ -205,45 +210,64 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
       return next !== undefined ? await next() : 'unavailable'
     }
 
-    // Race the user answer against the request signal. On abort, treat as
-    // 'cancelled' and let the next listener try — but ONLY if the user has
-    // not already settled (we don't want a stale resolve to override).
-    const outcome: ApprovalOutcome = await new Promise<ApprovalOutcome>((resolve) => {
+    // Race the Feishu answer, the caller's signal, and the WebUI answerer.
+    // The WebUI is reached by delegating with `next()` (api-remotes forwards
+    // the request to the browser); the first real outcome wins and the other
+    // surface's card is retired. `dual-answerer.ts` explains the gate.
+    const upstream = request.signal
+    const feishu = new Promise<AnswererResult<ApprovalOutcome, 'feishu'> | undefined>((resolve) => {
       let settled = false
-      const onAbort = () => {
+      const onAbort = (): void => {
         if (settled) return
         settled = true
-        if (pending.has(pendingId)) {
-          pending.delete(pendingId)
-          resolve('cancelled')
-        } else {
-          resolve('unavailable')
-        }
+        if (pending.delete(pendingId)) resolve(undefined)
       }
-      if (request.signal?.aborted) {
+      if (upstream?.aborted === true) {
         onAbort()
         return
       }
-      request.signal?.addEventListener('abort', onAbort, { once: true })
-      promise.then((o) => {
+      upstream?.addEventListener('abort', onAbort, { once: true })
+      void promise.then((outcome) => {
         if (settled) return
         settled = true
-        request.signal?.removeEventListener('abort', onAbort)
-        resolve(o)
+        upstream?.removeEventListener('abort', onAbort)
+        resolve(outcome === 'cancelled' || outcome === 'unavailable'
+          ? undefined
+          : { via: 'feishu', value: outcome })
       })
     })
 
-    if (outcome === 'cancelled' || outcome === 'unavailable') {
-      return next !== undefined ? await next() : outcome
+    if (next === undefined) {
+      return (await feishu)?.value ?? 'unavailable'
     }
-    return outcome
+
+    const gate = installSignalGate(request, upstream)
+    const web = Promise.resolve().then(next).then(
+      (value): AnswererResult<ApprovalOutcome, 'web'> | undefined =>
+        value === 'unavailable' ? undefined : { via: 'web', value },
+      () => undefined,
+    )
+    const winner = await firstDefined<AnswererResult<ApprovalOutcome, 'feishu' | 'web'>>([feishu, web])
+    if (winner === undefined) {
+      return 'unavailable'
+    }
+    if (winner.via === 'feishu') {
+      gate.release(new Error('answered on Feishu'))
+    } else if (pending.delete(pendingId) && entry.cardMessageId !== undefined) {
+      // The Web UI decided first: retire this approval card so its buttons stop
+      // looking live.
+      await channel.updateCard(entry.cardMessageId, renderAnsweredElsewhereCard(getTranslations()))
+        .catch((error: unknown) => {
+          logger.warn(`dsh-feishu: failed to retire answered approval card: ${error instanceof Error ? error.message : String(error)}`)
+        })
+    }
+    return winner.value
   }
   // Prepended so this answerer runs BEFORE api-remotes' forwarding listener.
-  // See feishu-questions.ts for the rationale: remotes' WebUI waterfall
-  // listener blocks the chain, so a plain (pushed) registration would leave
-  // Feishu inner and the approval card would never render here. Prepend lets
-  // Feishu claim first, but only for Feishu-bound sessions — others fall
-  // through to `next()` and back to the WebUI answerer.
+  // That ordering lets one request reach BOTH surfaces: Feishu renders its
+  // card, then delegates with `next()` so the WebUI renders too, and the first
+  // answer settles the waterfall (see the race above). Unbound sessions never
+  // reach that path — they fall straight through to `next()`.
   const disposeListener = ctx.on('approval/request', handleRequest, { prepend: true })
 
   const view = (entry: PendingApproval): PendingApprovalView => ({

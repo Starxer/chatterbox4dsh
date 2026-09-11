@@ -28,7 +28,14 @@ interface Harness {
 interface CtxHandle {
   ctx: Parameters<typeof startFeishuQuestions>[0]['ctx']
   /** Fire one user-questions request through the registered waterfall. */
-  trigger: (sessionId: string, questions: AskUserQuestionItem[], agent?: { session: { id: string } }) => Promise<AskUserQuestionAnswer | undefined>
+  trigger: (
+    sessionId: string,
+    questions: AskUserQuestionItem[],
+    agent?: { session: { id: string } },
+    next?: () => Promise<AskUserQuestionAnswer>,
+  ) => Promise<AskUserQuestionAnswer | undefined>
+  /** The request object the listener received, for signal-gate assertions. */
+  lastRequest: AskUserQuestionRequest | undefined
 }
 
 /**
@@ -39,6 +46,7 @@ interface CtxHandle {
  */
 function buildCtx(): CtxHandle {
   const listeners: Array<(request: AskUserQuestionRequest, next?: () => Promise<AskUserQuestionAnswer>) => Promise<AskUserQuestionAnswer | undefined>> = []
+  const handle: { lastRequest: AskUserQuestionRequest | undefined } = { lastRequest: undefined }
   const ctx = {
     on: (_event: string, listener: (request: AskUserQuestionRequest, next?: () => Promise<AskUserQuestionAnswer>) => Promise<AskUserQuestionAnswer | undefined>) => {
       if (_event === 'user-questions/request') listeners.push(listener)
@@ -51,16 +59,18 @@ function buildCtx(): CtxHandle {
 
   return {
     ctx,
-    trigger: async (sessionId, questions, agent) => {
+    get lastRequest() { return handle.lastRequest },
+    trigger: async (sessionId, questions, agent, next) => {
       const listener = listeners[0]
       if (listener === undefined) return undefined
       const request: AskUserQuestionRequest = {
         questions,
         ...(agent !== undefined ? { agent: { session: { id: sessionId } } as never } : {}),
       }
-      const result = await listener(request, async () => {
+      handle.lastRequest = request
+      const result = await listener(request, next ?? (async () => {
         throw new Error('no fallback answerer in test')
-      })
+      }))
       return result
     },
   }
@@ -304,7 +314,7 @@ describe('startFeishuQuestions', () => {
       harness,
     )
     const stop = startFeishuQuestions({ ctx: ctxHandle.ctx, channel, bridgeHolder, logger, getTranslations: () => t })
-    void ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } })
+    void ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }).catch(() => undefined)
     await new Promise(resolve => setImmediate(resolve))
     stop()
     expect(harness.cardActionHandler).toBeUndefined()
@@ -345,6 +355,93 @@ describe('startFeishuQuestions', () => {
         .join('\n')
       expect(md).toContain('Here is the supporting description.')
       expect(md).toContain('✅ **Yes**')
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('presents on both surfaces and lets the Web UI answer win', async () => {
+    const harness: Harness = { answered: [], sentCards: [], updatedCards: [], cardActionHandler: undefined, resolveChatCalls: [] }
+    const ctxHandle = buildCtx()
+    const { channel, cleanup } = buildChannel(harness)
+    const bridgeHolder = buildBridgeHolder(
+      () => ({ chatId: 'oc_chat', chatType: 'p2p' as const }),
+      harness,
+    )
+    const stop = startFeishuQuestions({ ctx: ctxHandle.ctx, channel, bridgeHolder, logger, getTranslations: () => t })
+    let resolveWeb!: (answer: AskUserQuestionAnswer) => void
+    const web = new Promise<AskUserQuestionAnswer>((resolve) => { resolveWeb = resolve })
+    try {
+      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }, () => web)
+      await new Promise(resolve => setImmediate(resolve))
+      // Both surfaces saw the request: the Feishu card is up, and the Web UI
+      // answerer was invoked through `next`.
+      expect(harness.sentCards).toHaveLength(1)
+
+      resolveWeb({ answers: [{ id: 'q1', selected: ['No'] }] })
+      await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['No'] }] })
+
+      // The losing Feishu card must stop looking answerable.
+      expect(harness.updatedCards).toHaveLength(1)
+      expect(JSON.stringify(harness.updatedCards[0]!.card)).toContain(t.cardAnsweredElsewhereTitle)
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('dismisses the Web UI surface when Feishu answers first', async () => {
+    const harness: Harness = { answered: [], sentCards: [], updatedCards: [], cardActionHandler: undefined, resolveChatCalls: [] }
+    const ctxHandle = buildCtx()
+    const { channel, cleanup } = buildChannel(harness)
+    const bridgeHolder = buildBridgeHolder(
+      () => ({ chatId: 'oc_chat', chatType: 'p2p' as const }),
+      harness,
+    )
+    const stop = startFeishuQuestions({ ctx: ctxHandle.ctx, channel, bridgeHolder, logger, getTranslations: () => t })
+    try {
+      // A Web UI that stays open and never answers.
+      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }, () => new Promise(() => {}))
+      await new Promise(resolve => setImmediate(resolve))
+      await harness.cardActionHandler!({
+        action: {
+          tag: 'button',
+          value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
+        },
+      })
+      await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
+      // The gate aborts the forwarded Web UI request, which is what makes the
+      // browser dismiss its card.
+      expect(ctxHandle.lastRequest?.signal?.aborted).toBe(true)
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('keeps waiting on Feishu when the Web UI answerer gives up', async () => {
+    const harness: Harness = { answered: [], sentCards: [], updatedCards: [], cardActionHandler: undefined, resolveChatCalls: [] }
+    const ctxHandle = buildCtx()
+    const { channel, cleanup } = buildChannel(harness)
+    const bridgeHolder = buildBridgeHolder(
+      () => ({ chatId: 'oc_chat', chatType: 'p2p' as const }),
+      harness,
+    )
+    const stop = startFeishuQuestions({ ctx: ctxHandle.ctx, channel, bridgeHolder, logger, getTranslations: () => t })
+    try {
+      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }, async () => {
+        throw new Error('no Web UI client is connected')
+      })
+      await new Promise(resolve => setImmediate(resolve))
+      await harness.cardActionHandler!({
+        action: {
+          tag: 'button',
+          value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
+        },
+      })
+      await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
+      expect(ctxHandle.lastRequest?.signal?.aborted).toBe(true)
     } finally {
       stop()
       cleanup()

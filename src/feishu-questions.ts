@@ -1,16 +1,12 @@
 /**
- * Feishu UI bridge for the `ask_user_question` tool: subscribes to the
- * apiproxy mux stream so the Feishu chat can render an interactive card with
- * the question and options, then post the user's pick back through the apiproxy
- * `respond()` RPC. The first answer — Feishu or WebUI — wins because both
- * share the apiproxy's `pendingQuestions` registry.
+ * Feishu UI bridge for the `ask_user_question` tool: registers a prepended
+ * `user-questions/request` waterfall listener so a Feishu-bound session renders
+ * an interactive card with the question and options, and returns the user's
+ * pick through the listener's resolved promise.
  *
- * Why mux fan-out and not a `ctx.userQuestions` provider?
- *   `ctx.userQuestions` accepts a single provider and the apiproxy already
- *   installs one at boot; a second registration throws `DUPLICATE_PROVIDER`.
- *   The apiproxy broadcasts every `ask()` to every mux subscriber, so adding
- *   another subscriber IS the documented fan-out path — the WebUI client uses
- *   the same one. This module connects the same way.
+ * The same request is also delegated to the WebUI answerer, so a question pops
+ * on both surfaces; the first answer wins and the other card is retired
+ * (`dual-answerer.ts` explains the mechanism).
  *
  * @module @starxer/chatterbox4dsh/feishu-questions
  */
@@ -33,6 +29,8 @@ import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
+import { firstDefined, installSignalGate, type AnswererResult } from './dual-answerer.ts'
+import { renderAnsweredElsewhereCard, renderSupersededCard } from './card-supersede.ts'
 
 /** Minimal logger surface the listener needs; matches ctx.logger's call style. */
 interface PluginLogger {
@@ -215,25 +213,70 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
       return next !== undefined ? await next() : Promise.reject(new Error('session not bound to chat'))
     }
 
+    const upstream = request.signal
     const abortController = new AbortController()
-    request.signal?.addEventListener('abort', () => {
-      for (const [pid, pending] of pendingCards.entries()) {
-        if (pending.abortController === abortController) {
-          pendingCards.delete(pid)
-          pending.resolve(undefined)
-        }
-      }
-    })
+    // One cancellation source for the Feishu batch: the caller's turn/step
+    // signal aborts it, and so does a Web UI answer (see the race below).
+    const onUpstreamAbort = (): void => { abortController.abort(upstream?.reason) }
+    if (upstream?.aborted === true) onUpstreamAbort()
+    else upstream?.addEventListener('abort', onUpstreamAbort, { once: true })
 
-    return await presentQuestions(chat, channel, pendingCards, request.questions, abortController, logger, getTranslations())
+    // Which notice to paint over an abandoned card: the generic stale card for
+    // a turn abort, the "answered in the Web UI" one when the Web UI won.
+    let answeredOnWeb = false
+    const cancelCard = (): object => answeredOnWeb
+      ? renderAnsweredElsewhereCard(getTranslations())
+      : renderSupersededCard(getTranslations())
+
+    try {
+      const feishu = presentQuestions(
+        chat, channel, pendingCards, request.questions, abortController, logger, getTranslations(), cancelCard,
+      ).then((answer): AnswererResult<AskUserQuestionAnswer, 'feishu'> | undefined =>
+        answer.answers.length > 0 ? { via: 'feishu', value: answer } : undefined)
+
+      if (next === undefined) {
+        return (await feishu)?.value ?? { answers: [] }
+      }
+
+      // Present on BOTH surfaces: delegate to the inner Web UI answerer
+      // (api-remotes forwards the request to the browser) while the Feishu card
+      // is already up, then let whichever answers first settle the waterfall.
+      // The gate is installed before delegating so the gateway binds the
+      // forwarded card to a signal this module can abort once Feishu wins —
+      // that abort is what makes the browser dismiss its card.
+      const gate = installSignalGate(request, upstream)
+      let webFailure: unknown
+      const web = Promise.resolve().then(next).then(
+        (value): AnswererResult<AskUserQuestionAnswer, 'web'> | undefined => ({ via: 'web', value }),
+        (error: unknown) => { webFailure = error; return undefined },
+      )
+      const winner = await firstDefined<AnswererResult<AskUserQuestionAnswer, 'feishu' | 'web'>>([feishu, web])
+      if (winner === undefined) {
+        if (upstream?.aborted === true) {
+          throw upstream.reason instanceof Error
+            ? upstream.reason
+            : new Error('the question was aborted before an answer arrived')
+        }
+        throw webFailure instanceof Error
+          ? webFailure
+          : new Error('no user-questions answerer accepted the request')
+      }
+      if (winner.via === 'feishu') {
+        gate.release(new Error('answered on Feishu'))
+      } else {
+        answeredOnWeb = true
+        abortController.abort(new Error('answered in the Web UI'))
+      }
+      return winner.value
+    } finally {
+      upstream?.removeEventListener('abort', onUpstreamAbort)
+    }
   }
   // Prepended so this answerer runs BEFORE api-remotes' forwarding listener.
-  // remotes routes agent-scoped waterfalls (e.g. `user-questions/request`) to
-  // the WebUI client with a waterfall listener that BLOCKS waiting for a
-  // WebUI answer; a plain (pushed) registration leaves Feishu inner to that
-  // chain, so the card never renders here. Prepend makes Feishu claim first,
-  // but only for sessions bound to a Feishu chat — unbound sessions fall
-  // through to `next()` and back to the WebUI answerer.
+  // That ordering is what lets one request reach BOTH surfaces: Feishu renders
+  // its card, then delegates with `next()` so the WebUI renders too, and the
+  // first answer settles the waterfall (see handleRequest). Unbound sessions
+  // never reach that path — they fall straight through to `next()`.
   const disposeListener = ctx.on('user-questions/request', handleRequest, { prepend: true })
 
   return () => {
@@ -263,6 +306,7 @@ async function presentQuestions(
   abortController: AbortController,
   logger?: PluginLogger,
   t?: Translations,
+  cancelCard?: () => object,
 ): Promise<AskUserQuestionAnswer> {
   if (questions.length === 0) {
     return { answers: [] }
@@ -270,7 +314,7 @@ async function presentQuestions(
   console.log(`dsh-feishu: [q] presenting ${questions.length} question(s) to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
   const answers: AskUserQuestionAnswerItem[] = []
   for (const question of questions) {
-    const item = await presentOneQuestion(chat, channel, pendingCards, question, abortController, logger, t)
+    const item = await presentOneQuestion(chat, channel, pendingCards, question, abortController, logger, t, cancelCard)
     if (item === undefined) break
     answers.push(item)
   }
@@ -293,6 +337,7 @@ async function presentOneQuestion(
   abortController: AbortController,
   logger?: PluginLogger,
   t?: Translations,
+  cancelCard?: () => object,
 ): Promise<AskUserQuestionAnswerItem | undefined> {
   const pendingId = `feishu-q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const options = question.options ?? []
@@ -309,6 +354,22 @@ async function presentOneQuestion(
     }
     pendingCards.set(pendingId, pending)
   })
+  // Abandoning this card (turn abort, or the Web UI answered first) must stop
+  // it looking answerable: drop it from the pending map, settle the deferred,
+  // and repaint it with whichever stale notice the caller selected.
+  const onCancel = (): void => {
+    const pending = pendingCards.get(pendingId)
+    if (pending === undefined) return
+    pendingCards.delete(pendingId)
+    pending.resolve(undefined)
+    if (pending.cardMessageId !== undefined && cancelCard !== undefined) {
+      void channel.updateCard(pending.cardMessageId, cancelCard()).catch((error: unknown) => {
+        logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+  }
+  if (abortController.signal.aborted) onCancel()
+  else abortController.signal.addEventListener('abort', onCancel, { once: true })
   try {
     console.log(`dsh-feishu: [q] sending card to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
     const result = await channel.send(chat.chatId, { card }, chat.threadId !== undefined
@@ -319,6 +380,12 @@ async function presentOneQuestion(
     const pending = pendingCards.get(pendingId)
     if (pending !== undefined && mid !== undefined) {
       pending.cardMessageId = mid
+    } else if (mid !== undefined && cancelCard !== undefined) {
+      // Cancelled while the send was in flight: retire the card now that we
+      // finally know its message id.
+      void channel.updateCard(mid, cancelCard()).catch((error: unknown) => {
+        logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
+      })
     }
   } catch (error: unknown) {
     console.log(`dsh-feishu: [q] card send failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -326,7 +393,11 @@ async function presentOneQuestion(
     pendingCards.delete(pendingId)
     return undefined
   }
-  return await deferred
+  try {
+    return await deferred
+  } finally {
+    abortController.signal.removeEventListener('abort', onCancel)
+  }
 }
 
 /**

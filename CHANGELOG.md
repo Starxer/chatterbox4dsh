@@ -10,6 +10,18 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 变更：提问与审批现在**飞书和 WebUI 同时弹卡**，谁先回答谁生效（`src/dual-answerer.ts` + `feishu-questions.ts` / `feishu-approvals.ts`）
+
+- **问题**：会话一旦绑定到飞书话题，DSH Web UI 就**再也不弹** `ask_user_question` 卡片或审批卡片了。
+- **根因**：这两个事件是 Agent 作用域的 Cordis waterfall。`api-remotes` 在 boot 时注册了一个把请求转发给浏览器、并**阻塞等待**的内层监听器；插件为了能渲染飞书卡片，用 `prepend: true` 把自己注册成**最外层**，命中绑定会话就**直接返回答案**——waterfall 就此结束，内层的 WebUI 转发永远不会执行（见旧版关键坑 #6）。
+- **改法**：最外层不再"独占"，而是**两个界面都呈现**后再比谁先答：
+  1. 飞书照常发卡；同时调用 `next()` 把同一个请求交给内层的 WebUI 转发器，于是浏览器也弹出卡片。
+  2. 用 `firstDefined()` 赛跑两个答案，**第一个真正给出答案的一方胜出**；某一边"给不了答案"（没有浏览器连接、客户端委托、发卡失败）只算弃权，不影响另一边。
+  3. **飞书先答**时，通过 `installSignalGate()` 把请求的 `signal` 换成一个可主动中止的组合信号再交给转发器——`api-gateway` 把转发卡片的生命周期绑在这个 signal 上，中止时会给浏览器发 `cancel` 帧，**WebUI 卡片随之消失**。这是 DSH 现有 API 下从插件侧关掉另一端卡片的唯一手段（gate 同时跟随调用方原本的 turn signal，所以 turn 中止时两端照常一起取消）。
+  4. **WebUI 先答**时，飞书卡片被改写为「✅ 已在网页端处理」的失效卡（不再像还能点）。
+- **兼容**：`installSignalGate` 用 `Object.defineProperty` 改写请求对象；若将来 DSH 冻结该对象，则退化为"WebUI 卡片挂在 turn 结束才消失"，不会报错。未绑定飞书的会话行为完全不变（直接 `next()` 走 WebUI）。
+- **验证**：新增 `tests/dual-answerer.spec.ts`（赛跑与信号门 8 例）、`feishu-questions.spec.ts` 三例（WebUI 胜 / 飞书胜 / WebUI 弃权）、`feishu-approvals.spec.ts` 三例（同上）；全套 **320 passed / 27 files**，typecheck 0 error、build OK。
+
 ### 修复：rc.1 的 `dsh-client-ui-primitives` 打包变更让插件测试加载不了组件库（`vitest.config.ts` / `tests/stubs/ui-primitives.tsx`）
 
 - **现象**：DSH `0.1.5-rc.1` 的全新安装下跑 `npm run test`，`tests/client.spec.ts` 报 `Cannot find package 'clsx' imported from .../dsh-client-ui-primitives/lib/index.js`（Vite 另会报 `Failed to resolve import "clsx"`）。

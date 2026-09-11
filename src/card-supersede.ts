@@ -54,6 +54,22 @@ export function renderSupersededCard(t: Translations): object {
   }
 }
 
+/** The card shown when the same request was answered on the other surface
+ *  (the DSH Web UI), so this one must stop looking answerable. */
+export function renderAnsweredElsewhereCard(t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: t.cardAnsweredElsewhereTitle },
+      template: 'grey',
+    },
+    body: {
+      elements: [{ tag: 'markdown', content: t.cardAnsweredElsewhereBody }],
+    },
+  }
+}
+
 export interface CardSupersederDeps {
   channel: SupersedeChannel
   logger: PluginLogger

@@ -30,6 +30,9 @@ export interface Translations {
   // ---- Card lifecycle (card-supersede.ts) ----
   cardSupersededTitle: string
   cardSupersededBody: string
+  /** Shown on a card whose request was already answered in the DSH Web UI. */
+  cardAnsweredElsewhereTitle: string
+  cardAnsweredElsewhereBody: string
 
   // ---- Session panel (feishu-session.ts) ----
   sessionPanelTitle: string
@@ -292,6 +295,8 @@ export interface Translations {
 export const zh = {
   cardSupersededTitle: '⬆️ 此卡片已失效',
   cardSupersededBody: '此卡片已被后续操作替换，请使用下方**最新的卡片**继续。',
+  cardAnsweredElsewhereTitle: '✅ 已在网页端处理',
+  cardAnsweredElsewhereBody: '这个问题已在 **DSH Web UI** 中回答，此卡片作废。',
   sessionPanelTitle: '📋 会话管理',
   sessionPanelIntro: '选择会话并执行操作。',
   sessionListHeader: '可用会话：',
@@ -538,6 +543,8 @@ export const zh = {
 export const en: Translations = {
   cardSupersededTitle: '⬆️ This card is stale',
   cardSupersededBody: 'This card was replaced by a later step. Use the **newest card** below instead.',
+  cardAnsweredElsewhereTitle: '✅ Handled in the Web UI',
+  cardAnsweredElsewhereBody: 'This request was already answered in the **DSH Web UI**, so this card is void.',
   sessionPanelTitle: '📋 Session',
   sessionPanelIntro: 'Pick a session and run an action.',
   sessionListHeader: 'Available sessions:',

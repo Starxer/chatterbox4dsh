@@ -171,6 +171,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       channel: cardChannel,
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
+      getTranslations: () => translationsFor(currentLocale().id),
     })
     stopApprovals = approvalsHandle.stop
     return {

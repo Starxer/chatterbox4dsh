@@ -74,6 +74,7 @@
 | — | 卡片显示粒度开关 + 面板精简 | ✅ **已完成（2026-09-09）**：`showToolCalls` / `showToolArgs` / `showToolResults`（+ 已有 `showReasoning`）四个开关；工具总开关关闭时纯工具步骤不发卡；WebUI 面板改为「应用凭据 / 访问策略 / 卡片显示」三卡，移除 Provider/Model/Workspace/Agent Preset/失败提示；修 `SETTINGS_KEYS` 漏收 `showReasoning`；新增 `/display` 斜杠命令覆盖四个开关 |
 | — | 防止卡片消失 | ✅ 内层 try/catch 保护 mux 事件处理，timer 回调 error-safe |
 | — | 不同步骤工具调用分离 | ✅ `resetStep` 不清除 `state.chat`（session 级坐标），每个 step 独立卡片 |
+| — | 提问/审批两端同时弹卡 | ✅ **已完成（2026-09-11）**：飞书绑定会话不再让 WebUI 静默失效——最外层监听器渲染飞书卡后用 `next()` 把同一请求交给 WebUI，`firstDefined()` 赛跑、谁先答谁生效；飞书胜出时用信号门中止转发（浏览器卡片消失），WebUI 胜出时飞书卡改写为「已在网页端处理」。见 `src/dual-answerer.ts` + CHANGELOG |
 | — | 审批按钮反馈 | ✅ 点击后卡片更新为 ✅ Approved / ❌ Rejected，移除按钮 |
 | — | 飞书事件订阅修复 | ✅ provision 新增 `im:message.reaction` 权限 |
 | — | 卡片按钮回调修复 | ✅ ~~Node.js SDK `MessageType.CARD` 被过滤~~**经对照实验证实补丁不必要**：`card.action.trigger` 以 `type='event'` 到达，帧过滤不拦它；已移除 `patch-sdk-card-action.sh` + `postinstall`（还原 pristine SDK） |
