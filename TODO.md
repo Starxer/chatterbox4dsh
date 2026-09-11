@@ -27,7 +27,7 @@
 - ✅ **测试环境坑（发版阻塞，已修 2026-09-10）**：`dsh-client-ui-primitives@rc.1` 把运行时依赖降为 `devDependencies`，全新安装后 `tests/client.spec.ts` 报 `Failed to resolve import "clsx"`。**采用 B1**：`vitest.config.ts` 加 `resolve.alias` 指向 `tests/stubs/ui-primitives.tsx`（按真组件可观测契约实现的四个替身），**零新增依赖、断言一条未删**。验证＝真模拟（移走 `node_modules/clsx`）：无 alias ❌ `Cannot find package 'clsx'`，有 alias ✅ 307 passed。完整记录见评估文档「问题 B」。
 - ✅ **C1（高）已实现（2026-09-10）——接管 `deliverables/presented`**。但结论与最初设想不同：**只把交付物列进 Turn Complete 卡片，不推送文件**。飞书没有工作区浏览器，推送既噪音大、又会与 `feishu_send_file` 重复；清单保留了 `present` 的全部信息（模型筛过的成品 + 描述），用户真要文件时说一句即可。实现落在 `feishu-streaming.ts`（收集）+ `channel.ts` `renderFooterCard`（渲染），**没有新建 `src/feishu-deliverables.ts`**。清单排在**卡片最前面**并用分隔线与指标隔开（2026-09-10 真机反馈修正，原先夹在 stats 与元信息之间）。
 - 🔲 **C2（中）`/subagents` 子代理卡片**：rc.1 有 `subagent/catalog` 事件 + 子代理排队/steer/stop，插件目前完全隐藏子代理会话。
-- ✅ **C4（低）已实现（2026-09-10）**：`deriveToolSummary` 补了 `present` 分支，显示 `交付物：a.txt +2`，不再落到「工具名 · 首字段」的 `present · files` 兜底。
+- ✅ **C4（低）已实现（2026-09-10）**：`deriveToolSummary` 补了 `present` 分支，显示 `交付文件：a.txt +2`（2026-09-11 随 i18n 对齐把「交付物」改成 WebUI 的「交付文件」），不再落到「工具名 · 首字段」的 `present · files` 兜底。
 - 📋 **C5（记录）代理环境**：入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；暂不处理。
 - ✅ **C3 `/feedback` 无需改动**：它是宿主 `commands` 注册表命令，插件的 `commands.execute` 兜底路径已自动转发，且会出现在 `/help` 的「DSH 内置」分组。
 
@@ -48,7 +48,7 @@
 
 | # | 功能 | 说明 |
 |---|---|---|
-| 1 | 卡片化 + footer | 最终回复卡片底部标注 workspace + preset + **模型名** + **思考强度** + **上下文使用量** |
+| 1 | 卡片化 + footer | 最终回复卡片底部标注 workspace + preset + **模型名** + **推理等级** + **上下文使用量** |
 | 4 | `/status` 命令 | 展示 session id / title / workspace / preset / model / **reasoning** / tokens / context / **缓存命中率** / **TTFT** / **吞吐量** / **LLM 时间** / **工具时间** |
 | 5 | 工具调用展示 | 订阅 `ctx.on('session/event')` → `tool/call` + `tool/result`，wathet/green/red 卡片。**原地更新**：`tool/call` 发卡片后保存 `messageId`，`tool/result` 用 `updateCard` 更新同一张卡片 |
 | 6 | todo 展示 | 订阅 `ctx.on('session/event')` → `todo/write`，turquoise 卡片含进度条 |
@@ -57,7 +57,7 @@
 | 13 | 卡片 Markdown 渲染不稳定 | ✅ 全面迁移到 Card JSON 2.0，表格/标题/内联代码原生渲染，移除降级逻辑 |
 | 14 | 纯查询命令即时返回 | ✅ fire-and-forget + agent 运行状态检测 |
 | 15 | Agent 消息队列调研 | 两层队列机制已确认（见下方调研记录） |
-| 17 | `/reasoning` 思考强度命令 | ✅ `/reasoning [off|low|high|max]`，通过 `agentDefaultModel.saveSelection` 持久化 |
+| 17 | `/reasoning` 推理等级命令 | ✅ `/reasoning [off|low|high|max]`，通过 `agentDefaultModel.saveSelection` 持久化 |
 | 19 | tool_call / tool_done 顺序问题 | ✅ `tool/call` 直接发送保存 `messageIdPromise`，`tool/result` 等待后 `updateCard`，消除竞态 |
 | 20 | 工具调用摘要 | ✅ 通过 mux `frame.view` 获取 `presentCall`/`presentResult` 的 `description`、`title`，显示在工具名称上方 |
 | 21 | 卡片颜色区分 | ✅ 工具调用中 wathet → 成功 green → 失败 red；Reply 蓝色；Turn Complete 绿色 |
@@ -75,7 +75,9 @@
 | — | 防止卡片消失 | ✅ 内层 try/catch 保护 mux 事件处理，timer 回调 error-safe |
 | — | 不同步骤工具调用分离 | ✅ `resetStep` 不清除 `state.chat`（session 级坐标），每个 step 独立卡片 |
 | — | 提问/审批两端同时弹卡 | ✅ **已完成（2026-09-11）**：飞书绑定会话不再让 WebUI 静默失效——最外层监听器渲染飞书卡后用 `next()` 把同一请求交给 WebUI，`firstDefined()` 赛跑、谁先答谁生效；飞书胜出时用信号门中止转发（浏览器卡片消失），WebUI 胜出时飞书卡改写为「已在网页端处理」。见 `src/dual-answerer.ts` + CHANGELOG |
-| — | 审批按钮反馈 | ✅ 点击后卡片更新为 ✅ Approved / ❌ Rejected，移除按钮 |
+| — | 审批按钮反馈 | ✅ 点击后卡片结算为 ✅ 已允许 / ❌ 已拒绝（随 `/lang` 双语），移除按钮 |
+| — | 审批卡：中止作废 + 取值统一 | ✅ **已完成（2026-09-11）**：本轮中止（`/stop`、turn 取消、请求结束）时审批卡此前会留下点不动的活按钮，现改写为灰色「⏹️ 审批已失效」并去按钮；按钮 `action.value` 从自写的「只认字符串」解析改为共享 `decodeCardValue()`（字符串/双重编码/对象都吃）。整卡原先硬编码英文，现已全量双语（`approval*` 一组 i18n 字段） |
+| — | i18n 词典对齐 WebUI locale | ✅ **已完成（2026-09-11）**：以各 `client` 包的 `src/client/locales.ts` 为准对齐中英词表——审批 `等待审批`/`允许一次`/`拒绝`、`推理等级`（原「推理强度」）、会话 `分叉`（原「派生」）、`交付文件`（原「交付物」）、`首 token 延迟`（原 `TTFT 平均`）。能取自词典的测试断言改为引用 `t.xxx()`，避免改词即红 |
 | — | 飞书事件订阅修复 | ✅ provision 新增 `im:message.reaction` 权限 |
 | — | 卡片按钮回调修复 | ✅ ~~Node.js SDK `MessageType.CARD` 被过滤~~**经对照实验证实补丁不必要**：`card.action.trigger` 以 `type='event'` 到达，帧过滤不拦它；已移除 `patch-sdk-card-action.sh` + `postinstall`（还原 pristine SDK） |
 | — | 选项卡片反馈 | ✅ 选择后 recall 旧卡 + 发新卡（青绿色头部，显示所有选项，已选高亮） |
@@ -108,7 +110,7 @@
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
-| 1 | subagent 会话独立命令 | **中** | **主会话列表剔除 subagent 会话：✅ 已完成（2026-09-02）** —— `listSessions()` 按会话 durable header `origin === 'subagent'` 过滤（DSH 子代理会话创建时即写该字段；fork 会话只有 `parentSession`、无 `origin`，不受影响，仍显示）。`/session`、`/session list`、`/session N`、onboarding 选择卡全部经 `listSessions`，一处过滤全覆盖。剩余：新增专门命令（暂定名 `subagent`）单独查看子代理会话，数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**尚未动工** |
+| 1 | subagent 会话独立命令 | **中** | **主会话列表剔除 subagent 会话：✅ 已完成（2026-09-02）** —— `listSessions()` 按会话 durable header `origin === 'subagent'` 过滤（DSH 子代理会话创建时即写该字段；fork 会话只有 `parentSession`、无 `origin`，不受影响，仍显示）。`/session`、`/session list`、`/session N`、onboarding 选择卡全部经 `listSessions`，一处过滤全覆盖。剩余：新增专门命令（暂定名 `subagent`）单独查看子代理会话，数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**尚未动工**（2026-09-11 核实：`src/` 内无该命令；与上文 rc.1 评估的 **C2** 是同一件事） |
 | 2 | `/steer` 与 `/queue` idle 兼容 | **中** | ✅ **已完成（2026-09-08）**：agent 空闲时 `/steer` 自动回退为发新消息，不再报错 |
 | 3 | `locale` 设置 + `/lang` | **中** | ✅ 已完成（2026-08-31）：插件 `locale` 字段（`auto`/`zh`/`en`，默认 `auto`）+ `/lang [zh\|en\|auto]` 切换持久化。**语言源 = 插件字段，默认跟随 DSH**（`settings.get('locale').preference`，无值回退 `zh`）。见 CHANGELOG「中英双语 i18n」 |
 | 4 | 插件文案 i18n（zh/en) | **中** | ✅ 已完成（2026-08-31）：命令响应层（`CommandTranslations` 拆 zh/en，`src/commands-i18n.ts`）+ 卡片层（`Translations` 字典 `src/i18n.ts`）：streaming/session/busy/permission/questions/onboarding/model-select/status/footer 全部双语，术语对齐 DSH。191 测试通过 |
@@ -128,8 +130,8 @@
 | 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-09-08 核实**：reasoning 已收紧为 **200 字预览**（`REASONING_CAP`，不展示完整思维链）、text 超 3000 字改为拆溢出续卡；仅 `collapsible` 未实现 |
 | — | **step 卡片可见性开关**（过程透明可配置） | **中** | ✅ **已完成（2026-09-09）**：新增 `showToolCalls` / `showToolArgs` / `showToolResults` 三个布尔配置（连同已有的 `showReasoning`，默认全 `true`），分别门控工具段落、`⚙️ 参数`、`📤 结果`、思考过程；`showToolCalls=false` 时工具段落整体不渲染、且**只有工具、无文字/思考的步骤不发卡**；WebUI 面板新增「卡片显示」卡承载四个 `Switch` + 插件语言。见 CHANGELOG「新增：卡片显示粒度开关 + 精简 WebUI 面板」。原记录：**后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
 | 3 | ~~工作区候选补全~~ → 目录浏览器 | **中** | ✅ **已完成（2026-09-08）**：改为**目录浏览器**（比输入前缀补全更直接）——`/new` 工作区卡片新增「📂 浏览目录…」，可导航 / 分页 / 显示隐藏目录 / 选当前目录为工作区。目录来源优先 DSH `directoryPicker` 的 `browse` 能力，`native` 或缺失时回退插件自带只读列举。见 CHANGELOG「新增：/new 工作区卡片支持浏览目录」。**前缀补全本身不再做**（浏览器已覆盖）。**2026-09-08 追加**：工作区列表与目录浏览最终统一用 **`interactive_container`**（Card 2.0 整块可点击区域，官方定位就是「卡片内的列表项」）：每个工作区 / 目录一整行可点、无按钮外观、名字与路径不省略——按钮宫格 / 按内容宽度分行（飞书不认列内 `width: 'fill'`）、编号下拉框（要先选号再提交，太绕）、整行按钮（有多余按钮外观）均已弃用。控制按钮行用 `column_set` + `flex_mode: 'stretch'`（窄屏堆叠，避免手机端被压缩截断） |
-| — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查**：`feishu-session.ts` 面板仍是就地更新（未改成发新卡，故无失效提示可写） |
-| — | **交互卡片就地更新上限** | **高** | ✅ **已修复（2026-09-08）**：飞书对同一条消息的卡片**就地更新约 2–3 次后停止投递按钮回调**（patch 与 CardKit 实例**同样**受限）。目录浏览器改「每次导航发新卡片」；`sendCard` 已不再用 `updateCardInstance`。**仍待排查**：`feishu-session.ts` 面板（切换/列表/刷新多次点击）、`feishu-model-select.ts`（provider→model→confirm 2–3 次）仍在就地更新，可能同样会失效 |
+| — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查（2026-09-11 复核，仍在）**：`feishu-session.ts` 面板仍有就地更新——但**只剩「🔄 刷新」一个按钮**（`src/feishu-session.ts:340`）；切换/归档/fork/改名都走「发新卡」，结果卡也是新卡，不受影响 |
+| — | **交互卡片就地更新上限** | **高** | ✅ **已修复（2026-09-08）**：飞书对同一条消息的卡片**就地更新约 2–3 次后停止投递按钮回调**（patch 与 CardKit 实例**同样**受限）。目录浏览器改「每次导航发新卡片」；`sendCard` 已不再用 `updateCardInstance`。**仍待排查（2026-09-11 复核，仍在）**：`feishu-session.ts` 的「🔄 刷新」按钮；`feishu-model-select.ts` 整个选择向导（provider→model→reasoning→confirm→成功卡，同一张卡就地更新 3+ 次，`updateCardInstanceOnMessage`）。两者都可能到第 2–3 次点击后回调失效——改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
 | — | **step 卡编辑次数上限** | **中** | ✅ **已修复（2026-09-08）**：step 卡改走 CardKit 卡片实例（`cardkit.v1.card.update` + 单调 `sequence`），通道未提供时回退 patch。**重要澄清**：飞书对**带按钮**的卡片就地更新约 2–3 次后停止投递回调；**step 卡没有按钮**，因此连续原地更新是安全的（详见上一条「交互卡片就地更新上限」）。见 CHANGELOG「修复：step 卡片改用 CardKit 卡片实例」 |
 | — | **step 卡丢失更新（工具状态不刷新 / 卡片只剩 reasoning）** | **高** | ✅ **已修复（2026-09-08）**：① `assistant/message` 曾无条件发新卡 → 工具先开卡时旧卡被弃、再也收不到结果；改为「已有卡就更新」。② 防抖表按 session state 键 → 下一步骤的更新取消上一步骤待触发的定时器；改为按卡片 ref 键。另加 `[send]`/`[update]` 诊断日志。见 CHANGELOG「修复：step 卡片丢失工具状态更新 / 只剩 reasoning」 |
 | 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
@@ -246,7 +248,7 @@
   - 不再依赖 `/stream` 开关或 `showIntermediateMessages` 设置
   - 不再调用 `markIntermediateSent`（中间消息 ≠ 最终回复，不应跳过最终卡片）
 
-## #17 `/reasoning` 思考强度命令 —— ✅ 已实现
+## #17 `/reasoning` 推理等级命令 —— ✅ 已实现
 
 - **命令**：`/reasoning` 查看 / `/reasoning off|low|high|max` 设置
 - **持久化**：通过 `agentDefaultModel.saveSelection()` 写入 DSH settings，重启后自动恢复
@@ -298,7 +300,7 @@
 
 - **现状**：每次发独立新卡片，5 QPS 限制
 - **目标**：CardKit 流式更新（单卡持续更新，无 QPS 限制）
-- **状态**：方案已设计，待实现
+- **状态**：❌ **已取消（2026-09-02 用户决定，见「待实现」表 #9）**——下方方案仅作技术留档
 
 ---
 
@@ -370,5 +372,5 @@ POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
 4. **静默截断防护**：发送前按已知上限（30KB 请求体 / ~10k 元素）本地校验并主动分段，**不要依赖飞书静默截断**。
 
 ### 待定
-- 是否需要 `renderMode: auto|card|text` 配置（对齐 openclaw 建议，让超长回复回退纯文本）。
-- 分段后是否在每卡加 `Part i/N` 标注（`renderReplyCards` 已有，step 卡可复用）。
+- 是否需要 `renderMode: auto|card|text` 配置（对齐 openclaw 建议，让超长回复回退纯文本）。**仍未做**（2026-09-11 核实：`src/` 内无 `renderMode`）。
+- 分段后是否在每卡加 `Part i/N` 标注：**reply 卡已有**（`channel.ts` `Part ${i}/${total}`），**step 溢出续卡也已有**（`feishu-streaming.ts` `Reply (continued ${part}/${total})`）——2026-09-11 核实，此项实际已完成。
