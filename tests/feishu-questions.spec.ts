@@ -382,9 +382,13 @@ describe('startFeishuQuestions', () => {
       resolveWeb({ answers: [{ id: 'q1', selected: ['No'] }] })
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['No'] }] })
 
-      // The losing Feishu card must stop looking answerable.
+      // The losing Feishu card must stop looking answerable — and still say
+      // which option the Web UI picked.
       expect(harness.updatedCards).toHaveLength(1)
-      expect(JSON.stringify(harness.updatedCards[0]!.card)).toContain(t.cardAnsweredElsewhereTitle)
+      const retired = JSON.stringify(harness.updatedCards[0]!.card)
+      expect(retired).toContain(t.cardAnsweredElsewhereTitle)
+      expect(retired).toContain('✅ **No**')
+      expect(retired).not.toContain('behaviors')
     } finally {
       stop()
       cleanup()

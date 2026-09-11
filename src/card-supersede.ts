@@ -55,8 +55,15 @@ export function renderSupersededCard(t: Translations): object {
 }
 
 /** The card shown when the same request was answered on the other surface
- *  (the DSH Web UI), so this one must stop looking answerable. */
-export function renderAnsweredElsewhereCard(t: Translations): object {
+ *  (the DSH Web UI), so this one must stop looking answerable.
+ *
+ *  @param detail - Optional line naming what the other surface chose, so the
+ *    stale card still tells the reader the outcome instead of just "void". */
+export function renderAnsweredElsewhereCard(t: Translations, detail?: string): object {
+  const elements: object[] = [{ tag: 'markdown', content: t.cardAnsweredElsewhereBody }]
+  if (detail !== undefined && detail !== '') {
+    elements.push({ tag: 'markdown', content: detail })
+  }
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -64,9 +71,7 @@ export function renderAnsweredElsewhereCard(t: Translations): object {
       title: { tag: 'plain_text', content: t.cardAnsweredElsewhereTitle },
       template: 'grey',
     },
-    body: {
-      elements: [{ tag: 'markdown', content: t.cardAnsweredElsewhereBody }],
-    },
+    body: { elements },
   }
 }
 

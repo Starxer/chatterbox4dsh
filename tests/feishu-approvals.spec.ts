@@ -160,7 +160,11 @@ describe('startFeishuApprovals', () => {
       await expect(answer).resolves.toBe('rejected')
       expect(h.sent).toHaveLength(1)
       expect(h.updated).toHaveLength(1)
-      expect(JSON.stringify(h.updated[0]!.card)).toContain(zh.cardAnsweredElsewhereTitle)
+      const retired = JSON.stringify(h.updated[0]!.card)
+      expect(retired).toContain(zh.cardAnsweredElsewhereTitle)
+      // The retired card still reports what the Web UI decided.
+      expect(retired).toContain('bash')
+      expect(retired).toContain('已拒绝')
     } finally {
       h.handle.stop()
     }

@@ -10,6 +10,15 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 变更：败方卡片显示「对方选了什么」（`src/card-supersede.ts` / `feishu-questions.ts` / `feishu-approvals.ts`）
+
+- **诉求**：WebUI 先答时，飞书那张卡虽然会变成灰色「已在网页端处理」，但只说了"作废"，没告诉你在网页端**选了什么**，回头翻聊天记录看不出结论。
+- **改法**：两个 surface 的答案本来就在手上（`firstDefined` 返回的 `winner.value`），之前渲染时丢掉了，现在把它带上：
+  - **提问卡**：改用 `renderSettledQuestionCard` 渲染（带 `title`/`template`/`note` 覆盖参数），标题为「已在网页端处理」、灰色，正文照旧列出所有选项并**高亮网页端选中的那个**，自定义回答与跳过也照常标注。
+  - **审批卡**：`renderAnsweredElsewhereCard` 增加可选 `detail` 行，传 `approvalDecidedBody`，于是卡片同时显示「已在网页端处理」和「✅ \`bash\` — 已允许一次 / ❌ … 已拒绝」。
+- **未做**：反向（飞书先答时让 WebUI 显示飞书选了什么）做不到——那条路径是**中止转发**，只能让浏览器撤卡，无法往对面写内容。
+- **验证**：`feishu-questions.spec.ts` 断言败方卡片同时含「已在网页端处理」与 `✅ **No**` 且不含按钮；`feishu-approvals.spec.ts` 断言含工具名与「已拒绝」。全套 **323 passed / 27 files**，typecheck 0 error。
+
 ### 变更：i18n 词典按 DSH WebUI 的 locale 文件对齐（`src/i18n.ts` / `src/commands-i18n.ts` / `src/feishu-streaming.ts`）
 
 - **背景**：DSH WebUI 自己的中文词表在 `packages/client/ui-*/src/client/locales.ts`，与插件词典长期各写各的，出现了「同一件事两个词」。

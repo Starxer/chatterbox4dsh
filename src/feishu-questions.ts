@@ -221,12 +221,24 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     if (upstream?.aborted === true) onUpstreamAbort()
     else upstream?.addEventListener('abort', onUpstreamAbort, { once: true })
 
-    // Which notice to paint over an abandoned card: the generic stale card for
-    // a turn abort, the "answered in the Web UI" one when the Web UI won.
-    let answeredOnWeb = false
-    const cancelCard = (): object => answeredOnWeb
-      ? renderAnsweredElsewhereCard(getTranslations())
-      : renderSupersededCard(getTranslations())
+    // What to paint over an abandoned card: the generic stale card for a turn
+    // abort, or — when the Web UI won — a card that still shows which option
+    // the Web UI picked, so the chat isn't left guessing.
+    let webAnswer: AskUserQuestionAnswer | undefined
+    const cancelCard = (question: AskUserQuestionItem): object => {
+      const t = getTranslations()
+      if (webAnswer === undefined) return renderSupersededCard(t)
+      const item = webAnswer.answers.find(answer => answer.id === question.id)
+      if (item === undefined) return renderAnsweredElsewhereCard(t)
+      const labels = [...item.selected]
+      if (item.custom !== undefined && item.custom !== '') labels.push(`✏️ ${item.custom}`)
+      else if (labels.length === 0) labels.push('⏭️')
+      return renderSettledQuestionCard(question, labels, t, {
+        title: t.cardAnsweredElsewhereTitle,
+        template: 'grey',
+        note: t.cardAnsweredElsewhereBody,
+      })
+    }
 
     try {
       const feishu = presentQuestions(
@@ -264,7 +276,7 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
       if (winner.via === 'feishu') {
         gate.release(new Error('answered on Feishu'))
       } else {
-        answeredOnWeb = true
+        webAnswer = winner.value
         abortController.abort(new Error('answered in the Web UI'))
       }
       return winner.value
@@ -306,7 +318,7 @@ async function presentQuestions(
   abortController: AbortController,
   logger?: PluginLogger,
   t?: Translations,
-  cancelCard?: () => object,
+  cancelCard?: (question: AskUserQuestionItem) => object,
 ): Promise<AskUserQuestionAnswer> {
   if (questions.length === 0) {
     return { answers: [] }
@@ -337,7 +349,7 @@ async function presentOneQuestion(
   abortController: AbortController,
   logger?: PluginLogger,
   t?: Translations,
-  cancelCard?: () => object,
+  cancelCard?: (question: AskUserQuestionItem) => object,
 ): Promise<AskUserQuestionAnswerItem | undefined> {
   const pendingId = `feishu-q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const options = question.options ?? []
@@ -363,7 +375,7 @@ async function presentOneQuestion(
     pendingCards.delete(pendingId)
     pending.resolve(undefined)
     if (pending.cardMessageId !== undefined && cancelCard !== undefined) {
-      void channel.updateCard(pending.cardMessageId, cancelCard()).catch((error: unknown) => {
+      void channel.updateCard(pending.cardMessageId, cancelCard(question)).catch((error: unknown) => {
         logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
@@ -383,7 +395,7 @@ async function presentOneQuestion(
     } else if (mid !== undefined && cancelCard !== undefined) {
       // Cancelled while the send was in flight: retire the card now that we
       // finally know its message id.
-      void channel.updateCard(mid, cancelCard()).catch((error: unknown) => {
+      void channel.updateCard(mid, cancelCard(question)).catch((error: unknown) => {
         logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
@@ -409,6 +421,7 @@ function renderSettledQuestionCard(
   question: AskUserQuestionItem,
   selected: readonly string[],
   t: Translations,
+  variant?: { title?: string; template?: string; note?: string },
 ): object {
   const options = question.options ?? []
   const selectedSet = new Set(selected)
@@ -440,6 +453,9 @@ function renderSettledQuestionCard(
   } else {
     mdParts.push(`✅ **${t.questionSelectedLabel}** ${selected.join(', ')}`)
   }
+  if (variant?.note !== undefined && variant.note !== '') {
+    mdParts.push(`\n${variant.note}`)
+  }
   // Use Card JSON 2.0 format (schema + body.elements) for the settled card.
   // This is necessary because im.v1.message.patch only supports v2 format.
   // The original question card uses old format (top-level elements) because
@@ -448,8 +464,8 @@ function renderSettledQuestionCard(
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: question.header ?? t.questionDefaultTitle },
-      template: 'turquoise',
+      title: { tag: 'plain_text', content: variant?.title ?? question.header ?? t.questionDefaultTitle },
+      template: variant?.template ?? 'turquoise',
     },
     body: {
       elements: [{ tag: 'markdown', content: mdParts.join('\n') }],

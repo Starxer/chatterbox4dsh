@@ -258,8 +258,13 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
       gate.release(new Error('answered on Feishu'))
     } else if (pending.delete(pendingId)) {
       // The Web UI decided first: retire this approval card so its buttons stop
-      // looking live.
-      await retireCard(entry, renderAnsweredElsewhereCard(getTranslations()), 'retire answered')
+      // looking live, while still telling the reader what the Web UI decided.
+      const t = getTranslations()
+      await retireCard(
+        entry,
+        renderAnsweredElsewhereCard(t, t.approvalDecidedBody(entry.toolName, winner.value === 'allowed-once')),
+        'retire answered',
+      )
     }
     return winner.value
   }
