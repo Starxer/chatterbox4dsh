@@ -93,14 +93,14 @@ describe('renderFooterCard deliverables', () => {
       ],
     }) as any
     const md = markdownOf(card)
-    expect(md).toContain('📦 **Deliverables** (2)')
+    expect(md).toContain(t.deliverablesTitle(2))
     expect(md).toContain('• `reports/summary.md` — Monthly rollup')
     expect(md).toContain('• `assets/chart.png`')
   })
 
   it('omits the section when nothing was declared', () => {
-    expect(markdownOf(renderFooterCard(t, {}, turnStats) as any)).not.toContain('Deliverables')
-    expect(markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: [] }) as any)).not.toContain('Deliverables')
+    expect(markdownOf(renderFooterCard(t, {}, turnStats) as any)).not.toContain('Present files')
+    expect(markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: [] }) as any)).not.toContain('Present files')
   })
 
   it('leads the card, with a divider before the metrics', () => {
@@ -112,7 +112,7 @@ describe('renderFooterCard deliverables', () => {
     // First element is the deliverable list, second is the divider that
     // separates it from the turn stats.
     expect(elements[0].tag).toBe('markdown')
-    expect(elements[0].content).toContain('📦 **Deliverables**')
+    expect(elements[0].content).toContain(t.deliverablesTitle(1))
     expect(elements[1].tag).toBe('hr')
     // The stats lines follow the divider, not the other way round.
     const firstStat = elements.findIndex((el: any) => el.tag === 'markdown' && el.text_size === 'notation')
@@ -123,7 +123,7 @@ describe('renderFooterCard deliverables', () => {
     const many = Array.from({ length: 9 }, (_, index) => ({ path: `out/file-${index}.txt` }))
     const md = markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: many }) as any)
     // Headline keeps the real total; the body shows the cap.
-    expect(md).toContain('📦 **Deliverables** (9)')
+    expect(md).toContain(t.deliverablesTitle(9))
     expect(md).toContain('• `out/file-5.txt`')
     expect(md).not.toContain('file-6.txt')
     expect(md).toContain('…and 3 more')

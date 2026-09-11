@@ -47,11 +47,11 @@ describe('renderApprovalCard', () => {
   it('orders Approve (primary) above Reject (danger)', () => {
     const card = renderApprovalCard(entry(), en)
     const buttons = elementsOf(card).filter(el => el.tag === 'button')
-    expect(buttons[0].text.content).toBe('Approve once')
+    expect(buttons[0].text.content).toBe(en.approvalApproveOnce)
     expect(buttons[0].type).toBe('primary')
-    expect(buttons[1].text.content).toBe('Reject')
+    expect(buttons[1].text.content).toBe(en.approvalReject)
     expect(buttons[1].type).toBe('danger')
-    expect(buttonTexts(elementsOf(card))).toEqual(['Approve once', 'Reject'])
+    expect(buttonTexts(elementsOf(card))).toEqual([en.approvalApproveOnce, en.approvalReject])
   })
 
   it('renders the whole card in the active locale', () => {

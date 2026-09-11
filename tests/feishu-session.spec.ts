@@ -52,7 +52,7 @@ describe('renderSessionPanelCard', () => {
     expect(selects[0].options).toHaveLength(3)
     const opButtons = forms[0].elements.filter((el: any) => el.tag === 'button')
     const labels = opButtons.map((b: any) => b.text?.content)
-    expect(labels).toEqual(expect.arrayContaining(['🔀 切换', '🔓 Detach', '🗄️ 归档', '🍴 派生', '✏️ 改名']))
+    expect(labels).toEqual(expect.arrayContaining(['🔀 切换', '🔓 Detach', '🗄️ 归档', '🍴 分叉', '✏️ 改名']))
   })
 
   it('renders an empty state when there are no sessions', () => {

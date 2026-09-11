@@ -59,10 +59,10 @@ export const zhCommandTranslations: CommandTranslations = {
     ? `• \`/${name}\` — ${description}`
     : `• \`/${name}\` — ${description} \`[${hint}]\``,
   helpEmpty: '当前没有可用的斜杠命令。',
-  approveDescription: '批准本聊天最近一个（或 `<shortCode>` 指定的）待审批项',
+  approveDescription: '允许本聊天最近一个（或 `<shortCode>` 指定的）待审批项',
   approveApproveHint: '[shortCode]',
-  approveApprovedNoPending: '本会话没有待审批项——无需批准。',
-  approveApproved: (shortCode, toolName) => `✅ 已批准 \`${toolName}\` (\`${shortCode}\`)。Agent 继续。`,
+  approveApprovedNoPending: '本会话没有待审批项。',
+  approveApproved: (shortCode, toolName) => `✅ 已允许 \`${toolName}\` (\`${shortCode}\`)。Agent 继续。`,
   approveUnknownShort: shortCode => `本会话没有 id 为 \`${shortCode}\` 的待审批项。`,
   denyDescription: '拒绝本聊天最近一个（或 `<shortCode>` 指定的）待审批项',
   denyHint: '[shortCode]',
@@ -105,7 +105,7 @@ export const zhCommandTranslations: CommandTranslations = {
         lines.push(`• 时长：${durParts.join(' · ')}`)
       }
       if (meta.ttftAvgMs > 0) {
-        lines.push(`• TTFT 平均：${formatDuration(meta.ttftAvgMs)}`)
+        lines.push(`• 首 token 延迟：${formatDuration(meta.ttftAvgMs)}`)
       }
       if (meta.tokensPerSecond > 0) {
         lines.push(`• 吞吐：${meta.tokensPerSecond} tok/s`)
@@ -118,11 +118,11 @@ export const zhCommandTranslations: CommandTranslations = {
     return lines.join('\n')
   },
   stopDescription: '停止本聊天当前运行中的 Agent（同 WebUI 停止按钮）',
-  reasoningDescription: '查看或更改模型推理强度（思考强度）',
+  reasoningDescription: '查看或更改模型的推理等级（对齐 WebUI）',
   reasoningUsage: '用法：/reasoning [off|low|high|max] [show on|off]',
-  reasoningCurrent: (effort: string) => `🧠 当前推理强度：**${effort}**`,
+  reasoningCurrent: (effort: string) => `🧠 当前推理等级：**${effort}**`,
   reasoningCurrentDefault: '(provider 默认)',
-  reasoningSwitched: (effort: string) => `🧠 推理强度已切换为 **${effort}**。跨重启持久化。`,
+  reasoningSwitched: (effort: string) => `🧠 推理等级已切换为 **${effort}**。跨重启持久化。`,
   reasoningLevels: '可用档位：`off` · `low` · `high` · `max`\n使用 `/reasoning show on|off` 切换推理内容显示。',
   reasoningLevelsFrom: (effortIds: readonly string[]) => `可用档位：${effortIds.map(id => `\`${id}\``).join(' · ')}\n使用 \`/reasoning show on|off\` 切换推理内容显示。`,
   reasoningUnknown: (level: string) => `未知推理档位 "${level}"。`,
@@ -238,7 +238,7 @@ export const enCommandTranslations: CommandTranslations = {
     return lines.join('\n')
   },
   stopDescription: 'Stop the currently running agent in this chat (like the WebUI stop button)',
-  reasoningDescription: 'Show or change the model reasoning effort (thinking intensity)',
+  reasoningDescription: 'Show or change the model reasoning effort',
   reasoningUsage: 'Usage: /reasoning [off|low|high|max] [show on|off]',
   reasoningCurrent: (effort: string) => `🧠 Current reasoning effort: **${effort}**`,
   reasoningCurrentDefault: '(provider default)',

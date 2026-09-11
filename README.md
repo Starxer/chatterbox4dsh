@@ -43,7 +43,7 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | Turn Complete 卡片 | turn 结束后展示总时长/LLM 时间/工具时间、TTFT/吞吐量、token/缓存命中率，footer 另显示 **Enter while busy**；吞吐量口径与 DSH Web UI `deriveTurnMetrics` 对齐（首 token 判定含 tool-call delta，token 与 decode 时间同批配对）。模型用 DSH `present` 工具声明的**交付物**列在**卡片最前面**（`📦 交付物`，路径 + 描述，之后用分隔线接指标）：**只列清单、不推送文件**，需要时让模型发即可 |
 | 会话管理面板 | `/session`：交互式卡片下拉选会话 + 切换/detach/归档/fork/改名/列表/刷新；`/session list` 表格卡；`/session N` 快速切换 |
 | 斜杠命令 | `/model` `/new` `/session` `/status` `/stop` `/steer` `/queue` `/busy` `/permission` `/reasoning` `/display` `/approve` `/deny` `/help` 等 |
-| 审批 | 与 DSH Web UI 共享同一份 pending 审批状态；审批卡片 **Approve 在上 / Reject 在下**，显示 `Reason:` 原因，**中英双语随 `/lang`**；本轮中止时卡片自动作废去按钮 |
+| 审批 | 与 DSH Web UI 共享同一份 pending 审批状态；审批卡片 **允许在上 / 拒绝在下**，显示原因，**中英双语随 `/lang`**（术语对齐 WebUI：等待审批 / 允许一次 / 拒绝）；本轮中止时卡片自动作废去按钮 |
 | `ask_user_question` 卡片 | 问题卡片（选项/自定义输入/跳过），一次多问时**顺序迭代**、整批返回答案 |
 | 图片 / 文件接收 | 图片按**真实字节判型**（PNG/JPEG/WebP/GIF）经 attachment store 落盘；文件下载到 **DSH 原生附件库**（`~/.dsh/attachments/v1/files/…`）并附 `fileHostPath` 给 agent 读取 |
 | agent 主动发文件 | `feishu_send_file` 模型工具：agent 可把工作区文件推送到当前飞书聊天（≤30MB） |

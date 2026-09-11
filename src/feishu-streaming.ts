@@ -1232,7 +1232,7 @@ export function deriveToolSummary(toolName: string, argsRaw: string): string {
         typeof (item as { path?: unknown } | null)?.path === 'string')
       const named = first === undefined ? `${files.length}` : firstLine(first.path)
       const extra = files.length > 1 ? ` +${files.length - 1}` : ''
-      return `交付物：${named}${extra}`
+      return `交付文件：${named}${extra}`
     }
   }
   const variant = classifyToolSummary(toolName)

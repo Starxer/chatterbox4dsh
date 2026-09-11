@@ -126,10 +126,10 @@ describe('deriveToolSummary', () => {
   })
 
   it('summarizes DSH present by its delivered paths, not the raw files array', () => {
-    expect(deriveToolSummary('present', JSON.stringify({ files: [{ path: 'out/report.md' }] }))).toBe('交付物：out/report.md')
-    expect(deriveToolSummary('present', JSON.stringify({ files: [{ path: 'a.txt' }, { path: 'b.txt' }, { path: 'c.txt' }] }))).toBe('交付物：a.txt +2')
+    expect(deriveToolSummary('present', JSON.stringify({ files: [{ path: 'out/report.md' }] }))).toBe('交付文件：out/report.md')
+    expect(deriveToolSummary('present', JSON.stringify({ files: [{ path: 'a.txt' }, { path: 'b.txt' }, { path: 'c.txt' }] }))).toBe('交付文件：a.txt +2')
     // Empty/garbled args fall back to the generic rule rather than throwing.
-    expect(deriveToolSummary('present', JSON.stringify({ files: [] }))).toBe('交付物：0')
+    expect(deriveToolSummary('present', JSON.stringify({ files: [] }))).toBe('交付文件：0')
     expect(deriveToolSummary('present', 'not-json')).toBe('present · not-json')
   })
 

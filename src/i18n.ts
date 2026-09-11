@@ -12,9 +12,10 @@
  * locale object is checked with `satisfies`, so a missing key in either
  * language fails the typecheck rather than silently rendering a blank string.
  *
- * Terminology aligns with the DSH native UI (see the AGENTS.md compatibility
- * table): `Agent 预设`, `会话`, `工作区`, `推理`, permission presets
- * `仅可查看`/`工作区内修改`/`完全权限`, etc.
+ * Terminology aligns with the DSH native UI (each client package's
+ * `src/client/locales.ts` is the source of truth): `Agent 预设`, `会话`,
+ * `工作区`, `推理等级`, `等待审批` / `允许一次` / `拒绝`, `分叉会话`,
+ * `交付文件`, and the permission presets `仅可查看` / `工作区内修改` / `完全权限`.
  *
  * @module @starxer/chatterbox4dsh/i18n
  */
@@ -313,15 +314,15 @@ export const zh = {
   cardSupersededBody: '此卡片已被后续操作替换，请使用下方**最新的卡片**继续。',
   cardAnsweredElsewhereTitle: '✅ 已在网页端处理',
   cardAnsweredElsewhereBody: '这个请求已在 **DSH Web UI** 中处理，此卡片作废。',
-  approvalCardTitle: '🔐 审批请求',
+  approvalCardTitle: '🔐 等待审批',
   approvalToolLabel: '**工具：**',
   approvalReasonLabel: '**原因：**',
   approvalLocationHint: (shortCode, inThread) => `_id \`${shortCode}\` · 待处理（${inThread ? '本话题' : '本聊天'}）_`,
-  approvalApproveOnce: '批准一次',
+  approvalApproveOnce: '允许一次',
   approvalReject: '拒绝',
-  approvalApprovedTitle: '✅ 已批准',
+  approvalApprovedTitle: '✅ 已允许',
   approvalRejectedTitle: '❌ 已拒绝',
-  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? '已批准一次' : '已拒绝'}`,
+  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? '已允许一次' : '已拒绝'}`,
   approvalExpiredTitle: '⏹️ 审批已失效',
   approvalExpiredBody: '这次审批请求已随本轮结束，此卡片作废。',
   sessionPanelTitle: '📋 会话管理',
@@ -333,7 +334,7 @@ export const zh = {
   sessionSwitch: '🔀 切换',
   sessionDetach: '🔓 Detach',
   sessionArchive: '🗄️ 归档',
-  sessionFork: '🍴 派生',
+  sessionFork: '🍴 分叉',
   sessionRename: '✏️ 改名',
   sessionConfirmTitle: action => `确认${action}？`,
   sessionConfirmBody: (action, name) => `确定要${action}「${name}」吗？`,
@@ -346,7 +347,7 @@ export const zh = {
   sessionResultSwitched: target => `已切换到会话「${target}」。`,
   sessionResultDetached: label => `🔓 已释放会话。${label} 已重置为全新会话。`,
   sessionResultArchived: () => '会话已归档。可在工作区 WebUI 中取消归档。',
-  sessionResultForked: id => `已派生新会话 \`${id}\`。`,
+  sessionResultForked: id => `已分叉出新会话 \`${id}\`。`,
   sessionResultRenamed: title => `会话已重命名为「${title}」。`,
   sessionErrorOccupied: '该会话正被占用，请先 detach 再切换。',
   sessionErrorArchived: '该会话已归档，请先在 WebUI 取消归档。',
@@ -435,9 +436,9 @@ export const zh = {
   busyQueueDesc: '当前轮结束后作为新轮运行（默认）',
   busySteerDesc: '注入当前运行轮立即响应',
 
-  // Turn Complete 交付物清单（channel.ts；来自 DSH `present` 工具的
+  // Turn Complete 交付文件清单（channel.ts；来自 DSH `present` 工具的
   // `deliverables/presented` 事件）。只列清单，不推送文件。
-  deliverablesTitle: (count: number) => `📦 **交付物**（${count}）`,
+  deliverablesTitle: (count: number) => `📦 **交付文件**（${count}）`,
   deliverablesMore: (count: number) => `_…另有 ${count} 个_`,
 
   // 卡片显示开关卡片（feishu-display.ts）
@@ -473,12 +474,12 @@ export const zh = {
   sessionOpSwitch: '切换',
   sessionOpDetach: '释放',
   sessionOpArchive: '归档',
-  sessionOpFork: '派生',
+  sessionOpFork: '分叉',
   sessionOpRename: '改名',
   sessionConfirmDetailSwitch: label => `将把这个对话切换到会话 \`${label}\`，若它被其它对话占用会先接管。`,
   sessionConfirmDetailDetach: label => `将释放会话 \`${label}\` 的占用（原持有者重置为新会话）。`,
   sessionConfirmDetailArchive: label => `将归档会话 \`${label}\`。`,
-  sessionConfirmDetailFork: label => `将从会话 \`${label}\` fork 出一个新会话（保留到当前事件的对话）。`,
+  sessionConfirmDetailFork: label => `将从会话 \`${label}\` 分叉出一个新会话（保留到当前事件的对话）。`,
   sessionConfirmDetailRename: label => `将把会话 \`${label}\` 改成新的标题。`,
   sessionResultEmptyTitle: '⚠️ 标题为空',
   sessionResultEmptyBody: '请输入新的会话标题后再确认。',
@@ -498,8 +499,8 @@ export const zh = {
   sessionResultDetachReleased: (label, owner) => `已释放会话 \`${label}\`（原持有者：${owner}）。`,
   sessionResultArchivedOk: '🗄️ 已归档',
   sessionResultArchivedBody: label => `会话 \`${label}\` 已归档。`,
-  sessionResultForkHeader: '🍴 已 fork',
-  sessionResultForkBody: (label, id) => `已从 \`${label}\` fork 出新会话${id !== undefined ? ` \`${id}\`` : ''}。可用「/new」或并在本面板中切换。`,
+  sessionResultForkHeader: '🍴 已分叉',
+  sessionResultForkBody: (label, id) => `已从 \`${label}\` 分叉出新会话${id !== undefined ? ` \`${id}\`` : ''}。可用「/new」或在本面板中切换。`,
   sessionResultOpFailed: '❌ 操作失败',
   sessionResultUnsupported: name => `本部署未启用「${name}」能力。`,
   sessionRenamePrompt: label => `为会话 \`${label}\` 输入新标题：`,
@@ -572,15 +573,15 @@ export const en: Translations = {
   cardSupersededBody: 'This card was replaced by a later step. Use the **newest card** below instead.',
   cardAnsweredElsewhereTitle: '✅ Handled in the Web UI',
   cardAnsweredElsewhereBody: 'This request was already handled in the **DSH Web UI**, so this card is void.',
-  approvalCardTitle: '🔐 Approval needed',
+  approvalCardTitle: '🔐 Waiting for approval',
   approvalToolLabel: '**Tool:**',
   approvalReasonLabel: '**Reason:**',
   approvalLocationHint: (shortCode, inThread) => `_id \`${shortCode}\` · pending in ${inThread ? 'this thread' : 'this chat'}_`,
-  approvalApproveOnce: 'Approve once',
+  approvalApproveOnce: 'Allow once',
   approvalReject: 'Reject',
-  approvalApprovedTitle: '✅ Approved',
+  approvalApprovedTitle: '✅ Allowed once',
   approvalRejectedTitle: '❌ Rejected',
-  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? 'approved once' : 'rejected'}`,
+  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? 'allowed once' : 'rejected'}`,
   approvalExpiredTitle: '⏹️ Approval expired',
   approvalExpiredBody: 'This approval request ended with the turn, so the card is void.',
   sessionPanelTitle: '📋 Session',
@@ -696,7 +697,7 @@ export const en: Translations = {
 
   // Turn Complete deliverables list (channel.ts; from DSH's `present` tool via
   // `deliverables/presented`). Listed only — files are never pushed.
-  deliverablesTitle: (count: number) => `📦 **Deliverables** (${count})`,
+  deliverablesTitle: (count: number) => `📦 **Present files** (${count})`,
   deliverablesMore: (count: number) => `_…and ${count} more_`,
 
   // Display switch card (feishu-display.ts)

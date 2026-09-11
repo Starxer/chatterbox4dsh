@@ -10,6 +10,17 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 变更：i18n 词典按 DSH WebUI 的 locale 文件对齐（`src/i18n.ts` / `src/commands-i18n.ts` / `src/feishu-streaming.ts`）
+
+- **背景**：DSH WebUI 自己的中文词表在 `packages/client/ui-*/src/client/locales.ts`，与插件词典长期各写各的，出现了「同一件事两个词」。
+- **对齐（以 WebUI 为准，中英都改）**：
+  - 审批卡标题 `审批请求`/`Approval needed` → **`等待审批`/`Waiting for approval`**（`ui-approval` `waiting`）；按钮 `批准一次`/`Approve once` → **`允许一次`/`Allow once`**（`allowOnce`）；结算卡随之改为 `✅ 已允许` / `✅ Allowed once`。`/approve` 命令文案同步改用「允许」。
+  - 推理档位 `推理强度` → **`推理等级`**（`ui-model-selection` `menu.effort`；英文仍是 reasoning effort）。
+  - 会话操作 `派生` / `已 fork` → **`分叉` / `已分叉`**（`ui-workspace` `menu.fork` = `分叉会话`）。
+  - Turn Complete 的 `📦 交付物` → **`📦 交付文件`**（`ui-deliverables` `row.title`），英文 `Deliverables` → `Present files`；工具摘要 `交付物：a.txt +2` → `交付文件：a.txt +2`。
+  - `/status` 的 `TTFT 平均` → **`首 token 延迟`**（`ui-trajectory` `timing.ttft`；英文仍是 `TTFT`）。
+- **验证**：`feishu-approvals` / `feishu-session` / `feishu-streaming` / `channel-footer` 的断言同步更新，其中能取自词典的一律改成引用 `t.deliverablesTitle(...)`，避免以后再改词就红；全套 **323 passed / 27 files**，typecheck 0 error。
+
 ### 修复：审批卡双语化 + 本轮中止时作废 + 按钮取值改用共享解码（`src/feishu-approvals.ts` / `src/i18n.ts`）
 
 - **审批卡此前全英文**：`Approval needed` / `Approve once` / `Reject` / `✅ Approved` / `❌ Rejected` / `pending in this thread` 都是写死的英文，`/lang zh` 也不变，与双语的提问卡不一致。现在整张卡（标题、`工具：`/`原因：` 标签、位置提示、两个按钮、结算卡）都走 `i18n.ts` 新增的 `approval*` 一组字段。
