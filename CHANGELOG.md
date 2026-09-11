@@ -17,7 +17,7 @@
   - **提问卡**：改用 `renderSettledQuestionCard` 渲染（带 `title`/`template`/`note` 覆盖参数），标题为「已在网页端处理」、灰色，正文照旧列出所有选项并**高亮网页端选中的那个**，自定义回答与跳过也照常标注。
   - **审批卡**：`renderAnsweredElsewhereCard` 增加可选 `detail` 行，传 `approvalDecidedBody`，于是卡片同时显示「已在网页端处理」和「✅ \`bash\` — 已允许一次 / ❌ … 已拒绝」。
 - **未做**：反向（飞书先答时让 WebUI 显示飞书选了什么）做不到——那条路径是**中止转发**，只能让浏览器撤卡，无法往对面写内容。
-- **验证**：`feishu-questions.spec.ts` 断言败方卡片同时含「已在网页端处理」与 `✅ **No**` 且不含按钮；`feishu-approvals.spec.ts` 断言含工具名与「已拒绝」。全套 **323 passed / 27 files**，typecheck 0 error。
+- **验证**：`feishu-questions.spec.ts` 断言败方卡片同时含「已在网页端处理」与 `✅ **No**` 且不含按钮；`feishu-approvals.spec.ts` 断言含工具名与「已拒绝」。全套 **323 passed / 27 files**，typecheck 0 error。**真机已验证（2026-09-11）**：WebUI 先选 → 飞书灰卡标题「✅ 已在网页端处理」、被选项高亮为 `✅ **第二个选项** — 已选择`、其余为 ⬜、卡片无按钮。
 
 ### 变更：i18n 词典按 DSH WebUI 的 locale 文件对齐（`src/i18n.ts` / `src/commands-i18n.ts` / `src/feishu-streaming.ts`）
 
