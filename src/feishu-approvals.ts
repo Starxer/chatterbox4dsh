@@ -262,7 +262,10 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
       const t = getTranslations()
       await retireCard(
         entry,
-        renderAnsweredElsewhereCard(t, t.approvalDecidedBody(entry.toolName, winner.value === 'allowed-once')),
+        renderAnsweredElsewhereCard(
+          t,
+          `${approvalAskMarkdown(entry, t)}\n\n${t.approvalDecidedLine(winner.value === 'allowed-once')}`,
+        ),
         'retire answered',
       )
     }
@@ -320,19 +323,29 @@ function shortCodeFor(rpcId: string): string {
 }
 
 /**
+ * The ask itself — tool, location, and the asker's reason — as one markdown
+ * block. Every later state of the card (settled, expired, answered elsewhere)
+ * repaints this verbatim, so the chat keeps what was actually being approved
+ * instead of collapsing to a bare result. Mirrors the question card, which
+ * keeps its question text and detail after settlement.
+ */
+function approvalAskMarkdown(entry: PendingApproval, t: Translations): string {
+  const parts = [
+    `${t.approvalToolLabel} \`${entry.toolName}\`\n${t.approvalLocationHint(entry.shortCode, entry.chat.threadId !== undefined)}`,
+  ]
+  // Render the asker's reason so the user can decide without guessing what the
+  // tool is about to do. Omit it when the asker supplied none.
+  if (entry.reason !== undefined && entry.reason.trim() !== '') {
+    parts.push(`${t.approvalReasonLabel} ${entry.reason}`)
+  }
+  return parts.join('\n\n')
+}
+
+/**
  * Build a Feishu interactive-card payload for one approval request. Localized
  * header, body with tool/reason, action row with Reject / Approve.
  */
 export function renderApprovalCard(entry: PendingApproval, t: Translations): object {
-  const locationHint = t.approvalLocationHint(entry.shortCode, entry.chat.threadId !== undefined)
-  const body: object[] = [
-    { tag: 'markdown', content: `${t.approvalToolLabel} \`${entry.toolName}\`\n${locationHint}` },
-  ]
-  // Render the asker's reason on the card so the user can decide without
-  // guessing what the tool is about to do. Omit the line when no reason exists.
-  if (entry.reason !== undefined && entry.reason.trim() !== '') {
-    body.push({ tag: 'markdown', content: `${t.approvalReasonLabel} ${entry.reason}` })
-  }
   // Card JSON 2.0: buttons go directly in body.elements (no 'action' wrapper).
   // Confirm-first order: Approve (primary) above Reject (danger).
   return {
@@ -344,7 +357,7 @@ export function renderApprovalCard(entry: PendingApproval, t: Translations): obj
     },
     body: {
       elements: [
-        ...body,
+        { tag: 'markdown', content: approvalAskMarkdown(entry, t) },
         {
           tag: 'button',
           text: { tag: 'plain_text', content: t.approvalApproveOnce },
@@ -364,7 +377,7 @@ export function renderApprovalCard(entry: PendingApproval, t: Translations): obj
 
 /**
  * Build a settled (approved/rejected) card to replace the approval card.
- * Buttons are removed; header and body show the final outcome.
+ * Buttons are removed; the ask is kept and the outcome appended below it.
  */
 function renderSettledCard(entry: PendingApproval, outcome: ApprovalOutcomeKind, t: Translations): object {
   const approved = outcome === 'allowed-once'
@@ -377,7 +390,10 @@ function renderSettledCard(entry: PendingApproval, outcome: ApprovalOutcomeKind,
     },
     body: {
       elements: [
-        { tag: 'markdown', content: t.approvalDecidedBody(entry.toolName, approved) },
+        {
+          tag: 'markdown',
+          content: `${approvalAskMarkdown(entry, t)}\n\n${t.approvalDecidedLine(approved)}`,
+        },
       ],
     },
   }
@@ -385,7 +401,8 @@ function renderSettledCard(entry: PendingApproval, outcome: ApprovalOutcomeKind,
 
 /**
  * Build the card that replaces an approval whose turn ended before anyone
- * answered. Buttons are removed so it cannot be mistaken for answerable.
+ * answered. Buttons are removed so it cannot be mistaken for answerable; the
+ * ask is kept so the history still shows what was pending.
  */
 function renderApprovalExpiredCard(entry: PendingApproval, t: Translations): object {
   return {
@@ -397,7 +414,7 @@ function renderApprovalExpiredCard(entry: PendingApproval, t: Translations): obj
     },
     body: {
       elements: [
-        { tag: 'markdown', content: `${t.approvalExpiredBody}\n\n${t.approvalToolLabel} \`${entry.toolName}\`` },
+        { tag: 'markdown', content: `${approvalAskMarkdown(entry, t)}\n\n${t.approvalExpiredBody}` },
       ],
     },
   }

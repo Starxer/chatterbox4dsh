@@ -46,7 +46,7 @@ export interface Translations {
   approvalReject: string
   approvalApprovedTitle: string
   approvalRejectedTitle: string
-  approvalDecidedBody: (toolName: string, approved: boolean) => string
+  approvalDecidedLine: (approved: boolean) => string
   /** Header/body of a card whose request ended with the turn (aborted). */
   approvalExpiredTitle: string
   approvalExpiredBody: string
@@ -322,7 +322,7 @@ export const zh = {
   approvalReject: '拒绝',
   approvalApprovedTitle: '✅ 已允许',
   approvalRejectedTitle: '❌ 已拒绝',
-  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? '已允许一次' : '已拒绝'}`,
+  approvalDecidedLine: approved => approved ? '✅ 已允许一次' : '❌ 已拒绝',
   approvalExpiredTitle: '⏹️ 审批已失效',
   approvalExpiredBody: '这次审批请求已随本轮结束，此卡片作废。',
   sessionPanelTitle: '📋 会话管理',
@@ -581,7 +581,7 @@ export const en: Translations = {
   approvalReject: 'Reject',
   approvalApprovedTitle: '✅ Allowed once',
   approvalRejectedTitle: '❌ Rejected',
-  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? 'allowed once' : 'rejected'}`,
+  approvalDecidedLine: approved => approved ? '✅ Allowed once' : '❌ Rejected',
   approvalExpiredTitle: '⏹️ Approval expired',
   approvalExpiredBody: 'This approval request ended with the turn, so the card is void.',
   sessionPanelTitle: '📋 Session',

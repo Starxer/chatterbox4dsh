@@ -84,13 +84,14 @@ function buildCtx() {
   return {
     ctx,
     get lastRequest() { return handle.lastRequest },
-    async trigger(sessionId: string, next?: () => Promise<any>, signal?: AbortSignal) {
+    async trigger(sessionId: string, next?: () => Promise<any>, signal?: AbortSignal, reason?: string) {
       const listener = listeners[0]
       if (listener === undefined) return undefined
       const request = {
         agent: { session: { id: sessionId } },
         toolName: 'bash',
         ...(signal === undefined ? {} : { signal }),
+        ...(reason === undefined ? {} : { reason }),
       }
       handle.lastRequest = request
       return await listener(request, next ?? (async () => 'unavailable'))
@@ -198,6 +199,45 @@ describe('startFeishuApprovals', () => {
       expect(h.updated).toHaveLength(1)
       expect(JSON.stringify(h.updated[0]!.card)).toContain(zh.approvalExpiredTitle)
       expect(JSON.stringify(h.updated[0]!.card)).not.toContain('button')
+    } finally {
+      h.handle.stop()
+    }
+  })
+
+  it('keeps the ask (tool + reason) after settling on Feishu', async () => {
+    const h = buildApprovalsHarness()
+    const reason = 'escalate sandbox to danger-full-access: remove the temp file'
+    try {
+      const answer = h.ctxHandle.trigger('session-1', () => new Promise(() => {}), undefined, reason)
+      await new Promise(resolve => setImmediate(resolve))
+      await h.action()!({
+        action: { tag: 'button', value: JSON.stringify({ pendingId: pendingIdOf(h.sent[0]!.card) }) },
+      })
+      await expect(answer).resolves.toBe('allowed-once')
+      // The settled card keeps what was being approved, like the question card.
+      const settled = JSON.stringify(h.updated[0]!.card)
+      expect(settled).toContain('bash')
+      expect(settled).toContain(reason)
+      expect(settled).toContain(zh.approvalDecidedLine(true))
+      expect(settled).not.toContain('"tag":"button"')
+    } finally {
+      h.handle.stop()
+    }
+  })
+
+  it('keeps the ask (tool + reason) on the expired card too', async () => {
+    const h = buildApprovalsHarness()
+    const reason = 'escalate sandbox to danger-full-access: remove the temp file'
+    try {
+      const turn = new AbortController()
+      const answer = h.ctxHandle.trigger('session-1', async () => 'unavailable', turn.signal, reason)
+      await new Promise(resolve => setImmediate(resolve))
+      turn.abort(new Error('turn stopped'))
+      await expect(answer).resolves.toBe('unavailable')
+      const expired = JSON.stringify(h.updated[0]!.card)
+      expect(expired).toContain(zh.approvalExpiredTitle)
+      expect(expired).toContain('bash')
+      expect(expired).toContain(reason)
     } finally {
       h.handle.stop()
     }

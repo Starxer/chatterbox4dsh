@@ -10,12 +10,21 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 变更：审批卡结算/失效后保留原有内容（`src/feishu-approvals.ts` / `src/i18n.ts`）
+
+- **问题**：审批卡一旦结算（点允许/拒绝）、本轮中止、或被网页端接管，重画出来的卡就只剩一行结果——`✅ \`bash\` — 已允许一次`。**触发这次审批的原因（reason）和 short code 全没了**，回头翻聊天记录不知道当时批的是什么。
+- **改法**（对齐问题卡的做法：问题卡结算后仍保留 `question` 与 `detail`）：抽出 `approvalAskMarkdown()`，把「工具 + 位置提示（short code / 本话题）+ 原因」作为**原样保留的提问块**，三种后续状态都在它**下面追加**结果——结算卡（绿/红）追加 `approvalDecidedLine`、失效卡（灰）追加 `approvalExpiredBody`、被网页端接管的卡也在它后面追加结果。
+- **i18n**：`approvalDecidedBody(toolName, approved)` → `approvalDecidedLine(approved)`（不再重复工具名，工具名已在提问块里），中英各改一处。
+- **验证**：新增两例——飞书结算后卡片仍含工具名、reason 与结果且无按钮；本轮中止的失效卡同样保留工具名与 reason。全套 **325 passed / 27 files**，typecheck 0 error。
+
+
+
 ### 变更：败方卡片显示「对方选了什么」（`src/card-supersede.ts` / `feishu-questions.ts` / `feishu-approvals.ts`）
 
 - **诉求**：WebUI 先答时，飞书那张卡虽然会变成灰色「已在网页端处理」，但只说了"作废"，没告诉你在网页端**选了什么**，回头翻聊天记录看不出结论。
 - **改法**：两个 surface 的答案本来就在手上（`firstDefined` 返回的 `winner.value`），之前渲染时丢掉了，现在把它带上：
   - **提问卡**：改用 `renderSettledQuestionCard` 渲染（带 `title`/`template`/`note` 覆盖参数），标题为「已在网页端处理」、灰色，正文照旧列出所有选项并**高亮网页端选中的那个**，自定义回答与跳过也照常标注。
-  - **审批卡**：`renderAnsweredElsewhereCard` 增加可选 `detail` 行，传 `approvalDecidedBody`，于是卡片同时显示「已在网页端处理」和「✅ \`bash\` — 已允许一次 / ❌ … 已拒绝」。
+  - **审批卡**：`renderAnsweredElsewhereCard` 增加可选 `detail` 行，并在后续改动中把整块提问（工具 + 位置 + 原因）一并带上，于是卡片同时显示「已在网页端处理」和结果行。
 - **未做**：反向（飞书先答时让 WebUI 显示飞书选了什么）做不到——那条路径是**中止转发**，只能让浏览器撤卡，无法往对面写内容。
 - **验证**：`feishu-questions.spec.ts` 断言败方卡片同时含「已在网页端处理」与 `✅ **No**` 且不含按钮；`feishu-approvals.spec.ts` 断言含工具名与「已拒绝」。全套 **323 passed / 27 files**，typecheck 0 error。**真机已验证（2026-09-11）**：WebUI 先选 → 飞书灰卡标题「✅ 已在网页端处理」、被选项高亮为 `✅ **第二个选项** — 已选择`、其余为 ⬜、卡片无按钮。
 
