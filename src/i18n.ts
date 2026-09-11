@@ -34,6 +34,22 @@ export interface Translations {
   cardAnsweredElsewhereTitle: string
   cardAnsweredElsewhereBody: string
 
+  // ---- Approval card (feishu-approvals.ts) ----
+  approvalCardTitle: string
+  /** Includes the bold markers and the trailing colon, e.g. `**Tool:**`. */
+  approvalToolLabel: string
+  /** Includes the bold markers and the trailing colon, e.g. `**Reason:**`. */
+  approvalReasonLabel: string
+  approvalLocationHint: (shortCode: string, inThread: boolean) => string
+  approvalApproveOnce: string
+  approvalReject: string
+  approvalApprovedTitle: string
+  approvalRejectedTitle: string
+  approvalDecidedBody: (toolName: string, approved: boolean) => string
+  /** Header/body of a card whose request ended with the turn (aborted). */
+  approvalExpiredTitle: string
+  approvalExpiredBody: string
+
   // ---- Session panel (feishu-session.ts) ----
   sessionPanelTitle: string
   sessionPanelIntro: string
@@ -296,7 +312,18 @@ export const zh = {
   cardSupersededTitle: '⬆️ 此卡片已失效',
   cardSupersededBody: '此卡片已被后续操作替换，请使用下方**最新的卡片**继续。',
   cardAnsweredElsewhereTitle: '✅ 已在网页端处理',
-  cardAnsweredElsewhereBody: '这个问题已在 **DSH Web UI** 中回答，此卡片作废。',
+  cardAnsweredElsewhereBody: '这个请求已在 **DSH Web UI** 中处理，此卡片作废。',
+  approvalCardTitle: '🔐 审批请求',
+  approvalToolLabel: '**工具：**',
+  approvalReasonLabel: '**原因：**',
+  approvalLocationHint: (shortCode, inThread) => `_id \`${shortCode}\` · 待处理（${inThread ? '本话题' : '本聊天'}）_`,
+  approvalApproveOnce: '批准一次',
+  approvalReject: '拒绝',
+  approvalApprovedTitle: '✅ 已批准',
+  approvalRejectedTitle: '❌ 已拒绝',
+  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? '已批准一次' : '已拒绝'}`,
+  approvalExpiredTitle: '⏹️ 审批已失效',
+  approvalExpiredBody: '这次审批请求已随本轮结束，此卡片作废。',
   sessionPanelTitle: '📋 会话管理',
   sessionPanelIntro: '选择会话并执行操作。',
   sessionListHeader: '可用会话：',
@@ -544,7 +571,18 @@ export const en: Translations = {
   cardSupersededTitle: '⬆️ This card is stale',
   cardSupersededBody: 'This card was replaced by a later step. Use the **newest card** below instead.',
   cardAnsweredElsewhereTitle: '✅ Handled in the Web UI',
-  cardAnsweredElsewhereBody: 'This request was already answered in the **DSH Web UI**, so this card is void.',
+  cardAnsweredElsewhereBody: 'This request was already handled in the **DSH Web UI**, so this card is void.',
+  approvalCardTitle: '🔐 Approval needed',
+  approvalToolLabel: '**Tool:**',
+  approvalReasonLabel: '**Reason:**',
+  approvalLocationHint: (shortCode, inThread) => `_id \`${shortCode}\` · pending in ${inThread ? 'this thread' : 'this chat'}_`,
+  approvalApproveOnce: 'Approve once',
+  approvalReject: 'Reject',
+  approvalApprovedTitle: '✅ Approved',
+  approvalRejectedTitle: '❌ Rejected',
+  approvalDecidedBody: (toolName, approved) => `${approved ? '✅' : '❌'} \`${toolName}\` — ${approved ? 'approved once' : 'rejected'}`,
+  approvalExpiredTitle: '⏹️ Approval expired',
+  approvalExpiredBody: 'This approval request ended with the turn, so the card is void.',
   sessionPanelTitle: '📋 Session',
   sessionPanelIntro: 'Pick a session and run an action.',
   sessionListHeader: 'Available sessions:',

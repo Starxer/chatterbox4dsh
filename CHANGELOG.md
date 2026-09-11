@@ -10,6 +10,13 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 修复：审批卡双语化 + 本轮中止时作废 + 按钮取值改用共享解码（`src/feishu-approvals.ts` / `src/i18n.ts`）
+
+- **审批卡此前全英文**：`Approval needed` / `Approve once` / `Reject` / `✅ Approved` / `❌ Rejected` / `pending in this thread` 都是写死的英文，`/lang zh` 也不变，与双语的提问卡不一致。现在整张卡（标题、`工具：`/`原因：` 标签、位置提示、两个按钮、结算卡）都走 `i18n.ts` 新增的 `approval*` 一组字段。
+- **本轮中止时审批卡不作废**（真 bug）：`/stop`、turn 取消或请求结束时，待审记录被删掉，但卡片原样留着、按钮齐全——点下去找不到 pending 条目，**静默无反应**。现在中止路径会把卡片改写为灰色「⏹️ 审批已失效」并去掉按钮（提问卡此前已有同样处理，这次补齐审批卡）。顺带把 `cardAnsweredElsewhereBody` 的「问题」改成中性的「请求」，因为它现在同时用于提问卡和审批卡。
+- **按钮取值改用共享解码**：审批卡自己实现了一套「只接受 JSON 字符串」的解析，与提问卡/其余卡片统一的 `decodeCardValue()`（字符串、双重编码、普通对象都吃）不一致，飞书一旦改投递形态就会静默失灵。已统一。
+- **验证**：`tests/feishu-approvals.spec.ts` 新增三例（中文整卡渲染、中止后作废且卡片无按钮、对象形态 `action.value` 可解），全套 **323 passed / 27 files**，typecheck 0 error。
+
 ### 变更：提问与审批现在**飞书和 WebUI 同时弹卡**，谁先回答谁生效（`src/dual-answerer.ts` + `feishu-questions.ts` / `feishu-approvals.ts`）
 
 - **问题**：会话一旦绑定到飞书话题，DSH Web UI 就**再也不弹** `ask_user_question` 卡片或审批卡片了。

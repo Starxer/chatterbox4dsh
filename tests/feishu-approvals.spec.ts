@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { renderApprovalCard, startFeishuApprovals } from '../src/feishu-approvals.ts'
-import { zh } from '../src/i18n.ts'
+import { en, zh } from '../src/i18n.ts'
 
 function entry(overrides: Record<string, unknown> = {}) {
   return {
@@ -26,7 +26,7 @@ function buttonTexts(elements: any[]): string[] {
 
 describe('renderApprovalCard', () => {
   it('shows the asker-provided reason on the card', () => {
-    const card = renderApprovalCard(entry({ reason: 'Run npm build in the workspace' }))
+    const card = renderApprovalCard(entry({ reason: 'Run npm build in the workspace' }), en)
     const content = elementsOf(card)
       .filter(el => el.tag === 'markdown')
       .map(el => el.content)
@@ -35,7 +35,7 @@ describe('renderApprovalCard', () => {
   })
 
   it('omits the reason line when none is provided', () => {
-    const card = renderApprovalCard(entry())
+    const card = renderApprovalCard(entry(), en)
     const content = elementsOf(card)
       .filter(el => el.tag === 'markdown')
       .map(el => el.content)
@@ -45,13 +45,26 @@ describe('renderApprovalCard', () => {
   })
 
   it('orders Approve (primary) above Reject (danger)', () => {
-    const card = renderApprovalCard(entry())
+    const card = renderApprovalCard(entry(), en)
     const buttons = elementsOf(card).filter(el => el.tag === 'button')
     expect(buttons[0].text.content).toBe('Approve once')
     expect(buttons[0].type).toBe('primary')
     expect(buttons[1].text.content).toBe('Reject')
     expect(buttons[1].type).toBe('danger')
     expect(buttonTexts(elementsOf(card))).toEqual(['Approve once', 'Reject'])
+  })
+
+  it('renders the whole card in the active locale', () => {
+    const card = renderApprovalCard(entry({ reason: '执行 npm build' }), zh)
+    expect((card as any).header.title.content).toBe(zh.approvalCardTitle)
+    expect(buttonTexts(elementsOf(card))).toEqual([zh.approvalApproveOnce, zh.approvalReject])
+    const content = elementsOf(card)
+      .filter((el: any) => el.tag === 'markdown')
+      .map((el: any) => el.content)
+      .join('\n')
+    expect(content).toContain(`${zh.approvalToolLabel} \`bash\``)
+    expect(content).toContain(zh.approvalReasonLabel)
+    expect(content).not.toContain('Approval')
   })
 })
 
@@ -71,10 +84,14 @@ function buildCtx() {
   return {
     ctx,
     get lastRequest() { return handle.lastRequest },
-    async trigger(sessionId: string, next?: () => Promise<any>) {
+    async trigger(sessionId: string, next?: () => Promise<any>, signal?: AbortSignal) {
       const listener = listeners[0]
       if (listener === undefined) return undefined
-      const request = { agent: { session: { id: sessionId } }, toolName: 'bash' }
+      const request = {
+        agent: { session: { id: sessionId } },
+        toolName: 'bash',
+        ...(signal === undefined ? {} : { signal }),
+      }
       handle.lastRequest = request
       return await listener(request, next ?? (async () => 'unavailable'))
     },
@@ -159,6 +176,38 @@ describe('startFeishuApprovals', () => {
       })
       await expect(answer).resolves.toBe('rejected')
       expect(h.ctxHandle.lastRequest?.signal?.aborted).toBe(true)
+    } finally {
+      h.handle.stop()
+    }
+  })
+
+  it('retires the card when the turn is aborted before an answer', async () => {
+    const h = buildApprovalsHarness()
+    try {
+      const turn = new AbortController()
+      const answer = h.ctxHandle.trigger('session-1', async () => 'unavailable', turn.signal)
+      await new Promise(resolve => setImmediate(resolve))
+      expect(h.sent).toHaveLength(1)
+      turn.abort(new Error('turn stopped'))
+      await expect(answer).resolves.toBe('unavailable')
+      // The card must stop looking answerable once its pending entry is gone.
+      expect(h.updated).toHaveLength(1)
+      expect(JSON.stringify(h.updated[0]!.card)).toContain(zh.approvalExpiredTitle)
+      expect(JSON.stringify(h.updated[0]!.card)).not.toContain('button')
+    } finally {
+      h.handle.stop()
+    }
+  })
+
+  it('accepts an object-shaped button value, not only Feishu\'s double-encoded string', async () => {
+    const h = buildApprovalsHarness()
+    try {
+      const answer = h.ctxHandle.trigger('session-1', () => new Promise(() => {}))
+      await new Promise(resolve => setImmediate(resolve))
+      await h.action()!({
+        action: { tag: 'button', value: { pendingId: pendingIdOf(h.sent[0]!.card) } },
+      })
+      await expect(answer).resolves.toBe('allowed-once')
     } finally {
       h.handle.stop()
     }

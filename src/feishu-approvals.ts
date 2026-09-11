@@ -24,6 +24,7 @@ import '@deepseek-ai/dsh-user-approval'
 import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
+import { decodeCardValue } from './card-action.ts'
 import { firstDefined, installSignalGate, type AnswererResult } from './dual-answerer.ts'
 import { renderAnsweredElsewhereCard } from './card-supersede.ts'
 
@@ -133,26 +134,22 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
     if (entry === undefined) return
     pending.delete(pendingId)
     entry.resolve(outcome)
-    if (entry.cardMessageId !== undefined) {
-      const settledCard = renderSettledCard(entry, outcome)
-      await channel.updateCard(entry.cardMessageId, settledCard).catch((error: unknown) => {
-        logger.warn(`dsh-feishu: failed to update approval card: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }
+    await retireCard(entry, renderSettledCard(entry, outcome, getTranslations()), 'update')
+  }
+
+  /** Best-effort repaint of a card this approval no longer owns. */
+  const retireCard = async (entry: PendingApproval, card: object, what: string): Promise<void> => {
+    if (entry.cardMessageId === undefined) return
+    await channel.updateCard(entry.cardMessageId, card).catch((error: unknown) => {
+      logger.warn(`dsh-feishu: failed to ${what} approval card: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   const onCardAction = async (evt: CardActionLike): Promise<void> => {
-    const action = evt.action
-    let raw = action?.value
-    if (typeof raw !== 'string') return
-    let parsed: { pendingId?: unknown; outcome?: unknown }
-    try {
-      let result = JSON.parse(raw)
-      if (typeof result === 'string') result = JSON.parse(result)
-      parsed = result as typeof parsed
-    } catch {
-      return
-    }
+    // Shared decoder: accepts the double-encoded string Feishu actually
+    // delivers AND a plain object, matching every other card in the plugin.
+    const parsed = decodeCardValue(evt.action?.value)
+    if (parsed === undefined) return
     if (typeof parsed.pendingId !== 'string') return
     const outcome = parsed.outcome === 'rejected' ? 'rejected' : 'allowed-once'
     await settle(parsed.pendingId, outcome)
@@ -197,7 +194,7 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
     })
     pending.set(pendingId, entry)
 
-    const card = renderApprovalCard(entry)
+    const card = renderApprovalCard(entry, getTranslations())
     try {
       const result = await channel.send(chat.chatId, { card }, chat.threadId !== undefined
         ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
@@ -220,7 +217,13 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
       const onAbort = (): void => {
         if (settled) return
         settled = true
-        if (pending.delete(pendingId)) resolve(undefined)
+        if (pending.delete(pendingId)) {
+          resolve(undefined)
+          // The turn is gone (stopped, cancelled, or the request ended), so
+          // this card must stop looking answerable — a click on it would find
+          // no pending entry and silently do nothing.
+          void retireCard(entry, renderApprovalExpiredCard(entry, getTranslations()), 'expire')
+        }
       }
       if (upstream?.aborted === true) {
         onAbort()
@@ -253,13 +256,10 @@ export function startFeishuApprovals(deps: FeishuApprovalsDeps): {
     }
     if (winner.via === 'feishu') {
       gate.release(new Error('answered on Feishu'))
-    } else if (pending.delete(pendingId) && entry.cardMessageId !== undefined) {
+    } else if (pending.delete(pendingId)) {
       // The Web UI decided first: retire this approval card so its buttons stop
       // looking live.
-      await channel.updateCard(entry.cardMessageId, renderAnsweredElsewhereCard(getTranslations()))
-        .catch((error: unknown) => {
-          logger.warn(`dsh-feishu: failed to retire answered approval card: ${error instanceof Error ? error.message : String(error)}`)
-        })
+      await retireCard(entry, renderAnsweredElsewhereCard(getTranslations()), 'retire answered')
     }
     return winner.value
   }
@@ -315,20 +315,18 @@ function shortCodeFor(rpcId: string): string {
 }
 
 /**
- * Build a Feishu interactive-card payload for one approval request. Header
- * "Approval needed", body with tool/reason, action row with Reject / Approve.
+ * Build a Feishu interactive-card payload for one approval request. Localized
+ * header, body with tool/reason, action row with Reject / Approve.
  */
-export function renderApprovalCard(entry: PendingApproval): object {
-  const locationHint = entry.chat.threadId !== undefined
-    ? `_id \`${entry.shortCode}\` · pending in this thread_`
-    : `_id \`${entry.shortCode}\` · pending in this chat_`
+export function renderApprovalCard(entry: PendingApproval, t: Translations): object {
+  const locationHint = t.approvalLocationHint(entry.shortCode, entry.chat.threadId !== undefined)
   const body: object[] = [
-    { tag: 'markdown', content: `**Tool:** \`${entry.toolName}\`\n${locationHint}` },
+    { tag: 'markdown', content: `${t.approvalToolLabel} \`${entry.toolName}\`\n${locationHint}` },
   ]
   // Render the asker's reason on the card so the user can decide without
   // guessing what the tool is about to do. Omit the line when no reason exists.
   if (entry.reason !== undefined && entry.reason.trim() !== '') {
-    body.push({ tag: 'markdown', content: `**Reason:** ${entry.reason}` })
+    body.push({ tag: 'markdown', content: `${t.approvalReasonLabel} ${entry.reason}` })
   }
   // Card JSON 2.0: buttons go directly in body.elements (no 'action' wrapper).
   // Confirm-first order: Approve (primary) above Reject (danger).
@@ -336,7 +334,7 @@ export function renderApprovalCard(entry: PendingApproval): object {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: 'Approval needed' },
+      title: { tag: 'plain_text', content: t.approvalCardTitle },
       template: 'orange',
     },
     body: {
@@ -344,13 +342,13 @@ export function renderApprovalCard(entry: PendingApproval): object {
         ...body,
         {
           tag: 'button',
-          text: { tag: 'plain_text', content: 'Approve once' },
+          text: { tag: 'plain_text', content: t.approvalApproveOnce },
           type: 'primary',
           value: JSON.stringify({ pendingId: entry.pendingId }),
         },
         {
           tag: 'button',
-          text: { tag: 'plain_text', content: 'Reject' },
+          text: { tag: 'plain_text', content: t.approvalReject },
           type: 'danger',
           value: JSON.stringify({ pendingId: entry.pendingId, outcome: 'rejected' }),
         },
@@ -363,18 +361,38 @@ export function renderApprovalCard(entry: PendingApproval): object {
  * Build a settled (approved/rejected) card to replace the approval card.
  * Buttons are removed; header and body show the final outcome.
  */
-function renderSettledCard(entry: PendingApproval, outcome: ApprovalOutcomeKind): object {
+function renderSettledCard(entry: PendingApproval, outcome: ApprovalOutcomeKind, t: Translations): object {
   const approved = outcome === 'allowed-once'
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: approved ? '✅ Approved' : '❌ Rejected' },
+      title: { tag: 'plain_text', content: approved ? t.approvalApprovedTitle : t.approvalRejectedTitle },
       template: approved ? 'green' : 'red',
     },
     body: {
       elements: [
-        { tag: 'markdown', content: `${approved ? '✅' : '❌'} \`${entry.toolName}\` — ${approved ? 'approved once' : 'rejected'}` },
+        { tag: 'markdown', content: t.approvalDecidedBody(entry.toolName, approved) },
+      ],
+    },
+  }
+}
+
+/**
+ * Build the card that replaces an approval whose turn ended before anyone
+ * answered. Buttons are removed so it cannot be mistaken for answerable.
+ */
+function renderApprovalExpiredCard(entry: PendingApproval, t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: t.approvalExpiredTitle },
+      template: 'grey',
+    },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `${t.approvalExpiredBody}\n\n${t.approvalToolLabel} \`${entry.toolName}\`` },
       ],
     },
   }
