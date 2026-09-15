@@ -7,9 +7,13 @@
  * cards stay in the chat — the operator prefers that to a recalled card — but
  * they keep showing live-looking buttons that no longer lead anywhere.
  *
- * This module replaces such a superseded card with a short localized notice
- * pointing at the newest card. It is deliberately best-effort: failing to
- * repaint the old card must never break the flow that already succeeded.
+ * This module retires such a superseded card IN PLACE: it keeps the card's own
+ * content, strips every callback binding, greys the header and appends a short
+ * localized notice pointing at the newest card. Replacing the whole payload
+ * with a generic notice erased the record of what the operator had picked (a
+ * `/new` flow leaves a dozen cards behind), so the content is preserved. It is
+ * deliberately best-effort: failing to repaint the old card must never break
+ * the flow that already succeeded.
  *
  * @module @starxer/chatterbox4dsh/card-supersede
  */
@@ -36,10 +40,88 @@ export interface SupersedeChannel {
 export interface CardRef {
   cardId: string
   messageId?: string | undefined
+  /**
+   * The card JSON exactly as posted. Hand it over whenever the payload is
+   * still in hand: whether the retired card keeps its content or collapses to
+   * the generic grey notice is decided by the retire MODE, never by dropping
+   * this field.
+   *
+   * That matters because a card only walked through can still become the
+   * decision card — a folder-browser page is "pure navigation" until the
+   * operator taps "✅ 用这个目录" on it, and only a remembered payload can be
+   * frozen on screen at that moment (see {@link renderStaleCard}). Dropping the
+   * payload here used to silently downgrade that settled decision to an empty
+   * notice.
+   *
+   * Omit it only when the caller genuinely no longer holds the payload: then
+   * the card gets a generic grey notice.
+   */
+  card?: object | undefined
+  /**
+   * True for a card posted as a pure navigation step (folder-browser page,
+   * "up one level", pager). Such a card is retired as the bare notice by
+   * default, so a long `/new` browse does not leave a wall of listings behind
+   * — but an explicit `mode: 'keep'` (the operator settled on that page) still
+   * freezes it.
+   */
+  navigation?: boolean | undefined
 }
 
-/** The card shown in place of a superseded one. No buttons: an abandoned card
- *  must not keep accepting taps. */
+/** Plain-object guard for the card JSON walk. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Drop every callback binding from a card payload, recursively.
+ *
+ * `behaviors` is the ONLY field that makes a Card JSON 2.0 element fire a
+ * callback (buttons, `select_static`, `interactive_container`). Removing it
+ * leaves the payload structurally valid but inert, so a retired card keeps its
+ * text for the record while no tap can reach the plugin.
+ */
+function stripBehaviors(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(stripBehaviors)
+  if (!isPlainObject(node)) return node
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'behaviors') continue
+    out[key] = stripBehaviors(value)
+  }
+  return out
+}
+
+/**
+ * Retire a posted card while KEEPING its content: the same payload with every
+ * callback binding stripped, a grey header and one appended notice line.
+ *
+ * This is the "settled decision" shape: the card where the operator actually
+ * made a choice stays in the chat as a readable, frozen record of that choice —
+ * a `/new` flow otherwise destroys every card it walks through, and the
+ * operator asked to keep the decision card and make it non-editable.
+ *
+ * @param card - the payload that was posted, verbatim.
+ * @param t - strings for the active locale.
+ * @param note - the notice line; defaults to the generic stale notice.
+ */
+export function renderStaleCard(card: object, t: Translations, note?: string): object {
+  const retired = stripBehaviors(card) as Record<string, unknown>
+  const header = isPlainObject(retired.header) ? retired.header : {}
+  retired.header = { ...header, template: 'grey' }
+  const notice = { tag: 'markdown', content: note ?? t.cardStaleNote, text_size: 'notation' }
+  const body = retired.body
+  if (isPlainObject(body) && Array.isArray(body.elements)) {
+    body.elements = [...body.elements, { tag: 'hr' }, notice]
+  } else if (Array.isArray(retired.elements)) {
+    retired.elements = [...retired.elements, { tag: 'hr' }, notice]
+  } else {
+    retired.body = { elements: [notice] }
+  }
+  return retired
+}
+
+/** The card shown in place of a superseded one when its payload is unknown. No
+ *  buttons: an abandoned card must not keep accepting taps. */
 export function renderSupersededCard(t: Translations): object {
   return {
     schema: '2.0',
@@ -92,12 +174,20 @@ export interface CardSuperseder {
   /** Remember the card most recently posted in this chat. */
   note(chatId: string, ref: CardRef): void
   /**
-   * Repaint the previously noted card for this chat as a stale-card notice.
+   * Repaint the previously noted card for this chat.
    *
    * Call it AFTER the new card has been posted so the user never sees a gap,
    * and BEFORE {@link note}-ing the new card.
+   *
+   * @param options.mode - `'keep'` freezes the noted card with its own content
+   *   so the decision it recorded stays readable; `'notice'` replaces it with
+   *   the generic grey stale notice. Omit it to get `'keep'`, except for a card
+   *   noted with `navigation: true` (a folder-browser page), which then
+   *   collapses to the notice.
+   * @param options.note - notice line for the `'keep'` shape; e.g. the
+   *   "✅ selected X, no longer editable" line on a settled decision card.
    */
-  supersedePrevious(chatId: string): Promise<void>
+  supersedePrevious(chatId: string, options?: { mode?: 'keep' | 'notice'; note?: string }): Promise<void>
   /** Drop the remembered card without repainting it (terminal result cards
    *  such as "session created" stay readable). */
   forget(chatId: string): void
@@ -117,11 +207,23 @@ export function createCardSuperseder(deps: CardSupersederDeps): CardSuperseder {
     clear: () => {
       lastByChat.clear()
     },
-    supersedePrevious: async (chatId) => {
+    supersedePrevious: async (chatId, options) => {
       const previous = lastByChat.get(chatId)
       if (previous === undefined) return
       lastByChat.delete(chatId)
-      const card = renderSupersededCard(deps.getTranslations())
+      const t = deps.getTranslations()
+      // Freeze the payload as a settled record when the caller asked for it
+      // (and handed one over). With no explicit mode, a card that was only a
+      // navigation step collapses to the bare notice; an explicit keep still
+      // wins, because that page may be exactly where the operator decided.
+      const keep = options?.mode === 'notice'
+        ? false
+        : options?.mode === 'keep'
+          ? previous.card !== undefined
+          : previous.navigation !== true && previous.card !== undefined
+      const card = keep
+        ? renderStaleCard(previous.card!, t, options?.note)
+        : renderSupersededCard(t)
       try {
         if (deps.channel.updateCardInstance !== undefined) {
           const sequence = (deps.sequenceByCard.get(previous.cardId) ?? 0) + 1

@@ -33,6 +33,7 @@ import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
+import { dispatchCardAction } from './card-dispatch.ts'
 
 export const name = 'lark-channel'
 export const inject = [
@@ -48,7 +49,10 @@ import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
 import { startFeishuModelSelect, renderProviderSelectCard, sendModelCardV2, type ModelSelectChannel } from './feishu-model-select.ts'
-import { startFeishuPermission, SANDBOX_MODES, PERMISSION_LABELS, type FeishuPermissionHandle } from './feishu-permission.ts'
+import { renderSupersededCard } from './card-supersede.ts'
+import { decodeCardValue } from './card-action.ts'
+import { renderNewSessionConfirmCard, renderNewSessionCancelledCard, NEW_SESSION_CONFIRM_ACTION, NEW_SESSION_CANCEL_ACTION } from './new-session-card.ts'
+import { startFeishuPermission, SANDBOX_MODES, PERMISSION_LABELS, describePermissionSwitchFailure, type FeishuPermissionHandle } from './feishu-permission.ts'
 import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
 import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
 import { startFeishuSession, renderSessionListCard, renderSessionResultCard, type FeishuSessionHandle } from './feishu-session.ts'
@@ -159,6 +163,28 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let busyHandle: FeishuBusyHandle | undefined = undefined
   let displayHandle: FeishuDisplayHandle | undefined = undefined
   let sessionHandle: FeishuSessionHandle | undefined = undefined
+  /** Card-action subscription that settles the `/new` confirmation card. */
+  let stopNewSessionConfirmer: (() => void) | undefined = undefined
+  /**
+   * The `/new` flow's final confirmation. Its model step no longer creates the
+   * session directly: everything is collected into one summary card, and the
+   * session is created only when the operator presses "create" on it.
+   */
+  const pendingNewSession = new Map<string, {
+    chatMessage: ConversationMessage
+    options: ChatCreationOptions
+    cardId: string
+    messageId?: string
+    topic: { rootId?: string; threadId?: string }
+  }>()
+  /** Monotonic CardKit sequence for the confirmation cards. */
+  const newSessionSequenceByCard = new Map<string, number>()
+  /** In-place repaint helper for a confirmation card (create / cancel / result). */
+  const paintNewSessionCard = async (cardId: string, card: object): Promise<void> => {
+    const sequence = (newSessionSequenceByCard.get(cardId) ?? 0) + 1
+    newSessionSequenceByCard.set(cardId, sequence)
+    await cardChannel.updateCardInstance(cardId, card, sequence)
+  }
   const channelHolder: { current: LarkChannel | undefined } = { current: undefined }
   // The approvals handle IS the ApprovalControl surface; the new
   // approval/request waterfall listener inside startFeishuApprovals owns the
@@ -342,7 +368,23 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         if (attachedChannels.has(ch)) return () => undefined
         attachedChannels.add(ch)
         return ch.on('cardAction', (...args) => {
-          for (const h of cardActionHandlers) void h(args[0] as CardActionEvent)
+          const evt = args[0] as CardActionEvent & { raw?: { action?: { form_value?: unknown } } }
+          // Card callbacks reach neither the journal nor any other log, which
+          // makes "I pressed the button and nothing happened" impossible to
+          // diagnose from outside. One line per tap is cheap and pins down the
+          // exact payload shape when a flow stalls.
+          console.log(
+            `dsh-feishu: [card] chatId=${evt.chatId ?? '-'} messageId=${evt.messageId ?? '-'}` +
+            ` value=${JSON.stringify(evt.action?.value)?.slice(0, 240) ?? '-'}` +
+            ` form=${JSON.stringify(evt.raw?.action?.form_value)?.slice(0, 240) ?? '-'}`,
+          )
+          // Contain each handler's failure: an escaping rejection here has no
+          // owner, and DSH's `installFailLoud` turns an `unhandledRejection`
+          // into `fatal load failure` + exit(1) — one button tap could stop
+          // the whole daemon (2026-09-14: the /permission sandbox fence).
+          dispatchCardAction(cardActionHandlers, evt, (error: unknown) => {
+            console.log(`dsh-feishu: [card] handler failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+          })
         })
       }
       const unsubList: Array<() => void> = []
@@ -527,6 +569,21 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     consumeReasoning = streamingResult.consumeReasoning
     consumeLastStepHadContent = streamingResult.consumeLastStepHadContent
     flushed = streamingResult.flushed
+    /**
+     * Retire the model card once the final confirmation card carries every
+     * setting. Unlike the cards that recorded a decision, this one is a mere
+     * step of the wizard, so it is repainted as the bare stale notice.
+     */
+    const retireModelCard = async (messageId: string | undefined, t: Translations): Promise<void> => {
+      if (messageId === undefined || modelSelectHandle === undefined) return
+      const cardId = modelSelectHandle.cardByMessage.get(messageId)
+      if (cardId === undefined) return
+      const sequence = (modelSelectHandle.sequenceByCard.get(cardId) ?? 0) + 1
+      modelSelectHandle.sequenceByCard.set(cardId, sequence)
+      await cardChannel.updateCardInstance(cardId, renderSupersededCard(t), sequence).catch((error: unknown) => {
+        console.log(`dsh-feishu: could not retire the model card: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
     modelSelectHandle = startFeishuModelSelect({
       llm,
       agentDefaultModel: defaultModel,
@@ -537,19 +594,37 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       topicFor: chatId => onboardingHandle?.topicFor(chatId) ?? {},
       getTranslations: () => translationsFor(currentLocale().id),
       onNewSessionConfirm: async (chatMessage, selection, messageId) => {
-        // The `/new` card flow's model step confirmed — create the session
-        // with the workspace/preset captured by the onboarding flow and the
-        // model chosen here.
-        const bridge = bridgeHolder.current
-        if (bridge === undefined) return
+        // The `/new` card flow's model step confirmed. Do NOT create the
+        // session yet: collect every setting into one final confirmation card
+        // (workspace · preset · model · effort) and create it only after the
+        // operator confirms. The model card itself is retired so the chat does
+        // not keep two live-looking steps.
+        const t = translationsFor(currentLocale().id)
         const flowOptions = onboardingHandle?.creationOptionsFor(chatMessage.chatId) ?? {}
-        await commitNewSession(bridge, cardChannel, chatMessage, {
+        const options: ChatCreationOptions = {
           ...(flowOptions.workspace !== undefined ? { workspace: flowOptions.workspace } : {}),
           ...(flowOptions.agentPreset !== undefined ? { agentPreset: flowOptions.agentPreset } : {}),
           provider: selection.provider,
           model: selection.model,
           ...(selection.reasoningEffort !== undefined ? { reasoningEffort: selection.reasoningEffort as never } : {}),
-        }, messageId, onboardingHandle?.topicFor(chatMessage.chatId))
+        }
+        await retireModelCard(messageId, t)
+        const card = renderNewSessionConfirmCard(options, t)
+        const topic = onboardingHandle?.topicFor(chatMessage.chatId) ?? {}
+        const opts = topic.threadId !== undefined && topic.rootId !== undefined
+          ? { replyInThread: true, replyTo: topic.rootId }
+          : {}
+        const cardId = await cardChannel.createCardInstance(card)
+        newSessionSequenceByCard.set(cardId, 0)
+        const result = await cardChannel.sendCardByReference(chatMessage.chatId, cardId, opts)
+        const confirmMessageId = result.messageId
+        pendingNewSession.set(chatMessage.chatId, {
+          chatMessage,
+          options,
+          cardId,
+          ...(confirmMessageId !== undefined ? { messageId: confirmMessageId } : {}),
+          topic,
+        })
       },
     })
     onboardingHandle = startFeishuOnboarding({
@@ -589,11 +664,47 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           modelSelectHandle.cardByMessage.set(sentId, cardId)
           modelSelectHandle.sequenceByCard.set(cardId, 0)
         }
-        // The preset card posted by the onboarding flow is now dead weight —
-        // repaint it as a stale-card notice so its buttons do not look live.
-        await onboardingHandle?.supersedePrevious(chatMessage.chatId)
+        // The preset picker recorded a real decision — which mode the session
+        // gets — so freeze it on that choice instead of collapsing it into the
+        // bare grey notice (the operator must still be able to read back what
+        // was picked). Only cards that were walked through are discarded.
+        const presetId = flowState?.agentPreset ?? agentPresets.defaultId
+        const presetRow = (await agentPresets.list()).find(p => p.id === presetId)
+        const presetLabel = presetRow !== undefined && presetRow.name !== undefined && presetRow.name !== ''
+          ? presetRow.name
+          : presetId
+        await onboardingHandle?.supersedePrevious(chatMessage.chatId, {
+          mode: 'keep',
+          note: translationsFor(currentLocale().id).cardSettledNote(presetLabel),
+        })
       },
     })
+
+    // The `/new` flow's last step: settle the final confirmation card.
+    const stopNewSessionConfirm = cardChannel.onCardAction(async (evt: { chatId?: string; messageId?: string; action?: { value?: unknown } }): Promise<void> => {
+      const parsed = decodeCardValue(evt.action?.value)
+      const kind = parsed?.kind
+      if (kind !== NEW_SESSION_CONFIRM_ACTION && kind !== NEW_SESSION_CANCEL_ACTION) return
+      const chatId = evt.chatId
+      if (chatId === undefined) return
+      const pending = pendingNewSession.get(chatId)
+      if (pending === undefined) return
+      pendingNewSession.delete(chatId)
+      const t = translationsFor(currentLocale().id)
+      if (kind === NEW_SESSION_CANCEL_ACTION) {
+        await paintNewSessionCard(pending.cardId, renderNewSessionCancelledCard(t)).catch((error: unknown) => {
+          console.log(`dsh-feishu: could not paint the cancelled session card: ${error instanceof Error ? error.message : String(error)}`)
+        })
+        return
+      }
+      const bridge = bridgeHolder.current
+      if (bridge === undefined) return
+      await commitNewSession(bridge, cardChannel, pending.chatMessage, pending.options, pending.messageId, pending.topic, {
+        cardId: pending.cardId,
+        paint: (card: object) => paintNewSessionCard(pending.cardId, card),
+      })
+    })
+    stopNewSessionConfirmer = stopNewSessionConfirm
   }
   // Approval control (the Feishu waterfall listener) and the reasoning-display
   // toggle are shared by the command runtime and the same-session standalone
@@ -683,7 +794,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     busyHandle?.stop()
     displayHandle?.stop()
     sessionHandle?.stop()
-  }, 'dsh-feishu: feishu questions + approvals + todos + streaming + send-file + model-select + permission + busy + display + session listeners')
+    stopNewSessionConfirmer?.()
+  }, 'dsh-feishu: feishu questions + approvals + todos + streaming + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
 
   let lastPrintedQrUrl: string | undefined
   const provisionManager = new ProvisionManager({
@@ -904,6 +1016,7 @@ async function commitNewSession(
   options: ChatCreationOptions,
   messageId?: string,
   topic?: { rootId?: string; threadId?: string },
+  repaint?: { cardId: string; paint: (card: object) => Promise<void> },
 ): Promise<{ messageId?: string }> {
   const salt = `new-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const sessionId = bridge.startNewSession(chatMessage, salt, options)
@@ -927,6 +1040,12 @@ async function commitNewSession(
   const opts = topic?.threadId !== undefined && topic.rootId !== undefined
     ? { replyInThread: true, replyTo: topic.rootId }
     : {}
+  // A confirmation card turns into the result in place — it already shows the
+  // settings that were just committed.
+  if (repaint !== undefined) {
+    await repaint.paint(card)
+    return {}
+  }
   if (messageId === undefined) {
     const cardId = await cardChannel.createCardInstance(card)
     return cardChannel.sendCardByReference(chatMessage.chatId, cardId, opts)
@@ -1314,10 +1433,17 @@ async function executeSlashCommand(
     // the sandbox mode AND the approval policy, so writing only the sandbox
     // knob leaves the bundle unmatched and DSH shows it as "custom". Fall back
     // to the single-knob `sandbox/mode` append when the service is absent.
-    if (permissionPresets?.set !== undefined) {
-      permissionPresets.set(session, raw)
-    } else {
-      session.append('sandbox/mode', { mode: raw })
+    // The write can legitimately refuse (the persistent-shell fence), so
+    // report the reason here instead of letting it surface as a bare
+    // `命令执行出错` from the channel's catch-all.
+    try {
+      if (permissionPresets?.set !== undefined) {
+        permissionPresets.set(session, raw)
+      } else {
+        session.append('sandbox/mode', { mode: raw })
+      }
+    } catch (error: unknown) {
+      return { kind: 'error', text: describePermissionSwitchFailure(error, translationsFor(localeControl?.current().id ?? 'zh')) }
     }
     return { kind: 'success', text: `✅ 权限模式已切换为 \`${raw}\`（${PERMISSION_LABELS[raw] ?? raw}）。将从下一次受限调用起生效。` }
   }

@@ -31,6 +31,10 @@ export interface Translations {
   // ---- Card lifecycle (card-supersede.ts) ----
   cardSupersededTitle: string
   cardSupersededBody: string
+  /** Appended to a retired card that keeps its original content. */
+  cardStaleNote: string
+  /** Appended to a DECISION card that is frozen on the choice it recorded. */
+  cardSettledNote: (value: string) => string
   /** Shown on a card whose request was already answered in the DSH Web UI. */
   cardAnsweredElsewhereTitle: string
   cardAnsweredElsewhereBody: string
@@ -176,6 +180,10 @@ export interface Translations {
 
   // Permission extras (feishu-permission.ts)
   permissionNoSession: string
+  /** Warning line for a switch DSH refused; `reason` is the raw error text. */
+  permissionSwitchFailed: (reason: string) => string
+  /** One extra sentence shown when the refusal is DSH's persistent-shell fence. */
+  permissionSwitchBusyShellHint: string
 
   // Turn Complete deliverables (channel.ts, from `deliverables/presented`)
   deliverablesTitle: (count: number) => string
@@ -272,6 +280,19 @@ export interface Translations {
   onboardingNoPresets: string
   onboardingCreatedTitle: string
   onboardingCreatedBody: (sessionId: string, summary: string) => string
+  /** Final confirmation card of the `/new` flow (all settings in one card). */
+  newSessionConfirmTitle: string
+  newSessionConfirmHint: string
+  newSessionConfirmCreate: string
+  newSessionConfirmCancel: string
+  newSessionCancelledTitle: string
+  newSessionCancelledBody: string
+  /** Summary line parts of the confirmation card. */
+  newSessionConfirmWorkspace: (path: string) => string
+  newSessionConfirmPreset: (preset: string) => string
+  newSessionConfirmModel: (route: string) => string
+  newSessionConfirmEffort: (effort: string) => string
+  newSessionConfirmDefaults: string
   onboardingAttachedTitle: string
   onboardingTakeover: (owner: string) => string
   onboardingAttachedBody: (sessionId: string, takeover: string) => string
@@ -312,6 +333,8 @@ export interface Translations {
 export const zh = {
   cardSupersededTitle: '⬆️ 此卡片已失效',
   cardSupersededBody: '此卡片已被后续操作替换，请使用下方**最新的卡片**继续。',
+  cardStaleNote: '⬆️ 此卡片已失效，请使用下方**最新的卡片**继续。',
+  cardSettledNote: value => `✅ 已选择：${value} —— 这张卡片已锁定，不能再修改。`,
   cardAnsweredElsewhereTitle: '✅ 已在网页端处理',
   cardAnsweredElsewhereBody: '这个请求已在 **DSH Web UI** 中处理，此卡片作废。',
   approvalCardTitle: '🔐 等待审批',
@@ -451,6 +474,8 @@ export const zh = {
   displayCardNote: '也支持 `/display <开关> on|off`。',
 
   permissionNoSession: '当前 chat 还没有会话，请先发一条消息再执行 /permission',
+  permissionSwitchFailed: reason => `⚠️ **切换未生效**：${reason}`,
+  permissionSwitchBusyShellHint: '_原因：该会话的常驻终端仍在运行，DSH 不允许此刻切换沙箱模式（会影响正在执行的命令）。请新建一个会话，或换用不含常驻终端的预设后再切换。_',
 
   modelSelectProviderLabel: label => `**Provider**　\`${label}\``,
   modelSelectBack: '← 返回选择 Provider',
@@ -532,6 +557,17 @@ export const zh = {
   onboardingNoPresets: '没有可用模板，将使用默认模板。',
   onboardingCreatedTitle: '✅ 会话已创建',
   onboardingCreatedBody: (sessionId, summary) => `**Session** \`${sessionId}\`\n\n${summary}\n\n现在可以发送消息开始对话了。`,
+  newSessionConfirmTitle: '🧩 新建会话 · 请确认',
+  newSessionConfirmHint: '确认后立即按以下设置创建会话。',
+  newSessionConfirmCreate: '✅ 创建会话',
+  newSessionConfirmCancel: '✖️ 取消',
+  newSessionCancelledTitle: '✖️ 已取消新建会话',
+  newSessionCancelledBody: '没有创建会话，可以重新发起 `/new`。',
+  newSessionConfirmWorkspace: path => `📁 **工作区**：\`${path}\``,
+  newSessionConfirmPreset: preset => `🧩 **Agent 预设**：\`${preset}\``,
+  newSessionConfirmModel: route => `🤖 **模型**：\`${route}\``,
+  newSessionConfirmEffort: effort => `🧠 **推理等级**：\`${effort}\``,
+  newSessionConfirmDefaults: '_未指定工作区/预设，将使用默认值。_',
   onboardingAttachedTitle: '📎 会话已绑定',
   onboardingTakeover: owner => `\n\n🔓 已从 ${owner} 接管该会话（原占用者已被重置为新会话）。`,
   onboardingAttachedBody: (sessionId, takeover) => `已绑定到会话 \`${sessionId}\`。${takeover}\n\n现在可以发送消息继续对话了。`,
@@ -571,6 +607,8 @@ export const zh = {
 export const en: Translations = {
   cardSupersededTitle: '⬆️ This card is stale',
   cardSupersededBody: 'This card was replaced by a later step. Use the **newest card** below instead.',
+  cardStaleNote: '⬆️ This card is stale — use the **newest card** below.',
+  cardSettledNote: value => `✅ Selected: ${value} — this card is locked and can no longer be changed.`,
   cardAnsweredElsewhereTitle: '✅ Handled in the Web UI',
   cardAnsweredElsewhereBody: 'This request was already handled in the **DSH Web UI**, so this card is void.',
   approvalCardTitle: '🔐 Waiting for approval',
@@ -710,6 +748,8 @@ export const en: Translations = {
   displayCardNote: 'Also available as `/display <switch> on|off`.',
 
   permissionNoSession: 'This chat has no session yet — send a message first, then run /permission',
+  permissionSwitchFailed: reason => `⚠️ **Switch not applied**: ${reason}`,
+  permissionSwitchBusyShellHint: '_Why: this session still has a persistent terminal running, and DSH refuses a sandbox-mode change while one is live (it would affect running commands). Start a new session, or use a preset without a persistent shell._',
 
   modelSelectProviderLabel: label => `**Provider**　\`${label}\``,
   modelSelectBack: '← Back to choose provider',
@@ -791,6 +831,17 @@ export const en: Translations = {
   onboardingNoPresets: 'No presets available; the default preset will be used.',
   onboardingCreatedTitle: '✅ Session created',
   onboardingCreatedBody: (sessionId, summary) => `**Session** \`${sessionId}\`\n\n${summary}\n\nYou can now send a message to start chatting.`,
+  newSessionConfirmTitle: '🧩 New session · please confirm',
+  newSessionConfirmHint: 'Confirming creates the session with the settings below.',
+  newSessionConfirmCreate: '✅ Create session',
+  newSessionConfirmCancel: '✖️ Cancel',
+  newSessionCancelledTitle: '✖️ New session cancelled',
+  newSessionCancelledBody: 'No session was created. Run `/new` again to retry.',
+  newSessionConfirmWorkspace: path => `📁 **Workspace**: \`${path}\``,
+  newSessionConfirmPreset: preset => `🧩 **Agent preset**: \`${preset}\``,
+  newSessionConfirmModel: route => `🤖 **Model**: \`${route}\``,
+  newSessionConfirmEffort: effort => `🧠 **Reasoning effort**: \`${effort}\``,
+  newSessionConfirmDefaults: '_No workspace/preset chosen; the defaults will be used._',
   onboardingAttachedTitle: '📎 Session attached',
   onboardingTakeover: owner => `\n\n🔓 Took over this session from ${owner} (the previous owner was reset to a brand-new session).`,
   onboardingAttachedBody: (sessionId, takeover) => `Attached to session \`${sessionId}\`.${takeover}\n\nYou can now send a message to continue chatting.`,

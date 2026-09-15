@@ -138,7 +138,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     // Repaint the previous card only AFTER the new one is on screen (no gap),
     // and before noting the new card — supersedePrevious consumes the note.
     await superseder.supersedePrevious(chat.chatId)
-    superseder.note(chat.chatId, { cardId, messageId: result.messageId })
+    superseder.note(chat.chatId, { cardId, messageId: result.messageId, card })
     if (supersededMessageId !== undefined) byCard.delete(supersededMessageId)
     if (result.messageId !== undefined) byCard.set(result.messageId, chat)
     return result.messageId

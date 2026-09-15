@@ -688,12 +688,15 @@ export interface FeishuOnboardingHandle {
    *  topic) so later card actions from that chat recover their thread key. */
   noteTopic(chatMessage: ConversationMessage): void
   /**
-   * Repaint this chat's last onboarding card as a stale-card notice. Used by
-   * the caller when it posts the model card (which is rendered by
-   * feishu-model-select, not by this module) so the preset card does not keep
-   * showing live-looking buttons.
+   * Repaint this chat's last onboarding card. Used by the caller when it posts
+   * the model card (which is rendered by feishu-model-select, not by this
+   * module) so the preset card does not keep showing live-looking buttons.
+   *
+   * @param options - same shape as the internal superseder: `keep` freezes the
+   *   card with its content (optionally with a settled note), `notice` replaces
+   *   it with the bare stale notice.
    */
-  supersedePrevious(chatId: string): Promise<void>
+  supersedePrevious(chatId: string, options?: { mode?: 'keep' | 'notice'; note?: string }): Promise<void>
 }
 
 export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboardingHandle {
@@ -746,23 +749,43 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
    *
    * @param terminal - true for a result/error card that ends a flow; it is not
    *   remembered, so a later flow will not repaint it.
+   * @param navigation - true for a pure navigation card (a folder-browser page
+   *   or "up one level"). Such a card, and the page it replaces, collapse to
+   *   the bare notice — unless the operator settles on that very page, whose
+   *   `settlePrevious` freezes it instead.
+   * @param settlePrevious - set when the card being retired is the one the
+   *   operator just used to COMMIT a value (picking a workspace, confirming a
+   *   directory). It is frozen on screen with that value and stops being
+   *   editable — the readable record of the decision.
    */
   async function sendCard(
     chatMessage: ConversationMessage,
     card: object,
-    options?: { terminal?: boolean },
+    options?: { terminal?: boolean; navigation?: boolean; settlePrevious?: string },
   ): Promise<void> {
     const opts = topicOpts(chatMessage)
     const cardId = await channel.createCardInstance(card)
     const result = await channel.sendCardByReference(chatMessage.chatId, cardId, opts)
     // Repaint the previous card only AFTER the new one is on screen, and
     // before remembering the new card (supersedePrevious consumes the note).
-    await superseder.supersedePrevious(chatMessage.chatId)
+    const t = getTranslations()
+    await superseder.supersedePrevious(chatMessage.chatId, options?.settlePrevious !== undefined
+      ? { mode: 'keep', note: t.cardSettledNote(options.settlePrevious) }
+      : options?.navigation === true ? { mode: 'notice' } : {})
     if (options?.terminal === true) {
       superseder.forget(chatMessage.chatId)
       return
     }
-    superseder.note(chatMessage.chatId, { cardId, messageId: result.messageId })
+    superseder.note(chatMessage.chatId, {
+      cardId,
+      messageId: result.messageId,
+      // Always remember the payload: this card can be the one the operator
+      // settles on (a folder page's "✅ 用这个目录"), and only a remembered
+      // payload can be frozen on screen afterwards. `navigation` alone decides
+      // that an un-settled page collapses to the bare notice.
+      card,
+      ...(options?.navigation === true ? { navigation: true } : {}),
+    })
   }
 
   /** Build the workspace picker with the default = deployment config. */
@@ -819,7 +842,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     }
     browseState.set(action.chatMessage.chatId, state)
     logger.info(`dsh-feishu: browse ${action.kind} → ${state.path} page=${state.page} entries=${listing.entries.length} hidden=${state.hidden}`)
-    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations()))
+    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations()), { navigation: true })
   }
 
   /** Re-list the current level with updated display options (hidden/page). */
@@ -855,7 +878,9 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     newFlow.set(chatKey, flowState)
     const presets = await agentPresets.list()
     const card = renderPresetPicker(presets, flowState.agentPreset ?? agentPresets.defaultId, getTranslations())
-    await sendCard(action.chatMessage, card)
+    // The card the operator clicked ("use this directory" / the path form) is
+    // the directory decision: freeze it showing the chosen path.
+    await sendCard(action.chatMessage, card, { settlePrevious: path })
   }
 
   async function handleAttach(action: QueuedAction): Promise<void> {
@@ -892,7 +917,11 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     const presets = await agentPresets.list()
     const defaultPreset = flowState.agentPreset ?? agentPresets.defaultId
     const card = renderPresetPicker(presets, defaultPreset, getTranslations())
-    await sendCard(action.chatMessage, card)
+    // The workspace picker is the card the operator just decided on: freeze it
+    // on that choice instead of turning it into a dead grey notice.
+    await sendCard(action.chatMessage, card, {
+      settlePrevious: flowState.workspace ?? action.value ?? '',
+    })
   }
 
   async function handlePickPreset(action: QueuedAction): Promise<void> {
@@ -1034,6 +1063,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     noteTopic: (chatMessage: ConversationMessage): void => {
       recordTopic(chatMessage)
     },
-    supersedePrevious: (chatId: string): Promise<void> => superseder.supersedePrevious(chatId),
+    supersedePrevious: (chatId: string, options?: { mode?: 'keep' | 'notice'; note?: string }): Promise<void> =>
+      superseder.supersedePrevious(chatId, options),
   }
 }

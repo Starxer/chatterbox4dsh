@@ -313,12 +313,15 @@ export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle
     const messageId = evt.messageId
     if (messageId === undefined) return
     // Priority: a rename card overrides a confirm card overrides a panel card.
+    // Await the inner handler instead of discarding it with `void`: a rejection
+    // from a dropped promise has no owner, and DSH escalates an unhandled
+    // rejection to `fatal load failure` + exit(1) (see `card-dispatch.ts`).
     const rename = renameCards.get(messageId)
-    if (rename !== undefined) return void handleRename(evt, rename)
+    if (rename !== undefined) return handleRename(evt, rename)
     const confirm = confirmCards.get(messageId)
-    if (confirm !== undefined) return void handleConfirm(evt, confirm)
+    if (confirm !== undefined) return handleConfirm(evt, confirm)
     const openState = openCards.get(messageId)
-    if (openState !== undefined) return void handlePanel(evt, openState)
+    if (openState !== undefined) return handlePanel(evt, openState)
   }
 
   const handlePanel = async (evt: SessionCardEvent, state: OpenState): Promise<void> => {

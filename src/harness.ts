@@ -89,6 +89,17 @@ export interface HarnessDependencies {
       request: { sessionId: unknown; requestId: string; mode: 'steer' | 'queue'; content: unknown },
       signal?: AbortSignal,
     ) => Promise<{ accepted: boolean }>
+    /**
+     * DSH's one-stop model route installer (agent-scoped selection ref +
+     * `model/selection` session event + persisted default). Required for a
+     * `/new` route to survive the first prompt — see {@link applyCreationRoute}.
+     */
+    selectModel?: (request: {
+      sessionId: unknown
+      provider: string
+      model: string
+      reasoningEffort?: string
+    }) => Promise<unknown>
   }
 }
 
@@ -1285,7 +1296,45 @@ export class HarnessConversationService {
         await handle.dispose()
         throw error
       }
+      await this.applyCreationRoute(sessionId, creation)
     }
     return handle
+  }
+
+  /**
+   * Install the `/new` route through DSH's own model-selection path.
+   *
+   * Creating an agent with `agentOptions.provider/model` is NOT enough on its
+   * own. The first prompt dispatched through `sessionController.prompt()` calls
+   * `ApiSessionAgentController.selectionFor(agent)`, which installs an
+   * `agent/request` listener whose selection is `agentDefaultModel
+   * .currentSelection()` whenever the session has no logged request header yet.
+   * That listener runs after the loop's own route resolution and overwrites the
+   * provider/model/reasoning effort of the first request — so a `/new` route
+   * silently degraded to the global default model (verified on 0.1.5-rc.2:
+   * session log carried no `model/selection` event and the first
+   * `request/header` held the default route).
+   *
+   * `selectModel` appends the durable `model/selection` event and sets the
+   * agent-scoped ref, which is exactly what the Web UI does when a model is
+   * picked, so the route survives the first prompt. Like the Web UI, it also
+   * persists the choice as the default selection.
+   */
+  private async applyCreationRoute(sessionId: string, creation: ChatCreationOptions | undefined): Promise<void> {
+    const selectModel = this.deps.sessionController?.selectModel
+    if (selectModel === undefined) return
+    if (creation?.provider === undefined || creation.model === undefined) return
+    try {
+      await selectModel.call(this.deps.sessionController, {
+        sessionId,
+        provider: creation.provider,
+        model: creation.model,
+        ...(creation.reasoningEffort !== undefined ? { reasoningEffort: creation.reasoningEffort } : {}),
+      })
+    } catch (error: unknown) {
+      // Non-fatal: the session still exists and runs on the default route.
+      const message = error instanceof Error ? error.message : String(error)
+      console.log(`dsh-feishu: could not apply the /new model route for ${sessionId}: ${message}`)
+    }
   }
 }

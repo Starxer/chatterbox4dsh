@@ -147,6 +147,69 @@ describe('startFeishuPermission', () => {
     expect(append).not.toHaveBeenCalled()
     handle.stop()
   })
+
+  // 2026-09-14 outage: DSH's persistent-shell fence refuses a sandbox-mode
+  // change while a PTY owned by the session is live. The throw used to escape
+  // this `async` handler as an unhandled rejection, which DSH turns into
+  // `fatal load failure` + exit(1). The click must now stay contained, keep
+  // the card alive, and say why nothing changed.
+  const busyShellRefusal = 'cannot change sandbox mode from "workspace-write" to "danger-full-access" while persistent terminal sessions are open or being created; wait for creation to settle and close them first'
+
+  async function clickFullAccessWith(permissionPresets: any, sandbox?: any) {
+    const session = { append: vi.fn() }
+    const send = vi.fn(async () => ({ messageId: 'om_card' }))
+    const updateCard = vi.fn(async () => undefined)
+    let actionHandler: ((evt: any) => unknown) | undefined
+    const handle = startFeishuPermission({
+      channel: { send, updateCard, onCardAction: (h: any) => { actionHandler = h; return () => undefined } },
+      ...(sandbox !== undefined ? { sandbox } : {}),
+      ...(permissionPresets !== undefined ? { permissionPresets } : {}),
+      sessionGetter: () => session,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    } as any)
+    await handle.open({ chatId: 'oc_1', chatType: 'p2p' }, 'session-1')
+    const card = ((send.mock.calls as any)[0][1] as any).card
+    const full = buttonsOf(card).find((b: any) => textOf(b).includes('Full access'))
+    // Must resolve, never reject: an escaping rejection is what killed dsh.
+    await expect(actionHandler!({ messageId: 'om_card', action: { value: full.value } })).resolves.toBeUndefined()
+    handle.stop()
+    return { updateCard, session }
+  }
+
+  it('reports the DSH persistent-shell refusal on the card instead of throwing', async () => {
+    const set = vi.fn(() => { throw new Error(busyShellRefusal) })
+    const { updateCard, session } = await clickFullAccessWith({ set, current: () => 'workspace-write' })
+    expect(set).toHaveBeenCalledWith(session, 'danger-full-access')
+    expect(session.append).not.toHaveBeenCalled()
+    expect(updateCard).toHaveBeenCalledTimes(1)
+    const rendered = JSON.stringify((updateCard.mock.calls[0] as any)[1])
+    // The card keeps its buttons (the state did not change) and explains why.
+    expect(rendered).toContain('Switch not applied')
+    expect(rendered).toContain('persistent terminal sessions are open')
+    expect(rendered).toContain('preset without a persistent shell')
+    expect(rendered).toContain('"disabled":true')
+  })
+
+  it('reports a refusal without the persistent-shell hint when that is not the cause', async () => {
+    const set = vi.fn(() => { throw new Error('permission: unknown preset "danger-full-access"') })
+    const { updateCard } = await clickFullAccessWith({ set, current: () => 'workspace-write' })
+    const rendered = JSON.stringify((updateCard.mock.calls[0] as any)[1])
+    expect(rendered).toContain('Switch not applied')
+    expect(rendered).not.toContain('preset without a persistent shell')
+  })
+
+  it('still repaints the card when reading the mode back fails', async () => {
+    const set = vi.fn()
+    const current = vi.fn(() => { throw new Error('permissions projection is not registered') })
+    const { updateCard } = await clickFullAccessWith(
+      { set, current },
+      { resolve: () => ({ mode: 'workspace-write' }) },
+    )
+    expect(set).toHaveBeenCalled()
+    expect(updateCard).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify((updateCard.mock.calls[0] as any)[1])).toContain('Workspace Write')
+  })
 })
 
 function textOf(button: any): string {

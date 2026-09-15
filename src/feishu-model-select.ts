@@ -339,6 +339,10 @@ function parseCardAction(evt: CardActionLike): { action: ModelCardAction; flow?:
       if (typeof model === 'string' && model !== '') {
         return { action: { type: 'confirm-select', provider, model, ...(effort !== undefined ? { reasoningEffort: effort } : {}) }, flow }
       }
+      // Never drop a confirm in silence: an empty `model` means the dropdown
+      // had no valid selection (see `handleSelectProvider`), and the operator
+      // otherwise just sees a dead button.
+      console.log(`dsh-feishu: [card] confirm-select ignored: provider=${provider} submitted no model (form_value=${JSON.stringify(formValue).slice(0, 200)})`)
     }
     return undefined
   }
@@ -533,7 +537,16 @@ export function startFeishuModelSelect(deps: {
     }
 
     const providers = llm.listProviders()
-    const card = renderModelSelectCard(providers, models, provider, current.model, current.reasoningEffort, supportedEfforts, modelDefaultEffort, flow, getTranslations())
+    // The dropdown must open on a model that BELONGS to the provider just
+    // picked. Handing it the session's current model blindly produced a
+    // `select_static` whose value is not among its own options whenever the
+    // operator switched providers (e.g. current `deepseek-official/…` while
+    // picking `minimax-cn`): the dropdown rendered empty, the form submitted no
+    // `model`, and the confirm silently did nothing at all — which is how a
+    // `/new` flow died one step before its confirmation card, with no card, no
+    // error and no log.
+    const initialModel = models.find(m => m.id === current.model)?.id ?? models[0]?.id ?? current.model
+    const card = renderModelSelectCard(providers, models, provider, initialModel, current.reasoningEffort, supportedEfforts, modelDefaultEffort, flow, getTranslations())
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 

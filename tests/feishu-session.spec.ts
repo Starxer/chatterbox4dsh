@@ -175,6 +175,45 @@ describe('startFeishuSession', () => {
     }
   })
 
+  it('surfaces a failing panel action to the caller instead of dropping the rejection', async () => {
+    // A handler failure must travel out of the card-action handler so the
+    // shared fan-out (`card-dispatch.ts`) owns it. Discarding the inner promise
+    // with `void` made the rejection unowned, and DSH escalates an unhandled
+    // rejection to `fatal load failure` + exit(1).
+    const harness: any = { sentCards: [], cardActionHandler: undefined }
+    let listCalls = 0
+    const bridge = {
+      // The first call renders the panel for `open`; the click's call fails.
+      listSessions: vi.fn(async () => {
+        listCalls += 1
+        if (listCalls > 1) throw new Error('list refused')
+        return SESSIONS
+      }),
+      attachSession: vi.fn(() => 'ok' as const),
+      detachSession: vi.fn(() => ({ kind: 'free' as const })),
+      describeChatKey: vi.fn((k: string) => k),
+    }
+    const { channel, cleanup } = buildChannel(harness)
+    const handle = startFeishuSession({
+      channel: channel as any,
+      bridge: () => bridge as any,
+      sessionController: { rename: vi.fn(), fork: vi.fn() },
+      logger: { warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    })
+    try {
+      // `open` already renders the panel from one listSessions call.
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      await expect(harness.cardActionHandler!({
+        messageId: 'om_card',
+        action: { value: { action: 'list' } },
+      })).rejects.toThrow('list refused')
+    } finally {
+      handle.stop()
+      cleanup()
+    }
+  })
+
   it('rename pops a dedicated rename card and confirms with the typed title', async () => {
     const harness: any = { sentCards: [], cardActionHandler: undefined }
     const bridge = {

@@ -713,4 +713,51 @@ describe('HarnessConversationService', () => {
     expect(createCall.sessionId).toBe(service2.resolveSessionIdFor(topicA))
     expect(createCall.agentOptions).toMatchObject({ provider: 'openai', model: 'gpt-4o' })
   })
+
+  it('installs the /new route through the session controller so the first prompt keeps it', async () => {
+    // Creating the agent with agentOptions is NOT enough: the session
+    // controller's own selection listener overwrites the route with the global
+    // default for a session without a request header. The creation route has to
+    // go through selectModel, exactly like the Web UI model picker does.
+    const f = fixture()
+    const deps = dependencies(f)
+    const selectModel = vi.fn(async (_request: any) => ({}))
+    deps.sessionController = { selectModel }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const topicA = { chatId: 'a', chatType: 'p2p' as const, threadId: 't1' }
+    service.startNewSession(topicA, 's1', { provider: 'minimax-cn', model: 'MiniMax-M3', reasoningEffort: 'low' as never })
+    await service.reply({ chatId: 'a', chatType: 'p2p', threadId: 't1', content: 'hello' })
+    expect(selectModel).toHaveBeenCalledTimes(1)
+    expect(selectModel.mock.calls[0]![0]).toEqual({
+      sessionId: service.resolveSessionIdFor(topicA),
+      provider: 'minimax-cn',
+      model: 'MiniMax-M3',
+      reasoningEffort: 'low',
+    })
+  })
+
+  it('does not touch the model route when /new carried no model', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const selectModel = vi.fn(async () => ({}))
+    deps.sessionController = { selectModel }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const topicA = { chatId: 'a', chatType: 'p2p' as const, threadId: 't1' }
+    service.startNewSession(topicA, 's1', { workspace: '/other-ws' })
+    await service.reply({ chatId: 'a', chatType: 'p2p', threadId: 't1', content: 'hello' })
+    expect(selectModel).not.toHaveBeenCalled()
+  })
+
+  it('keeps the session usable when installing the creation route fails', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    deps.sessionController = { selectModel: vi.fn(async () => { throw new Error('unknown model') }) }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const topicA = { chatId: 'a', chatType: 'p2p' as const, threadId: 't1' }
+    service.startNewSession(topicA, 's1', { provider: 'p', model: 'does-not-exist' })
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', threadId: 't1', content: 'hello' })).resolves.toBe('answer:hello')
+    expect(log.mock.calls.some(call => String(call[0]).includes('could not apply the /new model route'))).toBe(true)
+    log.mockRestore()
+  })
 })

@@ -107,12 +107,16 @@ export interface FeishuPermissionHandle {
   stop(): void
 }
 
-/** Render the permission picker card with the active mode marked. */
-export function renderPermissionCard(current: string, t: Translations): object {
+/** Render the permission picker card with the active mode marked.
+ *  @param failure - already-localized failure text (see
+ *  {@link describePermissionSwitchFailure}); when present it is shown as a
+ *  warning line so a click that did not take effect says why. */
+export function renderPermissionCard(current: string, t: Translations, failure?: string): object {
   const elements: object[] = [
     { tag: 'markdown', content: `${t.permissionCurrent(current)} ${permissionLabel(current, t)} ${MODE_ICON[current] ?? ''}` },
     { tag: 'markdown', content: t.permissionHint },
   ]
+  if (failure !== undefined && failure !== '') elements.push({ tag: 'markdown', content: failure })
   for (const mode of SANDBOX_MODES) {
     const active = mode === current
     // Color language: keep every selectable button clearly clickable. Only
@@ -137,10 +141,44 @@ export function renderPermissionCard(current: string, t: Translations): object {
   }
 }
 
+/**
+ * Explain a failed permission switch in the active locale.
+ *
+ * The switch is a normal DSH write (`permissionPresets.set()`) whose failure
+ * is a legitimate refusal, not a plugin fault — DSH's persistent-shell fence
+ * rejects a sandbox-mode change while a PTY owned by the session is live. That
+ * message is precise but bare and English, so add the one sentence that makes
+ * it actionable when the fence is what fired.
+ * @param error - whatever the write path threw.
+ * @param t - strings for the active locale.
+ * @returns the warning line to show on the card (or as command error text).
+ */
+export function describePermissionSwitchFailure(error: unknown, t: Translations): string {
+  const reason = error instanceof Error ? error.message : String(error)
+  // Match on DSH's wording, which is the only signal available to a caller;
+  // if upstream rewords it the hint is merely dropped, never wrong.
+  const busyShell = /persistent terminal/i.test(reason)
+  return `${t.permissionSwitchFailed(reason)}${busyShell ? `\n${t.permissionSwitchBusyShellHint}` : ''}`
+}
+
 /** Start the permission picker: send cards on demand and handle button clicks. */
 export function startFeishuPermission(deps: FeishuPermissionDeps): FeishuPermissionHandle {
   const { channel, sandbox, permissionPresets, sessionGetter, logger, getTranslations } = deps
   const byCard = new Map<string, { sessionId: string }>()
+
+  /** Read the effective mode, never letting a read failure mask the switch. */
+  const currentModeOf = (session: PermissionSession): string => {
+    try {
+      return permissionPresets?.current(session) ?? sandbox?.resolve?.({ session })?.mode ?? ''
+    } catch (error: unknown) {
+      logger.warn(`dsh-feishu: permission read failed: ${error instanceof Error ? error.message : String(error)}`)
+      try {
+        return sandbox?.resolve?.({ session })?.mode ?? ''
+      } catch {
+        return ''
+      }
+    }
+  }
 
   const onCardAction = async (evt: PermissionCardEvent): Promise<void> => {
     const messageId = evt.messageId
@@ -158,13 +196,24 @@ export function startFeishuPermission(deps: FeishuPermissionDeps): FeishuPermiss
     // the sandbox mode AND the approval policy, so writing only the sandbox
     // knob leaves the bundle unmatched and DSH reports it as "custom". Fall
     // back to the single-knob `sandbox/mode` append when the service is absent.
-    if (permissionPresets !== undefined) {
-      permissionPresets.set(session, parsed.mode)
-    } else {
-      session.append('sandbox/mode', { mode: parsed.mode })
+    //
+    // The write can legitimately refuse (DSH's persistent-shell fence for a
+    // sandbox-mode change), so contain it and say why on the card: an
+    // exception escaping here used to become an `unhandledRejection`, which
+    // DSH escalates to `fatal load failure` + exit(1).
+    let failure: string | undefined
+    try {
+      if (permissionPresets !== undefined) {
+        permissionPresets.set(session, parsed.mode)
+      } else {
+        session.append('sandbox/mode', { mode: parsed.mode })
+      }
+    } catch (error: unknown) {
+      failure = describePermissionSwitchFailure(error, getTranslations())
+      logger.warn(`dsh-feishu: permission switch failed: ${error instanceof Error ? error.message : String(error)}`)
     }
-    const current = permissionPresets?.current(session) ?? sandbox?.resolve?.({ session })?.mode ?? parsed.mode
-    await channel.updateCard(messageId, renderPermissionCard(current, getTranslations())).catch((error: unknown) => {
+    const current = currentModeOf(session) || parsed.mode
+    await channel.updateCard(messageId, renderPermissionCard(current, getTranslations(), failure)).catch((error: unknown) => {
       logger.warn(`dsh-feishu: permission card update failed: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
@@ -173,7 +222,7 @@ export function startFeishuPermission(deps: FeishuPermissionDeps): FeishuPermiss
   const open = async (chat: ConversationMessage, sessionId: string): Promise<string | undefined> => {
     const session = sessionGetter(sessionId)
     if (session === undefined) throw new Error(getTranslations().permissionNoSession)
-    const current = permissionPresets?.current(session) ?? sandbox?.resolve?.({ session })?.mode ?? ''
+    const current = currentModeOf(session)
     const opts = chat.threadId !== undefined
       ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
       : {}

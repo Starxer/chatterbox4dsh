@@ -10,6 +10,54 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 修复：一次卡片点击能杀掉整个 dsh 进程——`/permission` 切换触发 DSH 拒绝后被升级成 `fatal load failure`（`src/card-dispatch.ts`（新）/ `src/feishu-permission.ts` / `src/feishu-session.ts` / `src/index.ts` / `src/i18n.ts`）
+
+- **问题**（2026-09-14 使用者真机报告「刚才有一次 permission 切换故障」）：在话题里点 `/permission` 卡片的「🔓 Full access」，**dsh 进程直接以 status=1 退出**，systemd 重启（`restart counter is at 1`），当时所有正在跑的 turn 一起被杀。日志证据：`[card] … value={"p":"permission","mode":"danger-full-access"}` 紧跟一行 `dsh: fatal load failure: Error: cannot change sandbox mode from "workspace-write" to "danger-full-access" while persistent terminal sessions are open or being created`。
+- **根因（两层，缺一不可）**：
+  1. **DSH 的合法拒绝**：`dsh-terminal-bash` 注册了一个 `internal/dispatch` 全局监听——某会话仍有常驻 PTY（`terminals.hasOwnerActivity(owner)`）时，禁止改沙箱模式（会波及正在执行的命令）。该监听在 `session.append('sandbox/mode')` 的**回调收集阶段**抛出，所以事件根本没入日志。触发它的会话是 `minimal` 预设——**该预设唯一的 shell 就是常驻 bash**（`dsh-tool-bash-persistent`），于是 agent 跑过任何一条命令之后，这个会话在整个生命周期内都不能再切沙箱模式。**这是 DSH 行为，不是插件 bug**（WebUI 走 `/permission` 命令同样会撞上）。
+  2. **插件把拒绝升级成了致命错误**：卡片回调的扇出是 `for (const h of cardActionHandlers) void h(evt)`——没有任何人 await、也没有任何人持有这个 promise。`feishu-permission` 的处理器是 `async`，`permissionPresets.set()` 的同步抛出因此变成一个**无主的 rejected promise**；DSH 的 `installFailLoud` 把 `unhandledRejection` 一律当成启动失败（打印 `fatal load failure` 后 `process.exit(1)`）。**结论：在这个插件里，任何一个被丢弃的 promise 都能杀掉守护进程。**
+- **改法**：
+  1. **扇出逐个兜住失败**（新模块 `src/card-dispatch.ts` 的 `dispatchCardAction`）：`Promise.resolve(handler(evt)).catch(onError)` + 同步 throw 的 try/catch，一个处理器失败不影响其余处理器，失败走 `console.log`（进 journald）。按钮点错可以失败，但不能停服务。
+  2. **`/permission` 把拒绝讲清楚**（`src/feishu-permission.ts` 的 `describePermissionSwitchFailure`）：写入失败不再上抛，而是**原地重绘卡片**并附一行 `⚠️ 切换未生效：<DSH 原文>`；命中常驻终端围栏时再补一句可执行的建议（新建会话 / 换用不含常驻终端的预设）。`/permission <模式>` 文本路径同样接管，不再回落到通道的兜底 `命令执行出错`。读回当前模式也加了保护——读失败不能掩盖写失败。
+  3. **`feishu-session.ts` 的 `return void handleRename/handleConfirm/handlePanel(...)` 改为 `return handle...(...)`**：这是同一个病——`void` 丢掉的 promise 若 reject 同样无主、同样致命。改为让失败传回扇出（由第 1 条兜住并记录）。
+- **影响面与遗留**：崩溃后重启会清空 `terminals`（PTY 是内存态），所以围栏只在"会话跑过常驻 shell"期间存在；但**崩溃前已发出的那张 `/permission` 卡片在重启后成了死卡**（`byCard` 是进程内 Map），需要重新执行 `/permission` 拿新卡。
+- **验证**：新增 `tests/card-dispatch.spec.ts` 五例（逐个投递 / 异步 reject 被兜住且不影响后续处理器 / 同步 throw 不打断扇出 / **不产生 `unhandledRejection`** / 健康处理器不报错），`tests/feishu-permission.spec.ts` 三例（围栏拒绝时处理器**resolve 而非 reject**、卡片含原因+建议且按钮仍在 / 非围栏原因的拒绝不带那段建议 / 读回模式抛错时仍重绘卡片），`tests/feishu-session.spec.ts` 一例（面板操作失败必须由处理器 promise 传出，供扇出兜住）。**反证过**：把扇出改回 `void handler(evt)`，`unhandledRejection` 那例立刻变红（并把 `boom` 原样打出来）；把 session 改回 `return void handlePanel(...)`，新例变红。全套 **354 passed / 30 files**，typecheck 0 error，build ✅。
+
+### 修复：`/new` 走到模型卡就断——换 provider 后下拉初始值不属于该 provider，确认被静默丢弃（`src/feishu-model-select.ts` / `src/index.ts`）
+
+- **问题**（2026-09-11 使用者真机二次反馈「选择模式的卡片还是被 retire 了，似乎也没有最后的参数确定卡片」）：真机卡片时间线显示流程走到 `🤖 模型选择` 就停住——目录决定卡已正确冻结，但它之后只有一张灰提示（预设卡）和那张模型卡，**确认卡从未出现**；`lark-session-map.json` 未更新、主聊天也没有落错地方的卡片，`ctx.logger` 又不进 journald，所以整条链路没有任何痕迹。
+- **根因**：`handleSelectProvider` 把**当前会话的模型**直接塞给刚选中的 provider 的下拉——`renderModelSelectCard(providers, models, provider, current.model, …)`。话题里的当前模型是 `deepseek-official/deepseek-flash`，而 operator 点的是 `minimax-cn`（选项只有 MiniMax-M2.7 / M2.7-highspeed / M3）：`select_static` 的 `value` 不在自己的 `options` 里，飞书渲染成空下拉，提交时 `form_value.model` 为空，`parseCardAction` 判 `model !== ''` 不成立便 **`return undefined`，无卡片、无报错、无日志**，确认按钮看起来完全没反应。（14:31 那次能建出会话，只是因为当时当前模型恰好落在 minimax 列表里。）
+- **改法**：
+  1. **初始值回退到该 provider 自己的模型表**：`const initialModel = models.find(m => m.id === current.model)?.id ?? models[0]?.id ?? current.model`——属于当前 provider 就沿用，否则取该 provider 的第一个。下拉永远有合法选中项，确认永远不会再因为"没选中"而丢。
+  2. **消灭静默失败**：`model` 为空时打一行 `console.log`（进 journald，见关键坑 7 的"不许静默失败"），把 provider 与收到的 `form_value` 一起写出来。
+  3. **补上卡片回调日志**：`cardChannel.onCardAction` 的扇出入口新增一行 `dsh-feishu: [card] …`（`chatId` / `messageId` / `action.value` / `raw.action.form_value`）。此前**没有任何地方记录卡片点击**（`channel.ts` 只记 `[msg]` 文本），"点了没反应"从外部根本无法定位。一次点击一行，成本可忽略。
+  4. **预设卡改为冻结保留**（`onModelStep`）：它记录的是真实决定（`标准模式`/`PTC 模式`…），不再收成通用灰提示，末尾追加 `✅ 已选择：<预设名> —— 这张卡片已锁定，不能再修改`。
+- **验证**：新增 `tests/feishu-model-select.spec.ts`（该模块**此前零测试**，正是这个 bug 长期存活的原因）四例——换 provider 后下拉初始值必须是该 provider 的合法选项、当前模型属于该 provider 时保持不变、`flow: 'new-session'` 的确认确实转发给 `onNewSessionConfirm`（这条链路之前无法真机验证）、提交缺 `model` 时不静默而是留下日志。**反证过**：把初始值改回 `current.model`，第一条立刻转红。全套 **345 passed / 29 files**，typecheck 0 error。
+
+### 修复：目录决定卡仍退化成灰色提示——载荷被"翻页"标记丢掉了（`src/card-supersede.ts` / `src/feishu-onboarding.ts`）
+
+- **问题**（2026-09-11 使用者真机反馈「怎么和之前没有差别」）：上一节的「决定卡冻结保留」上线后，走 `/new` 的**目录浏览器**路径时，点「✅ 用这个目录」那张卡**仍然是裸灰提示**，没有冻结显示所选路径。真机卡片时间线可证：`/new` 之后连续 8 张全是「⬆️ 此卡片已失效」，没有一张带结算文案。
+- **根因**：`sendCard` 记「上一张卡」时按导航标记决定要不要带上原始载荷——`...(options?.navigation === true ? {} : { card })`。目录页正是 `navigation: true` 发的，于是它的载荷**根本没被记住**；而 `supersedePrevious` 里 `keep` 的前提是 `previous.card !== undefined`，于是 `commitWorkspace` 明明传了 `{ mode: 'keep', note }` 也拿不到内容，只能回退成通用灰提示。**「要不要保留」被编码成了「有没有记住载荷」这个隐式副作用**，两者本就不该耦合：一张卡在被退休之前随时可能变成决定卡（目录页就是典型——翻页时是纯导航，用户点「用这个目录」那一刻就是决定）。
+- **改法**：**载荷永远记住，形态只由退休模式决定**。`CardRef` 新增 `navigation?: boolean`，`sendCard` 一律带 `card`、按需标 `navigation: true`；`supersedePrevious` 的 keep 判定改为按优先级取模式——显式 `'notice'` → 不保留；显式 `'keep'` → 保留（有载荷时）；**未指定** → 导航卡不保留（翻页仍是裸提示，满足「翻页的不保留内容」），其余卡保留。`browse-back` 回工作区选择卡走的正是「未指定 + 上一张是导航页」，行为不变。
+- **验证**：新增 `tests/onboarding.spec.ts` 一例（`browse-open` → `browse-enter` → `browse-pick`：断言被冻结的是**目录页 card-2**、含 `✅ 已选择：/home/me/projects`、仍含目录项 `my-app`、且无任何 `behaviors`）；`tests/card-supersede.spec.ts` 新增两例（导航卡默认收成提示 / 导航卡被显式 `mode:'keep'` 时仍冻结）。**反证过**：把 `sendCard` 那行改回旧写法，onboarding 新例立刻转红，恢复后转绿。全套 **341 passed / 28 files**，typecheck 0 error。
+
+### 修复：新建会话时选的模型/推理等级真正生效（`src/harness.ts`）
+
+- **问题**（2026-09-11 使用者真机报告「新建会话时的模型选择没有生效」）：`/new` 卡片流程里选完 `minimax-cn/MiniMax-M3`，结果卡也明确写着 `🤖 minimax-cn/MiniMax-M3`，但会话实际跑的是全局默认 `deepseek-official/deepseek-flash`。会话日志可证：**没有 `model/selection` 事件**，第一条 `request/header` 就是默认路线，连 system prompt 的 `{{model}}` 也被改写成默认模型。
+- **根因**：插件靠 `chatToCreation` → `agents.create({ agentOptions })` 传路线，**但那只是"声明"，不是 DSH 认定的会话选择**。第一个 prompt 经 `sessionController.prompt()` 派发时，`ApiSessionAgentController.selectionFor(agent)` 会装上 `installModelSelection` 的 `agent/request` 监听；而对该会话（尚无 `request/header`）它的 `selection.current` 回退到 `agentDefaultModel.currentSelection()`，于是在 loop 自己解析完路线之后**又覆盖回全局默认**，连 `system-prompt/assemble` 的 `{{provider}}`/`{{model}}` 变量也一起覆盖。
+- **改法**：新建 agent 之后走 DSH 自己的写路径 `sessionController.selectModel({ sessionId, provider, model, reasoningEffort })`——它会写入持久的 `model/selection` 会话事件并设置 agent scoped ref（WebUI 选模型走的就是这条路），第一个 prompt 便不再被默认值覆盖。与 WebUI 一致，它同时会把该选择保存为全局默认。`selectModel` 缺失或抛错只记一行日志，不阻断会话（仍跑默认路线）。
+- **影响面**：`/new` 卡片流程与 `/new <工作区> <预设> [provider/model[:effort]]` 文本路径都覆盖到（同一条 `chatToCreation` 通路）。
+- **验证**：`tests/harness.spec.ts` 新增三例——新建时按 creation 选项调 `selectModel`（含 reasoningEffort）、没带模型时**不**碰路线、`selectModel` 抛错时会话仍可用且打了日志。全套 **331 passed / 27 files**，typecheck 0 error。
+
+### 变更：`/new` 流程收尾重做——决定卡冻结保留 + 最终确认卡（`src/new-session-card.ts` / `src/card-supersede.ts` / `src/feishu-onboarding.ts` / `src/index.ts` / `src/i18n.ts`）
+
+- **问题**（2026-09-11 使用者报告）：交互流程每步发新卡、并把上一张**整张替换**成一句灰色「此卡片已失效」，走一遍 `/new`（开卡 + 工作区选择 + 目录浏览几页 + 预设 + 模型）后聊天里剩下一墙没有内容的灰卡；而且**模型卡的「确认」一按就直接建会话**，没有让使用者看过「这个会话到底配了什么」。
+- **改法一：决定卡冻结保留**。`CardRef` 增加可选 `card`（发卡时的原始 JSON），退休时由调用方选模式：
+  - `{ mode: 'keep', note }` —— **冻结**：保留原卡全部内容，只递归删掉所有 `behaviors`（Card JSON 2.0 里唯一能触发回调的字段）、header 置灰、末尾追加 `note`。用于**做了决定的卡**：点某一行选定工作区、或点「✅ 用这个目录」确认目录时，那张卡就停在那里显示选择结果，**不可再编辑**（`cardSettledNote(value)`：`✅ 已选择：<值> —— 这张卡片已锁定，不能再修改。`，zh/en）。
+  - `{ mode: 'notice' }` —— **不保留**：整张替换成通用灰提示。用于**只是路过的卡**（目录浏览器的翻页、上/家目录）和**纯向导步骤**（预设卡、模型卡），否则翻十页会留下十条没用的目录清单。
+- **改法二：最终确认卡**。模型卡按「确认」不再建会话，而是把**所有设置**收进一张新卡（`src/new-session-card.ts`）：📁 工作区 / 🧩 Agent 预设 / 🤖 模型 / 🧠 推理等级 + 「✅ 创建会话 / ✖️ 取消」两个按钮（走 `behaviors`，因为卡片是 CardKit 实例——顶层 `value` 会被静默丢弃）。**确认后才建会话**，确认卡原地变成绿色「✅ 会话已创建」（`commitNewSession` 新增 `repaint` 参数，用卡片实例原地更新而非再发一张）；取消则原地变成灰色「✖️ 已取消新建会话」。pending 状态按 chat 存在 `pendingNewSession`，cardAction 订阅随插件 dispose 释放。
+- **验证**：新增 `tests/new-session-card.spec.ts`（4 例：列全设置 / 两个回调走 behaviors 且不带顶层 value / 未选工作区时给默认提示 / 取消卡无按钮）；`card-supersede` 扩到 10 例（含 `mode: 'notice'` 丢弃内容、`mode: 'keep'` 带结算文案且无回调）；`onboarding` 两例改断言「工作区决定卡冻结显示 `/ws-2`」「预设卡退休只剩通用提示」「en 词典」。全套 **338 passed / 28 files**，typecheck 0 error。
+
 ### 变更：审批卡结算/失效后保留原有内容（`src/feishu-approvals.ts` / `src/i18n.ts`）
 
 - **问题**：审批卡一旦结算（点允许/拒绝）、本轮中止、或被网页端接管，重画出来的卡就只剩一行结果——`✅ \`bash\` — 已允许一次`。**触发这次审批的原因（reason）和 short code 全没了**，回头翻聊天记录不知道当时批的是什么。

@@ -462,41 +462,98 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('repaints the replaced card as a stale-card notice when a new card is posted', async () => {
+  it('freezes the workspace decision card on the chosen value, non-editable', async () => {
     const { channel, handlers } = fakeChannel()
     const handle = startFeishuOnboarding(deps(channel, fakeBridge()))
     // First card (workspace picker) — nothing to supersede yet.
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
 
-    // Second card (preset picker) — the workspace picker must be retired so its
-    // now-dead buttons are not mistaken for live ones.
+    // Second card (preset picker) — the card the operator decided on keeps its
+    // content, is marked with the chosen workspace and stops being editable.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
     const [cardId, card, sequence] = channel.updateCardInstance.mock.calls[0]! as [string, any, number]
     expect(cardId).toBe('card-1')
     expect(sequence).toBe(1)
     const text = JSON.stringify(card)
-    expect(text).toContain(t.cardSupersededTitle)
-    expect(text).toContain('最新的卡片')
-    // The notice must not keep any live button around.
+    expect(text).toContain(t.cardSettledNote('/ws-2'))
+    // The record survives: the original picker body is still there...
+    expect(text).toContain('选择工作区')
+    // ...but no callback binding does.
+    expect(text).not.toContain('behaviors')
     expect(text).not.toContain('callback')
 
-    // A third card retires the second one.
+    // A third card retires the preset picker with the plain stale notice.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-back' }) } })
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
-    expect((channel.updateCardInstance.mock.calls[1]! as [string, any, number])[0]).toBe('card-2')
+    const second = channel.updateCardInstance.mock.calls[1]! as [string, any, number]
+    expect(second[0]).toBe('card-2')
+    expect(JSON.stringify(second[1])).toContain(t.cardStaleNote)
     handle.dispose()
   })
 
-  it('uses the active locale for the stale-card notice', async () => {
+  it('retires a folder-browser page with the generic notice instead of its listing', async () => {
+    // Only cards that carried a real choice stay readable after retirement;
+    // a `/new` browse can span a dozen pages, whose listings are dead weight.
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => fakeDirectoryPicker().picker
+    const handle = startFeishuOnboarding(d)
+    // First page (home) — nothing to retire yet.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    // Descending posts page 2 and repaints page 1 as the bare stale notice.
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: '/home/me/projects' }) } })
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    const [cardId, painted] = channel.updateCardInstance.mock.calls[0]! as [string, any, number]
+    expect(cardId).toBe('card-1')
+    const text = JSON.stringify(painted)
+    expect(text).toContain(t.cardSupersededTitle)
+    expect(text).toContain(t.cardSupersededBody)
+    // The listing (directory rows) is gone, and so is every callback binding.
+    expect(text).not.toContain('projects')
+    expect(text).not.toContain('behaviors')
+    handle.dispose()
+  })
+
+  it('freezes the folder-browser page the operator settled on, not a bare notice', async () => {
+    // Regression: a browser page is posted as "pure navigation", and its
+    // payload used to be dropped from the remembered ref. Tapping
+    // "✅ 用这个目录" on that very page then silently degraded to the generic
+    // notice, losing the record of the directory that was chosen.
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => fakeDirectoryPicker().picker
+    const handle = startFeishuOnboarding(d)
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-enter', value: '/home/me/projects' }) } })
+    // Ignore the retirement of the home page; only the settled page matters.
+    channel.updateCardInstance.mockClear()
+
+    await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-pick', value: '/home/me/projects' }) } })
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    const [cardId, painted] = channel.updateCardInstance.mock.calls[0]! as [string, any, number]
+    // card-1 = home page, card-2 = the projects page the operator settled on.
+    expect(cardId).toBe('card-2')
+    const text = JSON.stringify(painted)
+    expect(text).toContain(t.cardSettledNote('/home/me/projects'))
+    // The listing stays as the readable record of the decision...
+    expect(text).toContain('my-app')
+    // ...but nothing on it can be tapped any more.
+    expect(text).not.toContain('behaviors')
+    expect(text).not.toContain('callback')
+    handle.dispose()
+  })
+
+  it('uses the active locale for the settled-decision notice', async () => {
     const { channel, handlers } = fakeChannel()
     const handle = startFeishuOnboarding({ ...deps(channel, fakeBridge()), getTranslations: () => translationsFor('en') })
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
     const text = JSON.stringify((channel.updateCardInstance.mock.calls[0]! as [string, any, number])[1])
-    expect(text).toContain(translationsFor('en').cardSupersededTitle)
-    expect(text).toContain('newest card')
+    expect(text).toContain(translationsFor('en').cardSettledNote('/ws-2'))
+    expect(text).toContain('locked')
     handle.dispose()
   })
 
