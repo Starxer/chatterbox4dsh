@@ -25,6 +25,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { HarnessConversationService } from './harness.ts'
+import { downloadMessageResource } from './feishu-resource.ts'
 
 /** Feishu file-message ceiling (`resource.get` rejects > 30 MB upstream). */
 const MAX_FILE_BYTES = 30 * 1024 * 1024
@@ -148,14 +149,11 @@ export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => v
       }
 
       exec.signal.throwIfAborted()
-      // `rawClient` reaches the real `im.v1.messageResource.get` endpoint,
-      // which needs `(message_id, file_key)` together (the SDK's typed
-      // `downloadResource` routes user-sent keys to the wrong endpoint). The
-      // SDK returns `{ getReadableStream, ... }` rather than a Buffer.
-      const raw: unknown = await (ch as unknown as { rawClient: any }).rawClient.im.v1.messageResource.get({
-        params: { type: 'file' },
-        path: { message_id: args.message_id, file_key: args.file_key },
-      })
+      // `messageResource.get` needs `(message_id, file_key)` together, and a
+      // video/audio resource (which that endpoint cannot serve as `file`)
+      // falls back to `im.v1.file.get`. The SDK returns
+      // `{ getReadableStream, ... }` rather than a Buffer.
+      const raw: unknown = await downloadMessageResource(ch, args.message_id, args.file_key)
 
       const fileName = (args.file_name ?? args.file_key).replace(/[^a-zA-Z0-9._-]/g, '_') || args.file_key
       // Persist via the native attachment store (streamed, with backpressure)

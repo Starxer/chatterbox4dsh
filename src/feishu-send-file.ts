@@ -8,38 +8,89 @@
  * agent an explicit way to deliver a produced file into the chat that owns the
  * current session.
  *
- * Sending goes through the SDK's `LarkChannel.send` path. Real image bytes
- * (magic-sniffed) are sent as an inline-preview **image message**
- * (`{ image }` → `msg_type:'image'` → uploaded via `im.v1.image.create`),
- * so the user sees the picture directly instead of a click-to-open file.
- * Non-images, or images over Feishu's 10 MB image cap, fall back to a
- * `{ file }` message (`im.v1.file.create`, `file_type 'stream'`), which still
- * lands but requires opening. No hand-rolled upload + send dance needed.
- * Thread replies reuse the same `replyTo`/`replyInThread` options the
- * question/approval cards use.
+ * Sending goes through the SDK's `LarkChannel.send` path, which already knows
+ * every Feishu media message shape we want — no hand-rolled upload + send
+ * dance is needed:
+ *   • real image bytes (magic-sniffed) → `{ image }` → `msg_type:'image'`,
+ *     the picture renders inline;
+ *   • MP4/QuickTime video with a playable codec (sniffed from `ftyp` + the
+ *     video sample entry) → `{ video }` → `file_type:'mp4'` + `msg_type:'media'`,
+ *     a native, playable video bubble. Feishu never derives the bubble's cover
+ *     from the video, so a poster frame is extracted with `ffmpeg` **when it is
+ *     on PATH** and uploaded as `image_key` (best-effort: no ffmpeg, no cover);
+ *   • Ogg/Opus audio → `{ audio }` → `file_type:'opus'` + `msg_type:'audio'`,
+ *     a voice bubble.
+ * Everything else — or an image over Feishu's 10 MB image cap, an exotic video
+ * container/codec, or a video whose duration the SDK cannot parse — falls back
+ * to a `{ file }` message (`file_type:'stream'`), which still lands but
+ * requires opening. Refusing the inline path early is deliberate: uploading a
+ * container the client cannot play produces a broken bubble, which is worse
+ * than an attachment. Thread replies reuse the same `replyTo`/`replyInThread`
+ * options the question/approval cards use.
  *
  * @module @starxer/chatterbox4dsh/feishu-send-file
  */
 
-import { readFile, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { readFile, stat, unlink } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { basename, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { HarnessConversationService } from './harness.ts'
 import { errorText } from './error-text.ts'
-import { sniffImageMime } from './channel.ts'
+import { sniffAudioContainer, sniffImageMime, sniffVideoContainer } from './media-sniff.ts'
+
+const execFileAsync = promisify(execFile)
 
 /** Feishu file-message ceiling (`im.v1.file.create` rejects > 30 MB). */
 const MAX_FILE_BYTES = 30 * 1024 * 1024
 /** Feishu image-message ceiling (`im.v1.image.create` rejects > 10 MB; larger
  *  images must be sent as files and cannot inline-preview). */
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+/** Cover extraction is a nicety — never let a slow ffmpeg hold up the send. */
+const COVER_EXTRACT_TIMEOUT_MS = 15_000
 
 /** Minimal logger surface; matches ctx.logger's call style. */
 interface PluginLogger {
   warn(message: string): unknown
   error(message: string): unknown
+}
+
+/**
+ * Produce a poster frame for a video, or `undefined` when that is not possible
+ * (no ffmpeg on PATH, unreadable/degenerate video). Never throws: a missing
+ * cover must not fail the send.
+ */
+export type CoverFrameExtractor = (path: string) => Promise<Buffer | undefined>
+
+/**
+ * Default cover extractor: one frame via `ffmpeg`, falling back to the very
+ * first frame for clips shorter than the 1s mark. Returns `undefined` when
+ * ffmpeg is absent (`ENOENT`) or produced nothing.
+ */
+async function extractCoverFrameWithFfmpeg(filePath: string): Promise<Buffer | undefined> {
+  const out = join(tmpdir(), `dsh-feishu-cover-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`)
+  try {
+    for (const args of [
+      ['-ss', '1', '-i', filePath, '-frames:v', '1', '-vf', 'scale=640:-2', '-f', 'image2', out],
+      ['-i', filePath, '-frames:v', '1', '-vf', 'scale=640:-2', '-f', 'image2', out],
+    ]) {
+      try {
+        await execFileAsync('ffmpeg', ['-y', '-loglevel', 'error', ...args],
+          { timeout: COVER_EXTRACT_TIMEOUT_MS, windowsHide: true })
+      } catch {
+        continue
+      }
+      const frame = await readFile(out).catch(() => undefined)
+      if (frame !== undefined && frame.length > 0) return frame
+    }
+    return undefined
+  } finally {
+    await unlink(out).catch(() => undefined)
+  }
 }
 
 /** Live references read lazily on every execution (channel/bridge reconcile). */
@@ -48,6 +99,50 @@ export interface FeishuSendFileDeps {
   bridgeHolder: { current: HarnessConversationService | undefined }
   channelHolder: { current: LarkChannel | undefined }
   logger: PluginLogger
+  /** Override for tests; defaults to the ffmpeg-backed extractor. */
+  extractCoverFrame?: CoverFrameExtractor
+}
+
+/** The SDK's own outbound payload union (image / file / audio / video / …). */
+type SendInput = Parameters<LarkChannel['send']>[1]
+
+/**
+ * Upload a poster frame for a video, if one can be produced.
+ *
+ * Feishu never derives a bubble cover from the video itself — `image_key` is
+ * optional in the `media` content, and leaving it out yields a bubble with no
+ * thumbnail. So the cover is ours to supply. This is never fatal: extraction
+ * that cannot run (no ffmpeg on PATH) or an upload that fails only warns, and
+ * the video is sent without a cover.
+ */
+async function uploadCoverFrame(
+  channel: LarkChannel,
+  filePath: string,
+  logger: PluginLogger,
+  extract: CoverFrameExtractor,
+): Promise<string | undefined> {
+  let frame: Buffer | undefined
+  try {
+    frame = await extract(filePath)
+  } catch (error: unknown) {
+    logger.warn(`dsh-feishu: cover frame extraction failed (${errorText(error, 'unknown error')})`)
+    return undefined
+  }
+  if (frame === undefined || frame.length === 0) return undefined
+  try {
+    const uploaded = await channel.rawClient.im.v1.image.create({
+      data: { image_type: 'message', image: frame },
+    })
+    const key = uploaded?.image_key
+    if (key === undefined) {
+      logger.warn('dsh-feishu: cover frame upload returned no image_key; sending the video without a cover')
+    }
+    return key
+  } catch (error: unknown) {
+    logger.warn(`dsh-feishu: cover frame upload failed (${errorText(error, 'unknown Feishu error')}); `
+      + 'sending the video without a cover')
+    return undefined
+  }
 }
 
 /**
@@ -60,16 +155,19 @@ export interface FeishuSendFileDeps {
  */
 export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
   const { ctx, bridgeHolder, channelHolder, logger } = deps
+  const extractCoverFrame = deps.extractCoverFrame ?? extractCoverFrameWithFfmpeg
 
   return ctx.tools.register(defineTool({
     name: 'feishu_send_file',
     description:
       'Send a file from the workspace to the user via Feishu chat. Pass the absolute filesystem '
       + 'path of the file you produced. The file must exist, be a regular non-empty file, and be '
-      + 'under 30 MB. Images are sent as inline-preview image messages; anything else (or an image '
-      + 'over 10 MB) is sent as a file the user opens. Only works when the current session is bound '
-      + 'to a Feishu chat; otherwise it fails with a clear error and you should just tell the user '
-      + 'the file path instead.',
+      + 'under 30 MB. Images are sent as inline-preview image messages; MP4/MOV video with an '
+      + 'H.264/HEVC/MPEG-4 codec is sent as a playable video message (with a cover frame when '
+      + 'ffmpeg is available); Ogg/Opus audio is sent as a voice message; anything else — or an '
+      + 'image over 10 MB, or a video in a container/codec Feishu cannot play — is sent as a file '
+      + 'the user opens. Only works when the current session is bound to a Feishu chat; otherwise '
+      + 'it fails with a clear error and you should just tell the user the file path instead.',
     parameters: {
       path: {
         type: 'string',
@@ -90,11 +188,16 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
           message_id: { type: 'string', required: true },
           chat_id: { type: 'string', required: true },
           caption_sent: { type: 'boolean', required: true },
+          sent_as: {
+            type: 'string',
+            required: true,
+            description: 'How Feishu rendered it: image, video, audio or file.',
+          },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `Sent "${value.file_name}" to Feishu chat ${value.chat_id} (message ${value.message_id}).`,
+        text: `Sent "${value.file_name}" to Feishu chat ${value.chat_id} as a ${value.sent_as} (message ${value.message_id}).`,
       }],
     },
     async execute(args, exec) {
@@ -158,28 +261,68 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
       }
 
       exec.signal.throwIfAborted()
-      // Real image bytes (magic-sniffed) get an inline-preview image message
-      // (`{ image }` → `msg_type:'image'` → `image_key`); everything else — or
-      // an image over Feishu's 10 MB image cap — falls back to a `{ file }`
-      // message so it still lands, just as a click-to-open attachment.
-      const isImage = sniffImageMime(bytes) !== undefined
-      const sendAsImage = isImage && bytes.length <= MAX_IMAGE_BYTES
-      // Surfacing the specific reason (and Feishu API code, e.g. 230021 for an
-      // oversized file) on failure lets the agent report exactly why the send
-      // failed instead of a generic "send failed".
-      const payload = sendAsImage
-        ? { image: { source: bytes } }
-        : { file: { source: bytes, fileName } }
-      const result = await ch.send(chat.chatId, payload, opts).catch((error: unknown) => {
+      // Sniff from the BYTES, never the filename: sending a container the
+      // Feishu client cannot play produces a broken bubble, which is worse
+      // than the click-to-open attachment an unknown file gets.
+      const sendAsImage = sniffImageMime(bytes) !== undefined && bytes.length <= MAX_IMAGE_BYTES
+      const video = sendAsImage ? undefined : sniffVideoContainer(bytes)
+      const audio = sendAsImage || video !== undefined ? undefined : sniffAudioContainer(bytes)
+
+      const sendAsFile = async (): Promise<string> =>
+        (await ch.send(chat.chatId, { file: { source: bytes, fileName } }, opts)).messageId ?? ''
+
+      // The SDK throws when it cannot derive a media duration from the bytes
+      // (`duration could not be determined for video`), and Feishu can reject
+      // an upload it cannot play. Neither may cost the user the file.
+      const sendWithFileFallback = async (
+        kind: 'video' | 'audio',
+        input: SendInput,
+      ): Promise<{ id: string; sentAs: string }> => {
+        try {
+          const sent = await ch.send(chat.chatId, input, opts)
+          return { id: sent.messageId ?? '', sentAs: kind }
+        } catch (inlineError: unknown) {
+          logger.warn(`dsh-feishu: inline ${kind} send of "${fileName}" failed `
+            + `(${errorText(inlineError, 'unknown Feishu error')}); falling back to a file attachment`)
+          return { id: await sendAsFile(), sentAs: 'file' }
+        }
+      }
+
+      let sentAs: string
+      let messageId: string
+      try {
+        if (sendAsImage) {
+          sentAs = 'image'
+          messageId = (await ch.send(chat.chatId, { image: { source: bytes } }, opts)).messageId ?? ''
+        } else if (video !== undefined) {
+          const coverImageKey = await uploadCoverFrame(ch, args.path, logger, extractCoverFrame)
+          const outcome = await sendWithFileFallback('video', {
+            video: { source: bytes, ...(coverImageKey === undefined ? {} : { coverImageKey }) },
+          })
+          sentAs = outcome.sentAs
+          messageId = outcome.id
+        } else if (audio !== undefined) {
+          const outcome = await sendWithFileFallback('audio', { audio: { source: bytes } })
+          sentAs = outcome.sentAs
+          messageId = outcome.id
+        } else {
+          sentAs = 'file'
+          messageId = await sendAsFile()
+        }
+      } catch (error: unknown) {
+        // Surfacing the specific reason (and Feishu API code, e.g. 230021 for
+        // an oversized file) lets the agent report exactly why the send failed
+        // instead of a generic "send failed".
         throw new Error(`Failed to send "${fileName}" via Feishu: ${errorText(error, 'unknown Feishu error')}`)
-      })
-      logger.warn(`dsh-feishu: feishu_send_file sent "${fileName}" to chat ${chat.chatId} (${sendAsImage ? 'image' : 'file'})`)
+      }
+      logger.warn(`dsh-feishu: feishu_send_file sent "${fileName}" to chat ${chat.chatId} (${sentAs})`)
 
       return {
         file_name: fileName,
-        message_id: result.messageId ?? '',
+        message_id: messageId,
         chat_id: chat.chatId,
         caption_sent: captionSent,
+        sent_as: sentAs,
       }
     },
   }))

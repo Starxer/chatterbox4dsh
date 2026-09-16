@@ -169,6 +169,28 @@
 
 ## 已知问题
 
+### 飞书侧报错内容比 WebUI 简略（**未修，只记录**，2026-09-16 使用者报告）
+
+**现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」——同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
+
+**现状（插件侧三处硬上限）**：
+
+- **turn 级错误**：`channel.ts` 发纯文本 `处理这条消息时出错：<reason>`，`reason` 来自 `src/error-text.ts` 的 `errorText()`——只取 `error.message` + 数字/字符串 `code`，**丢掉 `cause` 链与堆栈**，并**在 600 字符处截断加 `…`**。
+- **工具失败**：步骤卡里 `❌` 后跟结果预览，`RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500` 字符；结构化预览还要再取样（`paths` 前 20、`files` 前 5、`matches` 前 3、`diffs` 前 3、每个 diff 各 8 行）。
+- **思考 / 正文**：`REASONING_CAP = 200`、`TEXT_STEP_CAP = 3000`（正文溢出会拆「Reply (continued N/M)」卡，**不丢**，但错误文本没有等价机制）。
+
+**WebUI 侧对照**：`packages/client/ui-trajectory/src/client/TrajectoryTable.tsx` 的输出格把 `record.cell.outputDetail` **整段**塞进 `<pre>`（并附「复制输出」按钮），**不做字符截断**；聊天区也保留完整错误文本。
+
+**为什么现在这样**：飞书单条消息/卡片有体积与渲染上限，卡片是即时可读界面，整段堆栈会淹掉卡片。
+
+**可选方向（未定、未动工）**：
+
+1. 发生错误时额外发一张「详细错误卡」或溢出卡，装完整 message + `cause` 链 + 堆栈；
+2. `/error` 命令回看最近一次错误的全文（插件把最近错误留在会话状态里）；
+3. 把完整错误写成 `.log`/`.txt` 落工作区，交给已有的 `feishu_send_file` 推给用户（零新面）。
+
+**处理**：**2026-09-16 决定先记录、不改**。
+
 ### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
 
 **现象**：步骤卡的推理标题从 `💬 **推理** · 807ms · 135 tokens` 变成 `💬 **推理** · 5.3s`——思考耗时还在，**推理 token 数没了**。真机卡片历史对照（`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`，264 张推理卡）：09-15 15:45 及以前带 token 数（不带的都是该步本就没有推理），**09-15 20:20 重启后 0 张**。

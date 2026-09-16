@@ -45,9 +45,9 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | 斜杠命令 | `/model` `/new` `/session` `/status` `/stop` `/steer` `/queue` `/busy` `/permission` `/reasoning` `/display` `/approve` `/deny` `/help` 等 |
 | 审批 | 与 DSH Web UI 共享同一份 pending 审批状态；审批卡片 **允许在上 / 拒绝在下**，显示原因，**中英双语随 `/lang`**（术语对齐 WebUI：等待审批 / 允许一次 / 拒绝）；本轮中止时卡片自动作废去按钮 |
 | `ask_user_question` 卡片 | 问题卡片（选项/自定义输入/跳过），一次多问时**顺序迭代**、整批返回答案 |
-| 图片 / 文件接收 | 图片按**真实字节判型**（PNG/JPEG/WebP/GIF）经 attachment store 落盘；文件下载到 **DSH 原生附件库**（`~/.dsh/attachments/v1/files/…`）并附 `fileHostPath` 给 agent 读取 |
-| agent 主动发文件 | `feishu_send_file` 模型工具：agent 可把工作区文件推送到当前飞书聊天（≤30MB） |
-| agent 接收文件 | `feishu_receive_file` 模型工具：agent 按需/兜底直接下载入站飞书文件到 **DSH 原生附件库**，返回 `fileHostPath` |
+| 图片 / 文件接收 | 图片按**真实字节判型**（PNG/JPEG/WebP/GIF）经 attachment store 落盘；文件、**用户发来的视频与语音**同样下载到 **DSH 原生附件库**（`~/.dsh/attachments/v1/files/…`）并附 `fileHostPath` 给 agent 读取 |
+| agent 主动发文件 | `feishu_send_file` 模型工具：agent 可把工作区文件推送到当前飞书聊天（≤30MB）。**图片内联预览**、**MP4/MOV（H.264/HEVC/MPEG-4）发成可播放的视频气泡**（有 `ffmpeg` 时附带抽帧封面）、**Ogg/Opus 发成语音气泡**；其余（含放不出来的容器/codec）仍作为文件 |
+| agent 接收文件 | `feishu_receive_file` 模型工具：agent 按需/兜底直接下载入站飞书文件（含视频/语音）到 **DSH 原生附件库**，返回 `fileHostPath` |
 | 运行中注入 steer | `/steer <内容>` 一次性注入当前 turn；`/busy steer` 可把"运行中发消息"默认设为注入（持久化）；agent 空闲时 `/steer`/`/queue` 自动回退为发新消息。运行中发普通消息会**先回一条纯文本提示**（已插入 / 已排队），且被注入的消息**不再单独回一张回复卡**（由当前轮的回复卡回答） |
 | 运行中排队（/queue） | `/queue <内容>` 强制走 queue 路径（即使处于 steer 模式）作为新一轮运行；空闲时回退为发新消息 |
 | 权限模式选择 | `/permission`：查看/切换会话权限（沙箱）模式，名称与显示名对齐 WebUI（Read Only / Workspace Write / Full access），**交互式卡片**点选切换 |
@@ -67,9 +67,9 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | Slash commands | `/model`, `/new`, `/session`, `/status`, `/stop`, `/steer`, `/queue`, `/busy`, `/permission`, `/reasoning`, `/display`, `/approve`, `/deny`, `/help` and more |
 | Approvals | Shares the same pending approvals as the DSH Web UI; the card puts **Approve on top / Reject below** and shows the `Reason:` |
 | `ask_user_question` card | Question cards with options, free-form input and a skip button; multiple questions are asked **one at a time** and returned as one batch |
-| Image / file intake | Images are typed from their **real bytes** (PNG/JPEG/WebP/GIF) and stored via the attachment store; files are downloaded into the **native DSH attachment store** (`~/.dsh/attachments/v1/files/…`) and exposed to the agent as `fileHostPath` |
-| Agent sends files | The `feishu_send_file` model tool pushes a workspace file into the current Feishu chat (≤30 MB) |
-| Agent receives files | The `feishu_receive_file` model tool downloads an inbound Feishu file into the **native DSH attachment store** on demand and returns its `fileHostPath` |
+| Image / file intake | Images are typed from their **real bytes** (PNG/JPEG/WebP/GIF) and stored via the attachment store; files — **and videos/voice notes the user sent** — are downloaded into the **native DSH attachment store** (`~/.dsh/attachments/v1/files/…`) and exposed to the agent as `fileHostPath` |
+| Agent sends files | The `feishu_send_file` model tool pushes a workspace file into the current Feishu chat (≤30 MB). **Images preview inline**, **MP4/MOV (H.264/HEVC/MPEG-4) is sent as a playable video bubble** (with an ffmpeg-extracted cover when ffmpeg is available), and **Ogg/Opus as a voice bubble**; everything else — including a container/codec Feishu cannot play — stays a file |
+| Agent receives files | The `feishu_receive_file` model tool downloads an inbound Feishu file (video and voice included) into the **native DSH attachment store** on demand and returns its `fileHostPath` |
 | Steer while running | `/steer <text>` injects one message into the current turn; `/busy steer` makes "send while running" mean inject by default (persisted); when the agent is idle, `/steer` and `/queue` fall back to a normal new message. A plain message sent while running gets a **plain-text notice first** (injected / queued), and the injected message **does not get its own reply card** — the running turn's reply answers it |
 | Queue while running (`/queue`) | `/queue <text>` forces the queue path (even in steer mode) and runs as a new turn; falls back to a normal message when idle |
 | Permission mode | `/permission` views/switches the session permission (sandbox) mode with an **interactive card**; names match the Web UI (Read Only / Workspace Write / Full access) |

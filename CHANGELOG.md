@@ -10,6 +10,25 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 已知问题（**未修，只记录**）：飞书侧报错内容比 WebUI 简略——错误摘要有三处硬上限（2026-09-16 使用者报告）
+
+- **现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」。同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
+- **现状（三处上限，均在插件侧）**：① **turn 级错误**走 `channel.ts` 的纯文本 `处理这条消息时出错：<reason>`，`reason` 由 `src/error-text.ts` 的 `errorText()` 生成——只取 `error.message` + 数字/字符串 `code`，**丢掉 `cause` 链与堆栈**，并**在 600 字符处截断加 `…`**；② **工具失败**在步骤卡里只有结果预览，`RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500` 字符，结构化预览还会再取样（`paths` 前 20 / `files` 前 5 / `matches` 前 3 / `diffs` 前 3 / 每个 diff 各 8 行）；③ 思考 200、正文 3000（正文溢出拆「Reply (continued N/M)」卡**不丢**，但错误文本没有等价机制）。
+- **WebUI 对照**：`packages/client/ui-trajectory/src/client/TrajectoryTable.tsx` 把 `record.cell.outputDetail` **整段**放进 `<pre>` 并附「复制输出」按钮，**不做字符截断**；聊天区同样保留完整错误文本。
+- **为什么这样**：飞书单条消息/卡片有体积与渲染上限，卡片是即时可读界面，整段堆栈会淹掉卡片。**要"对齐"就得另想办法**，不能直接放开上限。
+- **可选方向（未定、未动工）**：① 出错时额外发一张「详细错误卡」/溢出卡；② `/error` 命令回看最近一次错误全文；③ 把完整错误写成 `.log`/`.txt` 落工作区，交给已有的 `feishu_send_file` 推送（零新面）。
+- **处理**：**2026-09-16 决定先记录、不改**（与上文推理 token 回归同处理方式）。
+
+### 新增：视频/语音改走飞书原生消息（可播放视频气泡 / 语音气泡），并接收用户发来的视频与语音（`src/media-sniff.ts`（新）/ `src/feishu-resource.ts`（新）/ `src/feishu-send-file.ts` / `src/feishu-receive-file.ts` / `src/channel.ts`）
+
+- **问题**（2026-09-16 使用者报告「视频也是以文件的形式发送的」）：agent 用 `feishu_send_file` 推出的 mp4 一律走 `{ file }` → `file_type:'stream'` + `msg_type:'file'`，用户只能点开下载；而**用户发来的**视频/语音则完全收不到——SDK 把视频归一化成 `resources: [{ type:'video', … }]`、语音成 `type:'audio'`，而 `admitFilesForMessage` 只筛 `type === 'file'`，于是 agent 只看到 `content` 里一行 `<video key="…" name="…" duration="…"/>` 标签。
+- **出站（真机取证后实现）**：SDK（`@larksuiteoapi/node-sdk@1.74.0`）本身就带这两条 payload，插件只需**按字节**判定走哪条，不用手写上传：`{ video }` → `im.v1.file.create({ file_type:'mp4', duration })` + `msg_type:'media'`；`{ audio }` → `file_type:'opus'` + `msg_type:'audio'`。新增 `src/media-sniff.ts`：`sniffVideoContainer` 要求 ISO-BMFF `ftyp` 盒子、MP4 系 brand（或 `qt  `）**且**视频 sample entry 的 codec 属可播集合（`avc1`/`avc3`/`hvc1`/`hev1`/`mp4v`）**且** `moov → mvhd` 存在（SDK 要从它算时长）；`sniffAudioContainer` 要求 `OggS` + `OpusHead`。不满足一律退回文件——**把放不出来的容器当 mp4 传上去，比"下载后本地播"更糟**，而且 SDK 对 `media` 没有降级路径（只对 `post` 有）。
+- **封面**：飞书**不会**从 mp4 里抽帧，`msg_type:'media'` 的 `image_key` 只是"发送方交给它的海报图"（实测：只有 `file_key` 时参数校验通过、消息也发得出去，但客户端没有可画的东西 → 气泡无缩略图；同一 file_key 配上另一次 `im.v1.image.create` 得到的 `image_key` 就有封面）。故新增 best-effort 封面：PATH 上有 `ffmpeg` 就抽第 1 秒一帧（比 1 秒还短的片子回退第 0 帧），按 `image_type:'message'` 上传换 `image_key`；**没有 ffmpeg、抽帧失败、上传失败都只 warn**，照常发不带封面的视频。为便于测试，抽帧函数经 `FeishuSendFileDeps.extractCoverFrame` 注入（默认真 ffmpeg 实现）。
+- **兜底**：SDK 在算不出 mp4/opus 时长时会抛 `duration could not be determined for …`，所以 `{video}`/`{audio}` 发送失败一律退回 `{file}` 再发一次，**任何情况下都不丢投递**。
+- **入站**：`channel.ts` 的准入集合从 `file` 扩到 `file | video | audio`；下载统一收敛到新的 `src/feishu-resource.ts`。**两条下载端点是互补的（2026-09-16 双向真机实测）**：`im.v1.messageResource.get` 的 `type` **只认 `image` / `file`**（传 `media`/`video` 直接 `234001 Invalid request param`），而 `type='file'` 在**用户发的** media 消息上可用（用户发的 12.5s 视频完整取回 2.6MB），在 **app 自己发的**上却得 `234003 File not in msg.`；`im.v1.file.get({ file_key })` 恰好相反（app 发的可取回，用户发的得 `234008 The app is not the resource sender.`）。所以实现是「先 `messageResource`，失败再 `file.get`」，两种来源都不丢。无文件名的语音/视频会补上 `.mp4` / `.opus` 扩展名。<br>另注：用户用飞书客户端发的视频**自带 `image_key` 封面**（消息 content 里就有），印证了「封面由发送方提供」这一点。
+- **可观测性**：工具输出新增 `sent_as`（`image` / `video` / `audio` / `file`），工具描述同步说明各分支；`feishu_receive_file` 也改走同一个下载助手。
+- **验证**：`tests/media-sniff.spec.ts` 12 例（真 MP4 形态 / `qt  ` / 仅兼容 brand 命中 / ProRes 与 VP9 拒绝 / 纯音频轨 / 缺 `mvhd` / 截断与空字节 / Ogg-Opus / 非 Opus Ogg）；`tests/feishu-send-file.spec.ts` 10 例（图片、文件、视频带封面、无封面、封面上传失败仍发视频、视频失败回退文件、ProRes 走文件、Opus 语音、语音失败回退文件）；`tests/plugin.spec.ts` +3 例（入站 video 落附件库、无名语音补 `.opus`、`messageResource` 失败后走 `file.get`）。全套 **387 passed / 32 files**（原 365 / 31），typecheck 0 error。真机预检（未重启、只发消息）：本机一段 H.264+AAC mp4（5.17s / 728KB / `ftyp`=`isom,avc1,mp41`）以 `file_type:'mp4'` 上传成功（不传 `duration` 也成功），带/不带封面的 `media` 消息均正常送达。**入站也真机验证过**：使用者在聊天里发的 12.5s 视频（`msg_type=media`、`sender=user`、带 `image_key`）经 `messageResource.get?type=file` 完整取回 2622263 字节，而 `im.v1.file.get` 对它报 `234008`——与上面的双向结论一致。
+
 ### 已知回归（**宿主侧，非插件 bug，未修只记录**）：DSH `0.1.6` 起推理 token 数消失——默认 wire 协议换成 `messages`，而该端点不上报 thinking token（2026-09-16 定性）
 
 - **现象**（使用者真机报告「升级 0.1.6 以后推理的 token 速度丢失」）：步骤卡的推理标题从 `💬 **推理** · 807ms · 135 tokens` 变成 `💬 **推理** · 5.3s`——**思考耗时还在，推理 token 数没了**。真机卡片历史取证（`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`，264 张推理卡）：09-15 15:45 及以前均带 token 数（不带的都是该步本就没有推理），**09-15 20:20 重启后 0 张**。

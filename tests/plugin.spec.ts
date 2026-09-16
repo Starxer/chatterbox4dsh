@@ -433,4 +433,73 @@ describe('startChannel', () => {
     expect((bridge.reply.mock.calls[0]![0] as { content: string }).content).not.toContain('[文件:')
     await stop()
   })
+
+  it('admits an inbound video resource, which the SDK normalizes as type "video"', async () => {
+    const channel = fakeChannel(Buffer.from('mp4 payload'))
+    const bridge: any = { reply: vi.fn(async () => 'ok'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    const attachments = await fakeFileHost()
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
+    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
+    await channel.handlers.get('message')!({
+      messageId: 'om_video', chatId: 'oc_video', chatType: 'p2p',
+      content: '<video key="file_vid" name="clip.mp4"/>',
+      resources: [{ type: 'video', fileKey: 'file_vid', fileName: 'clip.mp4', durationMs: 5167 }],
+    })
+    await flushAsync()
+    expect(channel.rawClient.im.v1.messageResource.get).toHaveBeenCalledWith({
+      params: { type: 'file' },
+      path: { message_id: 'om_video', file_key: 'file_vid' },
+    })
+    expect(attachments.saveFileStream).toHaveBeenCalledOnce()
+    const replied = bridge.reply.mock.calls[0]![0] as { fileBlocks: Array<{ attachment: { name: string }; hostPath: string }> }
+    expect(replied.fileBlocks).toHaveLength(1)
+    expect(replied.fileBlocks[0]!.attachment.name).toBe('clip.mp4')
+    expect(replied.fileBlocks[0]!.hostPath).toContain('clip.mp4')
+    expect(attachments.captured[0]!.toString()).toBe('mp4 payload')
+    await stop()
+  })
+
+  it('names a nameless voice resource with an .opus extension', async () => {
+    const channel = fakeChannel(Buffer.from('opus payload'))
+    const bridge: any = { reply: vi.fn(async () => 'ok'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    const attachments = await fakeFileHost()
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
+    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
+    await channel.handlers.get('message')!({
+      messageId: 'om_voice', chatId: 'oc_voice', chatType: 'p2p', content: '<audio key="file_voice"/>',
+      resources: [{ type: 'audio', fileKey: 'file_voice' }],
+    })
+    await flushAsync()
+    const replied = bridge.reply.mock.calls[0]![0] as { fileBlocks: Array<{ attachment: { name: string } }> }
+    expect(replied.fileBlocks[0]!.attachment.name).toBe('file_voice.opus')
+    await stop()
+  })
+
+  it('falls back to im.v1.file.get when a media resource is not addressable as a message file', async () => {
+    // Real behaviour: `messageResource.get?type=file` answers 234003
+    // "File not in msg." for a media message, while `file.get` serves the bytes.
+    const channel = fakeChannel()
+    ;(channel.rawClient.im.v1.messageResource.get as any).mockRejectedValueOnce(
+      Object.assign(new Error('File not in msg.'), { code: 234003 }),
+    )
+    ;(channel.rawClient.im.v1 as any).file = { get: vi.fn(async () => Buffer.from('via file.get')) }
+    const bridge: any = { reply: vi.fn(async () => 'ok'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    const attachments = await fakeFileHost()
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
+    }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
+    await channel.handlers.get('message')!({
+      messageId: 'om_video2', chatId: 'oc_video2', chatType: 'p2p', content: '',
+      resources: [{ type: 'video', fileKey: 'file_vid2', fileName: 'clip.mp4' }],
+    })
+    await flushAsync()
+    expect((channel.rawClient.im.v1 as any).file.get).toHaveBeenCalledWith({ path: { file_key: 'file_vid2' } })
+    expect(attachments.captured[0]!.toString()).toBe('via file.get')
+    await stop()
+  })
 })

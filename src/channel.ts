@@ -10,6 +10,14 @@ import { TurnDroppedError } from './harness.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { errorText } from './error-text.ts'
 import { chunkText, CARD_TEXT_MAX } from './text-chunk.ts'
+import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
+import { downloadMessageResource } from './feishu-resource.ts'
+
+// Re-exported for callers that historically reached the sniffer through this
+// module; the implementation now lives in `media-sniff.ts` next to the video
+// and audio sniffers.
+export { sniffImageMime } from './media-sniff.ts'
+export type { ImageMediaTypeId } from './media-sniff.ts'
 
 export type ChannelFactory = (options: LarkChannelOptions) => LarkChannel
 export interface PluginLogger {
@@ -45,29 +53,6 @@ export type SlashCommandHandler = (
 type AttachmentLike = Pick<AttachmentStore, 'saveImage' | 'imageLimits'> & {
   saveFileStream: (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => Promise<FileAttachmentRef>
   fileHostPath: (ref: FileAttachmentRef) => string | undefined
-}
-
-export type ImageMediaTypeId = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
-
-/**
- * Sniff the real media type from the first bytes of an image, independent of
- * any filename/MIME hint. The attachment store validates declared vs actual
- * bytes (`IMAGE_TYPE_MISMATCH`), so we must NOT guess — Feishu only exposes
- * `type: 'image'` with no reliable content hint, and a guessed JPEG stamp will
- * reject every non-JPEG upload (PNG/WebP/GIF).
- */
-export function sniffImageMime(bytes: Uint8Array): ImageMediaTypeId | undefined {
-  const b = bytes
-  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
-      b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a) return 'image/png'
-  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg'
-  // WebP: "RIFF" .... "WEBP"
-  if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
-      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp'
-  // GIF: "GIF87a" / "GIF89a"
-  if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 &&
-      (b[3] === 0x38) && (b[5] === 0x61)) return 'image/gif'
-  return undefined
 }
 
 /** Extension hint as a fallback when magic bytes are inconclusive. */
@@ -181,11 +166,20 @@ export interface FileAdmission {
 }
 
 /**
- * Download every file resource off one normalized message and persist the
- * bytes through DSH's native attachment store (`saveFileStream`), so each is
- * attached to the user message as a durable `{ type:'file', attachment }`
- * content block whose `hostPath` the agent can open with its file tools.
- * Returns an empty array when the message carries no file resources.
+ * Resource kinds that carry a downloadable attachment. The SDK normalizes a
+ * user-sent video as `{ type: 'video' }` and a voice message as
+ * `{ type: 'audio' }` — neither is `'file'`, so filtering on `'file'` alone
+ * used to drop them and the agent only ever saw a bare `<video key="…"/>` tag.
+ */
+const ADMITTED_RESOURCE_TYPES = new Set(['file', 'video', 'audio'])
+
+/**
+ * Download every file/video/audio resource off one normalized message and
+ * persist the bytes through DSH's native attachment store
+ * (`saveFileStream`), so each is attached to the user message as a durable
+ * `{ type:'file', attachment }` content block whose `hostPath` the agent can
+ * open with its file tools. Returns an empty array when the message carries
+ * no such resources.
  */
 async function admitFilesForMessage(
   channel: LarkChannel,
@@ -193,17 +187,19 @@ async function admitFilesForMessage(
   signal: AbortSignal,
   attachments: AttachmentLike,
 ): Promise<readonly FileAdmission[]> {
-  const resources = (message.resources ?? []).filter(resource => resource.type === 'file')
+  const resources = (message.resources ?? []).filter(resource => ADMITTED_RESOURCE_TYPES.has(resource.type))
   if (resources.length === 0) return []
   const results: FileAdmission[] = []
   for (const resource of resources) {
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
-    const raw = await channel.rawClient.im.v1.messageResource.get({
-      params: { type: 'file' },
-      path: { message_id: message.messageId, file_key: resource.fileKey },
-    })
+    const raw = await downloadMessageResource(channel, message.messageId, resource.fileKey)
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
-    const fileName = resource.fileName ?? resource.fileKey
+    const rawName = resource.fileName ?? resource.fileKey
+    // A video/audio resource sometimes arrives without a file_name; keep a
+    // usable extension so the agent's file tools see what it is.
+    const fileName = rawName.includes('.') || resource.type === 'file'
+      ? rawName
+      : `${rawName}.${resource.type === 'video' ? 'mp4' : 'opus'}`
     const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_')
     const fileRef = await attachments.saveFileStream({
       data: downloadStream(raw),
@@ -390,10 +386,10 @@ export async function startChannel(
           return
         }
       }
-      // Admit file resources: persist the bytes through the native attachment
-      // store (`saveFileStream`) and attach each durable ref to the user turn
-      // so the agent can read the file at `hostPath`.
-      if ((message.resources ?? []).some(resource => resource.type === 'file')) {
+      // Admit file/video/audio resources: persist the bytes through the native
+      // attachment store (`saveFileStream`) and attach each durable ref to the
+      // user turn so the agent can read the file at `hostPath`.
+      if ((message.resources ?? []).some(resource => ADMITTED_RESOURCE_TYPES.has(resource.type))) {
         if (attachments === undefined) {
           await channel.send(message.chatId, {
             text: 'File messages are not supported because the deployment has no attachment service composed.',
