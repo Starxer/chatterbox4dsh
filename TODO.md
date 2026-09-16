@@ -169,6 +169,21 @@
 
 ## 已知问题
 
+### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
+
+**现象**：步骤卡的推理标题从 `💬 **推理** · 807ms · 135 tokens` 变成 `💬 **推理** · 5.3s`——思考耗时还在，**推理 token 数没了**。真机卡片历史对照（`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`，264 张推理卡）：09-15 15:45 及以前带 token 数（不带的都是该步本就没有推理），**09-15 20:20 重启后 0 张**。
+
+**根因（已取证到 wire 层）**：DSH `0.1.6` 把 `@deepseek-ai/dsh-llm-deepseek` 的 `protocol` 默认值改成了 **`messages`**（`packages/llm/llm-deepseek/src/config.ts`，端点 `https://api.deepseek.com/anthropic`），而**该端点的 usage 根本不带 thinking 明细**——直接打 API（流式 + 非流式都试过）只返回 `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `service_tier`；`protocols/messages/translate.ts` 的 `updateUsage` 自然也只映射这四个计数字段。老协议 `/chat/completions` 仍返回 `completion_tokens_details.reasoning_tokens`（实测 `{"reasoning_tokens": 23}`），`chat-completions/mapUsage` 会映射成 `reasoningTokens`。会话日志逐小时统计佐证：09-15 20 点前几乎每步都有 `usage.reasoningTokens`，**20:20 重启后 174 步全部为 0**。
+
+**影响面**：插件步骤卡的 `· N tokens`；**以及 DSH WebUI Trajectory 面板的 think 用量格**（`packages/client/ui-trajectory` 读的就是同一个 `usage.reasoningTokens`）——两端一起丢，所以这是宿主侧的事。
+
+**为什么插件修不了**：数值在 wire 上不存在，宿主拿不到，插件更拿不到。可选只有两条，**2026-09-16 使用者决定「先不改，只记录」**：
+
+1. 给 `llm-deepseek` settings 段（或 profile overlay 行）设 `protocol: chat-completions` → 精确值立刻回来（代价：本机不再走 `messages` 协议）；
+2. 插件按推理文本做 CJK 感知估算并标 `≈` → 全协议可用，但不是精确值。
+
+**处理**：不要在插件里继续找这个"bug"。建议把这个宿主侧回归反馈给 DSH：`TokenUsage.reasoningTokens` 仍在类型里、`ui-trajectory` 仍在读，但默认协议已经不再产出它。
+
 ### 卡片标题色带在部分客户端更新后不重绘（2026-09-08 重新定性）
 
 **现象**：卡片更新（`im.v1.message.patch` 或 `cardkit.v1.card.update`）后，标题背景色在部分飞书客户端上消失、变成白底（`header.template` 的缺省值 `default`）；同一张卡片在另一台设备上显示正常。

@@ -511,6 +511,68 @@ describe('HarnessConversationService', () => {
     expect(service2.sessionOwnerKey(defaultId)).toBe('thread:a:t1')
   })
 
+  it('resolveChat carries the topic root so WebUI-driven cards stay in the topic', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    const topicA = { chatId: 'a', chatType: 'group' as const, threadId: 't1' }
+    const sessionId = service.startNewSession(topicA, 's1')
+    // Before any inbound message in the topic the root is unknown: a send
+    // built from these coordinates would fall back to a top-level message.
+    expect(service.resolveChat(sessionId)).toEqual({ chatId: 'a', chatType: 'p2p', threadId: 't1' })
+    service.noteTopic({ ...topicA, rootId: 'om_root' })
+    expect(service.resolveChat(sessionId)).toEqual({ chatId: 'a', chatType: 'p2p', threadId: 't1', rootId: 'om_root' })
+  })
+
+  it('persists topic roots across restarts', async () => {
+    const statePath = join(tmpdir(), `lark-topic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    const topicA = { chatId: 'a', chatType: 'group' as const, threadId: 't1' }
+    const sessionId = service.startNewSession(topicA, 's1')
+    service.noteTopic({ ...topicA, rootId: 'om_root' })
+    // A restart (a fresh instance reading the same state file) must still know
+    // where the topic is — this is what a WebUI-driven turn depends on.
+    const restarted = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    expect(restarted.resolveChat(sessionId)).toEqual({ chatId: 'a', chatType: 'p2p', threadId: 't1', rootId: 'om_root' })
+    expect(restarted.topicFor('a')).toEqual({ threadId: 't1', rootId: 'om_root' })
+  })
+
+  it('noteTopic ignores thread-less chats and empty roots', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    service.noteTopic({ chatId: 'a', chatType: 'p2p', rootId: 'om_root' })
+    expect(service.topicFor('a')).toEqual({})
+    service.noteTopic({ chatId: 'a', chatType: 'p2p', threadId: 't1' })
+    expect(service.topicFor('a')).toEqual({})
+  })
+
+  it('topicFor returns the most recently used topic of a chat, and nothing without a root', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    service.noteTopic({ chatId: 'a', chatType: 'group', threadId: 't1', rootId: 'om_1' })
+    service.noteTopic({ chatId: 'a', chatType: 'group', threadId: 't2', rootId: 'om_2' })
+    expect(service.topicFor('a')).toEqual({ threadId: 't2', rootId: 'om_2' })
+    // Going back to t1 makes it the current one again
+    service.noteTopic({ chatId: 'a', chatType: 'group', threadId: 't1', rootId: 'om_1' })
+    expect(service.topicFor('a')).toEqual({ threadId: 't1', rootId: 'om_1' })
+    // Another chat's topics are not reported
+    expect(service.topicFor('b')).toEqual({})
+  })
+
+  it('missingTopicRoots lists topics without a root and setTopicRoot fills them', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    const topicA = { chatId: 'a', chatType: 'group' as const, threadId: 't1' }
+    const topicB = { chatId: 'a', chatType: 'group' as const, threadId: 't2' }
+    service.resolveSessionIdFor(topicA)
+    service.resolveSessionIdFor(topicB)
+    service.noteTopic({ ...topicA, rootId: 'om_1' })
+    expect(service.missingTopicRoots()).toEqual([{ chatId: 'a', threadId: 't2' }])
+    service.setTopicRoot('a', 't2', 'om_2')
+    expect(service.missingTopicRoots()).toEqual([])
+    expect(service.topicFor('a')).toEqual({ threadId: 't2', rootId: 'om_2' })
+  })
+
   it('detachSession resets the owner to a fresh session and frees the target', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })

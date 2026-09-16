@@ -4,7 +4,7 @@ import { createUserMessage, expandAssistantStream, isTokenDelta, type ReasoningE
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import { conversationKey, summarizeTurn, toSessionId } from './conversation.ts'
+import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './conversation.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { DomainName } from './config.ts'
 
@@ -146,8 +146,16 @@ export class HarnessConversationService {
    * Per-chat topic root message id (`rootId`), captured from inbound topic
    * messages. Feishu topic replies must target the topic ROOT message
    * (`replyTo: rootId` + `reply_in_thread: true`); replying to a non-root
-   * topic message does not reliably land in the topic. Keyed by the same
-   * chat key as `chatToSession`.
+   * topic message does not reliably land in the topic, and omitting `replyTo`
+   * makes the SDK fall back to `im.v1.message.create` — a brand-new top-level
+   * message, i.e. a *new topic* in a topic group. Keyed by the same chat key
+   * as `chatToSession`.
+   *
+   * Persisted (unlike the earlier in-memory-only version): a turn driven from
+   * the WebUI has no inbound message of its own, so this map is the only thing
+   * that can place its cards inside the topic — and it must survive the
+   * restart that follows every plugin update. Entries are re-appended on use,
+   * so the persisted order doubles as a recency list for {@link topicFor}.
    */
   private readonly chatToRootId = new Map<string, string>()
   /**
@@ -198,7 +206,12 @@ export class HarnessConversationService {
       const raw = readFileSync(path, 'utf-8')
       const data = JSON.parse(raw) as
         | Record<string, string>                 // legacy: { chatKey: sessionId }
-        | { chatToSession?: Record<string, string>; seenChatKeys?: string[]; busyMode?: Record<string, string> }
+        | {
+          chatToSession?: Record<string, string>
+          seenChatKeys?: string[]
+          busyMode?: Record<string, string>
+          chatToRootId?: Record<string, string>
+        }
       // Legacy format (pre-ownership): a flat record keyed by chat key.
       const legacy = Array.isArray(data) ? undefined
         : (data as Record<string, string>).chatToSession === undefined && !Array.isArray((data as any).seenChatKeys)
@@ -209,12 +222,20 @@ export class HarnessConversationService {
         for (const k of Object.keys(legacy)) this.seenChatKeys.add(k)
         return
       }
-      const parsed = data as { chatToSession?: Record<string, string>; seenChatKeys?: string[]; busyMode?: Record<string, string> }
+      const parsed = data as {
+        chatToSession?: Record<string, string>
+        seenChatKeys?: string[]
+        busyMode?: Record<string, string>
+        chatToRootId?: Record<string, string>
+      }
       for (const [k, v] of Object.entries(parsed.chatToSession ?? {})) this.chatToSession.set(k, v)
       for (const k of parsed.seenChatKeys ?? []) this.seenChatKeys.add(k)
       for (const [k, v] of Object.entries(parsed.busyMode ?? {})) {
         if (v === 'queue' || v === 'steer') this.chatToBusyMode.set(k, v)
       }
+      // Insertion order is preserved by JSON, so the topic recency order
+      // written by `noteTopic` survives the restart.
+      for (const [k, v] of Object.entries(parsed.chatToRootId ?? {})) this.chatToRootId.set(k, v)
     } catch (error: unknown) {
       // ENOENT is expected on first run; log other errors
       if ((error as { code?: string }).code !== 'ENOENT') {
@@ -233,6 +254,7 @@ export class HarnessConversationService {
         chatToSession: Object.fromEntries(this.chatToSession),
         seenChatKeys: [...this.seenChatKeys],
         busyMode: Object.fromEntries(this.chatToBusyMode),
+        chatToRootId: Object.fromEntries(this.chatToRootId),
       }), 'utf-8')
     } catch (error: unknown) {
       console.error('dsh-feishu: saveSessionMap failed:', error instanceof Error ? error.message : String(error))
@@ -243,9 +265,7 @@ export class HarnessConversationService {
     const key = conversationKey(message)
     // Capture the topic root id so streaming/question/approval/todo cards
     // can reply into the same Feishu topic instead of the main chat stream.
-    if (message.threadId !== undefined && message.rootId !== undefined) {
-      this.chatToRootId.set(key, message.rootId)
-    }
+    this.noteTopic(message)
     const handle = await this.getOrCreate(key)
     const agent = handle.agent
     const gen = this.generationOf(key)
@@ -791,6 +811,91 @@ export class HarnessConversationService {
   }
 
   /**
+   * Record the topic root message id of an inbound topic message. Must be
+   * called for EVERY inbound message — agent turns and slash commands alike —
+   * because this map is the only topic bookkeeping that outlives a restart:
+   * a turn driven from the WebUI (or from a Feishu card button) has no inbound
+   * message of its own, so `resolveChat` has to supply the coordinates from
+   * here. Without a root the send path degrades to `im.v1.message.create`,
+   * which posts a new top-level message — in a topic group that is a brand-new
+   * topic, i.e. the bot's cards leak out of the topic they belong to.
+   *
+   * Re-recording re-appends the key, so map (and file) order tracks recency;
+   * {@link topicFor} relies on that.
+   */
+  noteTopic(message: ConversationMessage): void {
+    if (message.threadId === undefined) return
+    const rootId = message.rootId
+    if (rootId === undefined || rootId === '') return
+    const key = conversationKey(message)
+    const known = this.chatToRootId.get(key)
+    const firstSight = !this.seenChatKeys.has(key)
+    // delete() + set() moves an existing key to the end of the map.
+    this.chatToRootId.delete(key)
+    this.chatToRootId.set(key, rootId)
+    if (known === rootId && !firstSight) return
+    this.seenChatKeys.add(key)
+    this.saveSessionMap()
+  }
+
+  /**
+   * The topic this chat most recently used, for flows whose card-action
+   * callbacks carry only `chatId` + `messageId` (never the thread). Restored
+   * from disk, so a card left over from before a restart still replies into
+   * its own topic.
+   *
+   * Returns `{}` — not a half-known topic — when the root is missing: handing
+   * callers a `threadId` without its `rootId` only lets them build
+   * `{ replyInThread: true }` with no `replyTo`, which is the silent top-level
+   * fallback {@link noteTopic} exists to prevent.
+   */
+  topicFor(chatId: string): { rootId?: string; threadId?: string } {
+    // Iterate most-recent-last and keep the final hit.
+    let found: { rootId: string; threadId: string } | undefined
+    for (const [key, rootId] of this.chatToRootId) {
+      const parts = parseChatKey(key)
+      if (parts.chatId !== chatId) continue
+      if (parts.threadId === undefined || parts.threadId === '') continue
+      found = { threadId: parts.threadId, rootId }
+    }
+    return found ?? {}
+  }
+
+  /**
+   * Topics this bridge knows about but has no root message id for. A binding
+   * restored from an older state file (written before roots were persisted) or
+   * one that only ever saw slash commands lands here; the caller resolves each
+   * root through the Feishu API once (see `fetchThreadRootId`) and feeds it
+   * back via {@link setTopicRoot}.
+   */
+  missingTopicRoots(): Array<{ chatId: string; threadId: string }> {
+    const missing: Array<{ chatId: string; threadId: string }> = []
+    const seen = new Set<string>()
+    for (const key of this.allChatKeys()) {
+      if (this.chatToRootId.has(key)) continue
+      const parts = parseChatKey(key)
+      if (parts.threadId === undefined || parts.threadId === '') continue
+      const threadKey = `${parts.chatId}\0${parts.threadId}`
+      if (seen.has(threadKey)) continue
+      seen.add(threadKey)
+      missing.push({ chatId: parts.chatId, threadId: parts.threadId })
+    }
+    return missing
+  }
+
+  /** Record a topic root resolved outside Feishu's push stream. */
+  setTopicRoot(chatId: string, threadId: string, rootId: string): void {
+    this.noteTopic({ chatId, chatType: 'p2p', threadId, rootId })
+  }
+
+  /** Every chat key this bridge knows: explicit bindings plus seen chats. */
+  private allChatKeys(): string[] {
+    const keys = new Set<string>(this.chatToSession.keys())
+    for (const key of this.seenChatKeys) keys.add(key)
+    return [...keys]
+  }
+
+  /**
    * Reconstruct a {@link ConversationMessage} from the chat key produced by
    * {@link conversationKey}. The key is sufficient for `resolveSessionId`
    * because only `chatId` and (optionally) `threadId` participate in the
@@ -798,11 +903,10 @@ export class HarnessConversationService {
    * harmless `'p2p'` default.
    */
   private messageFromKey(key: string): ConversationMessage {
-    if (key.startsWith('thread:')) {
-      const [, chatId, threadId] = key.split(':')
-      return { chatId: chatId ?? '', chatType: 'p2p', threadId: threadId ?? '' }
-    }
-    return { chatId: key.slice('chat:'.length), chatType: 'p2p' }
+    const parts = parseChatKey(key)
+    return parts.threadId === undefined
+      ? { chatId: parts.chatId, chatType: 'p2p' }
+      : { chatId: parts.chatId, chatType: 'p2p', threadId: parts.threadId }
   }
 
   /**

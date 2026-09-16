@@ -10,6 +10,27 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 已知回归（**宿主侧，非插件 bug，未修只记录**）：DSH `0.1.6` 起推理 token 数消失——默认 wire 协议换成 `messages`，而该端点不上报 thinking token（2026-09-16 定性）
+
+- **现象**（使用者真机报告「升级 0.1.6 以后推理的 token 速度丢失」）：步骤卡的推理标题从 `💬 **推理** · 807ms · 135 tokens` 变成 `💬 **推理** · 5.3s`——**思考耗时还在，推理 token 数没了**。真机卡片历史取证（`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`，264 张推理卡）：09-15 15:45 及以前均带 token 数（不带的都是该步本就没有推理），**09-15 20:20 重启后 0 张**。
+- **根因（取证到 wire 层）**：DSH `0.1.6` 把 `@deepseek-ai/dsh-llm-deepseek` 的 `protocol` 默认值改成 **`messages`**（`packages/llm/llm-deepseek/src/config.ts`，端点 `https://api.deepseek.com/anthropic`），而**该端点 usage 不带 thinking 明细**——直接打 API（流式与非流式）只返回 `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `service_tier`，`protocols/messages/translate.ts` 的 `updateUsage` 也只映射这四个计数。老协议 `/chat/completions` 仍返回 `completion_tokens_details.reasoning_tokens`（实测 `{"reasoning_tokens": 23}`），`chat-completions/mapUsage` 会映射成 `reasoningTokens`。会话日志逐小时统计佐证：09-15 20 点前几乎每步都有 `usage.reasoningTokens`，**20:20 重启后 174 步全部为 0**。
+- **影响面**：插件步骤卡的 `· N tokens`；**以及 DSH WebUI Trajectory 的 think 用量格**（`packages/client/ui-trajectory` 读的是同一个 `usage.reasoningTokens`）——两端一起丢，属宿主侧行为变化。
+- **为什么没修**：数值在 wire 上不存在，宿主拿不到、插件更拿不到。可选只有「切回 `chat-completions`（精确）」或「按推理文本估算并标 `≈`（近似）」两条取舍，**2026-09-16 使用者决定只记录、不改**。要恢复精确值只需给 `llm-deepseek` settings 段（或 profile overlay 行）设 `protocol: chat-completions`。
+- **建议**：反馈给 DSH——`TokenUsage.reasoningTokens` 仍在类型里、`ui-trajectory` 仍在读，但默认协议已不再产出它。
+
+### 修复：WebUI 里跑话题会话时，卡片溢出到话题外（`src/harness.ts` / `src/conversation.ts` / `src/channel.ts` / `src/topic-roots.ts`（新）/ `src/index.ts`）
+
+- **问题**（2026-09-16 使用者真机报告「在 webui 对话时，feishu 话题绑定了的 session 的消息会在 feishu 群里面溢出到话题外」）：一个绑定到飞书话题的会话，如果从 **WebUI** 侧驱动（而不是在话题里发消息），它产生的每张卡片都不落在原话题里，而是变成**群里的新话题**——每个话题下只有那一条孤零零的卡片。真机取证：`im.v1.message.list`（`container_id_type=chat`）拉回该群最近 29 条顶层消息，其中 **10 条是 `sender=app` 的 `interactive`，且各自所在话题内只有它自己 1 条消息**，而 9 个已绑定话题的根消息都在群里（说明会话绑定完好，问题只出在发送坐标上）。
+- **根因（两层）**：
+  1. **话题根消息 id 只存在于内存**：飞书话题回复必须 `replyTo: <话题根消息 id>` + `reply_in_thread`，否则 SDK 的 `rawSend` 在 `replyTo` 为空时**直接退回 `im.v1.message.create`**——`create` 没有话题参数，于是消息成为新的顶层消息（话题群里就是新话题）。这个根 id 只在**入站**消息里出现（`message.root_id`，话题根消息自身则用 `message_id` 兜底），原实现把它记在 `HarnessConversationService.chatToRootId` 这个**纯内存 Map** 里，`dispose()` 还会清空它。
+  2. **WebUI 驱动的 turn 没有入站消息**：它的坐标只能由 `resolveChat(sessionId)` 从那张 Map 反查。于是**任何一次重启（每次插件更新都会重启）、或任何一次连接 reconcile**之后，从 WebUI 发起的 turn 都拿不到根 id，卡片全部 `message.create` 到群顶层。同源的第二处泄漏：`channel.ts` 原先只在**非命令消息**进入 `bridge.reply()` 时才记录根 id，所以"只在话题里用过斜杠命令"的话题同样没有记录。
+- **改法**：
+  1. **话题根随状态文件持久化**（`harness.ts` + `conversation.ts`）：`chatToRootId` 与 `chatToSession` / `seenChatKeys` / `busyMode` 一起写进 `lark-session-map.json`，重启后自动恢复。记录时 `delete()` + `set()` 让 Map（及落盘顺序）按**最近使用**排序。
+  2. **每个入站话题消息都记录**（`channel.ts`）：新增 `bridge.noteTopic(...)`，放在 `replyToId = rootId ?? messageId` 之后、**斜杠命令分支之前**——命令提前 return 也不再漏记。这同时统一了原先分散在 `feishu-onboarding.ts` 里的另一份内存话题表：`topicFor(chatId)`（卡片回调只带 `chatId`，需要反查话题）现在**优先问 bridge**，onboarding 的内存表退化为回退。
+  3. **一次性补齐历史上缺失的根**（`src/topic-roots.ts`（新）+ `index.ts`）：`fetchThreadRootId()` 用 `im.v1.message.list` 的 `container_id_type: 'thread'`（`ByCreateTimeAsc`、`page_size: 1`）取话题第一条消息作为根（其 `root_id` 为空即它自己；若非根则优先用 `root_id`）。每次通道连上后，`recoverTopicRoots()` 在后台把 `missingTopicRoots()` 列出的历史话题逐个补齐，**不阻塞连接、失败只记日志**。真机预检：9/9 个已绑定话题都能解析出根。
+  4. **让"降级"不再静默**（`index.ts`）：`sendCardByReference` 在 `replyInThread` 为真却拿不到 `replyTo` 时打一行日志——这种降级此前完全不可观测。顺带把卡片通道 `send` / `sendCardByReference` 的 `opts` 类型补上 `replyTo`（原先只在后者上声明，`cardChannel.send` 的签名把 `replyTo` 吞掉了）。
+- **验证**：新增 `tests/topic-roots.spec.ts` 四例（取话题第一条 / 优先 `root_id` / 空话题与空参返回 `undefined` / API 抛错时降级为 `undefined` 且不抛）、`tests/harness.spec.ts` 六例（`resolveChat` 带上话题根 / 根跨重启持久化 / 无话题或无根时 `noteTopic` 不记录 / `topicFor` 返回最近使用的话题且缺根时返回 `{}` / `missingTopicRoots` 与 `setTopicRoot`）、`tests/plugin.spec.ts` 两例（入站话题消息——含**话题根消息自身没有 `root_id`**——都记录；斜杠命令提前返回前也已记录）。全套 **365 passed / 31 files**（原 354 / 30），typecheck 0 error，build ✅。
+
 ### 修复：一次卡片点击能杀掉整个 dsh 进程——`/permission` 切换触发 DSH 拒绝后被升级成 `fatal load failure`（`src/card-dispatch.ts`（新）/ `src/feishu-permission.ts` / `src/feishu-session.ts` / `src/index.ts` / `src/i18n.ts`）
 
 - **问题**（2026-09-14 使用者真机报告「刚才有一次 permission 切换故障」）：在话题里点 `/permission` 卡片的「🔓 Full access」，**dsh 进程直接以 status=1 退出**，systemd 重启（`restart counter is at 1`），当时所有正在跑的 turn 一起被杀。日志证据：`[card] … value={"p":"permission","mode":"danger-full-access"}` 紧跟一行 `dsh: fatal load failure: Error: cannot change sandbox mode from "workspace-write" to "danger-full-access" while persistent terminal sessions are open or being created`。

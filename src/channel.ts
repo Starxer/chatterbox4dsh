@@ -239,7 +239,7 @@ export interface ChatCoordinates {
 
 export async function startChannel(
   config: Omit<RuntimeConfig, 'appSecretRef'>,
-  bridge: Pick<HarnessConversationService, 'reply' | 'dispose' | 'consumeIntermediateSent' | 'resolveSessionIdFor' | 'needsOnboarding'>,
+  bridge: Pick<HarnessConversationService, 'reply' | 'dispose' | 'consumeIntermediateSent' | 'resolveSessionIdFor' | 'needsOnboarding' | 'noteTopic'>,
   factory: ChannelFactory = createLarkChannel,
   logger: PluginLogger = console,
   terminalLogger?: Pick<PluginLogger, 'error'>,
@@ -309,6 +309,18 @@ export async function startChannel(
       // the topic. Root messages (no root_id) reply to themselves.
       const replyToId = message.rootId ?? message.messageId
       console.log(`dsh-feishu: [msg] chatId=${message.chatId} threadId=${message.threadId ?? '-'} rootId=${message.rootId ?? '-'} replyInThread=${replyInThread} replyTo=${replyToId}`)
+      // Remember the topic's root for EVERY inbound message — slash commands
+      // included, before they can return early. A WebUI-driven turn has no
+      // inbound message of its own, so this persisted map is the only thing
+      // that can keep its cards inside the topic.
+      if (message.threadId !== undefined) {
+        bridge.noteTopic({
+          chatId: message.chatId,
+          chatType: message.chatType,
+          threadId: message.threadId,
+          rootId: replyToId,
+        })
+      }
       if (config.reactEmoji !== '') {
         try {
           await channel.addReaction(message.messageId, config.reactEmoji)

@@ -17,6 +17,21 @@ export function conversationKey(message: ConversationMessage): string {
     : `thread:${message.chatId}:${message.threadId}`
 }
 
+/** Chat key for a Feishu topic: one DSH session per (chat, thread) pair. */
+export function threadChatKey(chatId: string, threadId: string): string {
+  return `thread:${chatId}:${threadId}`
+}
+
+/**
+ * Inverse of {@link conversationKey}. Topic thread ids contain no `:`, but the
+ * `rest.join(':')` keeps a malformed key from silently truncating the id.
+ */
+export function parseChatKey(key: string): { chatId: string; threadId?: string } {
+  if (!key.startsWith('thread:')) return { chatId: key.slice('chat:'.length) }
+  const [, chatId, ...rest] = key.split(':')
+  return { chatId: chatId ?? '', threadId: rest.join(':') }
+}
+
 export function toSessionId(domain: DomainName, key: string): SessionId {
   const digest = createHash('sha256').update(`${domain}\0${key}`).digest('hex').slice(0, 40)
   // v2 sessions include the Harness workspace and agent-preset composition.

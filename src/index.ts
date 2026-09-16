@@ -57,6 +57,7 @@ import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
 import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
 import { startFeishuSession, renderSessionListCard, renderSessionResultCard, type FeishuSessionHandle } from './feishu-session.ts'
 import { startFeishuOnboarding, type FeishuOnboardingHandle } from './feishu-onboarding.ts'
+import { fetchThreadRootId } from './topic-roots.ts'
 import type { ChatCreationOptions } from './harness.ts'
 
 export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void> {
@@ -230,7 +231,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let pendingCardFlush: ((chatId: string) => Promise<void>) | undefined
   let cardSendDepth = 0
   const cardChannel = {
-    send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean }): Promise<{ messageId?: string }> => {
+    send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
       if (('card' in input || 'text' in input) && cardSendDepth === 0 && pendingCardFlush !== undefined) {
         cardSendDepth += 1
         try {
@@ -292,6 +293,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
       const content = JSON.stringify({ type: 'card', data: { card_id: cardId } })
+      if (opts?.replyInThread === true && (opts.replyTo === undefined || opts.replyTo === '')) {
+        // The topic's root message id was never recorded (see
+        // `HarnessConversationService.noteTopic`): `reply_in_thread` alone is
+        // meaningless to `message.create`, so this card lands at the top level
+        // of the chat — a new topic in a topic group. Logged so the leak is
+        // visible instead of silent.
+        console.log(`dsh-feishu: [send] topic reply without a root id for chat=${to} — falling back to a top-level message`)
+      }
       if (opts?.replyTo !== undefined && opts.replyTo !== '') {
         return ch.rawClient.im.v1.message.reply({
           path: { message_id: opts.replyTo },
@@ -483,11 +492,47 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       )
     },
   })
+  /**
+   * Fill in the topic roots the bridge is missing, one Feishu lookup each.
+   *
+   * Every send that must land inside a Feishu topic needs the topic's ROOT
+   * message id (`replyTo` + `reply_in_thread`); without it the SDK posts a new
+   * top-level message and the bot's cards escape the topic. Roots normally
+   * arrive on inbound messages, but a binding restored from an older state
+   * file — or one that only ever saw slash commands — has none, and a turn
+   * driven from the WebUI has no inbound message to supply one. Resolving them
+   * once at connect makes those topics behave like freshly-bound ones.
+   *
+   * Runs in the background: sequential (only a handful of topics), tolerant of
+   * failures (see `fetchThreadRootId`), and it never blocks the connection.
+   */
+  async function recoverTopicRoots(channel: LarkChannel): Promise<void> {
+    const bridge = bridgeHolder.current
+    if (bridge === undefined) return
+    const missing = bridge.missingTopicRoots()
+    if (missing.length === 0) return
+    let recovered = 0
+    for (const topic of missing) {
+      const rootId = await fetchThreadRootId(channel, topic.threadId)
+      if (rootId === undefined) continue
+      bridge.setTopicRoot(topic.chatId, topic.threadId, rootId)
+      recovered += 1
+    }
+    console.log(`dsh-feishu: topic roots — ${recovered}/${missing.length} resolved via the Feishu API`)
+  }
+
   // Pin the channel holder so the card adapter's `send`/`onCardAction` always
   // reach the live channel. The questions/approvals listeners wrap this
   // callback to also attach their cardAction handlers on reconnect.
   runtime.onChannelChange = channel => {
     channelHolder.current = channel
+    // Topics the bridge knows but has no root message id for (bindings carried
+    // over from before roots were persisted). Resolve them once, in the
+    // background, so a WebUI-driven turn in those topics does not leak its
+    // cards into the main chat. Best-effort: never blocks the connection.
+    void recoverTopicRoots(channel).catch((error: unknown) => {
+      console.log(`dsh-feishu: topic root recovery failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
   // `feishu_send_file` is independent of the questions/approvals seams: it only
   // needs the live channel + the session→chat reverse lookup, so it registers
@@ -541,6 +586,19 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     getTranslations: () => translationsFor(currentLocale().id),
   })
   if (sessionController !== undefined && userQuestions !== undefined && approval !== undefined) {
+    /**
+     * Topic coordinates for a chat whose card action carried only `chatId`.
+     *
+     * The bridge holds the persistent (and Feishu-recovered) copy; onboarding's
+     * in-memory map is the fallback for a topic it recorded but the bridge has
+     * not been told about yet. Prefer the bridge so a card that outlived a
+     * restart still replies into its own topic instead of the main chat.
+     */
+    const chatTopicFor = (chatId: string): { rootId?: string; threadId?: string } => {
+      const fromBridge = bridgeHolder.current?.topicFor(chatId) ?? {}
+      if (fromBridge.rootId !== undefined) return fromBridge
+      return onboardingHandle?.topicFor(chatId) ?? {}
+    }
     stopQuestions = startFeishuQuestions({
       ctx,
       channel: cardChannel,
@@ -591,7 +649,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       sessionController,
       channel: cardChannel,
       logger: ctx.logger('dsh-feishu'),
-      topicFor: chatId => onboardingHandle?.topicFor(chatId) ?? {},
+      topicFor: chatTopicFor,
       getTranslations: () => translationsFor(currentLocale().id),
       onNewSessionConfirm: async (chatMessage, selection, messageId) => {
         // The `/new` card flow's model step confirmed. Do NOT create the
@@ -610,7 +668,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         }
         await retireModelCard(messageId, t)
         const card = renderNewSessionConfirmCard(options, t)
-        const topic = onboardingHandle?.topicFor(chatMessage.chatId) ?? {}
+        const topic = chatTopicFor(chatMessage.chatId)
         const opts = topic.threadId !== undefined && topic.rootId !== undefined
           ? { replyInThread: true, replyTo: topic.rootId }
           : {}
@@ -654,7 +712,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         const current = defaultModel.currentSelection()
         const card = renderProviderSelectCard(llm.listProviders(), current, 'new-session', translationsFor(currentLocale().id))
         const cardId = await cardChannel.createCardInstance(card)
-        const topic = onboardingHandle?.topicFor(chatMessage.chatId) ?? {}
+        const topic = chatTopicFor(chatMessage.chatId)
         const opts = topic.threadId !== undefined && topic.rootId !== undefined
           ? { replyInThread: true, replyTo: topic.rootId }
           : {}
