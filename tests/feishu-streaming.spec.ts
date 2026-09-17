@@ -324,7 +324,7 @@ function stepHarness(
   const emit = (type: string, data?: any): void => {
     for (const handler of listeners) handler({ id: 's-1' }, { type, time: Date.now(), data })
   }
-  return { streaming, emit }
+  return { streaming, emit, bridge }
 }
 
 const tick = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
@@ -764,5 +764,57 @@ describe('turn deliverables (DSH present tool)', () => {
     emit('turn/end')
     expect((await streaming.flushed('s-1'))?.deliverables).toEqual([])
     streaming.stop()
+  })
+})
+
+describe('intermediate-sent note (the duplicate-reply guard channel.ts reads)', () => {
+  const plainChannel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+  })
+
+  it('notes the session when the step text reaches an already-posted card', async () => {
+    const channel = plainChannel()
+    const { emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    // A tool call opens the card while the step still has no text: the tool
+    // runs for seconds, so the card is posted bare.
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    expect(bridge.markIntermediateSent).not.toHaveBeenCalled()
+
+    // The step's text arrives afterwards and only reaches the screen through
+    // an update. channel.ts must still treat the text as already shown,
+    // otherwise it posts a second card with the same text.
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('request/context', { contextWindow: 8192 })
+    await tick(200)
+
+    const card = (channel.updateCard as any).mock.calls.at(-1)?.[1]
+    expect(mdOf(card)).toContain('the answer')
+    expect(bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+  })
+
+  it('still notes the session when the card is posted with the text already present', async () => {
+    const channel = plainChannel()
+    const { emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'hi' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    expect(bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+  })
+
+  it('does not note the session while the card carries no text', async () => {
+    const channel = plainChannel()
+    const { emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    emit('request/context', { contextWindow: 8192 })
+    await tick(200)
+    // The update ran, but nothing textual was on the card to report.
+    expect(channel.updateCard).toHaveBeenCalled()
+    expect(bridge.markIntermediateSent).not.toHaveBeenCalled()
   })
 })

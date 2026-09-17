@@ -164,6 +164,13 @@ interface StepToolCall {
 
 /** Per-session state for accumulating a step's content. */
 interface SessionStepState {
+  /**
+   * The session this state belongs to. Kept on the state (not just passed
+   * around) because `updateStepCard` runs from several event branches and must
+   * be able to report "this session's text is on screen" — see
+   * {@link noteStepCardText}.
+   */
+  sessionId: string
   /** Accumulated reasoning from reasoning-delta chunks. */
   reasoning: string
   /** Accumulated text from text-delta chunks. */
@@ -223,6 +230,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     let state = sessionStates.get(sessionId)
     if (state === undefined) {
       state = {
+        sessionId,
         reasoning: '',
         text: '',
         toolCalls: [],
@@ -359,6 +367,24 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const lastCardSendByChat = new Map<string, Promise<unknown>>()
 
   /**
+   * Note that this session's assistant text is already on screen in a step
+   * card, so channel.ts sends only the Turn Complete footer instead of a
+   * second card carrying the same text.
+   *
+   * Called from BOTH card paths. A card is commonly opened by a `tool/call`
+   * while the step's text is still empty (the tool runs for seconds), and the
+   * text only reaches the screen through a later update — that case must count
+   * exactly like a card posted with the text already present, otherwise
+   * channel.ts takes its "nothing was shown" branch and posts a duplicate
+   * reply card (and loses the Turn Complete card with its deliverables and
+   * metrics along the way).
+   */
+  const noteStepCardText = (sessionId: string, state: SessionStepState): void => {
+    if (state.text.trim() === '') return
+    bridgeHolder.current?.markIntermediateSent(sessionId)
+  }
+
+  /**
    * Post the step card immediately, built from the CURRENT state, and track
    * its identity. Only `queueStepCardSend` / `flushPendingSend` call this —
    * never the event handlers directly.
@@ -367,12 +393,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     const card = buildStepCard(state)
     state.stepCardSent = true
     state.chat = chat
-    // Mark this session as having sent intermediate content so channel.ts
-    // can skip the duplicate reply card and only send the footer.
-    const hasText = state.text.trim() !== ''
-    if (hasText) {
-      bridgeHolder.current?.markIntermediateSent(sessionId)
-    }
+    noteStepCardText(sessionId, state)
     const opts = chat.threadId !== undefined
       ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
       : {}
@@ -586,6 +607,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       console.log(`dsh-feishu: [update] skipped: sent=${state.stepCardSent} ref=${state.stepCardRef !== undefined}`)
       return
     }
+    // This update may be the moment the step's text first reaches the screen
+    // (a tool call often opened the card before any text existed), so the
+    // "text is on screen" note belongs here as well as on the send path.
+    noteStepCardText(state.sessionId, state)
     // Capture the ref and card NOW — resetStep may clear state before the timer fires
     const ref = state.stepCardRef
     const card = buildStepCard(state)

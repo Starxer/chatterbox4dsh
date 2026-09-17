@@ -213,16 +213,15 @@
 
 **缺口 3（整块丢）**：`channel.ts:505-518` 的 else 分支（`intermediateSent === false`）走 `renderReplyCards`，其签名没有 `turnStats`，**交付清单与本轮指标都不渲染**，只发一张蓝色 `Reply` 卡——群里实测命中 **15 次**，DM 0 次。
 
-**顺带隐患（未复现）**：`markIntermediateSent` 只在卡片**首次发出**时判断有无文本（`feishu-streaming.ts:372-375`）；若该步先被 `tool/call` 开卡、文本后到（走 `updateStepCard`），标记不会补上 → channel.ts 会再发一张**重复**的蓝色 `Reply` 卡（正文出现两遍）。
+**✅ 顺带隐患已修（2026-09-17）**：`markIntermediateSent` 原先只在卡片**首次发出**时判断有无文本（`feishu-streaming.ts` 的 `actuallySendStepCard`）；若该步先被 `tool/call` 开卡、正文后到（走 `updateStepCard`），标记不会补上 → channel.ts 会再发一张**重复**的蓝色 `Reply` 卡（正文出现两遍）并且不发 complete 卡。现抽成 `noteStepCardText(sessionId, state)`、**发送与更新两条路径都调用**（`SessionStepState` 因此带上 `sessionId`），3 例新测试；这也**缩小了下面缺口 3 的触发面**。详见 CHANGELOG「工具先开卡、正文后到时误判…」。
 
 **可选方向（未定、未动工）**：
 
 1. **补 produced**（直接消掉那 18 轮缺口）：在 streaming 里按 WebUI 同规则收集 write/edit/str_replace_editor 的成功产出（path 去重、首次出现顺序、closing seq 截断），渲染进 complete 卡；
 2. **complete 卡改为「轮次结束即发」**：让 streaming 在 `turn/end` 补发，并与 channel.ts 约定「谁负责这一轮的 footer」，覆盖飞书没触发的轮次；
-3. **else 分支接上 `turnStats`**，至少把交付清单渲染出来；
-4. 若上面「顺带隐患」那段确认会真实发生，再决定是否在 `updateStepCard` 路径补 `markIntermediateSent`。
+3. **else 分支接上 `turnStats`**，至少把交付清单渲染出来。
 
-**处理**：2026-09-17 使用者决定**先只记录、不改**（本轮未动任何源码）。
+**处理**：2026-09-17 使用者决定**三个缺口先只记录、不改**；同轮只修了上面那个已复现的隐患。
 
 ### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
 
@@ -284,13 +283,42 @@
 
 ---
 
-### ⚠️ MiniMax M3 思考强度选项差异 —— 已知，非 bug
+### ⚠️ MiniMax M3 思考强度选项差异 —— **可解（2026-09-17 重新定性）：settings 一处即可，插件与 DSH 都不用改**
 
-**现象**：MiniMax M3 模型的思考强度选项与标准模型不同。
+**现象**：MiniMax M3 的思考强度选项与标准模型不同——`/reasoning` 列出 `off / minimal / low / medium / high`，而 M3 的 `/anthropic` 端点只认 `adaptive` / `disabled`。
 
-**根因**：MiniMax-M3 支持的 thinking 选项是 `disable` / `adaptive`，而非标准的 `off` / `low` / `high` / `max`。这是模型本身的差异，非插件 bug。
+**根因（已取证到 wire 层）**：
 
-**状态**：✅ **已明确，无需修复**。`/reasoning` 命令显示的是 DSH 标准选项，MiniMax M3 实际行为由模型侧决定。
+- M3 在本部署走 `llm-pi-ai` 的 `api: anthropic-messages`（`baseUrl: https://api.minimaxi.com/anthropic`）。pi-ai 随附的 `providers/data/minimax-cn.json` 里 M3 只有 `reasoning: true`，**既无 `thinkingLevelMap` 也无 `compat`**；DSH 的 `resolveModelReasoning()`（`packages/llm/llm-pi-ai/src/catalog.ts`，`efforts === undefined` 分支）原样透传 → `getSupportedThinkingLevels()` 列出上面那 5 档，请求走 pi-ai 的 **budget 分支**：`thinking: {type:'enabled', budget_tokens:N}`（`@earendil-works/pi-ai` `dist/api/anthropic-messages.js` 的 `streamSimple`，只有 `compat.forceAdaptiveThinking === true` 才走 adaptive）。
+- MiniMax 官方口径：**M3 只接受 `thinking:{type:'adaptive'}` / `{type:'disabled'}`，会静默忽略 Anthropic 的 `enabled + budget_tokens`**（表现为拿不到 thinking 块 / `reasoning_tokens=0`）；M2.x 反而继续用 manual 形态。两家独立实现为此各发过一个 fix，可直接当参照：hermes-agent `3c680ea`（fix(minimax): preserve native M3 thinking on Anthropic routes）、`8267f85`（fix(anthropic-adapter): treat MiniMax M3 as adaptive-thinking on /anthropic），两处都注明来源为 [MiniMax Anthropic 兼容文档](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api)。
+
+**修法（settings-only，改 `~/.dsh/settings.yaml` 的 `llm-pi-ai` 段；插件零改动）**：给 M3 显式声明 `compat.forceAdaptiveThinking` + `reasoningEfforts`：
+
+```yaml
+llm-pi-ai:
+  providers:
+    minimax-cn:
+      models:
+        - id: MiniMax-M3
+          name: MiniMax-M3
+          contextWindow: 1000000
+          maxTokens: 128000
+          compat:
+            forceAdaptiveThinking: true   # → pi-ai 发 thinking:{type:'adaptive'}
+          reasoningEfforts:
+            off: disabled                 # 非 null → pi-ai 发 thinking:{type:'disabled'}
+            high: high                    # 唯一"开"档（M3 本来就不分档）
+```
+
+要点与坑：
+
+- `off:` **不能留空**。留空（= `null`）会被 pi-ai 读成"支持但什么都不发"（`model.reasoning && thinkingEnabled === false && thinkingLevelMap?.off !== null` 这条判据），而 M3 在**没有 thinking 参数时会返回空响应**——必须给个非空字面量，值本身不参与这条分支的 wire。
+- **M2.x 不要加** `forceAdaptiveThinking`：M2 家族的 `/anthropic` 不支持 adaptive（同一仓库测试里就有 M2.x 保持 manual 的断言）。
+- `/reasoning` 会**自动**跟着变，因为插件读的是 `llm.resolveModelInfo()` → pi-ai 的 `getSupportedThinkingLevels()`（`packages/llm/llm-pi-ai/src/adapter.ts` 的 `reasoningInfo()`）：声明后列表只剩 `off / high`，插件侧**一行都不用动**。
+
+**残留风险（需真机验一次，不要只看配置）**：pi-ai 的 adaptive 分支除了 `thinking:{type:'adaptive'}` 还会带一个 `output_config:{effort:<映射值>}`，而 MiniMax 文档只提 adaptive/disabled、没提这个字段。若 M3 对多出来的字段返回 400，就落到 pi-ai/宿主侧，超出 settings 能解决的范围（只能等上游或改源码）。**验证方式**：切 M3 + `/reasoning high` 跑一轮，看步骤卡是否出现 `💬 推理`、以及是否报错——只是"配置生效"不算验证。
+
+**状态**：原记录「✅ 已明确，无需修复」**已更正**为**可解**。settings 改动**尚未执行**（等确认是否需要切 M3 用再做）。
 
 ---
 

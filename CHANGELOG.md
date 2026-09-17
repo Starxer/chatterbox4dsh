@@ -10,6 +10,14 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 修复：工具先开卡、正文后到时误判「没显示过正文」，会多发一张重复回复卡（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
+
+- **问题**（2026-09-17 排查「产物信息出现在步骤卡而不是 complete 卡」时顺带发现、同日修复）：某一步先被 `tool/call` **开卡**、该步正文稍后才到时，`channel.ts` 会误判「飞书这边还没显示过正文」，于是**再发一张蓝色 `Reply` 卡**（同一段正文出现两遍），并且**不发 Turn Complete 卡**——连同 📦 交付文件 清单与本轮耗时/token 指标一起丢掉。
+- **根因**：`bridge.markIntermediateSent()` 只在 **`actuallySendStepCard()`** 里判定，判据是「卡片发出那一刻 `state.text` 是否为空」。而卡片常常由 `tool/call` 在正文到达前就发出（工具要跑几秒，卡先以 `⏳ running…` 上屏），正文随后只经 **`updateStepCard()`** 到达屏幕——更新路径从不补这个标记，于是 `bridge.consumeIntermediateSent()` 返回 false，channel.ts 走了「没有中间卡」的分支。
+- **改法**：把判定抽成 `noteStepCardText(sessionId, state)`（正文非空 → `markIntermediateSent`），**发送路径与更新路径都调用**。`updateStepCard` 因此需要 sessionId，把它放进了 `SessionStepState`（该状态本就是 per-session）。
+- **影响面**：只关掉这个误判；同时**缩小**（不消除）`channel.ts` 那条「整块丢交付清单 + 指标」的 else 分支的触发面。交付物面本身仍窄（produced 整半未实现、complete 卡只对飞书触发的轮次发送）——见 `TODO.md`。
+- **验证**：`tests/feishu-streaming.spec.ts` 新增 3 例：① 工具开卡（无正文）→ 正文经 `request/context` 的更新上屏 → 断言**卡片里确有正文**且已标记；② 正文随卡一起发出 → 仍标记（回归保护）；③ 无正文的更新 → **不**标记（保持判据狭窄）。全套 **405 passed / 33 files**（原 402 / 33），typecheck 0 error。
+
 ### 修复：飞书把 turn 失败压成一句通用错误——改为按 WebUI 的方式渲染同一份失败事实（`src/turn-failure.ts`（新）/ `src/conversation.ts` / `src/harness.ts` / `src/channel.ts` / `src/i18n.ts`）
 
 - **问题**（2026-09-17 使用者报告「飞书端报错没有 1:1 对应 WebUI，有时能正确显示，有时只剩一个默认的句子」）：同一个失败，WebUI 显示的是**具体原因 + 错误码**，飞书这边却只回一句 `处理这条消息时出错：Harness turn did not produce a successful assistant response`。日志取证：这句话在 journald 里**出现过 20+ 次**（09-08 至 09-17），最近的几次正对应会话里的 413（`DeepSeek Messages request failed (413)` / `INVALID_REQUEST`）。
