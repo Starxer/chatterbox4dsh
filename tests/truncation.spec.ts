@@ -37,6 +37,81 @@ describe('chunkText', () => {
   })
 })
 
+describe('chunkText block awareness', () => {
+  it('cuts earlier at the previous blank line instead of splitting a table', () => {
+    const intro = 'x'.repeat(60)
+    const table = ['| a | b |', '| --- | --- |', ...Array.from({ length: 5 }, (_, i) => `| r${i} | v${i} |`)].join('\n')
+    const chunks = chunkText(`${intro}\n\n${table}`, 100)
+    // The intro alone would leave no room for the table; the boundary moves
+    // back to the blank line so the table starts a fresh card intact.
+    expect(chunks[0]).toBe(intro)
+    expect(chunks[1]).toBe(table)
+  })
+
+  it('keeps a table inside one chunk when it fits without the preceding block', () => {
+    const table = ['| col | val |', '| --- | --- |', '| 1 | 2 |'].join('\n')
+    const chunks = chunkText(`${'p'.repeat(90)}\n\n${table}`, 100)
+    expect(chunks[1]).toBe(table)
+  })
+
+  it('repeats the header rows when one table exceeds the budget', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => `| r${i} | value ${i} |`)
+    const table = ['| col | val |', '| --- | --- |', ...rows].join('\n')
+    const chunks = chunkText(table, 120)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(chunk.startsWith('| col | val |\n| --- | --- |')).toBe(true)
+    }
+    const joined = chunks.join('\n')
+    for (const row of rows) expect(joined).toContain(row)
+  })
+
+  it('closes and re-opens a code fence when one block exceeds the budget', () => {
+    const body = Array.from({ length: 40 }, (_, i) => `line ${i} ${'z'.repeat(20)}`)
+    const fence = `\`\`\`ts\n${body.join('\n')}\n\`\`\``
+    const chunks = chunkText(fence, 200)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n')
+      expect(lines[0]).toBe('```ts')
+      expect(lines[lines.length - 1]).toBe('```')
+    }
+  })
+
+  it('does not treat blank lines inside a code fence as card boundaries', () => {
+    const body = Array.from({ length: 30 }, (_, i) => `l${i}`).join('\n\n')
+    const fence = `\`\`\`\n${body}\n\`\`\``
+    const chunks = chunkText(fence, 60)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(chunk.startsWith('```\n')).toBe(true)
+      expect(chunk.endsWith('\n```')).toBe(true)
+    }
+  })
+
+  it('falls back to a character cut for a single line longer than the budget', () => {
+    expect(chunkText('a'.repeat(5000), 3000)).toEqual(['a'.repeat(3000), 'a'.repeat(2000)])
+  })
+
+  it('preserves every block across a mixed document', () => {
+    const text = [
+      '# Title',
+      'paragraph one',
+      '```ts\nconst a = 1\n\nconst b = 2\n```',
+      ['| h1 | h2 |', '| --- | --- |', '| a | b |'].join('\n'),
+      '- item one\n- item two',
+    ].join('\n\n')
+    const chunks = chunkText(text, 40)
+    const joined = chunks.join('\n\n')
+    for (const block of text.split('\n\n')) {
+      // Blank-line separated blocks survive as substrings of some chunk, or
+      // (for the fenced block) as a fenced part carrying the same lines.
+      const body = block.replace(/^```.*\n|```$/g, '')
+      expect(joined).toContain(body.trim())
+    }
+  })
+})
+
 describe('capChunks', () => {
   it('truncates over-long chunks with an ellipsis', () => {
     expect(capChunks(['a'.repeat(50)], 20)).toEqual(['a'.repeat(20) + '…'])

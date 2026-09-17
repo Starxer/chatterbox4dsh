@@ -137,8 +137,13 @@ describe('deriveToolSummary', () => {
     expect(deriveToolSummary('my_custom_tool', JSON.stringify({ what: 'do the thing' }))).toBe('my_custom_tool · do the thing')
   })
 
-  it('titled tools (e.g. cordis_run) do not prefix the tool name', () => {
-    expect(deriveToolSummary('cordis_run', JSON.stringify({ package: 'pkg' }))).toBe('pkg')
+  it('titled tools (e.g. cordis_inspect_query) do not prefix the tool name', () => {
+    // DSH 0.1.6-alpha.2 keeps only the read-only Cordis inspection tools.
+    expect(deriveToolSummary('cordis_inspect_query', JSON.stringify({ provider: 'slots', method: 'listSubTree' }))).toBe('slots')
+  })
+
+  it('plugin_manager falls back to the generic tool-name prefix with its action', () => {
+    expect(deriveToolSummary('plugin_manager', JSON.stringify({ action: 'list_bundles' }))).toBe('plugin_manager · list_bundles')
   })
 
   it('non-JSON args fall back to the first line of the raw string', () => {
@@ -194,6 +199,24 @@ describe('renderStepCard reasoning + args budgets', () => {
     expect(md).not.toContain('a'.repeat(3001))
     // No truncation marker — overflow is handled by separate cards.
     expect(md).not.toContain('…(truncated)')
+  })
+
+  it('moves a table to the next card instead of cutting it at the character cap', () => {
+    // 2990 chars of filler puts the old fixed slice (3000) eight characters into
+    // the table, which rendered it as two broken halves (2026-09-18 report).
+    const filler = 'x'.repeat(2990)
+    const table = ['| a | b |', '| --- | --- |', '| 1 | 2 |'].join('\n')
+    const card = renderStepCard(t, undefined, `${filler}\n\n${table}`, []) as any
+    const md = mdOf(card)
+    expect(md).toContain(filler)
+    expect(md).not.toContain('| a | b |')
+    expect(md).not.toContain('| --- | --- |')
+  })
+
+  it('renders the step text in full when it fits the budget', () => {
+    const text = ['short paragraph', '', '| a | b |', '| --- | --- |', '| 1 | 2 |'].join('\n')
+    const card = renderStepCard(t, undefined, text, []) as any
+    expect(mdOf(card)).toContain('| --- | --- |')
   })
 
   it('renders the step footer as two notation lines (timing/tokens, then speed/context)', () => {

@@ -1,0 +1,313 @@
+# 升级方案：DSH 0.1.6-alpha.1 → 0.1.6-alpha.2
+
+> 评估日：2026-09-18。对比 `dsh-v0.1.6-alpha.1...dsh-v0.1.6-alpha.2`：**887 commits / 2622 个改动文件**。
+> 本文档只做**影响评估与改造清单**，评估时**未改动本机 DSH**。
+> 前置阅读：[`notes/upstream-and-compat.md`](../notes/upstream-and-compat.md)（版本兼容台账）、关键坑 13（preset 重校）/ 14（延迟重启）/ 17（依赖范围）。
+
+---
+
+## 0. 结论摘要
+
+| 项 | 结论 |
+|---|---|
+| 插件运行时代码 | **零必改**——四个被消费的 `sessionController` 方法签名逐字节未变，client slot 契约零差异 |
+| 依赖范围 | **无需修改**（与 alpha.1 同属 `0.1.6` tuple，坑 17 补充规则） |
+| 默认模型目录 | 移除 `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp`；插件走 `llm.listModels/resolveModelInfo` 动态解析，**代码安全**，但**本机 settings 踩到**（P0-1） |
+| Creator preset 工具集 | `cordis_define/run/stop/undefine` **全部删除**，改由 `plugin_manager` 承担（P0-2） |
+| 解析模式默认值 | `link` → `runtime` **翻转**，不再物化 fallback 链接（P0-4） |
+| profile 热重载 | `dsh-base` 默认挂 `plugin-manager` + `dsh-hmr`；web 侧配置改动**即时生效**、插件可**热卸载**（P0-5） |
+| `dsh.profile.patchReload` | 字段与校验**删除**；headless 的「仅启动生效」意图改由 headless bundle 的 `hmr: disabled` 承接（P0-3）|
+
+**一句话**：插件本身几乎不用动，但**本机部署侧有 5 项必须先处理**（其中 P0-5 已复核为「无需改动」，见下文）；P0-4 是本轮唯一**新引入的运行时风险**，且用一次 `npm install` 即可消除。
+
+---
+
+## 1. 影响评估
+
+### 1.1 插件的 19 个 `peerDependencies` 逐包 diff
+
+按包名反查目录后逐包统计「除 `package.json` 与 `tests/` 外的源码改动文件数」：
+
+| 包 | 改动源码文件 | 说明 |
+|---|---|---|
+| `@deepseek-ai/dsh-api-session-controller` | 18 | 见 §1.2；**被消费的四个方法未变** |
+| `@deepseek-ai/dsh-agent-presets` | 6 | 仅 shipped preset 组合文件与两个 skill 文本（§1.5） |
+| `@deepseek-ai/dsh-llm` | 5 | 仅 `llm/llm`：`inputModalities` 新增返回（§1.2） |
+| `@deepseek-ai/dsh-user-questions` | 4 | 仅 README + `types.ts` 新增可选 `callId` |
+| `@deepseek-ai/dsh-session` | 1 | 仅 `known-event-types.ts` 新增 `workspace/changes` |
+| 其余 14 个 | **0** | 只有 `package.json` 的 `version` 行变化 |
+
+> `@deepseek-ai/dsh-session` 是 `packages/core/session`；`packages/session/**` 全部只有版本号变化。
+
+### 1.2 host 侧 API 核对
+
+**逐字节未变**（`packages/api/session-controller/src/index.ts` + `commands.ts` 实现均未动）：
+
+| 方法 | 插件调用点 |
+|---|---|
+| `sessionController.prompt(request, signal)` | `src/harness.ts:463` |
+| `sessionController.selectModel({ sessionId, provider, model, reasoningEffort? })` | `src/commands.ts`、`src/feishu-model-select.ts` |
+| `sessionController.rename({ sessionId, title })` | `src/feishu-session.ts` |
+| `sessionController.fork({ sessionId }) → { sessionId }` | `src/feishu-session.ts` |
+
+`Session.snapshotEvents(fromSeq, toSeqExclusive)`、`SessionId`、`SessionHandle`、`reason.error` / `TurnEndReason` / `turn/end` 载荷**全部未变**——关键坑 7（1:1 对齐 WebUI 错误）、坑 8（必须带范围读事件）的现有做法继续有效。
+
+**行为面变化（需知悉，非必改）**：
+
+- **新增错误码 `session/writer-held`**：resume 被活动写句柄占用时，原先报 `gateway/internal`。`prompt` / `selectModel` / `rename` 都可能抛出。→ 确认 `prompt` 调用点的 rejection 已被处理（关键坑 24：被丢弃的 promise 能杀掉 dsh）。
+- `resolveAgent` 在共享 resume 后改为返回**已发布的 live agent**，而非 await 的 resume 结果。
+- `updateQueue` 变为 `async`（插件未调用，仅备查）。
+- 控制流 `queue` 帧、`ISessions.open/openSubagent/clear`、`SessionSnapshot.queue` 被删——**插件全部未使用**。
+
+### 1.3 client 契约核对
+
+- `packages/client/ui-settings/src/client/contract/slots.ts` **零行 diff**：`settings.action` / `settings.section` 仍是 `{ kind: 'list'; scope: 'root' }`，注册项、owner props、渲染点、声明点全部一致。
+- `slots.inject` / `slots.register` 签名**逐字节一致**；`ctx.slots` 服务名未变。
+- 插件用的 `@deepseek-ai/dsh-client-ui-primitives` 四个组件 —— `Button.tsx` / `Input.tsx` / `Switch.tsx` / `StateDot.tsx` —— **diff 为空**（该包其余 36 个改动文件与插件无关）。
+- 新增 Component Factory 体系（`registerFactory` 等）**纯增量**。
+- 被移除且插件未使用的：`useSessionPendingInteraction`（→ `useSessionStatus` + `useSessionRetainInfo`）、`sessions.open/clear`、`SessionListState.current`。
+
+### 1.4 被移除 / 被替换的宿主面
+
+| 变化 | 影响 |
+|---|---|
+| `DshProfileManifest.patchReload` 与 `ProfilePatchReload` 类型删除；旧的非法值校验一并移除 | 声明该字段的 profile 被**静默忽略**，不报错（P0-3） |
+| `apps/cli/src/profile-boot.ts` 的 `resolutionMode` 默认值由 `'link'` 改为 `'runtime'` | 不再物化 `$DSH_HOME/profiles/node_modules` fallback 链接，改为把「包代际」挂在 Node ESM/CJS resolver 上（P0-4） |
+| `packages/bundle/base/cordis.patch.yml` 新增 `plugin-manager` 与 `hmr` 两行（`disabled: !!js "!ctx.get('profileContext')"`） | base-backed profile 默认获得插件管理与**热重载**（P0-5） |
+| `hmr` 行的模块名由 `@deepseek-ai/cordis-plugin-hmr` 改为 `@deepseek-ai/dsh-hmr` | patch 行若同时断言旧 `name`，会被 `vendor/include` **静默跳过**（只打一条 warning） |
+| `packages/boot/app-boot` 不再安装用户 patch watcher（`watchUserPatches` 删除，新增 `reconcileProfilePatches`） | 热重载职责移交给 `dsh-hmr` 行 |
+| `@deepseek-ai/dsh-plugin-manager` 为**新增包**；`@deepseek-ai/dsh-plugin-manager/tools` 注册 `plugin_manager` | 见 P0-2 |
+| `tool-cordis` 由 7 个工具缩到 2 个（仅 `cordis_inspect_list` / `cordis_inspect_query`） | 见 P0-2 |
+| `packages/llm/llm-deepseek/src/common/models.ts` 从默认目录删除 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` | 见 P0-1 |
+| `attachment-local` 的 `sharp` 改为懒加载（`createLazyRequire`） | 缺 sharp 时错误从「启动即失败」推迟到「首次栅格操作」；仅影响排障时序 |
+| `messages/serialize.ts` 的历史 tool input 非法 JSON 由抛 `INVALID_REQUEST` 改为降级为空对象 | 修复类改动，插件无感 |
+
+### 1.5 Creator preset 的工具集替换
+
+- `presets/cordis/agent.cordis.yml` 末尾新增 `- id: tool-plugin-manager / name: '@deepseek-ai/dsh-plugin-manager/tools'`（启用）；`presets/standard` 与 `presets/ptc` 也各加一行但 `disabled: true`。
+- `tool-cordis` 的行保留，但语义收窄为**只读自省**；`cordis-host-runner` 的失败引导文案由「自行修正并重试」改为「把失败上报给用户」。
+- 两个随 preset 交付的 skill 被重写：`cordis-plugin-development`（改为「在工作区写 bundle → `plugin_manager install_bundle`」）与 `editing-cordis-compositions`。
+- 新增流程的安装语义：`installBundle` 会**即时尝试挂载**；patch 坏掉时报 `application: 'failed'` 且 profile 已被改写（只有 `applying` 之前的失败才回滚 `package.json` / `pnpm-lock.yaml`）。
+
+### 1.6 依赖范围：本次**不需要**改
+
+`0.1.6-alpha.1` 与 `0.1.6-alpha.2` 同属 `0.1.6` tuple，`^0.1.6-alpha.1` 在 semver 预发布规则下**已能匹配** alpha.2（关键坑 17 的补充规则）。实测依据：宿主在**装载期与安装期都不校验 peer 版本范围**（profile 以 `autoInstallPeers: false` 创建），该字段只作为依赖图的边参与代际闭包。
+
+> 因此「升到 `^0.1.6-alpha.2`」属于文档级整洁，不是正确性要求；但若同时重装 `node_modules`（推荐，见 P0-4），锁文件会自然解析到 alpha.2。
+
+> **取证校正（留档）**：本次评估起初依据「`packages/boot/app-boot/src/profile-resolution/` 在两端 diff 为空」判断「解析语义未变」——该结论**错误**。代码确实逐字节一致，但 `apps/cli/src/profile-boot.ts` 的**默认值翻转了**（`options.resolutionMode ?? 'link'` → `?? 'runtime'`），行为因此改变。教训：默认值翻转不会出现在实现文件的 diff 里，必须单独核对入口处的 `??` 兜底。
+
+---
+
+## 2. 前置项（P0）
+
+### P0-1 本机 settings 的 subagent 路由指向被移除的模型
+
+`deepseek-official` 的模型目录未在本机 settings 中覆盖，因此使用 DSH 内置 `DEFAULT_MODELS`。alpha.2 删除了 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp`（目录只剩 `deepseek-flash`(V41-Flash，带 image 输入) 与 `deepseek-v4-pro`）。
+
+- `agent-default-model` 用的是 `deepseek-flash` → **安全**。
+- `subagent-model-selection.allowedModels` 里有一条 `provider: deepseek-official / model: deepseek-v4-flash-vision-exp` → **失效项**。
+
+**处理**：改为 `deepseek-flash`，或在 `llm-deepseek.models` 自建目录项把该 id 补回。
+
+### P0-2 Creator preset 工具集替换
+
+本会话（创造模式）当前持有的 `cordis_define` / `cordis_run` / `cordis_stop` / `cordis_undefine` 在 alpha.2 **不存在**，取而代之的是 `plugin_manager`。
+
+**处理**：
+
+1. 升级后确认 preset 中出现 `tool-plugin-manager` 行（随 shipped `cordis` preset 自动生效；**本机自建 preset 需按关键坑 13 逐行重校**）。
+2. 同步本仓库所有引用旧工作流的文档与笔记：`AGENTS.md`（关联记录）、`notes/`、本目录其他 migration 文档、以及任何提到 `cordis_define`/`cordis_run` 的 skill 引用。
+3. 插件本身的安装方式不受影响：`dsh.bundle.patch` + `cordis.patch.yml` 契约形状**未变**（`app-boot` 仍读取 `dsh.bundle.patch`；无 patch 的包仍报 `not-bundle`）。
+
+### P0-3 `patchReload` 字段被删除
+
+`dsh.profile` 现在只读 `bundles`；`patchReload` 及旧的非 `live|startup` 校验全部移除。本机 `headless` profile 声明了 `"patchReload": "startup"`——**不会启动失败**（字段被忽略），但语义失效。
+
+alpha.2 由 composition 决定热重载：`packages/bundle/headless/cordis.patch.yml` 显式写了 `- id: hmr / disabled: true`，因此 **headless 的「仅启动生效」意图已由它承接**，web 侧则默认开启。
+
+**处理**：从文档/脚本里删掉对 `patchReload` 的断言，不需要新增动作；若某 profile 确实要关热重载，改为显式 `- id: hmr / disabled: true`。
+
+### P0-4 runtime 解析模式：插件工作区的 `@deepseek-ai/dsh-*` 仍是旧拷贝
+
+alpha.1 下 launcher 会物化 fallback 符号链接，插件的裸 `@deepseek-ai/dsh-*` import 走文件系统链接解析；alpha.2 改为进程内代际，**不再建链接**。
+
+插件构建产物 `lib/index.js` 保留了 8 个外部 import：
+
+```
+@deepseek-ai/dsh-credentials  @deepseek-ai/dsh-commands  @deepseek-ai/schemastery
+@deepseek-ai/dsh-llm          @deepseek-ai/dsh-session   @deepseek-ai/dsh-user-approval
+@deepseek-ai/dsh-user-questions  @deepseek-ai/dsh-tools
+```
+
+而插件工作区自己的 `node_modules/@deepseek-ai/dsh-*` 装的是 `^0.1.6-alpha.1` 的拷贝。runtime 模式下「local 候选优先于代际」，若这些裸 import 落到工作区那份旧拷贝，会出现 **cordis Context / `defineTool` 注册表 / `SessionId` brand 各一份**的实例分裂。
+
+**处理**：升级后把插件工作区的 `@deepseek-ai/dsh-*` devDeps 重装到 `0.1.6-alpha.2`（删 `node_modules` + `package-lock.json` 后全新 `npm install`），把隐患直接消掉。
+
+> 附带约束：包代际的替换是**只增不减**的——改动或删除已有映射会抛 "requires a process restart"。
+
+### P0-5 web profile 默认 HMR + `plugin_manager` 可热卸载
+
+`dsh-base` 现在默认挂 `plugin-manager` 与 `hmr`，因此 web profile 上：配置改动即时生效，插件可被**热禁用/重挂**。重挂会重新走一遍 `apply`，所以凡是没挂在 Cordis fiber 上的副作用都会泄漏，重挂时表现为重复卡片 / 重复定时任务，或直接因工具重名抛 `tool "<name>" is already registered`（该错误是致命的）。
+
+**复核结论（2026-09-18 实测审计）：插件的拆卸面是干净的，本项无需改动代码。** 证据：
+
+| 副作用 | 归属 | 拆卸路径 |
+|---|---|---|
+| 3 处 `setTimeout`（streaming 两处 debounce、todos 一处 debounce） | 各自的 per-session 状态对象 | `stopStreaming()` / `stopTodos()` 逐个 `clearTimeout`，且都在 `ctx.effect(() => () => {...})` 的清理里被调用 |
+| `session/event`、`approval/request`、`user-questions/request` 等监听 | `ctx.on(...)` 的 disposer | 同上，统一在该 effect 清理里调用 |
+| 两个 web 路由（settings / provision） | `ctx.effect(() => webServer.register(...))` | Cordis 自动卸载 |
+| 工具注册（send-file / receive-file） | `stopSendFileTool()` / `stopReceiveFileTool()` | 同上 |
+| 客户端 `<style>` | `ctx.effect` + `style.dataset.plugin = NS` | 正好命中 alpha.2「只清理 `style[data-plugin]`」的规则 |
+| `process.on` / `setInterval` / 全局单例 | **不存在**（全量 grep 为零） | — |
+
+三处 `addEventListener('abort')` 都挂在单次请求的 `AbortSignal` 上（`{ once: true }`），随请求结束释放，不跨 session 累积。
+
+**顺带发现**：`src/feishu-toolcalls.ts` 的 `startFeishuToolCalls` 在 `src/` 与 `tests/` 中**已无任何引用**（死模块）；它自带定时器，但因为从未启动，不构成热卸载风险。清理与否与本次升级无关，仅记录。
+
+> 结论修正留档：本项在初评时被列为「可能需要改代码」，依据是「存在裸 `setTimeout`」。实际审计表明这些定时器全部挂在可清理的 per-session 状态上、且清理函数确在 fiber 拆卸路径中——**判据不能只看「有没有裸定时器」，要看它有没有归属与拆卸路径**。
+
+---
+
+## 3. 升级步骤
+
+### 阶段 1 —— 停服务（推荐）
+
+`pnpm install` 会重写 `node_modules`，运行中的进程可能动态 import 到不一致的版本。**不要用「延迟 20 秒重启」跨越 install 阶段**（关键坑 14）：
+
+```sh
+systemctl --user stop dsh
+systemctl --user show -p MainPID --value dsh   # 期望 0
+```
+
+### 阶段 2 —— DSH 源码升级
+
+```sh
+cd <dsh-checkout>
+git fetch --tags --prune origin
+git checkout dsh-v0.1.6-alpha.2
+git status --porcelain
+
+pnpm install
+find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete
+rm -rf apps/web/dist
+
+# ⚠️ 必须是【完整】构建，不是 build:native-system（它不产 lib/）
+pnpm run build
+
+node --import tsx/esm apps/cli/src/bin.ts --version   # 期望 0.1.6-alpha.2
+```
+
+**验证点**：`pnpm install` 无 peer 冲突；`pnpm run build` 退出码 0；`--version` 输出 `0.1.6-alpha.2`。
+
+> 本部署用 `tsx` 跑源码，0.1.6 起源码态不再自足，**完整 `pnpm run build` 是硬前提**，缺 `lib/client.js` / `lib/typert.host.js` 会在首启报 `1 entry did not activate`。
+
+### 阶段 3 —— 本机配置（P0-1 / P0-3 / P0-4）
+
+```sh
+# P0-1：subagent 路由指向被移除的模型 → 改为 deepseek-flash（或自建目录项）
+#       文件：<dshHome>/settings.yaml
+# P0-3：确认没有脚本/文档断言 dsh.profile.patchReload
+# P0-4：插件工作区依赖重装到 alpha.2
+cd <plugin-repo>
+rm -rf node_modules package-lock.json
+npm install
+node -e "for (const p of ['dsh-session','dsh-llm','dsh-tools']) \
+  console.log(p, require('./node_modules/@deepseek-ai/'+p+'/package.json').version)"   # 期望 0.1.6-alpha.2
+
+npm run typecheck
+npm run test
+npm run build
+```
+
+**验证点**：
+
+- `typecheck` 0 错误（本次真正的判据——它会暴露 §1 之外的隐藏导出漂移）
+- `test` 基线 **405 passed / 33 files**（评估日实测），不得下降
+- `build` 产出新的 `lib/index.js` 与 `client/client.js`，且 `client/client.js` 随提交一起更新（受 git 跟踪）
+
+### 阶段 4 —— 启动与加载验证
+
+```sh
+systemctl --user start dsh
+sleep 8
+systemctl --user show -p MainPID --value dsh
+journalctl --user -u dsh -n 60 --no-pager | grep -iE "error|failed|already registered|pending|fatal"
+```
+
+**验证点（缺一不可）**：
+
+1. journal 无 `error|failed|already registered|fatal`——特别是**不出现 `tool "..." is already registered`**
+2. 出现 web 监听日志（`dsh web: http://127.0.0.1:...`）
+3. 合成出的 profile composition 中仍有 `lark-channel` 行
+4. 飞书通道起来（journal 无 WebSocket 反复重连）
+5. **不再出现 `session-log-deepseek` 相关的 413**（该 overlay 继续有效：base row 的 id 未变）
+
+### 阶段 5 —— 功能回归
+
+| # | 功能 | 检查方式 |
+|---|---|---|
+| 1 | 基础对话 + 步骤卡 | 发一句话，确认 per-step 卡、footer 指标、Turn Complete 卡正常 |
+| 2 | 斜杠命令 | `/help` `/status` `/lang` |
+| 3 | 模型选择 | `/model` 走一遍；确认**已不存在的模型 id 不再出现在列表里**（P0-1 的回归点） |
+| 4 | 权限 / 审批 / 提问卡 | 各触发一次；确认关键坑 7（错误 1:1 对齐）与坑 22（双端弹卡）仍成立 |
+| 5 | 图片 / 文件收发 | 图片需模型声明 `input: [image]`；文件走 `feishu_send_file` |
+| 6 | Web UI 设置页 | 打开设置，确认「飞书与 Lark」分区仍挂载（client slot 契约的回归点） |
+| 7 | 热重载（新增） | 在 web profile 改一次 `cordis.patch.yml`，确认插件被干净重挂、**无重复工具报错、无重复步骤卡** |
+| 8 | 子代理 / 工作流 | 跑一次子代理；确认 subagent 路由不再引用被删模型 |
+| 9 | Creator 模式 | 确认工具集变为「只读自省 + `plugin_manager`」，旧 `cordis_define/run` 已消失 |
+
+---
+
+## 4. 回滚方案
+
+任一阶段失败都可回滚；回滚**必须整体做**（DSH 源码 + 本机配置 + 插件依赖三者同步）。
+
+```sh
+systemctl --user stop dsh
+
+cd <dsh-checkout>
+git checkout dsh-v0.1.6-alpha.1
+pnpm install
+pnpm run build            # 同样是完整构建
+
+cd <plugin-repo>
+git checkout <升级前 commit>
+rm -rf node_modules package-lock.json
+npm install
+npm run build
+
+# P0-1 的 settings 改动按需回退（用升级前的备份）
+systemctl --user start dsh
+```
+
+> 会话格式：`SESSION_FORMAT_VERSION` 仍为 **3**（定义在 `packages/core/session/src/types.ts`，该文件两端**字节相同**），会话日志可直接回退，无需迁移。
+
+---
+
+## 5. 取证方式（可复现）
+
+本次评估**未改动本机 DSH**，方法可复现：
+
+```sh
+git clone --no-checkout --filter=blob:none \
+  --branch dsh-v0.1.6-alpha.2 https://github.com/deepseek-ai/deepseek-harness.git <tmp>
+cd <tmp>
+git fetch --filter=blob:none origin tag dsh-v0.1.6-alpha.1
+git diff --name-only dsh-v0.1.6-alpha.1 dsh-v0.1.6-alpha.2 | wc -l    # 2622
+```
+
+要点：
+
+- **按包名反查目录**再统计，不要按目录名字猜测（例如 `@deepseek-ai/dsh-session` 在 `packages/core/session`，而 `packages/session/**` 是另一组包）——否则会把「0 改动」和「未找到」混为一谈。
+- 判断「某个 API 是否变了」要看**入口文件与默认值**，不能只看实现文件的 diff：本次 `resolutionMode` 的默认值翻转就是典型反例（§1.6 留档）。
+- 判断「某个包是否只改了版本号」用 `git diff --stat <tag1> <tag2> -- <dir> ':!*tests*' ':!*package.json'`。
+
+---
+
+## 6. 关联记录
+
+- 版本兼容台账与历史基线：`notes/upstream-and-compat.md`
+- 关键坑全文（13 / 14 / 17 / 24）：`notes/pitfalls.md`
+- 上一跳（0.1.5-rc.2 → 0.1.6-alpha.1）：`docs/migration-0.1.5-rc.2-to-0.1.6-alpha.1.md`
+- 评估期间发现、**本次不改**的插件侧问题：见 `TODO.md`「已知问题」段

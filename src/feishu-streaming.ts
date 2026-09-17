@@ -932,9 +932,14 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // await it before the overflow cards so they cannot be created first.
         const lastStepSend = lastStepSendPromises.get(sessionId)
 
-        // Capture overflow data BEFORE resetStep clears state.
+        // Capture overflow data BEFORE resetStep clears state. A single
+        // block-aware split drives both cards: the step card renders segment 0
+        // and the remaining segments become continuation cards. Slicing at a
+        // fixed character offset used to cut tables and code fences in half
+        // (2026-09-18) — the boundary now always falls between blocks.
         const fullText = state.text.trim()
-        const overflowText = fullText.length > TEXT_STEP_CAP ? fullText.slice(TEXT_STEP_CAP).trim() : undefined
+        const textSegments = chunkText(fullText, TEXT_STEP_CAP, MAX_OVERFLOW_CARDS + 1)
+        const overflowChunks = textSegments.slice(1)
         const overflowChat = state.chat
         const overflowOpts = overflowChat !== undefined
           ? overflowChat.threadId !== undefined
@@ -942,8 +947,6 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             : {}
           : undefined
 
-        const hasOverflow = overflowText !== undefined && overflowText !== '' && overflowChat !== undefined && overflowOpts !== undefined
-        const overflowChunks = hasOverflow ? chunkText(overflowText!, TEXT_STEP_CAP) : []
         // The continuation cards carry the same step's speed so every card in
         // the reply stream shows one.
         const overflowTps = computeStepTps(state)
@@ -1065,8 +1068,13 @@ const REASONING_CAP = 200
 const ARGS_DISPLAY_CAP = 2000
 
 /** Cap for the text section of a step card (characters). Overflow is sent as
- *  follow-up "continued" cards so no content is silently dropped. */
+ *  follow-up "continued" cards so no content is silently dropped. The cap is a
+ *  *budget*, not a slice offset: `chunkText` picks the boundary so no table,
+ *  code fence or list is ever cut in half (see src/text-chunk.ts). */
 const TEXT_STEP_CAP = 3000
+
+/** Upper bound on the follow-up "continued" cards for one step's text. */
+const MAX_OVERFLOW_CARDS = 30
 
 /**
  * Truncate a value to a readable summary for card display.
@@ -1164,17 +1172,17 @@ const TOOL_SUMMARY_VARIANTS: Record<string, ToolSummaryVariant> = {
   edit: 'edit',
   run_code: 'code',
   todo_write: 'todo',
-  cordis_package_inspect: 'read',
-  cordis_runtime_inspect: 'read',
-  cordis_run: 'others',
-  cordis_stop: 'others',
-  cordis_undefine: 'others',
+  // DSH 0.1.6-alpha.2 keeps only the read-only Cordis inspection tools; the
+  // dynamic define/run/stop/undefine tools were replaced by `plugin_manager`
+  // (which needs no entry here — the generic `plugin_manager · <action>` line
+  // is already the right summary).
+  cordis_inspect_list: 'read',
+  cordis_inspect_query: 'read',
 }
 
 /** Tools with an owned title: the `others`-prefix rule does not apply to them. */
 const TOOL_SUMMARY_TITLED: ReadonlySet<string> = new Set([
-  'cordis_package_inspect', 'cordis_runtime_inspect', 'cordis_run', 'cordis_stop',
-  'cordis_undefine', 'pwsh',
+  'cordis_inspect_list', 'cordis_inspect_query', 'pwsh',
 ])
 
 /** Summary key preference per variant (mirrors Web UI `SUMMARY_KEYS`). */
@@ -1311,9 +1319,12 @@ export function renderStepCard(
 
   // Text section — with a title, mirroring the Reasoning / Tool Call sections.
   // Overflow beyond TEXT_STEP_CAP is sent as follow-up "continued" cards in
-  // the turn/end handler; the step card itself shows only the first segment.
+  // the turn/end handler; the step card shows segment 0 of that same split, so
+  // the two always agree and neither can cut a block in half.
   if (text !== undefined && text !== '') {
-    const displayText = text.length > TEXT_STEP_CAP ? text.slice(0, TEXT_STEP_CAP) : text
+    const displayText = text.length > TEXT_STEP_CAP
+      ? chunkText(text, TEXT_STEP_CAP, MAX_OVERFLOW_CARDS + 1)[0] ?? text
+      : text
     if (elements.length > 0) elements.push({ tag: 'hr' })
     elements.push({ tag: 'markdown', content: `${t.stepMessageHeader}\n\n${displayText}` })
   }

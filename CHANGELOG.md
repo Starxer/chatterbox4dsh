@@ -9,6 +9,20 @@
 > 另已评估 **并已升级到** DSH `0.1.5-rc.1`（279 commits，见 `docs/migration-0.1.5-alpha.1-to-rc.1.md`）：运行时代码与依赖范围**都无需修改**；下面新增的「交付物清单」正是 rc.1 新 `present` 工具带来的对齐项。
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
+>
+> 另已评估 **DSH `0.1.6-alpha.2`**（887 commits / 2622 改动文件，**本轮未升级**）：插件运行时代码**零必改**（四个被消费的 `sessionController` 方法逐字节未变、client slot 契约零差异、依赖范围因同属 `0.1.6` tuple 也无需改），但**本机部署侧有 5 项前置**——默认模型目录删除两个 id、Creator preset 工具集由 `cordis_define/run` 换成 `plugin_manager`、解析模式默认值 `link`→`runtime`、web profile 默认开 HMR 且支持热卸载、`dsh.profile.patchReload` 字段被删除。完整评估与升级/回滚步骤见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](./docs/migration-0.1.6-alpha.1-to-alpha.2.md)。
+>
+> 同期记录一处**待修**问题（**未动代码**）：超阈值分卡会切坏 Markdown（表格/代码块被从中间切开），定位与提议方案见 `TODO.md`「已知问题」首条。
+
+### 修复：超阈值分卡把表格/代码块切成两半——切分改为块感知（`src/text-chunk.ts` / `src/feishu-streaming.ts`）
+
+- **问题**（2026-09-18 使用者报告「卡片消息超出设定的字数阈值后，分卡发消息会破坏 Markdown 格式（比如表格等）」）：长回复被拆到多张卡时，**跨行结构**被从中间切开，两端各渲染半张表。两处硬切：① `feishu-streaming.ts` 的 `fullText.slice(TEXT_STEP_CAP)` 是纯字符切片，切点落进表格/代码块内部就切坏；② `text-chunk.ts` 在「单个段落超预算」时 `para.split('\n')` 逐行硬切——而 Markdown 表格行间只有单个 `\n`、没有空行，所以**整张表算一个段落**，必走这条分支。同一问题也影响 `channel.ts` 的 reply 卡。
+- **改法**（按使用者提出的「从空行切、提前点切」）：
+  1. **切分器重写为块感知**（`src/text-chunk.ts`）：先切块——空行分隔，且**代码围栏内部的空行不算分隔**、整块保留；再装箱，当下一块放不进剩余预算时**回退到上一个块边界**结束当前卡，绝不切进块内部。
+  2. **超预算单块**按类型给最小破坏的切法：代码围栏在每片**闭合再重开**（每片都是合法代码块），表格在每片**重复表头与分隔行**（每片都是合法表格），其余退回行边界、单行超长才按字符切。
+  3. **步骤卡与续卡共用同一次切分**（`src/feishu-streaming.ts`）：步骤卡渲染 `segments[0]`，其余成为 `Reply (continued N/M)` 续卡——两者不再各自切片，因此不可能对不上；`MAX_OVERFLOW_CARDS = 30` 沿用原有续卡上限。
+- **顺带修正**（同一批次，为 DSH 0.1.6-alpha.2 做准备）：`TOOL_SUMMARY_VARIANTS` / `TOOL_SUMMARY_TITLED` 里的 `cordis_package_inspect` / `cordis_runtime_inspect` **从未存在过**，`cordis_run` / `cordis_stop` / `cordis_undefine` 在 alpha.2 被删除；已替换为实际存在的 `cordis_inspect_list` / `cordis_inspect_query`，`plugin_manager` 走通用 `plugin_manager · <action>` 行。
+- **验证**：`tests/truncation.spec.ts` 新增 7 例（提前切到上一个空行 / 表格整体进下一张卡 / 超预算表格重复表头 / 代码围栏闭合重开 / 围栏内空行不作边界 / 单行超长仍按字符切 / 混合文档逐块保真），`tests/feishu-streaming.spec.ts` 新增 2 例并改写 1 例（2990 字填充 + 表格 → 步骤卡只含填充、表格整体进续卡；短文本表格完整渲染；titled 工具改用 `cordis_inspect_query`）。全套 **415 passed / 33 files**（原 405 / 33），typecheck 0 error，build ✅。
 
 ### 修复：工具先开卡、正文后到时误判「没显示过正文」，会多发一张重复回复卡（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）
 
