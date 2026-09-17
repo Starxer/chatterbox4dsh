@@ -193,6 +193,37 @@
 
 **处理**：turn 级已于 **2026-09-17 修复**；其余三项 2026-09-16 决定先记录、不改。
 
+### 交付物面比 WebUI 窄：produced 整半未实现 + complete 卡只对飞书触发的轮次发送（**2026-09-17 记录，未动工**）
+
+**现象**：使用者报告「产物信息有的时候出现在最后一个卡片，这是步骤卡片而不是 complete 卡片」。
+
+**核实一：步骤卡上那条不是 bug。** 步骤卡里的「交付文件：xxx +N」是 DSH `present` **工具调用**的渲染（`feishu-streaming.ts:1235` 的 `deriveToolSummary` 摘要 + 紧随的 `⚙️ 参数` / `📤 结果`）；WebUI 对同一个工具调用也是照样渲染，两端一致。`📦 **交付文件（N）**` 清单只可能出现在 complete 卡上：唯一渲染点 `channel.ts:765`（`renderFooterCard`），唯一调用点 `channel.ts:498`。实测 DM 1500 条消息 + 群 25 个话题 2005 条消息，**0 例**出现在步骤卡。
+
+> 排查方法（可复现）：`im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回用户可见卡片 JSON，再**按元素开头精确匹配** `^📦 **(交付文件|Present files)**`；判定步骤卡里的那条用 `^> 交付文件：`。⚠️ 不要用「正文含『交付文件』」这种粗筛——工具参数/结果里可能字面含这四个字（例如 grep 过 CHANGELOG），会大量假阳性。
+
+**核实二：真正的缺口是 produced。** 插件只订阅 `deliverables/presented`（`feishu-streaming.ts:864`），**没有实现 WebUI 的 produced 这一半**。
+
+**WebUI 的真实渲染条件**（`packages/client/ui-deliverables/src/client/Deliverables.tsx` 的 `selectDeliverables`）：`produced.length + presented.length === 0 ? null : {...}` —— 「本轮 write/edit 成功改过文件」**或**「调过 `present`」二者有其一才挂载那一行（所以 WebUI 也不是每轮都显示，这点使用者已当场指出）。`produced` 的推导在 `turn-deliverables.ts` 的 `mutationPath()`：只认 `write` / `edit` / `str_replace_editor`（tool/call 记路径，tool/result **非 error** 才算），按 path 去重、首次出现顺序，并排除 closing assistant seq 之后的结果。
+
+**量化**（本会话 turn ≥ 200 共 56 轮，逐轮从 `session.v3.jsonl.zstd` 统计）：`present` 5 轮、write/edit 有产出 23 轮、两者皆无 33 轮 ⇒ **WebUI 有产物行而飞书完全没有 = 18 轮（32%）**。"改了文件但没调 `present`"是常态而非偶发。
+
+**这解释了现象本身**：不调 `present` 的轮次（18/23 的多数），飞书侧唯一的产物线索就是步骤卡里 `write`/`edit` 工具调用的 `⚙️ 参数`（`file_path`）与 `📤 结果`（`<path>…`）；WebUI 轮末那行「改动的文件」在飞书没有对应物。而"有时候"＝模型恰好调了 `present` 的轮次——那时 📦 清单才出现在 complete 卡上。
+
+**缺口 2（origin）**：complete 卡只在**飞书入站消息触发的轮次**发送（唯一发送点在 `channel.ts:498`，位于 `bridge.reply().then()` 内），而 WebUI 的交付行挂在 `turn/start` 上、与来源无关。实测第 **251** 轮（此前 6.5 小时无飞书消息，最后停在「回复 · 第 251 轮 · 第 8 步」）**没有 complete 卡**，第 203 轮同样。本窗口内没有「`present` + 非飞书触发」的轮次，故尚未造成实际丢失，属逻辑风险。
+
+**缺口 3（整块丢）**：`channel.ts:505-518` 的 else 分支（`intermediateSent === false`）走 `renderReplyCards`，其签名没有 `turnStats`，**交付清单与本轮指标都不渲染**，只发一张蓝色 `Reply` 卡——群里实测命中 **15 次**，DM 0 次。
+
+**顺带隐患（未复现）**：`markIntermediateSent` 只在卡片**首次发出**时判断有无文本（`feishu-streaming.ts:372-375`）；若该步先被 `tool/call` 开卡、文本后到（走 `updateStepCard`），标记不会补上 → channel.ts 会再发一张**重复**的蓝色 `Reply` 卡（正文出现两遍）。
+
+**可选方向（未定、未动工）**：
+
+1. **补 produced**（直接消掉那 18 轮缺口）：在 streaming 里按 WebUI 同规则收集 write/edit/str_replace_editor 的成功产出（path 去重、首次出现顺序、closing seq 截断），渲染进 complete 卡；
+2. **complete 卡改为「轮次结束即发」**：让 streaming 在 `turn/end` 补发，并与 channel.ts 约定「谁负责这一轮的 footer」，覆盖飞书没触发的轮次；
+3. **else 分支接上 `turnStats`**，至少把交付清单渲染出来；
+4. 若上面「顺带隐患」那段确认会真实发生，再决定是否在 `updateStepCard` 路径补 `markIntermediateSent`。
+
+**处理**：2026-09-17 使用者决定**先只记录、不改**（本轮未动任何源码）。
+
 ### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
 
 **现象**：步骤卡的推理标题从 `💬 **推理** · 807ms · 135 tokens` 变成 `💬 **推理** · 5.3s`——思考耗时还在，**推理 token 数没了**。真机卡片历史对照（`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`，264 张推理卡）：09-15 15:45 及以前带 token 数（不带的都是该步本就没有推理），**09-15 20:20 重启后 0 张**。
