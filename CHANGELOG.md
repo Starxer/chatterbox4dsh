@@ -10,7 +10,21 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 
+### 修复：飞书把 turn 失败压成一句通用错误——改为按 WebUI 的方式渲染同一份失败事实（`src/turn-failure.ts`（新）/ `src/conversation.ts` / `src/harness.ts` / `src/channel.ts` / `src/i18n.ts`）
+
+- **问题**（2026-09-17 使用者报告「飞书端报错没有 1:1 对应 WebUI，有时能正确显示，有时只剩一个默认的句子」）：同一个失败，WebUI 显示的是**具体原因 + 错误码**，飞书这边却只回一句 `处理这条消息时出错：Harness turn did not produce a successful assistant response`。日志取证：这句话在 journald 里**出现过 20+ 次**（09-08 至 09-17），最近的几次正对应会话里的 413（`DeepSeek Messages request failed (413)` / `INVALID_REQUEST`）。
+- **根因**：`harness.reply()` 只拿 `summarizeTurn()` 的结果做非空判断，而 `summarizeTurn()` 读到 `turn/end` 的 `reason` 时**只记 `kind`、把 `reason.error` 整段丢掉**，随后 `reply()` 抛出一句硬编码英文。**结构化失败事实在插件里走了一整圈又被扔掉**，于是飞书显示什么与 WebUI 显示什么毫无关系。
+- **改法（按使用者要求：插件不自己解释错误，只看 WebUI 怎么显示）**：
+  1. **新增 `src/turn-failure.ts`，逐行移植 WebUI 的投影**——`displayFailure()`（= `packages/client/ui-chat/src/client/conversation-nodes/event-projection.ts`：非对象取 `String(failure)`、非字符串 `code` 丢弃、非字符串 `message` 落 JSON 序列化、`code === 'AUTH'` 只留 code 丢掉 message 以防凭据回显）与 `renderTurnFailureCard()`（= 同包 `chat/MessageItem.tsx` 的 `TurnErrorItem`：红头 + `message.turnError` 标题 + 原文正文 + `code` 内联代码；`AUTH` 换成本地化的 `message.failure.auth`）。两条文案直接对齐 DSH locale：`本轮运行失败` / `This turn failed`、`API 密钥无效` / `API key is invalid`。
+  2. **`summarizeTurn()` 保留失败事实**：新增 `ended`（`turn/end` 的 `reason.kind`）与 `failure`（`error` 结束时的投影结果）两个字段，不再只回 `{ text, ok }`。
+  3. **`harness.reply()` 不再吞掉原因**：`error` 结束 → 抛 `TurnFailureError`（携带 `failure`）；`aborted` / `interrupted` / `blocked` / `max-tokens` 等**非失败**结束 → 不再报错，改为返回本轮已有的文本（WebUI 对它们也从不显示错误行）。顺带修掉一个长期存在的错报：`/stop` 中止当前轮后，发起该轮的那条消息原来一定会收到这句"运行失败"。
+  4. **`channel.ts` 按类型分流**：`TurnFailureError` → 红卡（与 WebUI 的 turn-error 行同构）；其余插件侧错误（飞书 API、斜杠命令、图片/文件准入）继续走 `errorText()` 的具体原因。**卡片若被飞书拒绝，自动退回纯文本 `本轮运行失败：<原因> [<CODE>]`**——换了更丰富的载体，不等于可以把原因赌丢。
+- **未改**（仍是已知问题，见下条）：工具失败的结果预览上限（1500 字符 / 结构化取样）与 `errorText()` 的 600 字符截断。
+- **验证**：新增 `tests/turn-failure.spec.ts` 10 例（投影的四种形态含 `AUTH` 去 message / 卡片三段结构 / AUTH 双语替换 / 空体兜底 / 文本行与卡片刻画同一份事实 / `TurnFailureError` 不重新推导），`tests/conversation.spec.ts` 由 2 例扩到 6 例（保留 `ended`+`failure`、`AUTH` 投影、`aborted` 不造假失败），`tests/harness.spec.ts` 3 例（结构化失败原样抛出 / 无细节时按 WebUI 方式投影 / `aborted` 不报错而是返回已产出的文本），`tests/plugin.spec.ts` 2 例（`TurnFailureError` 渲染成红卡且载荷逐字段断言 / 卡片被拒后回退文本仍带原因与 code）。全套 **402 passed / 33 files**（原 387 / 32），typecheck 0 error，build ✅。
+
 ### 已知问题（**未修，只记录**）：飞书侧报错内容比 WebUI 简略——错误摘要有三处硬上限（2026-09-16 使用者报告）
+
+> ① turn 级错误的"通用句子"问题已于 **2026-09-17 修复**（见上一条）；`errorText()` 的 600 字符截断与下面②③仍是已知差距。
 
 - **现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」。同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
 - **现状（三处上限，均在插件侧）**：① **turn 级错误**走 `channel.ts` 的纯文本 `处理这条消息时出错：<reason>`，`reason` 由 `src/error-text.ts` 的 `errorText()` 生成——只取 `error.message` + 数字/字符串 `code`，**丢掉 `cause` 链与堆栈**，并**在 600 字符处截断加 `…`**；② **工具失败**在步骤卡里只有结果预览，`RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500` 字符，结构化预览还会再取样（`paths` 前 20 / `files` 前 5 / `matches` 前 3 / `diffs` 前 3 / 每个 diff 各 8 行）；③ 思考 200、正文 3000（正文溢出拆「Reply (continued N/M)」卡**不丢**，但错误文本没有等价机制）。

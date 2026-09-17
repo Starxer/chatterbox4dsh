@@ -26,12 +26,31 @@ describe('summarizeTurn', () => {
       { seq: 3, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'new ' }, { type: 'text', text: 'answer' }] } } },
       { seq: 4, type: 'turn/end', data: { reason: { kind: 'completed' } } },
     ]
-    expect(summarizeTurn(events, 2)).toEqual({ text: 'new answer', ok: true })
+    expect(summarizeTurn(events, 2)).toEqual({ text: 'new answer', ok: true, ended: 'completed' })
   })
 
-  it('reports a failed or empty turn without exposing its internal error', () => {
+  it('carries the structured failure of a failed turn instead of discarding it', () => {
     expect(summarizeTurn([
-      { seq: 4, type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'secret' } } } },
-    ], 4)).toEqual({ text: '', ok: false })
+      { seq: 4, type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'secret', code: 'INVALID_REQUEST', status: 413 } } } },
+    ], 4)).toEqual({
+      text: '',
+      ok: false,
+      ended: 'error',
+      failure: { message: 'secret', code: 'INVALID_REQUEST' },
+    })
+  })
+
+  it('drops the provider message of an AUTH failure (it may echo a credential)', () => {
+    expect(summarizeTurn([
+      { seq: 4, type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'bad key sk-abc', code: 'AUTH' } } } },
+    ], 4)).toEqual({ text: '', ok: false, ended: 'error', failure: { message: '', code: 'AUTH' } })
+  })
+
+  it('reports an aborted turn without inventing a failure', () => {
+    expect(summarizeTurn([
+      { seq: 4, type: 'turn/start', data: {} },
+      { seq: 5, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'partial' }] } } },
+      { seq: 6, type: 'turn/end', data: { reason: { kind: 'aborted', reason: { kind: 'user' } } } },
+    ], 4)).toEqual({ text: 'partial', ok: false, ended: 'aborted' })
   })
 })

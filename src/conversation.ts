@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { DomainName } from './config.ts'
+import { displayFailure, type TurnFailure } from './turn-failure.ts'
 
 export interface ConversationMessage {
   chatId: string
@@ -45,13 +46,26 @@ interface EventLike {
   data: any
 }
 
-export interface TurnSummary { text: string; ok: boolean }
+export interface TurnSummary {
+  text: string
+  ok: boolean
+  /** `turn/end` reason kind for the summarised turn, when one was in range. */
+  ended?: string
+  /**
+   * Structured failure carried by an `error` ending, projected the way the DSH
+   * Web UI projects it (`turn-failure.ts`). The Web UI renders exactly these
+   * facts; the channel must not replace them with a generic sentence.
+   */
+  failure?: TurnFailure
+}
 
 export function summarizeTurn(events: readonly EventLike[], firstSeq: number): TurnSummary {
   let text = ''
   let completed = false
   let failed = false
   let hasAssistantMessage = false
+  let ended: string | undefined
+  let failure: TurnFailure | undefined
   for (const event of events) {
     if (event.seq < firstSeq) continue
     if (event.type === 'assistant/message') {
@@ -72,12 +86,21 @@ export function summarizeTurn(events: readonly EventLike[], firstSeq: number): T
       const reason = event.data?.reason
       if (reason !== undefined && reason !== null) {
         completed = reason.kind === 'completed'
-        failed = reason.kind === 'error' || reason.kind === 'cancelled'
+        failed = reason.kind === 'error'
+        ended = typeof reason.kind === 'string' ? reason.kind : undefined
+        // The failure facts ride on the ending itself; keep them intact so the
+        // channel can render what the Web UI renders.
+        failure = reason.kind === 'error' ? displayFailure(reason.error) : undefined
       }
     }
   }
   if (completed && !failed && text === '' && hasAssistantMessage) {
-    return { text: '(no text response)', ok: true }
+    return { text: '(no text response)', ok: true, ...ended === undefined ? {} : { ended } }
   }
-  return { text, ok: completed && !failed && text !== '' }
+  return {
+    text,
+    ok: completed && !failed && text !== '',
+    ...ended === undefined ? {} : { ended },
+    ...failure === undefined ? {} : { failure },
+  }
 }

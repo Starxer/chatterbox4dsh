@@ -9,6 +9,7 @@ import { translationsFor, type Translations } from './i18n.ts'
 import { TurnDroppedError } from './harness.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { errorText } from './error-text.ts'
+import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn-failure.ts'
 import { chunkText, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
@@ -256,6 +257,39 @@ export async function startChannel(
     logger.error(message)
     terminalLogger?.error(message)
   }
+  /**
+   * Report a failed request back into the chat.
+   *
+   * A terminal *turn* failure arrives as a {@link TurnFailureError} carrying the
+   * same structured facts the DSH Web UI renders (`reason.error.message` +
+   * `.code`); it is rendered with {@link renderTurnFailureCard} so both surfaces
+   * show the same reason. Everything else is a plugin-side error (Feishu API,
+   * slash command, media admission) and keeps the concrete `errorText()` reason.
+   */
+  const sendFailure = async (
+    chatId: string,
+    error: unknown,
+    opts: { replyTo: string; replyInThread: boolean },
+  ): Promise<void> => {
+    const deliver = async (payload: { text: string } | { card: object }): Promise<boolean> => {
+      try {
+        await channel.send(chatId, payload, opts)
+        return true
+      } catch (sendError: unknown) {
+        logError(`dsh-feishu: failure reply failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`)
+        return false
+      }
+    }
+    if (error instanceof TurnFailureError) {
+      const t = getTranslations?.() ?? translationsFor('zh')
+      if (await deliver({ card: renderTurnFailureCard(t, error.failure) })) return
+      // The card is the richer shape, not the only one: if Feishu rejects it,
+      // fall back to plain text carrying the same reason and code.
+      await deliver({ text: turnFailureText(t, error.failure) })
+      return
+    }
+    await deliver({ text: `处理这条消息时出错：${errorText(error, config.errorMessage)}` })
+  }
   const channel = factory({
     appId: config.appId,
     appSecret: config.appSecret,
@@ -491,20 +525,12 @@ export async function startChannel(
             return
           }
           logError(`dsh-feishu: message handling failed: ${error instanceof Error ? error.message : String(error)}`)
-          void channel.send(chatId, { text: `处理这条消息时出错：${errorText(error, config.errorMessage)}` }, {
-            replyTo: replyToId,
-            replyInThread,
-          }).catch((sendError: unknown) => {
-            logError(`dsh-feishu: fallback reply failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`)
-          })
+          void sendFailure(chatId, error, { replyTo: replyToId, replyInThread })
         })
       } catch (error: unknown) {
         // Synchronous errors from bridge.reply() setup (rare)
         logError(`dsh-feishu: message dispatch failed: ${error instanceof Error ? error.message : String(error)}`)
-        await channel.send(message.chatId, { text: `处理这条消息时出错：${errorText(error, config.errorMessage)}` }, {
-          replyTo: replyToId,
-          replyInThread,
-        }).catch(() => undefined)
+        await sendFailure(message.chatId, error, { replyTo: replyToId, replyInThread })
       }
     }),
     channel.on('reconnecting', () => { logger.warn('dsh-feishu: WebSocket reconnecting') }),

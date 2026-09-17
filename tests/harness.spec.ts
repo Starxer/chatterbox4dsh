@@ -301,10 +301,39 @@ describe('HarnessConversationService', () => {
     expect(handle.dispose).toHaveBeenCalledOnce()
   })
 
-  it('rejects a turn that commits no successful assistant answer', async () => {
+  it('surfaces the structured turn failure instead of a generic sentence', async () => {
+    const failure = { message: 'DeepSeek Messages request failed (413)', code: 'INVALID_REQUEST', status: 413 }
+    const create = vi.fn(async ({ sessionId }: any) => ({ agent: { session: { id: sessionId, seq: 0, events: [{ seq: 0, type: 'turn/end', data: { reason: { kind: 'error', error: failure } } }] }, whenIdle: async () => undefined, followup() {}, steer() {}, cancel() {}, status: 'idle' as const }, dispose: async () => undefined }))
+    const service = new HarnessConversationService({ agents: { create, resume: vi.fn(), get: () => undefined }, sessions: { flush: async () => true }, sessionPersistence: { list: async () => [] }, selection: () => ({ provider: 'p', model: 'm' }), agentPresets: { resolve: async () => ({ id: 'default' }), mount: async () => undefined }, workspaceRegistry: { list: () => [], resolveByPath: async () => undefined, archivedSessionIds: [] } }, { domain: 'feishu', workspace: '/work' })
+    // The Web UI renders exactly these two facts; the error carries them intact
+    // so the channel can mirror that rendering.
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'one' })).rejects.toMatchObject({
+      name: 'TurnFailureError',
+      failure: { message: failure.message, code: 'INVALID_REQUEST' },
+    })
+  })
+
+  it('projects a detail-less error ending the same way the Web UI does', async () => {
+    // Every real `error` ending carries a structured `error`; this pins the
+    // projection for a payload without one to the Web UI's own rendering of the
+    // raw value instead of an invented message.
     const create = vi.fn(async ({ sessionId }: any) => ({ agent: { session: { id: sessionId, seq: 0, events: [{ seq: 0, type: 'turn/end', data: { reason: { kind: 'error' } } }] }, whenIdle: async () => undefined, followup() {}, steer() {}, cancel() {}, status: 'idle' as const }, dispose: async () => undefined }))
     const service = new HarnessConversationService({ agents: { create, resume: vi.fn(), get: () => undefined }, sessions: { flush: async () => true }, sessionPersistence: { list: async () => [] }, selection: () => ({ provider: 'p', model: 'm' }), agentPresets: { resolve: async () => ({ id: 'default' }), mount: async () => undefined }, workspaceRegistry: { list: () => [], resolveByPath: async () => undefined, archivedSessionIds: [] } }, { domain: 'feishu', workspace: '/work' })
-    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'one' })).rejects.toThrow(/successful assistant response/)
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'one' })).rejects.toMatchObject({
+      name: 'TurnFailureError',
+      failure: { message: 'undefined' },
+    })
+  })
+
+  it('does not report an aborted turn as a failure', async () => {
+    // `/stop` (or an interrupting message) aborts the turn: the Web UI keeps the
+    // streamed output and shows no error row, so reply() must not raise one.
+    const create = vi.fn(async ({ sessionId }: any) => ({ agent: { session: { id: sessionId, seq: 0, events: [
+      { seq: 0, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'partial answer' }] } } },
+      { seq: 1, type: 'turn/end', data: { reason: { kind: 'aborted', reason: { kind: 'user' } } } },
+    ] }, whenIdle: async () => undefined, followup() {}, steer() {}, cancel() {}, status: 'idle' as const }, dispose: async () => undefined }))
+    const service = new HarnessConversationService({ agents: { create, resume: vi.fn(), get: () => undefined }, sessions: { flush: async () => true }, sessionPersistence: { list: async () => [] }, selection: () => ({ provider: 'p', model: 'm' }), agentPresets: { resolve: async () => ({ id: 'default' }), mount: async () => undefined }, workspaceRegistry: { list: () => [], resolveByPath: async () => undefined, archivedSessionIds: [] } }, { domain: 'feishu', workspace: '/work' })
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'one' })).resolves.toBe('partial answer')
   })
 
   it('reply bounds the event snapshot to the current turn instead of the whole history', async () => {

@@ -7,6 +7,7 @@ import { dirname } from 'node:path'
 import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './conversation.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { DomainName } from './config.ts'
+import { TurnFailureError, displayFailure } from './turn-failure.ts'
 
 /** Minimum surface of {@link Agent} the conversation service depends on. */
 interface AgentLike {
@@ -329,7 +330,20 @@ export class HarnessConversationService {
     await agent.whenIdle()
     await this.deps.sessions.flush(agent.session)
     const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
-    if (!result.ok) throw new Error('Harness turn did not produce a successful assistant response')
+    if (!result.ok) {
+      // A turn that ended `error` carries the provider's structured facts on
+      // its `turn/end` reason, and the DSH Web UI renders exactly those facts
+      // (message + code + the localized turn-error title). Re-throw them intact
+      // so the channel can mirror that rendering; replacing them with a
+      // hardcoded sentence is what made one failure look different on each side.
+      if (result.failure !== undefined) throw new TurnFailureError(result.failure)
+      if (result.ended === 'error') throw new TurnFailureError(displayFailure(undefined))
+      // Aborted / interrupted / blocked / max-tokens endings are not failures:
+      // the Web UI keeps the streamed output and shows no error row, so deliver
+      // whatever text the turn produced (the step cards already showed it) and
+      // never raise a bogus "turn failed" notice.
+      return result.text === '' ? undefined : result.text
+    }
     return result.text
   }
 

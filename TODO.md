@@ -169,27 +169,29 @@
 
 ## 已知问题
 
-### 飞书侧报错内容比 WebUI 简略（**未修，只记录**，2026-09-16 使用者报告）
+### 飞书侧报错内容比 WebUI 简略（**turn 级已修 2026-09-17，工具/思考仍有上限**）
 
 **现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」——同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
 
-**现状（插件侧三处硬上限）**：
+**✅ 已修（2026-09-17，turn 级错误）**：飞书原先只回一句通用句子，现在**直接渲染 WebUI 那一份失败事实**。根因是 `summarizeTurn()` 丢掉 `turn/end` 的 `reason.error`，`harness.reply()` 随即抛硬编码的 `Harness turn did not produce a successful assistant response`（journald 里 09-08 起出现 20+ 次）。改法见 CHANGELOG「飞书把 turn 失败压成一句通用错误」：新增 `src/turn-failure.ts` **逐行移植** WebUI 的 `displayFailure` + `TurnErrorItem`（红头 + `本轮运行失败`/`This turn failed` + 原文正文 + `code`；`AUTH` 换 `API 密钥无效`/`API key is invalid`），红卡被拒时回退同样内容的纯文本。顺带修掉 `/stop` 中止当前轮后**必然错报一次"运行失败"**的问题（`aborted`/`interrupted` 等非失败结束不再报错）。
 
-- **turn 级错误**：`channel.ts` 发纯文本 `处理这条消息时出错：<reason>`，`reason` 来自 `src/error-text.ts` 的 `errorText()`——只取 `error.message` + 数字/字符串 `code`，**丢掉 `cause` 链与堆栈**，并**在 600 字符处截断加 `…`**。
+**仍存在的上限**：
+
 - **工具失败**：步骤卡里 `❌` 后跟结果预览，`RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500` 字符；结构化预览还要再取样（`paths` 前 20、`files` 前 5、`matches` 前 3、`diffs` 前 3、每个 diff 各 8 行）。
 - **思考 / 正文**：`REASONING_CAP = 200`、`TEXT_STEP_CAP = 3000`（正文溢出会拆「Reply (continued N/M)」卡，**不丢**，但错误文本没有等价机制）。
+- **插件侧非 turn 错误**（飞书 API、斜杠命令、图片/文件准入）：走 `errorText()`，只取 `error.message` + `code`，**丢掉 `cause` 链与堆栈**并在 600 字符处截断加 `…`。
 
 **WebUI 侧对照**：`packages/client/ui-trajectory/src/client/TrajectoryTable.tsx` 的输出格把 `record.cell.outputDetail` **整段**塞进 `<pre>`（并附「复制输出」按钮），**不做字符截断**；聊天区也保留完整错误文本。
 
 **为什么现在这样**：飞书单条消息/卡片有体积与渲染上限，卡片是即时可读界面，整段堆栈会淹掉卡片。
 
-**可选方向（未定、未动工）**：
+**可选方向（未定、未动工，仅针对上面仍存在的上限）**：
 
-1. 发生错误时额外发一张「详细错误卡」或溢出卡，装完整 message + `cause` 链 + 堆栈；
+1. 工具失败时额外发一张「详细错误卡」或溢出卡，装完整结果文本；
 2. `/error` 命令回看最近一次错误的全文（插件把最近错误留在会话状态里）；
 3. 把完整错误写成 `.log`/`.txt` 落工作区，交给已有的 `feishu_send_file` 推给用户（零新面）。
 
-**处理**：**2026-09-16 决定先记录、不改**。
+**处理**：turn 级已于 **2026-09-17 修复**；其余三项 2026-09-16 决定先记录、不改。
 
 ### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
 

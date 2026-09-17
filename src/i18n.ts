@@ -147,6 +147,12 @@ export interface Translations {
   busySteeredNotice: string
   /** Plain-text notice sent when a busy-mode message is queued behind the running turn. */
   busyQueuedNotice: string
+  // ---- Turn failure (turn-failure.ts; mirrors DSH Web UI `message.turnError`
+  // and `message.failure.auth` — the Web UI is the source of truth) ----
+  /** Red-card title for a failed turn, e.g. `本轮运行失败`. */
+  turnFailedTitle: string
+  /** Body substituted for an `AUTH` failure whose message may echo a credential. */
+  failureAuth: string
 
   // ---- Status (renderStatusCard in index.ts) ----
   statusRunWarning: string
@@ -432,6 +438,8 @@ export const zh = {
   enterWhileBusy: '忙碌时进入',
   busySteeredNotice: '🎯 已插入当前运行轮，模型会在下一步看到这条消息。',
   busyQueuedNotice: '📥 已排队，当前轮结束后会自动执行这条消息（排队期间可用 /stop 丢弃）。',
+  turnFailedTitle: '本轮运行失败',
+  failureAuth: 'API 密钥无效',
 
   statusRunWarning: '> ⚠️ Agent 正在运行中，以上信息可能并非最新。请在 Agent 运行结束后再次发送 `/status` 获取准确信息。',
   statusSessionLabel: '会话',
@@ -706,6 +714,8 @@ export const en: Translations = {
   enterWhileBusy: 'Enter while busy',
   busySteeredNotice: '🎯 Injected into the running turn — the model will see it on the next step.',
   busyQueuedNotice: '📥 Queued — it will run after the current turn finishes (send /stop while waiting to discard it).',
+  turnFailedTitle: 'This turn failed',
+  failureAuth: 'API key is invalid',
 
   statusRunWarning: '> ⚠️ The agent is running; this may be stale. Send `/status` again after it finishes.',
   statusSessionLabel: 'Session',

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { startChannel } from '../src/channel.ts'
+import { TurnFailureError } from '../src/turn-failure.ts'
+import { translationsFor } from '../src/i18n.ts'
 import type { AttachmentId, FileAttachmentRef, ImageAttachmentRef, ImageMediaType, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 
 /** Flush the microtask queue so fire-and-forget promises settle. */
@@ -193,6 +195,35 @@ describe('startChannel', () => {
     await flushAsync()
     expect(terminal.error).toHaveBeenCalledWith('dsh-feishu: message handling failed: secret stack')
     expect(channel.send).toHaveBeenCalledWith('oc_1', { text: '处理这条消息时出错：secret stack' }, { replyTo: 'om_1', replyInThread: true })
+  })
+
+  it('renders a DSH turn failure exactly the way the Web UI renders it', async () => {
+    const channel = fakeChannel()
+    // Same structured facts the Web UI reads off `turn/end`'s `reason.error`.
+    const bridge = { reply: vi.fn(async () => { throw new TurnFailureError({ message: 'DeepSeek Messages request failed (413)', code: 'INVALID_REQUEST' }) }), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    await startChannel({ appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open', groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', content: 'hi' })
+    await flushAsync()
+    const payload = (channel.send as any).mock.calls.at(-1)![1] as any
+    expect(payload.card.header.title.content).toBe(translationsFor('zh').turnFailedTitle)
+    expect(payload.card.header.template).toBe('red')
+    expect(payload.card.body.elements).toEqual([
+      { tag: 'markdown', content: 'DeepSeek Messages request failed (413)' },
+      { tag: 'markdown', content: '`INVALID_REQUEST`' },
+    ])
+    expect(channel.send).toHaveBeenCalledWith('oc_1', payload, { replyTo: 'om_1', replyInThread: true })
+  })
+
+  it('falls back to text carrying the same failure when the card is rejected', async () => {
+    const channel = fakeChannel()
+    // First send (the card) is refused by Feishu; the reason must still arrive.
+    channel.send.mockRejectedValueOnce(new Error('invalid card json'))
+    const bridge = { reply: vi.fn(async () => { throw new TurnFailureError({ message: 'boom', code: 'TRANSPORT' }) }), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    await startChannel({ appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open', groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', content: 'hi' })
+    await flushAsync()
+    await flushAsync()
+    expect((channel.send as any).mock.calls.at(-1)![1]).toEqual({ text: '本轮运行失败：boom [TRANSPORT]' })
   })
 
   it('disposes conversation resources when channel disconnect fails', async () => {
