@@ -186,7 +186,11 @@
 2. **超预算单块**按类型给最小破坏的切法：**代码围栏**在每个分片闭合再重开（每片都是合法代码块）；**表格**在每个分片重复表头与分隔行（每片都是合法表格）；其余（长列表/引用/段落）退回行边界，单行超长才按字符切。
 3. `feishu-streaming.ts` 的步骤卡与续卡改为**共用同一次切分**：步骤卡渲染 `segments[0]`，其余成为续卡——两者永远一致，不可能再对不上。
 
-**验证**：`tests/truncation.spec.ts` 新增 7 例（提前切到上一个空行 / 表格整体进下一张卡 / 超预算表格重复表头 / 代码围栏闭合重开 / 围栏内空行不作边界 / 单行超长仍按字符切 / 混合文档逐块保真），`tests/feishu-streaming.spec.ts` 新增 2 例并改写 1 例（2990 字填充 + 表格 → 步骤卡只含填充、表格整体进续卡；短文本表格完整渲染；titled 工具改用 `cordis_inspect_query`）。顺带把工具摘要表里**从未存在过**的 `cordis_package_inspect` / `cordis_runtime_inspect` 与 alpha.2 已删除的 `cordis_run/stop/undefine` 换成实际存在的 `cordis_inspect_list` / `cordis_inspect_query`（`plugin_manager` 走通用前缀行）。全套 **415 passed / 33 files**（原 405），typecheck 0 error，build ✅。
+**验证**：`tests/truncation.spec.ts` 新增 7 例（提前切到上一个空行 / 表格整体进下一张卡 / 超预算表格重复表头 / 代码围栏闭合重开 / 围栏内空行不作边界 / 单行超长仍按字符切 / 混合文档逐块保真），`tests/feishu-streaming.spec.ts` 新增 1 例（2990 字填充 + 表格 → 步骤卡只含填充、表格整体进续卡；短文本表格完整渲染）。
+
+> **一条踩过的坑（勿再清理）**：升级时曾把工具摘要表里的 `cordis_run/stop/undefine`、`cordis_package_inspect/runtime_inspect` 当成「alpha.2 已删除的工具」换掉——**错的**。这张表镜像 Web UI 的 `TOOL_VARIANTS`，而该文件在 alpha.1/alpha.2 之间逐字节未变、仍映射这些旧名，为的是让**旧会话记录的工具调用**继续以相同摘要重渲染。已回退（见 CHANGELOG）。`plugin_manager` 不在 Web UI 变体表里，走通用 `plugin_manager · <action>` 行即对齐。
+
+全套 **415 passed / 33 files**（原 405），typecheck 0 error，build ✅。
 
 > 相关：本文档「飞书消息长度限制调研记录」已给出卡片 30KB 请求体 / 单 markdown 元素约 10k 字符的隐式上限与推荐拆卡阈值（~6k–8k 字符）；本次修法与该阈值选择无耦合。
 

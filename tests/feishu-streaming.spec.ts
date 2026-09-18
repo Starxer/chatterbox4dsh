@@ -137,12 +137,15 @@ describe('deriveToolSummary', () => {
     expect(deriveToolSummary('my_custom_tool', JSON.stringify({ what: 'do the thing' }))).toBe('my_custom_tool · do the thing')
   })
 
-  it('titled tools (e.g. cordis_inspect_query) do not prefix the tool name', () => {
-    // DSH 0.1.6-alpha.2 keeps only the read-only Cordis inspection tools.
-    expect(deriveToolSummary('cordis_inspect_query', JSON.stringify({ provider: 'slots', method: 'listSubTree' }))).toBe('slots')
+  it('titled tools (e.g. cordis_run) do not prefix the tool name', () => {
+    // `cordis_run` is a legacy name: the Web UI still maps it so tool calls
+    // recorded by older sessions keep rendering, and this table mirrors that.
+    expect(deriveToolSummary('cordis_run', JSON.stringify({ package: 'pkg' }))).toBe('pkg')
   })
 
   it('plugin_manager falls back to the generic tool-name prefix with its action', () => {
+    // New in DSH 0.1.6-alpha.2 and not in the Web UI's variant map, so the
+    // generic `others` rule (name · first string field) is the aligned render.
     expect(deriveToolSummary('plugin_manager', JSON.stringify({ action: 'list_bundles' }))).toBe('plugin_manager · list_bundles')
   })
 

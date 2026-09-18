@@ -128,7 +128,7 @@ alpha.2 由 composition 决定热重载：`packages/bundle/headless/cordis.patch
 
 **处理**：从文档/脚本里删掉对 `patchReload` 的断言，不需要新增动作；若某 profile 确实要关热重载，改为显式 `- id: hmr / disabled: true`。
 
-### P0-4 runtime 解析模式：插件工作区的 `@deepseek-ai/dsh-*` 仍是旧拷贝
+### P0-4 runtime 解析模式：核心包必须只有**一份物理副本**
 
 alpha.1 下 launcher 会物化 fallback 符号链接，插件的裸 `@deepseek-ai/dsh-*` import 走文件系统链接解析；alpha.2 改为进程内代际，**不再建链接**。
 
@@ -140,9 +140,32 @@ alpha.1 下 launcher 会物化 fallback 符号链接，插件的裸 `@deepseek-a
 @deepseek-ai/dsh-user-questions  @deepseek-ai/dsh-tools
 ```
 
-而插件工作区自己的 `node_modules/@deepseek-ai/dsh-*` 装的是 `^0.1.6-alpha.1` 的拷贝。runtime 模式下「local 候选优先于代际」，若这些裸 import 落到工作区那份旧拷贝，会出现 **cordis Context / `defineTool` 注册表 / `SessionId` brand 各一份**的实例分裂。
+**失败模式（DSH 官方已知问题）**：一旦解析链上出现**第二份物理副本**，`@deepseek-ai/dsh-tools` 会加载两次，模块级 Symbol 不匹配，**每一次工具调用**都报
+`Cannot read properties of undefined (reading 'prepare')`。
 
-**处理**：升级后把插件工作区的 `@deepseek-ai/dsh-*` devDeps 重装到 `0.1.6-alpha.2`（删 `node_modules` + `package-lock.json` 后全新 `npm install`），把隐患直接消掉。
+- [Discussion #2078 — 一行 `Symbol.for` 修复该崩溃](https://github.com/deepseek-ai/deepseek-harness/discussions/2078)
+- [Discussion #3516 — profile 里的第二份核心副本让每次工具调用失败](https://github.com/deepseek-ai/deepseek-harness/discussions/3516)
+- [运维手册：修复重复的核心运行时闭包](https://github.com/sandbaseai/deepseek-harness-handbook/blob/main/docs/en/troubleshooting/duplicate-core-runtime-closure.md)
+
+> ⚠️ **版本对齐不等于去重**。两份同版本（甚至同为 `0.1.6-alpha.2`）的拷贝依然是两个模块实例、两套 Symbol——所以「把依赖升到同一版本」**并不能**消除这个失败模式。真正的判据是**解析链上只有一个 realpath**。
+
+**本部署的实测结论（2026-09-18，升级后审计）：**
+
+| 位置 | 结果 |
+|---|---|
+| `profiles/node_modules/@deepseek-ai/`（259 项） | 全部是 pnpm 软链，`realpath` 均落回检出里的 workspace 包（如 `dsh-tools` → `packages/core/tools`）→ **同一份物理包** |
+| `profiles/web/node_modules/@deepseek-ai/` | **空**（只有 `@starxer/chatterbox4dsh` 这一条 link） |
+| 安装体（`apps/cli` 解析根） | `dsh-tools` / `dsh-llm` / `dsh-session` 均为 `0.1.6-alpha.2`，realpath 指向 workspace 包 |
+| 运行期 `reading 'prepare'` 报错计数 | **0** |
+
+即：插件工作区自己那份 `node_modules/@deepseek-ai/*`（真实目录、非软链）虽与安装体版本一致，但**裸包名被代际解析路由到安装体**，没有被加载；profile 侧也没有第二份。两侧都干净。
+
+**处理**：
+
+1. 保持 `@deepseek-ai/dsh-*` 版本与运行中的 DSH 一致（本次已在升级脚本里重装到 `0.1.6-alpha.2`）——这是**正确性**要求（API 漂移），不是去重手段。
+2. 升级后**必须**审计解析链上没有第二份副本（上表三条命令即可）。
+3. 已在 `profiles/node_modules` 里的遗留投影不必手删：resolver 会通过 `legacy-links.ts` 的 `isProfileModuleFallbackLink` 排除它们（`resolver.ts` 的 legacy 过滤分支）。但**不要**再往那里装第二份核心包。
+
 
 > 附带约束：包代际的替换是**只增不减**的——改动或删除已有映射会抛 "requires a process restart"。
 

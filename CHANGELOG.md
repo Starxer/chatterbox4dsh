@@ -21,7 +21,7 @@
   1. **切分器重写为块感知**（`src/text-chunk.ts`）：先切块——空行分隔，且**代码围栏内部的空行不算分隔**、整块保留；再装箱，当下一块放不进剩余预算时**回退到上一个块边界**结束当前卡，绝不切进块内部。
   2. **超预算单块**按类型给最小破坏的切法：代码围栏在每片**闭合再重开**（每片都是合法代码块），表格在每片**重复表头与分隔行**（每片都是合法表格），其余退回行边界、单行超长才按字符切。
   3. **步骤卡与续卡共用同一次切分**（`src/feishu-streaming.ts`）：步骤卡渲染 `segments[0]`，其余成为 `Reply (continued N/M)` 续卡——两者不再各自切片，因此不可能对不上；`MAX_OVERFLOW_CARDS = 30` 沿用原有续卡上限。
-- **顺带修正**（同一批次，为 DSH 0.1.6-alpha.2 做准备）：`TOOL_SUMMARY_VARIANTS` / `TOOL_SUMMARY_TITLED` 里的 `cordis_package_inspect` / `cordis_runtime_inspect` **从未存在过**，`cordis_run` / `cordis_stop` / `cordis_undefine` 在 alpha.2 被删除；已替换为实际存在的 `cordis_inspect_list` / `cordis_inspect_query`，`plugin_manager` 走通用 `plugin_manager · <action>` 行。
+- **顺带核实并保留（勿清理）**：`TOOL_SUMMARY_VARIANTS` / `TOOL_SUMMARY_TITLED` 里的 `cordis_package_inspect` / `cordis_runtime_inspect` / `cordis_run` / `cordis_stop` / `cordis_undefine` 看着像「alpha.2 已删除的工具」，但它们**必须留着**——这张表镜像的是 Web UI 的 `TOOL_VARIANTS`，而该文件在 alpha.1/alpha.2 之间**逐字节未变**、仍映射这些旧名，为的是让**旧会话记录下来的工具调用**继续以相同摘要重渲染。升级时曾按「已删除」把这几行换成 `cordis_inspect_list`/`cordis_inspect_query`，核对 Web UI 后**已回退**；`plugin_manager`（alpha.2 新增、Web UI 变体表未收录）走通用 `plugin_manager · <action>` 行，与 Web UI 一致。
 - **验证**：`tests/truncation.spec.ts` 新增 7 例（提前切到上一个空行 / 表格整体进下一张卡 / 超预算表格重复表头 / 代码围栏闭合重开 / 围栏内空行不作边界 / 单行超长仍按字符切 / 混合文档逐块保真），`tests/feishu-streaming.spec.ts` 新增 2 例并改写 1 例（2990 字填充 + 表格 → 步骤卡只含填充、表格整体进续卡；短文本表格完整渲染；titled 工具改用 `cordis_inspect_query`）。全套 **415 passed / 33 files**（原 405 / 33），typecheck 0 error，build ✅。
 
 ### 修复：工具先开卡、正文后到时误判「没显示过正文」，会多发一张重复回复卡（`src/feishu-streaming.ts` / `tests/feishu-streaming.spec.ts`）

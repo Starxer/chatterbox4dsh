@@ -1172,17 +1172,21 @@ const TOOL_SUMMARY_VARIANTS: Record<string, ToolSummaryVariant> = {
   edit: 'edit',
   run_code: 'code',
   todo_write: 'todo',
-  // DSH 0.1.6-alpha.2 keeps only the read-only Cordis inspection tools; the
-  // dynamic define/run/stop/undefine tools were replaced by `plugin_manager`
-  // (which needs no entry here — the generic `plugin_manager · <action>` line
-  // is already the right summary).
-  cordis_inspect_list: 'read',
-  cordis_inspect_query: 'read',
+  // Legacy Cordis names kept on purpose: this table mirrors the Web UI's
+  // `TOOL_VARIANTS`, which still maps them so tool calls recorded by older
+  // sessions re-render with the same summary. They are deliberately NOT
+  // "cleaned up" to match the currently registered tool set.
+  cordis_package_inspect: 'read',
+  cordis_runtime_inspect: 'read',
+  cordis_run: 'others',
+  cordis_stop: 'others',
+  cordis_undefine: 'others',
 }
 
 /** Tools with an owned title: the `others`-prefix rule does not apply to them. */
 const TOOL_SUMMARY_TITLED: ReadonlySet<string> = new Set([
-  'cordis_inspect_list', 'cordis_inspect_query', 'pwsh',
+  'cordis_package_inspect', 'cordis_runtime_inspect', 'cordis_run', 'cordis_stop',
+  'cordis_undefine', 'pwsh',
 ])
 
 /** Summary key preference per variant (mirrors Web UI `SUMMARY_KEYS`). */
