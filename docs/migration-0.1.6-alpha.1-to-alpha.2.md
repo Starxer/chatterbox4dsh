@@ -340,9 +340,32 @@ git diff --name-only dsh-v0.1.6-alpha.1 dsh-v0.1.6-alpha.2 | wc -l    # 2622
 
 ---
 
-## 6. 关联记录
+## 6. 事故记录（2026-09-18）
+
+升级本身按 §3 跑完（`DSH_OK=1` / `PLUGIN_OK=1`），但**随后触发了上游 alpha.2 的致命回归，会话坏过一次**。完整根因与三条纪律见本地笔记的「关键坑 28」（`notes/pitfalls.md`）。时间线：
+
+| 时间 | 事件 |
+|---|---|
+| 02:59–03:02 | 升级脚本执行完成，DSH 起在 `0.1.6-alpha.2` |
+| 03:02 后 | 命中上游回归：`tsx` 源码入口下 `@deepseek-ai/dsh-tools` 被求值两次 → **每次工具调用**报 `Cannot read properties of undefined (reading 'prepare')`；会话在该轮中断（会话日志从 03:0x 直接断到 15:xx） |
+| 14:41 | 回滚脚本执行 → **构建失败**（跨版本残留产物，见下），但脚本仍启动了半成品树，问题进一步恶化 |
+| 15:02 | 服务单元 `ExecStart` 改为**构建产物入口** `apps/cli/lib/bin.js`（临时措施，单元文件内已注明原因并引用 #6986/#7011） |
+| 15:06 | 服务在新入口上重启，恢复可用 |
+
+**两个教训（都已固化进 §2 的处理项与升级/回滚脚本）**：
+
+1. **回滚失败的直接原因是跨版本残留的构建产物**：alpha.2 的 `plugin-manager/lib/types/index.js` 引用了 alpha.1 不存在的 `readProfilePatches` / `reconcileProfilePatches`，`git checkout` 回 alpha.1 后这些**未被 git 跟踪的 `lib/`** 让 `pnpm run build` 在 rolldown 报 `[MISSING_EXPORT]`。必须**先清 `lib/`+`dist/`+`*.tsbuildinfo` 再构建**。
+2. **构建失败时不要启动服务**。上一轮把半成品树拉起来，才是「会话彻底不可用」的那一步。
+
+**上游状态**：`#7011` / `#6986` 均 **open**（`#7011` 的根因分析与本机实测完全一致）。**已定策略：不改 DSH 源码、不往检出打补丁，等上游修复**；修复进入正式 release 后再把服务入口切回源码入口并复验一次工具调用。可选的两种临时改法（`Symbol.for` 一行、把默认值改回 `link`）记录在 `notes/upstream-and-compat.md`，**当前不采用**。
+
+**会话完整性**：上游提示「在 `tool/call` 之后崩溃的会话可能缺配对 `tool/result`，建议新建会话」。本会话实测**干净**，无需重建：260 次 `tool/call` / 259 已配对（唯一未配对的是当时正在执行的调用），`turn/end` 为 7 `completed` + 1 `interrupted`、**0 `error`**。会话日志里出现的 `reading 'prepare'` 字样全部来自事后读取的文本（单元文件注释、讨论内容、journal 摘录），不是真实报错。
+
+---
+
+## 7. 关联记录
 
 - 版本兼容台账与历史基线：`notes/upstream-and-compat.md`
-- 关键坑全文（13 / 14 / 17 / 24）：`notes/pitfalls.md`
+- 关键坑全文（13 / 14 / 17 / 24 / **28**）：`notes/pitfalls.md`
 - 上一跳（0.1.5-rc.2 → 0.1.6-alpha.1）：`docs/migration-0.1.5-rc.2-to-0.1.6-alpha.1.md`
 - 评估期间发现、**本次不改**的插件侧问题：见 `TODO.md`「已知问题」段

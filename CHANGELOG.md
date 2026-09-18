@@ -10,9 +10,11 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 >
-> 另已评估 **DSH `0.1.6-alpha.2`**（887 commits / 2622 改动文件，**本轮未升级**）：插件运行时代码**零必改**（四个被消费的 `sessionController` 方法逐字节未变、client slot 契约零差异、依赖范围因同属 `0.1.6` tuple 也无需改），但**本机部署侧有 5 项前置**——默认模型目录删除两个 id、Creator preset 工具集由 `cordis_define/run` 换成 `plugin_manager`、解析模式默认值 `link`→`runtime`、web profile 默认开 HMR 且支持热卸载、`dsh.profile.patchReload` 字段被删除。完整评估与升级/回滚步骤见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](./docs/migration-0.1.6-alpha.1-to-alpha.2.md)。
+> 另已评估 **并已升级到** DSH **`0.1.6-alpha.2`**（887 commits / 2622 改动文件）：插件运行时代码**零必改**（四个被消费的 `sessionController` 方法逐字节未变、client slot 契约零差异、依赖范围因同属 `0.1.6` tuple 也无需改）。部署侧前置项：默认模型目录删除两个 id（已改 settings 路由）、Creator preset 工具集由 `cordis_define/run` 换成 `plugin_manager`、解析模式默认值 `link`→`runtime`、web profile 默认开 HMR、`dsh.profile.patchReload` 字段被删除（已复核无动作）。完整评估、升级/回滚步骤与**事故记录**见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](./docs/migration-0.1.6-alpha.1-to-alpha.2.md)。
 >
-> 同期记录一处**待修**问题（**未动代码**）：超阈值分卡会切坏 Markdown（表格/代码块被从中间切开），定位与提议方案见 `TODO.md`「已知问题」首条。
+> ⚠️ **升级当天触发上游 alpha.2 回归，会话坏过一次**：源码入口下 `@deepseek-ai/dsh-tools` 被求值两次 → 每次工具调用报 `Cannot read properties of undefined (reading 'prepare')`。已用**服务入口改走构建产物**规避，**未改动 DSH 源码**；上游修复前不改 DSH 源码（详见 migration 文档 §6）。
+>
+> 同批次修掉：超阈值分卡把表格/代码块切成两半——切分改为块感知（见下条）。
 
 ### 修复：超阈值分卡把表格/代码块切成两半——切分改为块感知（`src/text-chunk.ts` / `src/feishu-streaming.ts`）
 
