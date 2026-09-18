@@ -161,6 +161,10 @@ alpha.1 下 launcher 会物化 fallback 符号链接，插件的裸 `@deepseek-a
 即：插件工作区自己那份 `node_modules/@deepseek-ai/*`（真实目录、非软链）虽与安装体版本一致，但**裸包名被代际解析路由到安装体**，没有被加载；profile 侧也没有第二份。两侧都干净。
 
 > ⚠️ **这张表测的是「临时措施生效之后」的状态，不是自然状态**。升级当天本机确实撞上了这个崩溃（会话坏过一次）：`tsx` 源码入口会让 `@deepseek-ai/dsh-tools` 加载两次。当前运行的补救办法是**把服务入口改成构建产物** `apps/cli/lib/bin.js`（见 `notes/upstream-and-compat.md`），它让解析闭包只剩一份，症状才消失。**代价**：改任何 host 源码后必须先 `pnpm run build` 再重启。上游修复落地前，不要直接切回 `tsx` 源码入口。
+>
+> **✅ 已定策略（2026-09-18）：不改 DSH 源码、不往检出里打补丁，等上游修复**（保持检出干净，便于随时切 tag）。上游修复进入正式 release 后，再把服务入口切回源码入口并复验一次工具调用。上游讨论：[#7011](https://github.com/deepseek-ai/deepseek-harness/discussions/7011)（仍 open）/ [#6986](https://github.com/deepseek-ai/deepseek-harness/discussions/6986)。
+>
+> **🔴 纪律：dsh 运行期间不要 `pnpm run build`**。产物入口下整个图都从 `lib` 加载，就地重建后任何惰性 import 会把同一模块求值第二次，用同样的机制把崩溃重新引出来。
 
 **处理**：
 
