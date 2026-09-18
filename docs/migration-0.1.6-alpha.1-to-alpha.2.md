@@ -160,11 +160,14 @@ alpha.1 下 launcher 会物化 fallback 符号链接，插件的裸 `@deepseek-a
 
 即：插件工作区自己那份 `node_modules/@deepseek-ai/*`（真实目录、非软链）虽与安装体版本一致，但**裸包名被代际解析路由到安装体**，没有被加载；profile 侧也没有第二份。两侧都干净。
 
+> ⚠️ **这张表测的是「临时措施生效之后」的状态，不是自然状态**。升级当天本机确实撞上了这个崩溃（会话坏过一次）：`tsx` 源码入口会让 `@deepseek-ai/dsh-tools` 加载两次。当前运行的补救办法是**把服务入口改成构建产物** `apps/cli/lib/bin.js`（见 `notes/upstream-and-compat.md`），它让解析闭包只剩一份，症状才消失。**代价**：改任何 host 源码后必须先 `pnpm run build` 再重启。上游修复落地前，不要直接切回 `tsx` 源码入口。
+
 **处理**：
 
 1. 保持 `@deepseek-ai/dsh-*` 版本与运行中的 DSH 一致（本次已在升级脚本里重装到 `0.1.6-alpha.2`）——这是**正确性**要求（API 漂移），不是去重手段。
-2. 升级后**必须**审计解析链上没有第二份副本（上表三条命令即可）。
+2. 升级后**必须**审计解析链上没有第二份副本（上表三条命令即可），**并且**确认服务入口与当前规避方案一致。
 3. 已在 `profiles/node_modules` 里的遗留投影不必手删：resolver 会通过 `legacy-links.ts` 的 `isProfileModuleFallbackLink` 排除它们（`resolver.ts` 的 legacy 过滤分支）。但**不要**再往那里装第二份核心包。
+4. **跨版本切 tag 前必须先清构建产物**（`lib/`、`dist/`、`*.tsbuildinfo`）——残留的 alpha.2 产物引用 alpha.1 不存在的导出会让 `build:lib` 直接失败；且**构建失败时不要启动服务**。
 
 
 > 附带约束：包代际的替换是**只增不减**的——改动或删除已有映射会抛 "requires a process restart"。
@@ -215,15 +218,20 @@ pnpm install
 find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete
 rm -rf apps/web/dist
 
-# ⚠️ 必须是【完整】构建，不是 build:native-system（它不产 lib/）
+# ⚠️ 先清跨版本残留产物，再跑【完整】构建（不是 build:native-system，它不产 lib/）
+find packages apps -maxdepth 3 -type d \( -name lib -o -name dist \) -not -path '*/node_modules/*' -exec rm -rf {} +
+find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete
 pnpm run build
 
-node --import tsx/esm apps/cli/src/bin.ts --version   # 期望 0.1.6-alpha.2
+# 服务入口当前是构建产物，就用同一个入口验版本
+node apps/cli/lib/bin.js --version   # 期望 0.1.6-alpha.2
 ```
 
 **验证点**：`pnpm install` 无 peer 冲突；`pnpm run build` 退出码 0；`--version` 输出 `0.1.6-alpha.2`。
 
-> 本部署用 `tsx` 跑源码，0.1.6 起源码态不再自足，**完整 `pnpm run build` 是硬前提**，缺 `lib/client.js` / `lib/typert.host.js` 会在首启报 `1 entry did not activate`。
+> ⚠️ **构建失败就不要启动服务**。2026-09-18 的教训：残留产物让 `build:lib` 失败后仍 `systemctl start`，把半成品树拉起来，会话直接不可用。
+>
+> 本部署的**服务入口是构建产物 `apps/cli/lib/bin.js`**（临时规避 alpha.2 的 `dsh-tools` 双实例崩溃，见 §P0-4 与 `notes/upstream-and-compat.md`），因此完整 `pnpm run build` 是硬前提——**改任何 host 源码都必须重新构建再重启**。
 
 ### 阶段 3 —— 本机配置（P0-1 / P0-3 / P0-4）
 
