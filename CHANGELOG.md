@@ -32,6 +32,7 @@
   3. `cardChannel.send` 的外层上界相应为「屏障 60s + 出站 20s」（原来最坏是无限等待）。
 - **验证**：新增 `tests/card-send-barrier.spec.ts` 6 例，其中两例**直接锁死这次的失效模式**——「某聊天 flush 永不 settle 时，**另一个聊天**的 flush 仍必须执行」（旧全局计数器下第二个 flush 会被跳过）、「一次卡住的 flush 之后哨兵必须释放，下一次 flush 仍会执行」（旧实现下永久为 1）；另 4 例覆盖顺序保证、同聊天再入不重复 flush、超时后照发并回报原因、未注册 flush 时直接发送。全套 **438 passed / 35 files**（原 432 / 34），typecheck 0 error，build ✅。
 - **注意**：与下一条一样，修复需要**重启 dsh** 才对运行中的进程生效。
+- **真机复验（2026-09-21 14:10 重启后）**：同一步骤先 `assistant/message`（步骤卡进入防抖窗口）再 `ask_user_question`，日志为 `[q] sending card` → `[send] instance card=…` → `[send] message=… via card=…` → `[q] card sent`，即**屏障先 flush 步骤卡并等其消息落地，才发问卡**；飞书侧实测步骤卡 `…47.559` 早于问卡 `…48.569`。作为对照，修复前同一场景为问卡 `…36.161` 早于步骤卡 `…36.326`。
 
 ### 修复：一次永不返回的出站请求会永久冻结整个聊天的卡片投递——出站调用加超时、卡片链加兜底、正文加兜底，并给 SDK 日志脱敏（`src/outbound-timeout.ts`（新）/ `src/log-redact.ts`（新）/ `src/feishu-streaming.ts` / `src/index.ts` / `src/channel.ts` / `src/harness.ts`）
 
