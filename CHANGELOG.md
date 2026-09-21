@@ -17,6 +17,25 @@
 > 同批次修掉：超阈值分卡把表格/代码块切成两半——切分改为块感知（见下条）。
 >
 > 同批次修掉：**一次永不返回的出站请求会永久冻结整个聊天的卡片投递**（Agent 答完、WebUI 能看见、飞书什么都没有）；同一次挂起还会让**卡片排序屏障静默失效**，于是「老问题重新出现」——问题卡片又抢在步骤卡片前面。两条见下。
+>
+> 同批次修掉：**在群里新建话题建会话时，创建流程的卡片被发到另一个话题**——卡片所属话题不能按「群」推断（一个群只有一个 `chatId`、却有很多话题），改成按**被点击卡片的 message id** 精确回查。见下。
+
+### 修复：群里新建话题建 DSH 会话时，创建流程的卡片被发到另一个话题（`src/card-topics.ts`（新）/ `src/index.ts` / `src/feishu-onboarding.ts` / `src/feishu-model-select.ts` / `tests/card-topics.spec.ts`（新））
+
+- **问题**（2026-09-21 使用者报告「在群里创建话题创建 dsh 会话，创建过程的卡片被发错话题」）：在已开启话题的群里新开一个话题、并在其中走 `/new` 创建会话时，**流程前半段的卡片落在新话题里，后半段（模型选择卡、最终确认卡）却落到另一个旧话题里**。
+- **根因**：**话题坐标被按「群」保存和查询**。飞书卡片回调只带 `chatId` + `messageId`，而一个群只有一个 `chatId`、却可以有任意多个话题，于是所有 `chatId` 维度的话题表（`feishu-onboarding` 的 `chatTopic`、bridge 的 `topicFor`）都只能记住**这个群最后用过的那一个话题**。事故链（journal 可复现）：
+  1. 某群新话题里的第一条消息被记录，`topicFor` 指向**新**话题；流程的引导卡、工作区选择卡、目录浏览卡、预设卡都正确进入新话题；
+  2. 约 8 分钟后，**同一群的旧话题**来了一条无关消息（在另一个会话里继续对话），`noteTopic` 把旧话题移到「最近使用」队尾；
+  3. `index.ts` 的 `onModelStep` / `onNewSessionConfirm` 明明拿到的是**带正确话题坐标**的卡片回调（`feishu-onboarding` 已经补齐了 `threadId`/`rootId`），却丢弃它、改用 `chatTopicFor(chatId)` 按**群**重查 → 命中刚刚变成「最近使用」的旧话题 → 模型卡与确认卡被发进旧话题。
+  同源的隐患：`feishu-model-select` 的 `topicFor` 也只看 `chatId`。
+- **改法**（新增 `src/card-topics.ts`）：
+  1. **按被点击的卡片精确回查**：新增 `messageId → 话题` 注册表（`createCardTopicRegistry`，有界 500 条、LRU 淘汰）。**每发出一张卡就登记它落在哪个话题**（`feishu-onboarding.sendCard`、`index.ts` 的模型卡/确认卡、`sendModelCardV2` 的 `/model` 卡），点击回调再按 `messageId` 取回——`messageId` 唯一定位「操作者点的到底是哪张卡」，与群里有多少话题无关。
+  2. **统一解析顺序**（`resolveCardTopic`）：① 回调消息自带的坐标（话题里的入站消息、已被上游补齐的回调）→ ② 该卡片自己的话题（注册表）→ ③ 才轮到按群猜（bridge 的「最近使用」→ onboarding 的副本，重启后靠 bridge 的持久化兜底）。前两级命中时**不再调用**第③级，避免它再次劫持。
+  3. `feishu-model-select` 的 `topicFor` 改为接收 `{ chatId, messageId }`（把回调里的 message id 透出来），`feishu-onboarding.withTopicContext` 同样先按卡片自身的 message id 回查、再退回按群记的旧表。
+  4. 半已知坐标（只有 `threadId` 没有 `rootId`）**一律不登记、不采信**——那正是「`reply_in_thread` 但没有 `replyTo`」的静默顶层兜底，在话题群里等于**又开一个新话题**。
+- **验证**：新增 `tests/card-topics.spec.ts` 10 例（注册表往返/半已知坐标被拒/超上限淘汰/`clear`；`resolveCardTopic` 的三级优先级，并**直接锁死本次事故**：卡片已知时必须忽略「群最近使用」那个猜测，且该猜测**不得被查询**）；`tests/onboarding.spec.ts` 新增 2 例（**同群另一个话题来消息后，点击新话题里的卡片仍把下一张卡发回新话题**；注册表没有记录的旧卡仍按群兜底）；`tests/feishu-model-select.spec.ts` 新增 3 例（`topicFor` 必须收到被点击卡片的 messageId、恢复的话题要落到转发出去的 `chatMessage` 上、`sendModelCardV2` 必须登记所发卡片的话题）。全套 **453 passed / 36 files**（原 438 / 35），typecheck 0 error，build ✅。
+- **注意**：修复需要**重启 dsh** 才对运行中的进程生效。
+- **已知残余**：注册表是**进程内**的。插件重载后点击「重载前发出的旧卡」时会退回按群猜测（第③级）；此时若同群另一个话题恰好刚有流量，仍可能发错话题。要彻底消除需要按 message id 调飞书 API 反查 `thread_id`（`topic-roots.ts` 已有同类调用），未做——重载中途还在点旧卡属于窄缝，代价（每次点击多一次 API 调用）不值当。
 
 ### 修复：卡片排序屏障曾被一次挂起**静默**废掉——问卡重新抢在步骤卡之前（`src/card-send-barrier.ts`（新）/ `src/index.ts` / `tests/card-send-barrier.spec.ts`（新））
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { startFeishuModelSelect } from '../src/feishu-model-select.ts'
+import { sendModelCardV2, startFeishuModelSelect } from '../src/feishu-model-select.ts'
+import { createCardTopicRegistry } from '../src/card-topics.ts'
 import { translationsFor } from '../src/i18n.ts'
 
 const t = translationsFor('zh')
@@ -11,7 +12,11 @@ const t = translationsFor('zh')
  * parsing contract and the dropdown/staleness bug behind
  * 「点了确认没反应，也没有最后的确认卡」.
  */
-function harness(overrides: { models?: unknown } = {}) {
+function harness(overrides: {
+  models?: unknown
+  topicFor?: (message: { chatId: string; messageId?: string }) => { rootId?: string; threadId?: string }
+  onNewSessionConfirm?: (chatMessage: any, selection: any, messageId: string | undefined) => Promise<void>
+} = {}) {
   const handlers: Array<(evt: any) => void | Promise<void>> = []
   const cards: any[] = []
   let instances = 0
@@ -48,7 +53,7 @@ function harness(overrides: { models?: unknown } = {}) {
   const bridgeHolder = {
     current: { sessionCurrentSelection: async () => ({ provider: 'provA', model: 'a1' }) },
   } as any
-  const onNewSessionConfirm = vi.fn(async () => undefined)
+  const onNewSessionConfirm = overrides.onNewSessionConfirm ?? vi.fn(async () => undefined)
   const handle = startFeishuModelSelect({
     llm,
     agentDefaultModel: { currentSelection: () => ({ provider: 'provA', model: 'a1' }) } as any,
@@ -58,7 +63,7 @@ function harness(overrides: { models?: unknown } = {}) {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
     getTranslations: () => t,
     onNewSessionConfirm,
-    topicFor: () => ({}),
+    topicFor: overrides.topicFor ?? (() => ({})),
   })
   const fire = (evt: any) => Promise.all(handlers.map(h => h(evt)))
   return { channel, cards, fire, handle, onNewSessionConfirm }
@@ -118,7 +123,7 @@ describe('feishu-model-select', () => {
       raw: { action: { form_value: { model: 'b2', reasoning_effort: 'low' } } },
     })
     expect(onNewSessionConfirm).toHaveBeenCalledTimes(1)
-    const [chatMessage, selection, messageId] = onNewSessionConfirm.mock.calls[0] as unknown as [any, any, string]
+    const [chatMessage, selection, messageId] = (onNewSessionConfirm as unknown as { mock: { calls: any[][] } }).mock.calls[0] as [any, any, string]
     expect(chatMessage.chatId).toBe('oc_1')
     expect(selection).toEqual({ provider: 'provB', model: 'b2', reasoningEffort: 'low' })
     expect(messageId).toBe('m-1')
@@ -139,5 +144,75 @@ describe('feishu-model-select', () => {
     expect(log.mock.calls.flat().join(' ')).toContain('confirm-select ignored')
     log.mockRestore()
     handle.dispose()
+  })
+
+  /**
+   * 2026-09-21 regression: the topic of a card-driven send was resolved from
+   * the CHAT alone, so in a group with two topics the model card of a `/new`
+   * flow ended up in whichever topic had been used most recently. The clicked
+   * card's message id is the only unambiguous key — the caller must receive it.
+   */
+  it('resolves the topic from the clicked card, not from the group', async () => {
+    const seen: Array<{ chatId: string; messageId?: string }> = []
+    const { fire, handle } = harness({
+      topicFor: message => {
+        seen.push(message)
+        // Stand-in for the message-id → topic registry: only the card that was
+        // actually posted into the new topic resolves to it.
+        return message.messageId === 'm-new-topic'
+          ? { threadId: 'omt_new', rootId: 'om_root_new' }
+          : { threadId: 'omt_old', rootId: 'om_root_old' }
+      },
+    })
+    await fire({
+      chatId: 'oc_grp',
+      messageId: 'm-new-topic',
+      action: { value: { action: 'confirm-select', provider: 'provB', flow: 'new-session' } },
+      raw: { action: { form_value: { model: 'b2' } } },
+    })
+    expect(seen).toEqual([{ chatId: 'oc_grp', messageId: 'm-new-topic' }])
+    handle.dispose()
+  })
+
+  it('restores the clicked card\u2019s topic onto the forwarded chatMessage', async () => {
+    const onNewSessionConfirm = vi.fn(async () => undefined)
+    const { fire, handle } = harness({
+      onNewSessionConfirm,
+      topicFor: () => ({ threadId: 'omt_new', rootId: 'om_root_new' }),
+    })
+    await fire({
+      chatId: 'oc_grp',
+      messageId: 'm-new-topic',
+      action: { value: { action: 'confirm-select', provider: 'provB', flow: 'new-session' } },
+      raw: { action: { form_value: { model: 'b2' } } },
+    })
+    const [chatMessage] = onNewSessionConfirm.mock.calls[0] as unknown as [any]
+    expect(chatMessage.threadId).toBe('omt_new')
+    expect(chatMessage.rootId).toBe('om_root_new')
+    handle.dispose()
+  })
+})
+
+describe('sendModelCardV2 topic bookkeeping', () => {
+  it('records the topic of the card it sent, so a later click resolves exactly', async () => {
+    const topics = createCardTopicRegistry()
+    const channel = {
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-card' })),
+    } as any
+    await sendModelCardV2(
+      channel,
+      { chatId: 'oc_grp', chatType: 'group', threadId: 'omt_new', rootId: 'om_root_new' },
+      {},
+      new Map(),
+      new Map(),
+      topics,
+    )
+    expect(channel.sendCardByReference).toHaveBeenCalledWith(
+      'oc_grp',
+      'card-1',
+      { replyInThread: true, replyTo: 'om_root_new' },
+    )
+    expect(topics.for('m-card')).toEqual({ threadId: 'omt_new', rootId: 'om_root_new' })
   })
 })

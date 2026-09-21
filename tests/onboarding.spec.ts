@@ -351,6 +351,72 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
+  /**
+   * 2026-09-21 regression. The `/new` flow ran in a topic the operator had
+   * just created, while an older topic of the SAME group kept producing
+   * traffic. The per-chat topic map can only hold one topic per group, so once
+   * the old topic's message was seen the flow's later cards (the model card and
+   * the final confirm card) were posted into that old topic.
+   *
+   * The card's own message id is what disambiguates: the operator clicked a
+   * card this module posted into a known topic, so that topic wins over the
+   * group-wide "most recent" guess.
+   */
+  it('keeps a flow card in its own topic after another topic of the group got traffic', async () => {
+    const { channel, handlers } = fakeChannel()
+    const bridge = fakeBridge()
+    const onModelStep = vi.fn(async () => undefined)
+    const handle = startFeishuOnboarding({ ...deps(channel, bridge), onModelStep })
+    // The first-message card of the NEWLY created topic (`omt_new`).
+    await handle.sendOnboardingCard(
+      { chatId: 'oc_grp', chatType: 'group', threadId: 'omt_new', rootId: 'om_root_new' },
+      '这个话题',
+    )
+    // ...and the onboarding card is the one that got sent last.
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith(
+      'oc_grp',
+      expect.any(String),
+      { replyInThread: true, replyTo: 'om_root_new' },
+    )
+    // An unrelated inbound message in an OLDER topic of the same group: the
+    // per-chat map now points at `omt_old`.
+    handle.noteTopic({ chatId: 'oc_grp', chatType: 'group', threadId: 'omt_old', rootId: 'om_root_old' })
+    // The operator clicks "new" on the card that lives in the NEW topic.
+    await fire(handlers, {
+      chatId: 'oc_grp',
+      messageId: 'm-ref',
+      action: { value: JSON.stringify({ kind: 'new' }) },
+    })
+    // The workspace picker must follow the clicked card into `omt_new`, not the
+    // group's most recently used topic.
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith(
+      'oc_grp',
+      expect.any(String),
+      { replyInThread: true, replyTo: 'om_root_new' },
+    )
+    handle.dispose()
+  })
+
+  it('still restores topic context from the per-chat map for an unknown card', async () => {
+    // Cards sent before a plugin reload are not in the message-id registry; the
+    // chat-level map (persisted by the bridge) has to keep working for them.
+    const { channel, handlers } = fakeChannel()
+    const onModelStep = vi.fn(async () => undefined)
+    const handle = startFeishuOnboarding({ ...deps(channel, fakeBridge()), onModelStep })
+    handle.noteTopic({ chatId: 'oc_1', chatType: 'group', threadId: 'omt_9', rootId: 'om_root' })
+    await fire(handlers, {
+      chatId: 'oc_1',
+      messageId: 'm-not-registered',
+      action: { value: JSON.stringify({ kind: 'pick-preset', value: 'researcher' }) },
+    })
+    expect(onModelStep).toHaveBeenCalledWith(
+      { chatId: 'oc_1', chatType: 'p2p', threadId: 'omt_9', rootId: 'om_root' },
+      'm-not-registered',
+      { agentPreset: 'researcher' },
+    )
+    handle.dispose()
+  })
+
   it('noteTopic records slash-command topic context for later card actions', async () => {
     const { channel, handlers } = fakeChannel()
     const bridge = fakeBridge()

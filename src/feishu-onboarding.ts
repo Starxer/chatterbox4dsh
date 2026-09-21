@@ -24,6 +24,7 @@ import { opendir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { createCardSuperseder, type SupersedeChannel } from './card-supersede.ts'
+import { createCardTopicRegistry, type CardTopicRegistry } from './card-topics.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -129,6 +130,13 @@ export interface FeishuOnboardingDeps {
    *  `new-session`); the model-select handle's onNewSessionConfirm callback
    *  then commits the selection to session creation. */
   onModelStep: (chatMessage: ConversationMessage, messageId: string | undefined, flowState: { workspace?: string; agentPreset?: string }) => Promise<void>
+  /**
+   * Shared `messageId → topic` registry (see `card-topics.ts`). The caller
+   * passes the same instance to the model-select flow so a card sent by one
+   * module and clicked in another still resolves to its own topic. Omitted in
+   * tests, which get a private one.
+   */
+  cardTopics?: CardTopicRegistry
 }
 
 /** A queued onboarding card action. */
@@ -701,6 +709,7 @@ export interface FeishuOnboardingHandle {
 
 export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboardingHandle {
   const { bridgeHolder, channel, logger, workspaceRegistry, agentPresets, agentDefaultModel, config, getTranslations, onModelStep, getDirectoryPicker } = deps
+  const cardTopics = deps.cardTopics ?? createCardTopicRegistry()
 
   /** Per-chat in-flight `/new` flow state. */
   const newFlow = new Map<string, { workspace?: string; agentPreset?: string }>()
@@ -714,12 +723,19 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   const sequenceByCard = new Map<string, number>()
   const superseder = createCardSuperseder({ channel, logger, getTranslations, sequenceByCard })
 
-  /** Send opts that land in the chat's topic when it has one. */
-  function topicOpts(chatMessage: ConversationMessage): { replyInThread?: boolean; replyTo?: string } {
-    const rootId = chatMessage.rootId ?? chatTopic.get(chatMessage.chatId)?.rootId
-    const threadId = chatMessage.threadId ?? chatTopic.get(chatMessage.chatId)?.threadId
+  /** The topic a card for `chatMessage` must be sent into: the message's own
+   *  coordinates when it has them, else this chat's last recorded topic. */
+  function topicOf(chatMessage: ConversationMessage): { rootId?: string; threadId?: string } {
+    const known = chatTopic.get(chatMessage.chatId)
+    const rootId = chatMessage.rootId ?? known?.rootId
+    const threadId = chatMessage.threadId ?? known?.threadId
     if (threadId === undefined || rootId === undefined) return {}
-    return { replyInThread: true, replyTo: rootId }
+    return { rootId, threadId }
+  }
+
+  /** Reply options that land a send inside `topic`; `{}` when it has none. */
+  function replyOpts(topic: { rootId?: string; threadId?: string }): { replyInThread?: boolean; replyTo?: string } {
+    return topic.rootId === undefined ? {} : { replyInThread: true, replyTo: topic.rootId }
   }
 
   /** Record topic context from an inbound chat message (first message or
@@ -763,9 +779,13 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     card: object,
     options?: { terminal?: boolean; navigation?: boolean; settlePrevious?: string },
   ): Promise<void> {
-    const opts = topicOpts(chatMessage)
+    const topic = topicOf(chatMessage)
     const cardId = await channel.createCardInstance(card)
-    const result = await channel.sendCardByReference(chatMessage.chatId, cardId, opts)
+    const result = await channel.sendCardByReference(chatMessage.chatId, cardId, replyOpts(topic))
+    // Remember which topic THIS card went into, keyed by its message id: the
+    // click that comes back for it carries no thread, and the per-chat map
+    // cannot tell two topics of the same group apart (see `card-topics.ts`).
+    cardTopics.note(result.messageId, topic)
     // Repaint the previous card only AFTER the new one is on screen, and
     // before remembering the new card (supersedePrevious consumes the note).
     const t = getTranslations()
@@ -959,12 +979,26 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   }
 
   /** Card action events carry only chatId + messageId — never the thread id.
-   *  Restore the topic context recorded when the card was sent so binding and
-   *  flow cards target the topic's key (`thread:<chatId>:<threadId>`) instead
-   *  of the main chat key (`chat:<chatId>`). */
+   *  Restore the topic context so binding and flow cards target the topic's
+   *  key (`thread:<chatId>:<threadId>`) instead of the main chat key
+   *  (`chat:<chatId>`).
+   *
+   *  The card's OWN message id decides which topic that is: the operator
+   *  clicked a card, and this module remembers the topic it posted that exact
+   *  card into. The per-chat map is only the fallback — it can hold just one
+   *  topic per group, so with two topics active it hands the click the other
+   *  topic's coordinates and every later card of the flow lands there. */
   function withTopicContext(action: QueuedAction): QueuedAction {
+    if (action.chatMessage.threadId !== undefined) return action
+    const own = cardTopics.for(action.messageId)
+    if (own.threadId !== undefined && own.rootId !== undefined) {
+      return {
+        ...action,
+        chatMessage: { ...action.chatMessage, threadId: own.threadId, rootId: own.rootId },
+      }
+    }
     const ctx = chatTopic.get(action.chatMessage.chatId)
-    if (ctx?.threadId === undefined || action.chatMessage.threadId !== undefined) return action
+    if (ctx?.threadId === undefined) return action
     return {
       ...action,
       chatMessage: {

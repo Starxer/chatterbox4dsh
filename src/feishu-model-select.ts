@@ -16,6 +16,7 @@ import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { renderSupersededCard } from './card-supersede.ts'
+import type { CardTopicRegistry } from './card-topics.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -391,6 +392,7 @@ export async function sendModelCardV2(
   card: object,
   cardByMessage: Map<string, string>,
   sequenceByCard: Map<string, number>,
+  cardTopics?: CardTopicRegistry,
 ): Promise<{ messageId: string; cardId: string }> {
   const cardId = await channel.createCardInstance(card)
   // Topic messages must be sent as replies to the topic ROOT message so the
@@ -403,6 +405,12 @@ export async function sendModelCardV2(
   if (messageId !== '') {
     cardByMessage.set(messageId, cardId)
     sequenceByCard.set(cardId, 0)
+    // Record the topic this card went into, keyed by its message id — the
+    // click that comes back carries no thread id (see `card-topics.ts`).
+    cardTopics?.note(messageId, {
+      ...(chatMessage.threadId !== undefined ? { threadId: chatMessage.threadId } : {}),
+      ...(chatMessage.rootId !== undefined ? { rootId: chatMessage.rootId } : {}),
+    })
   }
   return { messageId, cardId }
 }
@@ -425,13 +433,18 @@ export function startFeishuModelSelect(deps: {
    *  `/new` card flow, which reuses the provider/model cards but commits the
    *  selection to session creation. */
   onNewSessionConfirm?: (chatMessage: ConversationMessage, selection: { provider: string; model: string; reasoningEffort?: string }, messageId: string | undefined) => Promise<void>
-  /** Topic reply context recorded for a chat (rootId/threadId). Card action
-   *  events carry only chatId + messageId, so the caller restores the thread
-   *  context here — otherwise selections / new-session commits inside a topic
-   *  would target the main chat key instead of the topic key. */
-  topicFor?: (chatId: string) => { rootId?: string; threadId?: string }
+  /** Topic reply context for a clicked card. Card action events carry only
+   *  `chatId` + `messageId`, so the caller restores the thread context here —
+   *  otherwise selections / new-session commits inside a topic would target
+   *  the main chat key instead of the topic key. The message id is the card's,
+   *  which is what makes the lookup unambiguous in a group with several
+   *  topics (see `card-topics.ts`). */
+  topicFor?: (message: { chatId: string; messageId?: string }) => { rootId?: string; threadId?: string }
+  /** Shared `messageId → topic` registry; cards sent from here are recorded so
+   *  a click on them resolves to their own topic. */
+  cardTopics?: CardTopicRegistry
 }): { dispose: () => void; cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> } {
-  const { llm, agentDefaultModel, bridgeHolder, sessionController, channel, logger, getTranslations, onNewSessionConfirm, topicFor } = deps
+  const { llm, agentDefaultModel, bridgeHolder, sessionController, channel, logger, getTranslations, onNewSessionConfirm, topicFor, cardTopics } = deps
 
   const processing = new Map<string, true>()
   const actionQueue = new Map<string, QueuedAction[]>()
@@ -469,12 +482,12 @@ export function startFeishuModelSelect(deps: {
     card: object,
   ): Promise<void> {
     if (messageId === undefined) {
-      await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard)
+      await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard, cardTopics)
       return
     }
     const cardId = cardByMessage.get(messageId)
     if (cardId === undefined) {
-      await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard)
+      await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard, cardTopics)
       return
     }
     const seq = (sequenceByCard.get(cardId) ?? 0) + 1
@@ -484,7 +497,7 @@ export function startFeishuModelSelect(deps: {
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       logger.warn(`dsh-feishu: model-select updateCardInstance failed: ${msg} — sending fresh card`)
-      const fresh = await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard)
+      const fresh = await sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard, cardTopics)
       cardByMessage.set(fresh.messageId, fresh.cardId)
       // The old card could not be updated — retire it so its buttons do not
       // keep looking live next to the fresh one. Best-effort.
@@ -680,7 +693,7 @@ export function startFeishuModelSelect(deps: {
     // Card actions carry only chatId + messageId; restore the topic context
     // recorded when the card was sent so selections and `new-session` commits
     // target the topic's key instead of the main chat's.
-    const topic = topicFor?.(chatMessage.chatId)
+    const topic = topicFor?.({ chatId: chatMessage.chatId, ...(evt.messageId !== undefined ? { messageId: evt.messageId } : {}) })
     if (topic?.threadId !== undefined && chatMessage.threadId === undefined) {
       chatMessage.threadId = topic.threadId
       if (topic.rootId !== undefined) chatMessage.rootId = topic.rootId

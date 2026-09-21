@@ -72,6 +72,7 @@ import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
 import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
 import { startFeishuSession, renderSessionListCard, renderSessionResultCard, type FeishuSessionHandle } from './feishu-session.ts'
 import { startFeishuOnboarding, type FeishuOnboardingHandle } from './feishu-onboarding.ts'
+import { createCardTopicRegistry, resolveCardTopic, type CardTopicRegistry, type TopicCoords } from './card-topics.ts'
 import { fetchThreadRootId } from './topic-roots.ts'
 import type { ChatCreationOptions } from './harness.ts'
 
@@ -252,6 +253,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     timeoutMs: CARD_BARRIER_TIMEOUT_MS,
     onTimeout: reason => console.log(`dsh-feishu: pending card flush gave up: ${reason}`),
   })
+  /**
+   * Shared `messageId → topic` registry for every card the plugin sends (see
+   * `card-topics.ts`). One instance for the whole plugin because a card sent
+   * by one module is clicked in another: the `/new` flow's model card is sent
+   * by this file while the preset card that leads to it comes from
+   * `feishu-onboarding`. Declared here — before the channel handler — so the
+   * slash-command path (`/model`) can record its card too.
+   */
+  const cardTopics = createCardTopicRegistry()
   const cardChannel = {
     // Every method below is bounded. The SDK's HTTP client has no request
     // timeout, so without this a single unanswered request leaves the promise
@@ -461,7 +471,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         modelSelectHandle !== undefined ? { cardByMessage: modelSelectHandle.cardByMessage, sequenceByCard: modelSelectHandle.sequenceByCard } : undefined,
         onboardingHandle, workspaceRegistry, agentPresets, approvalControl, showReasoningControl, displayControl, displayHandle, sessionHandle,
         { current: currentLocale, set: setPluginLocale },
-        permissionPresets),
+        permissionPresets, cardTopics),
         attachments,
         async (coords) => {
           const meta = await bridge.getSessionMeta(coords as ConversationMessage)
@@ -604,18 +614,29 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   })
   if (sessionController !== undefined && userQuestions !== undefined && approval !== undefined) {
     /**
-     * Topic coordinates for a chat whose card action carried only `chatId`.
+     * Topic coordinates for a card-driven send. Three sources, best first:
+     * the coordinates the clicked message already carries, the topic this very
+     * card message was sent into, and only then the chat-level guess.
      *
-     * The bridge holds the persistent (and Feishu-recovered) copy; onboarding's
-     * in-memory map is the fallback for a topic it recorded but the bridge has
-     * not been told about yet. Prefer the bridge so a card that outlived a
-     * restart still replies into its own topic instead of the main chat.
+     * The chat-level guess (the bridge's most recently used topic for that
+     * group, then onboarding's per-chat copy) is correct only while a group
+     * uses one topic. With two topics live at once it hands the flow the WRONG
+     * topic — observed 2026-09-21: an unrelated inbound message in an old topic
+     * moved it to the front of the bridge's recency list, and the `/new` flow's
+     * model + confirm cards were posted into that old topic while its earlier
+     * cards sat in the newly created one. The bridge copy is still preferred
+     * over onboarding's for cards that outlived a restart (it is persisted).
      */
-    const chatTopicFor = (chatId: string): { rootId?: string; threadId?: string } => {
-      const fromBridge = bridgeHolder.current?.topicFor(chatId) ?? {}
-      if (fromBridge.rootId !== undefined) return fromBridge
-      return onboardingHandle?.topicFor(chatId) ?? {}
-    }
+    const chatTopicFor = (message: { chatId: string; messageId?: string; threadId?: string; rootId?: string }): TopicCoords =>
+      resolveCardTopic({
+        cardTopics,
+        message,
+        chatFallback: () => {
+          const fromBridge = bridgeHolder.current?.topicFor(message.chatId) ?? {}
+          if (fromBridge.rootId !== undefined) return fromBridge
+          return onboardingHandle?.topicFor(message.chatId) ?? {}
+        },
+      })
     stopQuestions = startFeishuQuestions({
       ctx,
       channel: cardChannel,
@@ -667,6 +688,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       channel: cardChannel,
       logger: ctx.logger('dsh-feishu'),
       topicFor: chatTopicFor,
+      cardTopics,
       getTranslations: () => translationsFor(currentLocale().id),
       onNewSessionConfirm: async (chatMessage, selection, messageId) => {
         // The `/new` card flow's model step confirmed. Do NOT create the
@@ -685,7 +707,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         }
         await retireModelCard(messageId, t)
         const card = renderNewSessionConfirmCard(options, t)
-        const topic = chatTopicFor(chatMessage.chatId)
+        const topic = chatTopicFor(chatMessage)
         const opts = topic.threadId !== undefined && topic.rootId !== undefined
           ? { replyInThread: true, replyTo: topic.rootId }
           : {}
@@ -693,6 +715,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         newSessionSequenceByCard.set(cardId, 0)
         const result = await cardChannel.sendCardByReference(chatMessage.chatId, cardId, opts)
         const confirmMessageId = result.messageId
+        cardTopics.note(confirmMessageId, topic)
         pendingNewSession.set(chatMessage.chatId, {
           chatMessage,
           options,
@@ -710,6 +733,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       agentPresets,
       agentDefaultModel: defaultModel,
       getTranslations: () => translationsFor(currentLocale().id),
+      cardTopics,
       // Read lazily: directory-picker-auto mounts its backend (native or
       // browse) asynchronously during boot, so the service may not exist yet
       // when this plugin applies. A missing/native capability just hides the
@@ -729,12 +753,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         const current = defaultModel.currentSelection()
         const card = renderProviderSelectCard(llm.listProviders(), current, 'new-session', translationsFor(currentLocale().id))
         const cardId = await cardChannel.createCardInstance(card)
-        const topic = chatTopicFor(chatMessage.chatId)
+        const topic = chatTopicFor(chatMessage)
         const opts = topic.threadId !== undefined && topic.rootId !== undefined
           ? { replyInThread: true, replyTo: topic.rootId }
           : {}
         const result = await cardChannel.sendCardByReference(chatMessage.chatId, cardId, opts)
         const sentId = result.messageId ?? ''
+        cardTopics.note(sentId, topic)
         if (sentId !== '') {
           modelSelectHandle.cardByMessage.set(sentId, cardId)
           modelSelectHandle.sequenceByCard.set(cardId, 0)
@@ -1162,6 +1187,7 @@ async function executeSlashCommand(
     set: (value: 'zh' | 'en' | 'auto') => Promise<void>
   },
   permissionPresets?: { current?: (session: any) => string; set?: (session: any, name: string) => void },
+  cardTopics?: CardTopicRegistry,
 ): Promise<
   | { kind: 'success' | 'error'; text: string; card?: object }
   | { kind: 'consumed' }
@@ -1562,7 +1588,7 @@ async function executeSlashCommand(
       ...(current.reasoningEffort !== undefined ? { reasoningEffort: String(current.reasoningEffort) } : {}),
     }, undefined, translationsFor(localeControl?.current().id ?? 'zh'))
     try {
-      await sendModelCardV2(cardChannel, chatMessage, card, modelSelectMaps.cardByMessage, modelSelectMaps.sequenceByCard)
+      await sendModelCardV2(cardChannel, chatMessage, card, modelSelectMaps.cardByMessage, modelSelectMaps.sequenceByCard, cardTopics)
       // V2 card was sent directly via cardkit. Signal "consumed" so channel.ts
       // sends no follow-up message AND does not fall through into the agent
       // loop (returning `undefined` would treat `/model` as a regular message).
