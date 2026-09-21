@@ -436,6 +436,43 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
+  /**
+   * The topic fix must not change DM or a group with topic mode OFF: there is
+   * no thread to resolve, so every card of the flow is a plain top-level
+   * message (`{}` reply opts), exactly as before.
+   */
+  it('sends every card of a DM flow as a plain message', async () => {
+    const { channel, handlers } = fakeChannel()
+    const onModelStep = vi.fn(async () => undefined)
+    const handle = startFeishuOnboarding({ ...deps(channel, fakeBridge()), onModelStep })
+    await handle.sendOnboardingCard({ chatId: 'oc_dm', chatType: 'p2p' }, '这个对话框')
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_dm', expect.any(String), {})
+    // Clicking through the flow (card actions carry no thread either) must keep
+    // sending plain messages rather than invent a topic.
+    await fire(handlers, { chatId: 'oc_dm', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'new' }) } })
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_dm', expect.any(String), {})
+    await fire(handlers, { chatId: 'oc_dm', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
+    await fire(handlers, { chatId: 'oc_dm', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-preset', value: 'researcher' }) } })
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_dm', expect.any(String), {})
+    // No thread is restored onto the chatMessage the model step receives.
+    expect(onModelStep).toHaveBeenLastCalledWith(
+      { chatId: 'oc_dm', chatType: 'p2p' },
+      'm-ref',
+      { workspace: '/ws-2', agentPreset: 'researcher' },
+    )
+    handle.dispose()
+  })
+
+  it('sends every card of a plain group flow as a plain message', async () => {
+    const { channel, handlers } = fakeChannel()
+    const handle = startFeishuOnboarding(deps(channel, fakeBridge()))
+    await handle.sendOnboardingCard({ chatId: 'oc_grp', chatType: 'group' }, '这个对话框')
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_grp', expect.any(String), {})
+    await fire(handlers, { chatId: 'oc_grp', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'new' }) } })
+    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_grp', expect.any(String), {})
+    handle.dispose()
+  })
+
   it('always offers the browse entry point in the workspace picker', async () => {
     const { channel, handlers } = fakeChannel()
     const handle = startFeishuOnboarding(deps(channel, fakeBridge()))

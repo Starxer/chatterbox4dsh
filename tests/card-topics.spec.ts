@@ -111,4 +111,18 @@ describe('resolveCardTopic', () => {
       chatFallback: () => ({ threadId: 'omt_only', rootId: 'om_root_only' }),
     })).toEqual({ threadId: 'omt_only', rootId: 'om_root_only' })
   })
+
+  /**
+   * DM (`p2p`) and a group with topic mode OFF have no thread at all: no
+   * coordinates on the message, nothing in the registry (a card send with no
+   * topic records nothing), and the chat-level sources are empty too. The
+   * result must be "no topic", i.e. a plain top-level message — exactly what
+   * the pre-fix code did.
+   */
+  it('resolves to no topic at all for a DM or a plain group', () => {
+    const topics = createCardTopicRegistry()
+    const empty = (): { threadId?: string; rootId?: string } => ({})
+    expect(resolveCardTopic({ cardTopics: topics, message: { chatId: 'oc_dm' }, chatFallback: empty })).toEqual({})
+    expect(resolveCardTopic({ cardTopics: topics, message: { chatId: 'oc_dm', messageId: 'om_card' }, chatFallback: empty })).toEqual({})
+  })
 })

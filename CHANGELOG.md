@@ -33,7 +33,8 @@
   2. **统一解析顺序**（`resolveCardTopic`）：① 回调消息自带的坐标（话题里的入站消息、已被上游补齐的回调）→ ② 该卡片自己的话题（注册表）→ ③ 才轮到按群猜（bridge 的「最近使用」→ onboarding 的副本，重启后靠 bridge 的持久化兜底）。前两级命中时**不再调用**第③级，避免它再次劫持。
   3. `feishu-model-select` 的 `topicFor` 改为接收 `{ chatId, messageId }`（把回调里的 message id 透出来），`feishu-onboarding.withTopicContext` 同样先按卡片自身的 message id 回查、再退回按群记的旧表。
   4. 半已知坐标（只有 `threadId` 没有 `rootId`）**一律不登记、不采信**——那正是「`reply_in_thread` 但没有 `replyTo`」的静默顶层兜底，在话题群里等于**又开一个新话题**。
-- **验证**：新增 `tests/card-topics.spec.ts` 10 例（注册表往返/半已知坐标被拒/超上限淘汰/`clear`；`resolveCardTopic` 的三级优先级，并**直接锁死本次事故**：卡片已知时必须忽略「群最近使用」那个猜测，且该猜测**不得被查询**）；`tests/onboarding.spec.ts` 新增 2 例（**同群另一个话题来消息后，点击新话题里的卡片仍把下一张卡发回新话题**；注册表没有记录的旧卡仍按群兜底）；`tests/feishu-model-select.spec.ts` 新增 3 例（`topicFor` 必须收到被点击卡片的 messageId、恢复的话题要落到转发出去的 `chatMessage` 上、`sendModelCardV2` 必须登记所发卡片的话题）。全套 **453 passed / 36 files**（原 438 / 35），typecheck 0 error，build ✅。
+- **验证**：新增 `tests/card-topics.spec.ts` 11 例（注册表往返/半已知坐标被拒/超上限淘汰/`clear`；`resolveCardTopic` 的三级优先级，并**直接锁死本次事故**：卡片已知时必须忽略「群最近使用」那个猜测，且该猜测**不得被查询**；**私聊/未开话题的群聊解析为「无话题」**）；`tests/onboarding.spec.ts` 新增 4 例（**同群另一个话题来消息后，点击新话题里的卡片仍把下一张卡发回新话题**；注册表没有记录的旧卡仍按群兜底；**私聊流程每张卡都是普通顶层消息（`{}`）、且不会往 `chatMessage` 上塞话题**；**未开话题的群聊同理**）；`tests/feishu-model-select.spec.ts` 新增 3 例（`topicFor` 必须收到被点击卡片的 messageId、恢复的话题要落到转发出去的 `chatMessage` 上、`sendModelCardV2` 必须登记所发卡片的话题）。全套 **456 passed / 36 files**（原 438 / 35），typecheck 0 error，build ✅。
+- **兼容性（DM / 未开话题的群聊）**：私聊与未开话题的群聊里，消息**没有** `threadId`/`rootId`，注册表也**不登记**无话题的发送，因此 `resolveCardTopic` 三级全部落空 → 返回 `{}` → 卡片照旧以**普通顶层消息**发送，`chatMessage` 上也不会被塞进话题（会话仍绑定 `chat:<chatId>`）。即：**开启话题的群聊被修好，其余场景逐字未变**（新增的 4 例专门锁这条）。
 - **注意**：修复需要**重启 dsh** 才对运行中的进程生效。
 - **已知残余**：注册表是**进程内**的。插件重载后点击「重载前发出的旧卡」时会退回按群猜测（第③级）；此时若同群另一个话题恰好刚有流量，仍可能发错话题。要彻底消除需要按 message id 调飞书 API 反查 `thread_id`（`topic-roots.ts` 已有同类调用），未做——重载中途还在点旧卡属于窄缝，代价（每次点击多一次 API 调用）不值当。
 
