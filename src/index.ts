@@ -34,7 +34,8 @@ import { startFeishuStreaming } from './feishu-streaming.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
 import { dispatchCardAction } from './card-dispatch.ts'
-import { withTimeout } from './outbound-timeout.ts'
+import { createCardSendBarrier } from './card-send-barrier.ts'
+import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 
 export const name = 'lark-channel'
 export const inject = [
@@ -45,6 +46,19 @@ export const inject = [
 export const Config = ConfigSchema
 export type { PluginConfig }
 export { ConfigSchema } from './config.ts'
+
+/**
+ * How long a card may wait for the step card that logically precedes it before
+ * the ordering guarantee is abandoned.
+ *
+ * That wait can legitimately include a full step-card send (CardKit instance
+ * then message), so it is generous — it exists to release the barrier's guard,
+ * not to police latency.
+ */
+const CARD_BARRIER_TIMEOUT_MS = 60_000
+
+/** The barrier wait plus the HTTP call it precedes. */
+const CARD_SEND_TIMEOUT_MS = CARD_BARRIER_TIMEOUT_MS + OUTBOUND_TIMEOUT_MS
 
 import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool } from './feishu-send-file.ts'
@@ -226,34 +240,30 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // would be created first and appear above the step card it follows
   // (observed 2026-09-09). Streaming registers a flush here; every card/text
   // send first lets it post any debounced step card for that chat and waits
-  // until its message exists. `cardSendDepth` guards re-entrancy: the step
-  // card itself may go through `send` on the non-CardKit fallback and must
-  // not wait on the flush that is producing it.
+  // until its message exists.
+  //
+  // The guard and the wait live in `card-send-barrier.ts`: they are PER CHAT
+  // and BOUNDED. The first version of this used one global counter and an
+  // unbounded wait, so a single stuck flush silently disabled the ordering
+  // guarantee for every chat — which is exactly how the 2026-09-09 inversion
+  // came back on 2026-09-21 (key pitfall 30).
   let pendingCardFlush: ((chatId: string) => Promise<void>) | undefined
-  let cardSendDepth = 0
+  const cardBarrier = createCardSendBarrier({
+    timeoutMs: CARD_BARRIER_TIMEOUT_MS,
+    onTimeout: reason => console.log(`dsh-feishu: pending card flush gave up: ${reason}`),
+  })
   const cardChannel = {
     // Every method below is bounded. The SDK's HTTP client has no request
     // timeout, so without this a single unanswered request leaves the promise
     // pending forever and everything chained behind it — the per-chat
     // step-card chain above all — waits forever too (key pitfall 29).
     send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
-      return withTimeout((async () => {
-        if (('card' in input || 'text' in input) && cardSendDepth === 0 && pendingCardFlush !== undefined) {
-          cardSendDepth += 1
-          try {
-            await pendingCardFlush(to)
-          } catch (error: unknown) {
-            // Ordering is best-effort: a failed flush must not block the card
-            // the user is actually waiting for.
-            console.log(`dsh-feishu: pending card flush failed: ${error instanceof Error ? error.message : String(error)}`)
-          } finally {
-            cardSendDepth -= 1
-          }
-        }
+      // The bound covers the barrier plus the HTTP call it precedes.
+      return withTimeout(cardBarrier.run(to, pendingCardFlush, async () => {
         const ch = channelHolder.current
         if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
         return ch.send(to, input, opts) as Promise<{ messageId?: string }>
-      })(), 'send card or text')
+      }), 'send card or text', CARD_SEND_TIMEOUT_MS)
     },
     /**
      * Register the streaming module's step-card flush. Called once at boot;

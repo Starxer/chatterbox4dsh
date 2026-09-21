@@ -16,7 +16,22 @@
 >
 > 同批次修掉：超阈值分卡把表格/代码块切成两半——切分改为块感知（见下条）。
 >
-> 同批次修掉：**一次永不返回的出站请求会永久冻结整个聊天的卡片投递**（Agent 答完、WebUI 能看见、飞书什么都没有）；见下条。
+> 同批次修掉：**一次永不返回的出站请求会永久冻结整个聊天的卡片投递**（Agent 答完、WebUI 能看见、飞书什么都没有）；同一次挂起还会让**卡片排序屏障静默失效**，于是「老问题重新出现」——问题卡片又抢在步骤卡片前面。两条见下。
+
+### 修复：卡片排序屏障曾被一次挂起**静默**废掉——问卡重新抢在步骤卡之前（`src/card-send-barrier.ts`（新）/ `src/index.ts` / `tests/card-send-barrier.spec.ts`（新））
+
+- **问题**（2026-09-21 使用者报告「问题卡片在生成步骤卡片之前出现，应该是先生成步骤卡片，然后才生成提出的问题」，并指出这是**老问题重现**）：飞书侧实测问卡与步骤卡分别为 `…36.161` / `…36.326`，问卡早 165ms。同一现象 2026-09-09 已修过。
+- **根因（两处设计缺陷叠加，与下一条同源）**：「步骤卡必须先于它自己那一步发起的问答/审批卡」由 `index.ts` 的 `cardChannel.send` 保证——发任何卡之前先 `await pendingCardFlush(chatId)`，让 streaming 把还在防抖窗口里的步骤卡立刻发出并等它的消息落地。而：
+  1. **再入哨兵是全局计数器 `cardSendDepth`**（与 chatId 无关）；
+  2. **屏障内部的等待没有上界**（最后 `await lastCardSendByChat.get(chatId)`）。
+
+  事故链：某群话题一次 `message.create` 挂起 ⇒ 46 秒后同一话题又一张卡走 `send` 兜底路径 ⇒ 进入屏障并**永久**等待那个永不 settle 的 promise ⇒ `finally` 永不执行 ⇒ **`cardSendDepth` 永久停在 1** ⇒ 此后**所有聊天**的 `cardChannel.send` 都静默跳过 flush、排序保证消失、**日志里一个字都没有**；近 3 小时后私聊里的一次 `ask_user_question` 就复现了 09-09 的倒序。
+- **改法**（新模块 `src/card-send-barrier.ts`）：
+  1. **哨兵按 chat 记账**（`Set<chatId>`）：一个聊天卡住不再影响其他聊天；同聊天的再入仍被挡住——步骤卡自己走 `send` 兜底时必须不能等那个正在生产它的 flush。
+  2. **屏障等待有界**（`CARD_BARRIER_TIMEOUT_MS = 60s`）：即使 flush 永不 settle，`finally` 也一定执行、哨兵一定释放；超时只是**放弃排序**并打一行 `pending card flush gave up: …`，卡片照发。
+  3. `cardChannel.send` 的外层上界相应为「屏障 60s + 出站 20s」（原来最坏是无限等待）。
+- **验证**：新增 `tests/card-send-barrier.spec.ts` 6 例，其中两例**直接锁死这次的失效模式**——「某聊天 flush 永不 settle 时，**另一个聊天**的 flush 仍必须执行」（旧全局计数器下第二个 flush 会被跳过）、「一次卡住的 flush 之后哨兵必须释放，下一次 flush 仍会执行」（旧实现下永久为 1）；另 4 例覆盖顺序保证、同聊天再入不重复 flush、超时后照发并回报原因、未注册 flush 时直接发送。全套 **438 passed / 35 files**（原 432 / 34），typecheck 0 error，build ✅。
+- **注意**：与下一条一样，修复需要**重启 dsh** 才对运行中的进程生效。
 
 ### 修复：一次永不返回的出站请求会永久冻结整个聊天的卡片投递——出站调用加超时、卡片链加兜底、正文加兜底，并给 SDK 日志脱敏（`src/outbound-timeout.ts`（新）/ `src/log-redact.ts`（新）/ `src/feishu-streaming.ts` / `src/index.ts` / `src/channel.ts` / `src/harness.ts`）
 
