@@ -338,6 +338,7 @@ function stepHarness(
     resolveChat: () => ({ chatId: 'oc_1', chatType: 'p2p' }),
     getSessionMeta: async () => ({ contextWindow: 4096, lastInputTokens: 12 }),
     markIntermediateSent: vi.fn(),
+    clearIntermediateSent: vi.fn(),
   }
   const streaming = startFeishuStreaming({
     ctx: { on: (_name: string, handler: any) => { listeners.push(handler); return () => undefined } } as any,
@@ -842,5 +843,111 @@ describe('intermediate-sent note (the duplicate-reply guard channel.ts reads)', 
     // The update ran, but nothing textual was on the card to report.
     expect(channel.updateCard).toHaveBeenCalled()
     expect(bridge.markIntermediateSent).not.toHaveBeenCalled()
+  })
+
+  it('withdraws the note when the card carrying the text never reached Feishu', async () => {
+    // The send resolves WITHOUT a message id, i.e. Feishu never created the
+    // card's message. The answer is therefore NOT on screen and channel.ts has
+    // to post it itself — the failure that used to swallow whole replies
+    // (2026-09-21, key pitfall 29).
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({})),
+      updateCard: vi.fn(async () => undefined),
+    }
+    const { streaming, emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    expect(bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+
+    emit('turn/end')
+    await streaming.flushed('s-1')
+    expect(bridge.clearIntermediateSent).toHaveBeenCalledWith('s-1')
+    streaming.stop()
+  })
+
+  it('keeps the note when the card really was delivered', async () => {
+    const channel = plainChannel()
+    const { streaming, emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    emit('turn/end')
+    await streaming.flushed('s-1')
+    expect(bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+    expect(bridge.clearIntermediateSent).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('does not carry the delivery note over into the next turn', async () => {
+    // Turn 1 delivers, turn 2's card never leaves: the stale mark from turn 1
+    // must not make channel.ts skip turn 2's reply.
+    const channel: StepChannel = {
+      send: vi.fn()
+        .mockResolvedValueOnce({ messageId: 'm-1' })
+        .mockResolvedValueOnce({}),
+      updateCard: vi.fn(async () => undefined),
+    }
+    const { streaming, emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'first' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    emit('turn/end')
+    await streaming.flushed('s-1')
+    expect(bridge.clearIntermediateSent).not.toHaveBeenCalled()
+
+    emit('turn/start')
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'second' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    emit('turn/end')
+    await streaming.flushed('s-1')
+    expect(bridge.clearIntermediateSent).toHaveBeenCalledWith('s-1')
+    streaming.stop()
+  })
+})
+
+describe('a stuck card send must not wedge the chat', () => {
+  const neverSettles = new Promise<{ messageId?: string }>(() => { /* never */ })
+
+  it('gives up on a predecessor that never settles and still posts the next card', async () => {
+    vi.useFakeTimers()
+    try {
+      let instances = 0
+      const channel: StepChannel = {
+        send: vi.fn(async () => ({ messageId: 'm-plain' })),
+        updateCard: vi.fn(async () => undefined),
+        createCardInstance: vi.fn(async () => `card-${++instances}`),
+        sendCardByReference: vi.fn()
+          .mockReturnValueOnce(neverSettles)
+          .mockResolvedValue({ messageId: 'm-2' }),
+        updateCardInstance: vi.fn(async () => undefined),
+      }
+      const { streaming, emit } = stepHarness(channel)
+      emit('turn/start')
+      emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'first' } })
+      emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(channel.sendCardByReference).toHaveBeenCalledTimes(1)
+
+      // Second step: its instance is created, but its message waits for the
+      // first card's message — which never arrives.
+      emit('step/start')
+      emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'second' } })
+      emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+      await vi.advanceTimersByTimeAsync(300)
+      expect(channel.sendCardByReference).toHaveBeenCalledTimes(1)
+
+      // The wait is bounded, so the second card is posted rather than being
+      // stranded like the first (the 2026-09-21 outage: 8 orphaned instances).
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(channel.sendCardByReference).toHaveBeenCalledTimes(2)
+      streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

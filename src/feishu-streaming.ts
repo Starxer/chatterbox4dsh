@@ -22,6 +22,7 @@ import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { chunkText } from './text-chunk.ts'
+import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -65,10 +66,32 @@ export interface FeishuStreamingChannel {
  * `sequence` is the monotonic counter `cardkit.v1.card.update` requires.
  */
 interface StepCardRef {
+  /** Owning session, so confirmations can be attributed without a lookup. */
+  sessionId: string
   messageId: Promise<string | undefined>
   cardId: Promise<string | undefined>
   sequence: number
 }
+
+/**
+ * How long a card may wait for the PREVIOUS card's message before giving up on
+ * it and posting anyway.
+ *
+ * Waiting keeps the chat's card order intact, but an unbounded wait is what
+ * used to freeze a whole chat (key pitfall 29). One full chained send is a
+ * barrier wait plus an instance create plus a message create, so this bound is
+ * deliberately wider than a single {@link OUTBOUND_TIMEOUT_MS}.
+ */
+const CHAIN_TIMEOUT_MS = OUTBOUND_TIMEOUT_MS * 2 + 5_000
+
+/**
+ * Last-resort bound on `flushed()`.
+ *
+ * It normally resolves when the turn's final card and its overflow cards are
+ * on screen. It is only ever reached through a bug, and resolving late is far
+ * better than never: the caller posts the Turn Complete footer afterwards.
+ */
+const FLUSH_TIMEOUT_MS = 120_000
 
 /** Public deps for the unified per-step module. */
 export interface FeishuStreamingDeps {
@@ -367,9 +390,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const lastCardSendByChat = new Map<string, Promise<unknown>>()
 
   /**
-   * Note that this session's assistant text is already on screen in a step
-   * card, so channel.ts sends only the Turn Complete footer instead of a
-   * second card carrying the same text.
+   * Mark the session's text as already on screen in a step card, so channel.ts
+   * sends only the Turn Complete footer instead of a second card carrying the
+   * same text.
    *
    * Called from BOTH card paths. A card is commonly opened by a `tool/call`
    * while the step's text is still empty (the tool runs for seconds), and the
@@ -378,10 +401,28 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * channel.ts takes its "nothing was shown" branch and posts a duplicate
    * reply card (and loses the Turn Complete card with its deliverables and
    * metrics along the way).
+   *
+   * The mark is OPTIMISTIC — it is set as soon as the card carrying the text
+   * is handed to Feishu, not after Feishu confirms it. That is deliberate: the
+   * confirmation could arrive arbitrarily late (or never), and channel.ts reads
+   * the flag right after `flushed()`. The correction for a card that never
+   * made it is {@link ../../channel.ts}'s pair of `turnTextDelivered` +
+   * `clearIntermediateSent`, applied at `flushed()` — see key pitfall 29.
    */
   const noteStepCardText = (sessionId: string, state: SessionStepState): void => {
     if (state.text.trim() === '') return
     bridgeHolder.current?.markIntermediateSent(sessionId)
+  }
+
+  /**
+   * Record that text from this turn genuinely reached the chat.
+   *
+   * `flushed()` uses it to decide whether the optimistic mark from
+   * {@link noteStepCardText} may stand. Set on a CONFIRMED send (the message id
+   * came back) or a confirmed update — never on the optimistic path.
+   */
+  const noteTextDelivered = (sessionId: string): void => {
+    turnTextDelivered.set(sessionId, true)
   }
 
   /**
@@ -394,6 +435,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.stepCardSent = true
     state.chat = chat
     noteStepCardText(sessionId, state)
+    // Captured now: `state.text` is cleared by resetStep before the send may
+    // resolve, and the confirmation below must judge THIS card's content.
+    const cardHasText = state.text.trim() !== ''
     const opts = chat.threadId !== undefined
       ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
       : {}
@@ -405,7 +449,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         console.log(`dsh-feishu: [send] instance card=${id}`)
         return id
       }).catch((error: unknown) => {
-        console.log(`dsh-feishu: [send] card instance create failed: ${error instanceof Error ? error.message : String(error)}`)
+        console.log(`dsh-feishu: [send] card instance create failed: ${describeError(error)}`)
         return undefined
       })
       : Promise.resolve(undefined)
@@ -415,7 +459,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via card=${id}`)
           return r.messageId
         }).catch((error: unknown) => {
-          console.log(`dsh-feishu: [send] send by reference failed: ${error instanceof Error ? error.message : String(error)}`)
+          console.log(`dsh-feishu: [send] send by reference failed: ${describeError(error)}`)
           return undefined
         })
       }
@@ -423,8 +467,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via send`)
         return r.messageId
       }).catch((error: unknown) => {
-        console.log(`dsh-feishu: [send] step card send failed: ${error instanceof Error ? error.message : String(error)}`)
-        logger.warn(`dsh-feishu: step card send failed: ${error instanceof Error ? error.message : String(error)}`)
+        console.log(`dsh-feishu: [send] step card send failed: ${describeError(error)}`)
+        logger.warn(`dsh-feishu: step card send failed: ${describeError(error)}`)
         return undefined
       })
     }
@@ -432,10 +476,29 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // wait for the previous card's message, then await this card's instance
     // (created in parallel above) and send it. A failed earlier send must not
     // stall the chain, hence the catch.
+    //
+    // The wait is also BOUNDED. An unbounded one used to freeze the chat: one
+    // predecessor whose send never settled meant every later card was created
+    // (an orphan CardKit instance) and never sent, and the turn's answer —
+    // which only reaches the user by updating those cards — was lost with it
+    // (2026-09-21, key pitfall 29). Giving up on the predecessor costs card
+    // order; not giving up costs the answer.
     const previousSend = lastCardSendByChat.get(chat.chatId) ?? Promise.resolve()
-    const messageId = previousSend.catch(() => undefined).then(() => cardId).then(sendMessage)
+    const previousSettled = settleWithin(
+      previousSend,
+      'wait for the previous step card',
+      CHAIN_TIMEOUT_MS,
+      reason => console.log(`dsh-feishu: [send] previous step card did not settle (${reason}); sending anyway`),
+    )
+    const messageId = previousSettled.then(() => cardId).then(sendMessage)
+    // Confirm delivery once the message id is known. Registered before
+    // `flushed()` awaits the same promise, so the flag is always set before
+    // channel.ts reads it.
+    void messageId.then((id) => {
+      if (id !== undefined && cardHasText) noteTextDelivered(sessionId)
+    }).catch(() => undefined)
     lastCardSendByChat.set(chat.chatId, messageId.catch(() => undefined))
-    state.stepCardRef = { messageId, cardId, sequence: 0 }
+    state.stepCardRef = { sessionId, messageId, cardId, sequence: 0 }
     // Track the send promise so flushed() can wait for the final step card's
     // message to be created before the Turn Complete footer is sent.
     lastStepSendPromises.set(sessionId, messageId)
@@ -521,6 +584,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const pendingUpdates = new Map<StepCardRef, {
     timer: ReturnType<typeof setTimeout>
     card: object
+    /**
+     * Whether the card being written carried assistant text. Captured at
+     * schedule time because `state.text` may be cleared by `resetStep` before
+     * the update lands, and a confirmed update that carries text is what
+     * proves the answer reached the chat.
+     */
+    hasText: boolean
   }>()
 
   /** Flush promises: resolved by turn/end after the final card update. */
@@ -534,14 +604,29 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   const lastStepSendPromises = new Map<string, Promise<string | undefined>>()
 
+  /**
+   * Whether this turn's assistant text is CONFIRMED to be in the chat, per
+   * session. Reset on `turn/start`, set by {@link noteTextDelivered}, read and
+   * cleared by `flushed()`.
+   *
+   * Turn-scoped on purpose: `resetStep` runs on every step, so a field on the
+   * session state would be wiped mid-turn.
+   */
+  const turnTextDelivered = new Map<string, boolean>()
+
   /** Turn stats per session, stored independently of flush promise timing. */
   const turnStatsMap = new Map<string, TurnStats>()
 
-  /** Execute a card update (shared by debounce timer and flush). */
+  /**
+   * Execute a card update (shared by debounce timer and flush).
+   *
+   * Resolves `true` only when Feishu CONFIRMED the write, so callers can tell
+   * "the answer is on screen" from "we tried".
+   */
   const executeCardUpdate = (
     ref: StepCardRef,
     card: object,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     // CardKit instance path: no edit cap, so a long step keeps updating.
     if (channel.updateCardInstance !== undefined) {
       return ref.cardId.then((cardId) => {
@@ -556,49 +641,64 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           return ref.messageId.then((messageId) => {
             if (messageId === undefined) {
               console.log('dsh-feishu: [update] message not sent yet, skipping instance update')
-              return
+              return false
             }
             ref.sequence += 1
             console.log(`dsh-feishu: [update] card=${cardId} seq=${ref.sequence}`)
-            return channel.updateCardInstance!(cardId, card, ref.sequence)
+            return channel.updateCardInstance!(cardId, card, ref.sequence).then(() => true)
           })
         }
         console.log('dsh-feishu: [update] no card instance, falling back to patch')
         return patchByMessageId(ref, card)
       }).catch((error: unknown) => {
-        console.log(`dsh-feishu: [update] failed: ${error instanceof Error ? error.message : String(error)}`)
-        logger.warn(`dsh-feishu: step card update failed: ${error instanceof Error ? error.message : String(error)}`)
+        console.log(`dsh-feishu: [update] failed: ${describeError(error)}`)
+        logger.warn(`dsh-feishu: step card update failed: ${describeError(error)}`)
+        return false
       })
     }
     return patchByMessageId(ref, card)
   }
 
-  /** Fallback update path: im.v1.message.patch on the sent message. */
-  const patchByMessageId = (ref: StepCardRef, card: object): Promise<void> => {
+  /**
+   * Fallback update path: im.v1.message.patch on the sent message. Resolves
+   * `true` only when Feishu confirmed the patch.
+   */
+  const patchByMessageId = (ref: StepCardRef, card: object): Promise<boolean> => {
     return ref.messageId.then((messageId) => {
       if (messageId !== undefined) {
         console.log(`dsh-feishu: [update] patch message=${messageId}`)
-        return channel.updateCard(messageId, card)
+        return channel.updateCard(messageId, card).then(() => true)
       }
       console.log('dsh-feishu: [update] messageId is undefined, skipping')
+      return false
     }).catch((error: unknown) => {
-      console.log(`dsh-feishu: [update] failed: ${error instanceof Error ? error.message : String(error)}`)
-      logger.warn(`dsh-feishu: step card update failed: ${error instanceof Error ? error.message : String(error)}`)
+      console.log(`dsh-feishu: [update] failed: ${describeError(error)}`)
+      logger.warn(`dsh-feishu: step card update failed: ${describeError(error)}`)
+      return false
     })
   }
+
+  /**
+   * Apply one scheduled update and, when it lands carrying text, record that
+   * the turn's answer really is in the chat.
+   */
+  const applyPendingUpdate = (ref: StepCardRef, card: object, hasText: boolean): Promise<void> =>
+    executeCardUpdate(ref, card).then((landed) => {
+      if (landed && hasText) noteTextDelivered(ref.sessionId)
+    }).catch((error: unknown) => {
+      console.log(`dsh-feishu: [update] timer callback error: ${describeError(error)}`)
+    })
 
   /** Flush the pending debounce timer for a state, executing the updateCard immediately. */
   const flushPendingUpdate = (state: SessionStepState): Promise<void> => {
     const ref = state.stepCardRef
     if (ref === undefined) return Promise.resolve()
     const entry = pendingUpdates.get(ref)
-    if (entry !== undefined) {
-      clearTimeout(entry.timer)
-      pendingUpdates.delete(ref)
-      console.log('dsh-feishu: [update] flushing pending update for turn/end')
-      return executeCardUpdate(ref, entry.card)
-    }
-    return Promise.resolve()
+    if (entry === undefined) return Promise.resolve()
+    clearTimeout(entry.timer)
+    pendingUpdates.delete(ref)
+    console.log('dsh-feishu: [update] flushing pending update for turn/end')
+    return applyPendingUpdate(ref, entry.card, entry.hasText)
   }
 
   /** Update the existing step card with current state (debounced). */
@@ -614,6 +714,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Capture the ref and card NOW — resetStep may clear state before the timer fires
     const ref = state.stepCardRef
     const card = buildStepCard(state)
+    // Captured now for the same reason as the card itself: the confirmation
+    // must judge what THIS update carries, not whatever state holds later.
+    const hasText = state.text.trim() !== ''
     // Clear previous pending update for THIS card (a different card's pending
     // update must survive — see the map's comment).
     const existing = pendingUpdates.get(ref)
@@ -621,11 +724,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Debounce: merge rapid updates into one
     pendingUpdates.set(ref, {
       card,
+      hasText,
       timer: setTimeout(() => {
         pendingUpdates.delete(ref)
-        executeCardUpdate(ref, card).catch((error: unknown) => {
-          console.log(`dsh-feishu: [update] timer callback error: ${error instanceof Error ? error.message : String(error)}`)
-        })
+        void applyPendingUpdate(ref, card, hasText)
       }, STEP_CARD_DEBOUNCE_MS),
     })
   }
@@ -859,6 +961,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       } else if (event.type === 'turn/start') {
         resetStep(state)
         lastStepSendPromises.delete(sessionId)
+        // New turn, new delivery question.
+        turnTextDelivered.delete(sessionId)
         state.turnStats = {
           turnStartTime: event.time ?? Date.now(),
           stepCount: 0,
@@ -1005,15 +1109,43 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /** Wait for the final step card update to complete before sending footer. Returns turn stats. */
-  const flushed = (sessionId: string): Promise<TurnStats | undefined> => {
+  /**
+   * Wait for the turn's final card update to complete before sending footer.
+   * Returns turn stats.
+   *
+   * Also the point where the optimistic "text is on screen" mark is either
+   * allowed to stand or withdrawn: if no card carrying assistant text was
+   * CONFIRMED delivered this turn, the mark is cleared so channel.ts posts the
+   * answer itself. Without this, a card that Feishu never accepted silenced the
+   * whole reply (2026-09-21, key pitfall 29).
+   *
+   * The wait is bounded as a last resort; running out of patience must not
+   * become "no footer at all".
+   */
+  const flushed = async (sessionId: string): Promise<TurnStats | undefined> => {
     const entry = flushPromises.get(sessionId)
     const lastSend = lastStepSendPromises.get(sessionId)
     const flushReady = entry !== undefined ? entry.promise : Promise.resolve()
-    return flushReady
-      // Wait for the last step card's message to be created so the Turn
-      // Complete footer never overtakes the final step card in the chat.
-      .then(() => lastSend)
-      .then(() => turnStatsMap.get(sessionId))
+    const settled = await settleWithin(
+      flushReady
+        // Wait for the last step card's message to be created so the Turn
+        // Complete footer never overtakes the final step card in the chat.
+        .then(() => lastSend)
+        .then(() => turnStatsMap.get(sessionId)),
+      'turn flush',
+      FLUSH_TIMEOUT_MS,
+      reason => console.log(`dsh-feishu: flushed(${sessionId}) gave up: ${reason}`),
+    )
+    // Read the delivery record only now: the confirmation for the final step
+    // card is attached to the very promise awaited above, so it has run by the
+    // time we get here.
+    const delivered = turnTextDelivered.get(sessionId) === true
+    turnTextDelivered.delete(sessionId)
+    if (!delivered) {
+      // Nothing textual reached the chat: channel.ts must send the real reply.
+      bridgeHolder.current?.clearIntermediateSent(sessionId)
+    }
+    return settled
   }
 
   return {
@@ -1028,6 +1160,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       turnStatsMap.clear()
       lastStepSendPromises.clear()
       lastCardSendByChat.clear()
+      turnTextDelivered.clear()
       for (const entry of flushPromises.values()) entry.resolve()
       flushPromises.clear()
     },

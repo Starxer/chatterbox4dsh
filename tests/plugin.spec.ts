@@ -155,6 +155,59 @@ describe('startChannel', () => {
     await stop()
   })
 
+  it('posts the full reply when no step card was confirmed delivered', async () => {
+    // The 2026-09-21 failure: streaming marked the text as "on screen", the
+    // card never reached Feishu, and streaming withdrew the mark from
+    // flushed(). channel.ts must therefore read the flag AFTER flushed() —
+    // reading it earlier leaves the user with no answer at all.
+    const channel = fakeChannel()
+    let intermediate = true
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => { const had = intermediate; intermediate = false; return had }),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => { intermediate = false; return undefined })
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, flushed)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).toContain('the full answer')
+    await stop()
+  })
+
+  it('sends only the footer when a step card really carried the text', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => true),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => undefined)
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true,
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, flushed)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).not.toContain('the full answer')
+    await stop()
+  })
+
   it('skips the reaction when reactEmoji is empty', async () => {
     const channel = fakeChannel()
     const bridge = { reply: vi.fn(async () => 'ok'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }

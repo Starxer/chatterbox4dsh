@@ -1343,6 +1343,19 @@ export class HarnessConversationService {
     return true
   }
 
+  /**
+   * Withdraw the intermediate-sent flag without consuming it.
+   *
+   * Streaming marks the flag optimistically when it hands a text-carrying card
+   * to Feishu, then calls this from `flushed()` when no such card was ever
+   * confirmed delivered. Without it, one failed card send made channel.ts skip
+   * its own reply and the answer disappeared entirely (2026-09-21, key pitfall
+   * 29).
+   */
+  clearIntermediateSent(sessionId: string): void {
+    this.intermediateSent.delete(sessionId)
+  }
+
   /** Resolve the session id for a chat message (used by streaming module). */
   resolveSessionIdFor(message: ConversationMessage): string {
     return this.resolveSessionId(message)

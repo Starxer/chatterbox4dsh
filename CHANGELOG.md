@@ -15,6 +15,24 @@
 > ⚠️ **升级当天触发上游 alpha.2 回归，会话坏过一次**：源码入口下 `@deepseek-ai/dsh-tools` 被求值两次 → 每次工具调用报 `Cannot read properties of undefined (reading 'prepare')`。已用**服务入口改走构建产物**规避，**未改动 DSH 源码**；上游修复前不改 DSH 源码（详见 migration 文档 §6）。
 >
 > 同批次修掉：超阈值分卡把表格/代码块切成两半——切分改为块感知（见下条）。
+>
+> 同批次修掉：**一次永不返回的出站请求会永久冻结整个聊天的卡片投递**（Agent 答完、WebUI 能看见、飞书什么都没有）；见下条。
+
+### 修复：一次永不返回的出站请求会永久冻结整个聊天的卡片投递——出站调用加超时、卡片链加兜底、正文加兜底，并给 SDK 日志脱敏（`src/outbound-timeout.ts`（新）/ `src/log-redact.ts`（新）/ `src/feishu-streaming.ts` / `src/index.ts` / `src/channel.ts` / `src/harness.ts`）
+
+- **问题**（2026-09-21 使用者报告「从飞书发消息，Agent 完成了回答，WebUI 上能看见，但飞书上就看不见回答」）：某个**群话题**在某一刻之后对 Agent 卡片彻底静默——步骤卡、回答正文、Turn Complete 页脚全都不再出现，但同一进程里的私聊一切正常，斜杠命令卡与纯文本通知也照常到达。
+- **根因（三段，缺一不成灾）**：
+  1. **SDK 的 HTTP 客户端没有请求超时**（`timeout: 0`）。网络抖动（日志里成对的 `ECONNRESET`）之后，一次 `im.v1.message.create` 请求发出去**再也没返回**，promise 永久 pending。
+  2. **步骤卡按聊天串行，且这个串行等待没有上界**：每张卡都排在「上一张卡的消息」之后（`previousSend.catch(...).then(...)`）。第一张卡的消息永不 settle，**之后每张卡都只创建了 CardKit 实例、消息永远发不出去**——日志特征就是 `[send] instance card=…` 后面**不再**跟 `[send] message=… via card=…`。取证：该话题最后一条成功投递是某时刻，之后 8 个孤立卡实例；全量日志按 card id 做集合差，历史上共有 **80 个**孤立实例，分两批（另一次更早的爆发 72 个，被重启清掉）。
+  3. **回答正文只以「更新步骤卡」的方式上屏，而兜底被自己关掉了**：`noteStepCardText()` 是**乐观**标记——卡片交给飞书就置位「正文已上屏」，而 `channel.ts` 只有两条分支（发页脚 / 发整卡），于是「没上屏就补发整卡」这条路被跳过；同时 `flushed()` 又 `await` 同一个永不 settle 的 promise，**连页脚也发不出去**。三者叠加 = 该聊天彻底静默。
+- **改法**：
+  1. **出站调用一律有界**（`src/outbound-timeout.ts`：`withTimeout` / `settleWithin`，20s）。落在 `cardChannel` 的全部方法（`send` / `createCardInstance` / `sendCardByReference` / `updateCardInstance` / `updateCard`）与 `channel.ts` 的所有出站发送上。超时**不是取消**——请求可能仍在服务端成功，所以只把「结果未知」当失败处理，**绝不重试发送**。
+  2. **卡片链等待有上界**：串行等待改成 `settleWithin(previousSend, …, 45s)`，等不到就照发——**代价是卡片顺序，不是整个回答**。
+  3. **正文兜底真的兜得住**：新增 `clearIntermediateSent()`；`feishu-streaming` 按轮记录「确实有带正文的卡片被飞书**确认**投递」（`turnTextDelivered`，`turn/start` 复位），`flushed()` 发现没有就把乐观标记**撤回**；`channel.ts` 相应把 `consumeIntermediateSent()` **移到 `await flushed()` 之后**，于是这种情况会走「发整卡」分支把回答送出去。标记按轮隔离，不会把上一轮的投递结论带到下一轮。
+  4. **`flushed()` 自身也有界**（120s）——等待超时必须退化成「照发页脚」，而不是「什么都不发」。
+  5. **顺带的安全修复（独立问题）**：SDK 默认 logger 是 `console.log('[error]:', …)`，会把整个 axios error 打出来，而它的 `config.data` 就是取 token 的请求体——**`app_secret` 明文进了 journal**。现在改为自建 logger（`src/log-redact.ts`）：Error 只留 message + stack（不含请求体），其余值 JSON 化并**按已知密钥值逐个打码**，Bearer token 也一并打码。
+- **验证**：新增 `tests/outbound-safety.spec.ts` 11 例（`withTimeout` 透传/传播拒绝/到点拒绝并点名、`settleWithin` 超时回报并返回 undefined、密钥与 Bearer 打码、axios 形态错误不泄漏 `config.data`）；`tests/feishu-streaming.spec.ts` 新增 4 例（发送未确认投递 → `flushed()` 撤回标记；确认投递 → 保留标记；**投递结论不跨轮泄漏**；假计时器下**前一张卡永不 settle 时后一张卡仍会发出**）；`tests/plugin.spec.ts` 新增 2 例（**撤回标记后必须发整卡正文**、确认后只发页脚——直接锁住「先 `flushed()` 再读标记」的顺序）。全套 **432 passed / 34 files**（原 415 / 33），typecheck 0 error，build ✅。
+- **注意**：这是**进程内状态**的修复；出问题的那一刻起已经被冻结的聊天，需要**重启 dsh** 才会解锁（重启前的挂起 promise 无法回收）。
 
 ### 修复：超阈值分卡把表格/代码块切成两半——切分改为块感知（`src/text-chunk.ts` / `src/feishu-streaming.ts`）
 

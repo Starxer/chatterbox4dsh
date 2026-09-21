@@ -13,6 +13,8 @@ import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn
 import { chunkText, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
+import { createSafeChannelLogger } from './log-redact.ts'
+import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 
 // Re-exported for callers that historically reached the sniffer through this
 // module; the implementation now lives in `media-sniff.ts` next to the video
@@ -273,7 +275,7 @@ export async function startChannel(
   ): Promise<void> => {
     const deliver = async (payload: { text: string } | { card: object }): Promise<boolean> => {
       try {
-        await channel.send(chatId, payload, opts)
+        await sendOutbound(chatId, payload, opts)
         return true
       } catch (sendError: unknown) {
         logError(`dsh-feishu: failure reply failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`)
@@ -297,6 +299,11 @@ export async function startChannel(
     domain: config.domain === 'lark' ? Domain.Lark : Domain.Feishu,
     source: 'dsh-feishu',
     loggerLevel: LoggerLevel.info,
+    // The SDK's own logger dumps the whole axios error on a failed request,
+    // and that error carries the token request body — app_secret in clear text.
+    // Ours reduces errors to message + stack and scrubs known secrets (key
+    // pitfall 29, secondary finding).
+    logger: createSafeChannelLogger([config.appSecret]),
     handshakeTimeoutMs: 15_000,
     includeRawEvent: true,
     // Self-healing inbound: on a silent network partition (TCP half-open) the
@@ -320,6 +327,22 @@ export async function startChannel(
       dedup: { ttl: 10 * 60_000, maxEntries: 10_000 },
     },
   })
+
+  /**
+   * Every outbound message this module posts goes through here so the wait is
+   * bounded.
+   *
+   * The SDK builds its HTTP client with `timeout: 0`, so a request the peer
+   * never answers (half-open TLS socket behind a proxy — observed 2026-09-21)
+   * stays pending forever. A handler that awaits it is stuck forever too, and
+   * the user's reply never arrives (key pitfall 29).
+   */
+  const sendOutbound = (
+    to: string,
+    input: { card: object } | { text: string },
+    opts?: { replyInThread?: boolean; replyTo?: string },
+  ): Promise<{ messageId?: string }> =>
+    withTimeout(channel.send(to, input, opts), 'send message', OUTBOUND_TIMEOUT_MS)
 
   const unsubscribers = [
     channel.on('message', async (message: NormalizedMessage) => {
@@ -372,7 +395,7 @@ export async function startChannel(
               return
             }
             const payload = commandResult.card !== undefined ? { card: commandResult.card } : { text: commandResult.text }
-            await channel.send(message.chatId, payload, {
+            await sendOutbound(message.chatId, payload, {
               replyTo: replyToId,
               replyInThread,
             })
@@ -380,7 +403,7 @@ export async function startChannel(
           }
         } catch (error: unknown) {
           logError(`dsh-feishu: slash command failed: ${error instanceof Error ? error.message : String(error)}`)
-          await channel.send(message.chatId, { text: `命令执行出错：${errorText(error, config.errorMessage)}` }, {
+          await sendOutbound(message.chatId, { text: `命令执行出错：${errorText(error, config.errorMessage)}` }, {
             replyTo: replyToId,
             replyInThread,
           }).catch((sendError: unknown) => {
@@ -403,7 +426,7 @@ export async function startChannel(
       }
       if ((message.resources ?? []).some(resource => resource.type === 'image')) {
         if (attachments === undefined) {
-          await channel.send(message.chatId, {
+          await sendOutbound(message.chatId, {
             text: 'Image messages are not supported because the deployment has no attachment service composed.',
           }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
           return
@@ -413,7 +436,7 @@ export async function startChannel(
           inboundMessage = { ...inboundMessage, imageBlocks }
         } catch (error: unknown) {
           logError(`dsh-feishu: image admission failed: ${error instanceof Error ? error.message : String(error)}`)
-          await channel.send(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
+          await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
             replyTo: replyToId,
             replyInThread,
           }).catch(() => undefined)
@@ -425,7 +448,7 @@ export async function startChannel(
       // user turn so the agent can read the file at `hostPath`.
       if ((message.resources ?? []).some(resource => ADMITTED_RESOURCE_TYPES.has(resource.type))) {
         if (attachments === undefined) {
-          await channel.send(message.chatId, {
+          await sendOutbound(message.chatId, {
             text: 'File messages are not supported because the deployment has no attachment service composed.',
           }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
           return
@@ -475,7 +498,7 @@ export async function startChannel(
           onBusy: (mode) => {
             const t = getTranslations?.() ?? translationsFor('zh')
             const notice = mode === 'steer' ? t.busySteeredNotice : t.busyQueuedNotice
-            void channel.send(chatId, { text: notice }, {
+            void sendOutbound(chatId, { text: notice }, {
               replyTo: replyToId,
               replyInThread,
             }).catch((error: unknown) => {
@@ -488,30 +511,35 @@ export async function startChannel(
           // for one turn).
           if (text === undefined) return
           const sessionId = bridge.resolveSessionIdFor(inboundMessage)
-          const intermediateSent = bridge.consumeIntermediateSent(sessionId)
           const meta = await replyCardMeta?.({ chatId, chatType, ...(threadId !== undefined ? { threadId } : {}) })
+          // Read the "the text is already on screen" flag AFTER flushed().
+          // Streaming clears it there when the turn's cards never actually
+          // reached Feishu, so that the branch below still posts the answer;
+          // reading it earlier would miss that correction (key pitfall 29).
+          const turnStats = await flushed?.(sessionId)
+          const intermediateSent = bridge.consumeIntermediateSent(sessionId)
 
           if (intermediateSent) {
-            // Streaming already sent a step card with the text content.
-            // Wait for the final step card update to complete, then send the footer.
-            const turnStats = await flushed?.(sessionId)
+            // Streaming already sent a step card with the text content:
+            // send only the Turn Complete footer.
             const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats)
             if (footerCard !== undefined) {
-              await channel.send(chatId, { card: footerCard }, {
+              await sendOutbound(chatId, { card: footerCard }, {
                 replyTo: replyToId,
                 replyInThread,
               })
             }
           } else {
-            // No intermediate card was sent — send the full reply, split across
-            // multiple cards if the output exceeds one card's content budget.
+            // No intermediate card made it to the chat — send the full reply,
+            // split across multiple cards if the output exceeds one card's
+            // content budget. This is the safety net that keeps a failed step
+            // card from swallowing the whole answer.
             // Carry the turn's decode throughput so this fallback card shows a
             // tok/s line like every other assistant card.
-            const turnStats = await flushed?.(sessionId)
             const tps = turnTokensPerSecond(turnStats)
             const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
             for (const card of cards) {
-              await channel.send(chatId, { card }, {
+              await sendOutbound(chatId, { card }, {
                 replyTo: replyToId,
                 replyInThread,
               })

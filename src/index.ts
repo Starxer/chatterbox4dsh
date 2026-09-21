@@ -34,6 +34,7 @@ import { startFeishuStreaming } from './feishu-streaming.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
 import { dispatchCardAction } from './card-dispatch.ts'
+import { withTimeout } from './outbound-timeout.ts'
 
 export const name = 'lark-channel'
 export const inject = [
@@ -231,22 +232,28 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let pendingCardFlush: ((chatId: string) => Promise<void>) | undefined
   let cardSendDepth = 0
   const cardChannel = {
+    // Every method below is bounded. The SDK's HTTP client has no request
+    // timeout, so without this a single unanswered request leaves the promise
+    // pending forever and everything chained behind it — the per-chat
+    // step-card chain above all — waits forever too (key pitfall 29).
     send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
-      if (('card' in input || 'text' in input) && cardSendDepth === 0 && pendingCardFlush !== undefined) {
-        cardSendDepth += 1
-        try {
-          await pendingCardFlush(to)
-        } catch (error: unknown) {
-          // Ordering is best-effort: a failed flush must not block the card
-          // the user is actually waiting for.
-          console.log(`dsh-feishu: pending card flush failed: ${error instanceof Error ? error.message : String(error)}`)
-        } finally {
-          cardSendDepth -= 1
+      return withTimeout((async () => {
+        if (('card' in input || 'text' in input) && cardSendDepth === 0 && pendingCardFlush !== undefined) {
+          cardSendDepth += 1
+          try {
+            await pendingCardFlush(to)
+          } catch (error: unknown) {
+            // Ordering is best-effort: a failed flush must not block the card
+            // the user is actually waiting for.
+            console.log(`dsh-feishu: pending card flush failed: ${error instanceof Error ? error.message : String(error)}`)
+          } finally {
+            cardSendDepth -= 1
+          }
         }
-      }
-      const ch = channelHolder.current
-      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
-      return ch.send(to, input, opts) as Promise<{ messageId?: string }>
+        const ch = channelHolder.current
+        if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+        return ch.send(to, input, opts) as Promise<{ messageId?: string }>
+      })(), 'send card or text')
     },
     /**
      * Register the streaming module's step-card flush. Called once at boot;
@@ -271,13 +278,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     createCardInstance: (card: object): Promise<string> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return ch.rawClient.cardkit.v1.card.create({
+      return withTimeout(ch.rawClient.cardkit.v1.card.create({
         data: { type: 'card_json', data: JSON.stringify(card) },
       }).then((r: any) => {
         const cardId = r.data?.card_id as string | undefined
         if (cardId === undefined) throw new Error('dsh-feishu: cardkit.card.create returned no card_id')
         return cardId
-      })
+      }), 'create card instance')
     },
     /**
      * Send a message that references a card instance by `card_id` instead of
@@ -302,7 +309,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         console.log(`dsh-feishu: [send] topic reply without a root id for chat=${to} — falling back to a top-level message`)
       }
       if (opts?.replyTo !== undefined && opts.replyTo !== '') {
-        return ch.rawClient.im.v1.message.reply({
+        return withTimeout(ch.rawClient.im.v1.message.reply({
           path: { message_id: opts.replyTo },
           data: {
             content,
@@ -312,7 +319,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         }).then((r: any) => {
           const id = r.data?.message_id as string | undefined
           return id === undefined ? {} : { messageId: id }
-        })
+        }), 'send card by reference')
       }
       // Infer receive_id_type from the target id prefix (same logic as the
       // SDK's detectReceiveIdType): oc_→chat_id, ou_→open_id, on_→union_id.
@@ -320,7 +327,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         : to.startsWith('ou_') ? 'open_id'
         : to.startsWith('on_') ? 'union_id'
         : to.includes('@') ? 'email' : 'user_id'
-      return ch.rawClient.im.v1.message.create({
+      return withTimeout(ch.rawClient.im.v1.message.create({
         params: { receive_id_type: receiveIdType },
         data: {
           receive_id: to,
@@ -333,7 +340,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       }).then((r: any) => {
         const id = r.data?.message_id as string | undefined
         return id === undefined ? {} : { messageId: id }
-      })
+      }), 'send card by reference')
     },
     /**
      * Full-update a card instance (cardkit.v1.card.update). The message that
@@ -349,7 +356,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     updateCardInstance: (cardId: string, card: object, sequence: number): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return ch.rawClient.cardkit.v1.card.update({
+      return withTimeout(ch.rawClient.cardkit.v1.card.update({
         path: { card_id: cardId },
         data: {
           card: { type: 'card_json', data: JSON.stringify(card) },
@@ -359,12 +366,12 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         if (r.code !== undefined && r.code !== 0) {
           throw new Error(`dsh-feishu: cardkit.card.update failed: code=${r.code} msg=${r.msg ?? 'unknown'}`)
         }
-      })
+      }), 'update card instance')
     },
     updateCard: (messageId: string, card: object): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return ch.updateCard(messageId, card)
+      return withTimeout(ch.updateCard(messageId, card), 'patch card')
     },
     recallMessage: (messageId: string): Promise<void> => {
       const ch = channelHolder.current
