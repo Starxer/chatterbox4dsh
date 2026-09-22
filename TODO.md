@@ -73,6 +73,21 @@
 
 ---
 
+## DSH 0.1.7-alpha.2 适配（已评估并升级，2026-09-23）
+
+> 对比 `dsh-v0.1.7-alpha.1...dsh-v0.1.7-alpha.2`：**162 commits / 869 个文件**。完整执行记录见本机 `notes/upgrade-0.1.7-alpha.2.md`。
+
+- ✅ **插件零改动**：逐符号核过 `settings.section` / `sessionProjections` / `configForms` 契约 / `remote.credentials` / `sessionController.prompt`、`selectModel` / `archiveSession` / `WorkspaceActiveSessionError` / `whileServed` —— **全部 0 差异**；18 个 peer 包里 16 个源码 0 变更，其余两个（`api/session-controller`、`core/tools`）只有**纯新增可选字段**（`SessionPageRequest.turnWindow?`、`ToolDefinition.projectContent?`）。持久化 schema 无变化 → **无需数据迁移**。
+- ✅ **产物逐字节一致**：升级前后 `lib/index.js` / `client/client.js` 的 sha256 相同——「不需要改」不是推断，是构建结果。typecheck 0 error、**458 tests 全绿**（插件 dev 依赖已对齐 alpha.2：44 个 `@deepseek-ai/*` 包全部 `0.1.7-alpha.2`，`cordis` 4.0.4、`schemastery` 3.18.4）。
+- ✅ **升级红利**：① 后台任务完成唤醒**默认无上限**——修掉「用户离开后会话被静默卡住」，飞书场景正好命中（本机未配置 `maxConsecutiveWakes`，升级即得）；② Web 服务重启后原页面**恢复连接**，不再「显示已连接但收不到回复」；③ 客户端批次脚本失败改为**按行重试**，设置卡更不容易被同批次其他行拖垮。
+- ⚠️ **一处破坏性配置变更不适用**：`spill-policy` 的 `maxInlineBytes` → `maxInlineTokens`（改为按 token 计预算）。本机没有任何自定义 spill-policy（上游改的是 base bundle 默认值）。
+- ℹ️ **发行说明那句「插件依赖解析模式调整为运行时解析 / 插件管理支持运行时卸载，请开发者检查加载与卸载逻辑」的落点**：对应 `workspace:^` → `workspace:*`（DSH 目标精确）/ `~`（vendor、native）的**依赖范围策略**（连 remote API cookbook 的示例也改了），**不是运行时行为改动**——alpha.2 里 `packages/boot/app-boot/src/profile-resolution/*` 一个文件都没动。我们已符合「共享实例的 dsh 包同时声明在 `peerDependencies` 与 `devDependencies`」；linked 解析**不校验 peer 范围**，且 `^0.1.7-alpha.1` 本就涵盖 alpha.2（同 tuple，关键坑 17），所以 `package.json` 无需改动。插件自身的卸载卫生也复核过：定时器在 `dispose()` 里 clear，路由/字典/表单全走 `ctx.effect`，无裸 `process.on` / `globalThis` 泄漏。
+- ℹ️ **服务入口路径未变**（`apps/cli/package.json` 的 `bin` 两版一致）→ systemd 单元无需修改，**关键坑 28 的产物入口规避继续有效**；升级后工具调用正常，`prepare` 报错未复现。
+- 🔲 **仍未解决**：坑 28 的上游讨论（源码入口下 `dsh-tools` 被求值两次）在 alpha.2 范围内**没有任何 commit 引用**，无法确认已修 → 权宜之计**不撤**。
+- 🔲 **P6-4 仍被上游阻塞**：alpha.2 没有新增任何逐步计时类投影（`sessionProjections` 的方法集与 alpha.1 完全一致）。
+
+---
+
 ## 迁移遗留：P6 可选重构（**均未动工**，2026-09-22 盘点）
 
 > 来源：升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进；建议各自单独立项。
