@@ -28,6 +28,14 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：会话面板支持置顶 / 取消置顶（`src/feishu-session.ts` / `src/index.ts` / `src/i18n.ts`）
+
+- **宿主能力**：`workspaceRegistry` 上有一份 **registry 全局、按置顶顺序**的 `pinnedSessionIds`，外加两个**幂等**方法 `pinSession(id)` / `unpinSession(id)`（已置顶再 pin、未置顶再 unpin 都是空操作）。这与 WebUI 侧边栏的置顶是同一份数据。
+- **面板**：新增「📌 置顶」「📍 取消置顶」两个按钮（与切换 / 断开 / 归档 / 分叉 / 改名同一行）。点完发一条确认文案，并把面板**重绘一次**，让 📌 标记跟上注册表。
+- **标记**：`/session` 面板的下拉项与 `/session list` 表格里，已置顶的会话名前面加 `📌`。表格**不加列**、只加前缀，所以 `sessionListTableHeader` 的列数不用动。
+- **归档互斥**：给已归档会话置顶时宿主抛 `WorkspaceArchivedSessionPinError`，插件**按 `name` 鸭子类型识别**（宿主抛的类，插件可能持有另一份副本，与关键坑 28 同源）并回「已归档，无法置顶——请先取消归档」，而不是一句泛泛的失败；注册表没暴露方法时只记 warn、不发消息。
+- **测试**：`tests/feishu-session.spec.ts` 新增 5 例——置顶与取消置顶各一条并核对确认文案、归档互斥走专门文案、注册表缺能力时只告警、📌 出现在下拉与列表且未置顶项**不带**标记。该文件 14 → 19 例。
+
 ### 变更：模型选择改走宿主自己的模型目录（`src/feishu-model-select.ts`）
 
 - **背景**：模型选择器此前自己拼三份数据——`llm.listProviders()`、`llm.listModels(provider)`，再对**单个**模型调 `llm.resolveModelInfo()` 取推理档位。宿主的 `sessionController.modelCatalog()` **一次**就答完这三件事，还带上**可读模型名**（`name`）与每个模型的 `reasoning.efforts`。

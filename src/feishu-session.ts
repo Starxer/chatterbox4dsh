@@ -51,6 +51,12 @@ export interface WorkspaceRegistryLike {
   /** 0.1.7 adds `options.stopActivity`: without it a session that still has
    *  running work is refused with `WorkspaceActiveSessionError`. */
   archiveSession?(sessionId: string, options?: { stopActivity?: boolean }): Promise<unknown>
+  /** Registry-global pin set, in pin order; read at render time. */
+  readonly pinnedSessionIds?: readonly string[]
+  /** Pin a session (idempotent). An archived session is refused with `WorkspaceArchivedSessionPinError`. */
+  pinSession?(sessionId: string): Promise<unknown>
+  /** Unpin a session (idempotent). */
+  unpinSession?(sessionId: string): Promise<unknown>
 }
 
 /** Narrow card channel surface. */
@@ -84,7 +90,7 @@ export interface FeishuSessionHandle {
   stop(): void
 }
 
-type Op = 'switch' | 'detach' | 'rename' | 'archive' | 'fork'
+type Op = 'switch' | 'detach' | 'rename' | 'archive' | 'fork' | 'pin' | 'unpin'
 
 interface OpenState {
   chat: ConversationMessage
@@ -139,6 +145,8 @@ function opWord(op: Op, t: Translations): string {
     case 'archive': return t.sessionOpArchive
     case 'fork': return t.sessionOpFork
     case 'rename': return t.sessionOpRename
+    case 'pin': return t.sessionOpPin
+    case 'unpin': return t.sessionOpUnpin
   }
 }
 
@@ -149,9 +157,9 @@ function sessionLabel(entry: SessionEntry): string {
 }
 
 /** Build the session dropdown options (name → id). */
-function sessionOptions(sessions: readonly SessionEntry[]): Array<{ text: object; value: string }> {
+function sessionOptions(sessions: readonly SessionEntry[], pinned?: ReadonlySet<string>): Array<{ text: object; value: string }> {
   return sessions.map(entry => ({
-    text: { tag: 'plain_text', content: sessionLabel(entry) },
+    text: { tag: 'plain_text', content: pinned?.has(entry.id) === true ? `📌 ${sessionLabel(entry)}` : sessionLabel(entry) },
     value: entry.id,
   }))
 }
@@ -161,8 +169,9 @@ export function renderSessionPanelCard(
   sessions: readonly SessionEntry[],
   currentChatKey: string,
   t: Translations,
+  pinned?: ReadonlySet<string>,
 ): object {
-  const options = sessionOptions(sessions)
+  const options = sessionOptions(sessions, pinned)
   const formElements: object[] = [
     { tag: 'markdown', content: t.sessionPanelSelectLabel },
     {
@@ -216,6 +225,8 @@ function buildOpButtons(t: Translations): object[] {
     { op: 'archive', label: t.sessionArchive },
     { op: 'fork', label: t.sessionFork },
     { op: 'rename', label: t.sessionRename },
+    { op: 'pin', label: t.sessionPin },
+    { op: 'unpin', label: t.sessionUnpin },
   ]
   return ops.map(({ op, label, type }) => ({
     tag: 'button',
@@ -238,6 +249,9 @@ export function renderSessionConfirmCard(state: ConfirmState, t: Translations): 
       : t.sessionConfirmDetailArchive(state.sessionLabel),
     fork: t.sessionConfirmDetailFork(state.sessionLabel),
     rename: t.sessionConfirmDetailRename(state.sessionLabel),
+    // Unreachable: pin/unpin are idempotent and never open a confirm card.
+    pin: t.sessionOpPin,
+    unpin: t.sessionOpUnpin,
   }
   return {
     schema: '2.0',
@@ -312,11 +326,12 @@ export function renderSessionRenameCard(sessionLabel: string, t: Translations): 
 }
 
 /** Render the `/session list` table card. */
-export function renderSessionListCard(sessions: readonly SessionEntry[], t: Translations): object {
+export function renderSessionListCard(sessions: readonly SessionEntry[], t: Translations, pinned?: ReadonlySet<string>): object {
   const rows = sessions.map(entry => {
     const owned = entry.ownedBy === undefined ? '-' : '🔒'
+    const name = pinned?.has(entry.id) === true ? `📌 ${sessionLabel(entry)}` : sessionLabel(entry)
     const preset = entry.agentPreset === undefined || entry.agentPreset === '' ? '-' : entry.agentPreset
-    return `| ${sessionLabel(entry)} | \`${entry.id.slice(-12)}\` | ${preset} | ${owned} | ${formatRelative(entry.updatedAt, t)} |`
+    return `| ${name} | \`${entry.id.slice(-12)}\` | ${preset} | ${owned} | ${formatRelative(entry.updatedAt, t)} |`
   })
   const body = rows.length > 0
     ? `${t.sessionListTableHeader}\n|---|---|---|---|---|\n${rows.join('\n')}`
@@ -341,6 +356,8 @@ function formatRelative(updatedAt: number, t: Translations): string {
 
 /** Start the session panel: handle the panel + confirm card callbacks. */
 export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle {
+  /** The registry's pin set, read fresh so each render reflects the latest write. */
+  const pinnedIds = (): ReadonlySet<string> => new Set(deps.workspaceRegistry?.pinnedSessionIds ?? [])
   const { channel, bridge, sessionController, workspaceRegistry, logger, getTranslations } = deps
   const openCards = new Map<string, OpenState>()
   const confirmCards = new Map<string, ConfirmState>()
@@ -371,13 +388,13 @@ export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle
 
     if (action === 'list') {
       const sessions = await brid.listSessions()
-      await channel.send(state.chat.chatId, { card: renderSessionListCard(sessions, getTranslations()) }, replyOpts(state.chat)).catch(() => undefined)
+      await channel.send(state.chat.chatId, { card: renderSessionListCard(sessions, getTranslations(), pinnedIds()) }, replyOpts(state.chat)).catch(() => undefined)
       return
     }
     if (action === 'refresh') {
       const sessions = await brid.listSessions()
       const key = conversationKey(state.chat)
-      await channel.updateCard(evt.messageId!, renderSessionPanelCard(sessions, key, getTranslations())).catch((e: unknown) => {
+      await channel.updateCard(evt.messageId!, renderSessionPanelCard(sessions, key, getTranslations(), pinnedIds())).catch((e: unknown) => {
         logger.warn(`dsh-feishu: session panel refresh failed: ${e instanceof Error ? e.message : String(e)}`)
       })
       return
@@ -387,7 +404,43 @@ export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle
     const entry = sessions.find(s => s.id === sessionId)
     const label = entry === undefined ? sessionId.slice(-12) : sessionLabel(entry)
     const op = action as Op
-    if (op !== 'switch' && op !== 'detach' && op !== 'rename' && op !== 'fork' && op !== 'archive') return
+    if (op !== 'switch' && op !== 'detach' && op !== 'rename' && op !== 'fork' && op !== 'archive'
+      && op !== 'pin' && op !== 'unpin') return
+
+    if (op === 'pin' || op === 'unpin') {
+      const registry = deps.workspaceRegistry
+      const call = op === 'pin' ? registry?.pinSession : registry?.unpinSession
+      if (call === undefined) {
+        logger.warn(`dsh-feishu: session panel ${op} requested but the workspace registry exposes no ${op}Session`)
+        return
+      }
+      const strings = getTranslations()
+      try {
+        // Bound to the registry: these are service methods, not free functions.
+        await call.call(registry, sessionId)
+        await channel.send(state.chat.chatId, {
+          text: op === 'pin' ? strings.sessionResultPinned(label) : strings.sessionResultUnpinned(label),
+        }, replyOpts(state.chat)).catch(() => undefined)
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        // Pinning is refused for an archived session; name the blocking state
+        // instead of a generic failure. Duck-typed by `name` because the Host may
+        // hand us another copy of the class (key pitfall 28).
+        const name = (error as { name?: string } | null)?.name
+        logger.warn(`dsh-feishu: session ${op} failed: ${message}`)
+        await channel.send(state.chat.chatId, {
+          text: name === 'WorkspaceArchivedSessionPinError'
+            ? strings.sessionResultPinArchived(label)
+            : strings.sessionResultPinFailed(label),
+        }, replyOpts(state.chat)).catch(() => undefined)
+      }
+      // Re-render the panel so the pin marks follow the registry.
+      const after = await brid.listSessions()
+      await channel.updateCard(evt.messageId!, renderSessionPanelCard(after, conversationKey(state.chat), getTranslations(), pinnedIds())).catch((e: unknown) => {
+        logger.warn(`dsh-feishu: session panel refresh after ${op} failed: ${e instanceof Error ? e.message : String(e)}`)
+      })
+      return
+    }
 
     if (op === 'rename') {
       // Rename pops its own dedicated input card instead of a confirm card.

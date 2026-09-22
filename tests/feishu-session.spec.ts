@@ -27,6 +27,7 @@ function buildChannel(harness: any) {
     channel: {
       send: vi.fn(async (to: string, input: any) => {
         if (input.card !== undefined) harness.sentCards.push({ to, card: input.card, input })
+        if (input.text !== undefined) (harness.sentTexts ??= []).push({ to, text: input.text })
         return { messageId: 'om_card' }
       }),
       updateCard: vi.fn(async () => undefined),
@@ -42,7 +43,7 @@ function buildChannel(harness: any) {
 }
 
 describe('renderSessionPanelCard', () => {
-  it('renders a session dropdown and all five op buttons', () => {
+  it('renders a session dropdown and every op button', () => {
     const card = renderSessionPanelCard(SESSIONS, 'chat:z', t) as any
     expect(markdownOf(card)).toContain('共 3 个会话')
     expect(markdownOf(card)).toContain('1 个被占用')
@@ -53,7 +54,7 @@ describe('renderSessionPanelCard', () => {
     expect(selects[0].options).toHaveLength(3)
     const opButtons = forms[0].elements.filter((el: any) => el.tag === 'button')
     const labels = opButtons.map((b: any) => b.text?.content)
-    expect(labels).toEqual(expect.arrayContaining(['🔀 切换', '🔓 Detach', '🗄️ 归档', '🍴 分叉', '✏️ 改名']))
+    expect(labels).toEqual(expect.arrayContaining(['🔀 切换', '🔓 Detach', '🗄️ 归档', '🍴 分叉', '✏️ 改名', '📌 置顶', '📍 取消置顶']))
   })
 
   it('renders an empty state when there are no sessions', () => {
@@ -390,5 +391,109 @@ describe('startFeishuSession', () => {
       handle.stop()
       cleanup()
     }
+  })
+})
+
+/**
+ * Pin state is registry-wide (`workspaceRegistry.pinnedSessionIds`), and both
+ * writes are idempotent. The panel therefore offers two explicit buttons rather
+ * than one toggle: whichever the operator picks either takes effect or is
+ * already true. Re-rendering after the write is what makes the 📌 marks follow.
+ */
+describe('pin / unpin from the session panel', () => {
+  function build(registry: any) {
+    const harness: any = { sentCards: [], sentTexts: [], cardActionHandler: undefined }
+    const bridge = {
+      listSessions: vi.fn(async () => SESSIONS),
+      attachSession: vi.fn(() => 'ok' as const),
+      detachSession: vi.fn(() => ({ kind: 'free' as const })),
+      describeChatKey: vi.fn((k: string) => k),
+    }
+    const { channel, cleanup } = buildChannel(harness)
+    const logger = { warn: vi.fn(), error: vi.fn() }
+    const handle = startFeishuSession({
+      channel: channel as any,
+      bridge: () => bridge as any,
+      workspaceRegistry: registry,
+      logger,
+      getTranslations: () => t,
+    })
+    return { harness, handle, cleanup, logger }
+  }
+
+  const click = (harness: any, action: string) => harness.cardActionHandler!({
+    messageId: 'om_card',
+    action: { value: { action } },
+    raw: { action: { form_value: { session: 's2' } } },
+  })
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+  it('pins the selected session and reports it', async () => {
+    const pinSession = vi.fn(async () => undefined)
+    const { harness, handle, cleanup } = build({ pinnedSessionIds: [], pinSession })
+    try {
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      harness.sentTexts.length = 0
+      await click(harness, 'pin')
+      await settle()
+      expect(pinSession).toHaveBeenCalledWith('s2')
+      expect(harness.sentTexts.map((m: any) => m.text)).toEqual(['已置顶会话「Write docs」。'])
+    } finally { handle.stop(); cleanup() }
+  })
+
+  it('unpins the selected session and reports it', async () => {
+    const unpinSession = vi.fn(async () => undefined)
+    const { harness, handle, cleanup } = build({ pinnedSessionIds: ['s2'], unpinSession })
+    try {
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      harness.sentTexts.length = 0
+      await click(harness, 'unpin')
+      await settle()
+      expect(unpinSession).toHaveBeenCalledWith('s2')
+      expect(harness.sentTexts.map((m: any) => m.text)).toEqual(['已取消置顶「Write docs」。'])
+    } finally { handle.stop(); cleanup() }
+  })
+
+  it('names the archived state when the registry refuses the pin', async () => {
+    const pinSession = vi.fn(async () => {
+      // Mirrors the host: pinning and archival are mutually exclusive.
+      throw Object.assign(new Error('cannot pin an archived session'), { name: 'WorkspaceArchivedSessionPinError' })
+    })
+    const { harness, handle, cleanup, logger } = build({ pinnedSessionIds: [], pinSession })
+    try {
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      harness.sentTexts.length = 0
+      await click(harness, 'pin')
+      await settle()
+      expect(harness.sentTexts.map((m: any) => m.text))
+        .toEqual(['「Write docs」已归档，无法置顶——请先取消归档。'])
+      expect(logger.warn.mock.calls.flat().join(' ')).toContain('pin failed')
+    } finally { handle.stop(); cleanup() }
+  })
+
+  it('warns and writes nothing when the registry exposes no pinSession', async () => {
+    const { harness, handle, cleanup, logger } = build({ pinnedSessionIds: [] })
+    try {
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      harness.sentTexts.length = 0
+      await click(harness, 'pin')
+      await settle()
+      expect(harness.sentTexts).toHaveLength(0)
+      expect(logger.warn.mock.calls.flat().join(' ')).toContain('no pinSession')
+    } finally { handle.stop(); cleanup() }
+  })
+
+  it('marks pinned sessions in the dropdown and in the /session list table', () => {
+    const pinned = new Set(['s2'])
+    const panel: any = renderSessionPanelCard(SESSIONS, 'chat:z', t, pinned)
+    const form = panel.body.elements.find((el: any) => el.tag === 'form')
+    const select = form.elements.find((el: any) => el.tag === 'select_static')
+    expect(select.options.map((o: any) => o.text.content)).toContain('📌 Write docs')
+    expect(select.options.map((o: any) => o.text.content)).toContain('Fix the bug')
+    const list: any = renderSessionListCard(SESSIONS, t, pinned)
+    expect(markdownOf(list)).toContain('📌 Write docs')
+    // Unpinned rows stay unmarked.
+    expect(markdownOf(list)).not.toContain('📌 Fix the bug')
   })
 })

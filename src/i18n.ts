@@ -66,6 +66,8 @@ export interface Translations {
   sessionArchive: string
   sessionFork: string
   sessionRename: string
+  sessionPin: string
+  sessionUnpin: string
   sessionConfirmTitle: (action: string) => string
   sessionConfirmBody: (action: string, name: string) => string
   sessionConfirmOk: string
@@ -83,6 +85,10 @@ export interface Translations {
   sessionResultArchived: () => string
   sessionResultForked: (id: string) => string
   sessionResultRenamed: (title: string) => string
+  sessionResultPinned: (label: string) => string
+  sessionResultUnpinned: (label: string) => string
+  sessionResultPinArchived: (label: string) => string
+  sessionResultPinFailed: (label: string) => string
   sessionErrorOccupied: string
   sessionErrorArchived: string
   sessionErrorInvalid: string
@@ -233,6 +239,8 @@ export interface Translations {
   sessionOpArchive: string
   sessionOpFork: string
   sessionOpRename: string
+  sessionOpPin: string
+  sessionOpUnpin: string
   sessionConfirmDetailSwitch: (label: string) => string
   sessionConfirmDetailDetach: (label: string) => string
   sessionConfirmDetailArchive: (label: string) => string
@@ -371,6 +379,8 @@ export const zh = {
   sessionArchive: '🗄️ 归档',
   sessionFork: '🍴 分叉',
   sessionRename: '✏️ 改名',
+  sessionPin: '📌 置顶',
+  sessionUnpin: '📍 取消置顶',
   sessionConfirmTitle: action => `确认${action}？`,
   sessionConfirmBody: (action, name) => `确定要${action}「${name}」吗？`,
   sessionConfirmOk: '确认',
@@ -386,6 +396,10 @@ export const zh = {
   sessionResultArchived: () => '会话已归档。可在工作区 WebUI 中取消归档。',
   sessionResultForked: id => `已分叉出新会话 \`${id}\`。`,
   sessionResultRenamed: title => `会话已重命名为「${title}」。`,
+  sessionResultPinned: label => `已置顶会话「${label}」。`,
+  sessionResultUnpinned: label => `已取消置顶「${label}」。`,
+  sessionResultPinArchived: label => `「${label}」已归档，无法置顶——请先取消归档。`,
+  sessionResultPinFailed: label => `「${label}」置顶失败，请看日志。`,
   sessionErrorOccupied: '该会话正被占用，请先 detach 再切换。',
   sessionErrorArchived: '该会话已归档，请先在 WebUI 取消归档。',
   sessionErrorInvalid: '无效的会话。',
@@ -517,6 +531,8 @@ export const zh = {
   sessionOpArchive: '归档',
   sessionOpFork: '分叉',
   sessionOpRename: '改名',
+  sessionOpPin: '置顶',
+  sessionOpUnpin: '取消置顶',
   sessionConfirmDetailSwitch: label => `将把这个对话切换到会话 \`${label}\`，若它被其它对话占用会先接管。`,
   sessionConfirmDetailDetach: label => `将释放会话 \`${label}\` 的占用（原持有者重置为新会话）。`,
   sessionConfirmDetailArchive: label => `将归档会话 \`${label}\`。`,
@@ -650,6 +666,8 @@ export const en: Translations = {
   sessionArchive: '🗄️ Archive',
   sessionFork: '🍴 Fork',
   sessionRename: '✏️ Rename',
+  sessionPin: '📌 Pin',
+  sessionUnpin: '📍 Unpin',
   sessionConfirmTitle: action => `Confirm ${action}?`,
   sessionConfirmBody: (action, name) => `Are you sure you want to ${action} "${name}"?`,
   sessionConfirmOk: 'Confirm',
@@ -665,6 +683,10 @@ export const en: Translations = {
   sessionResultArchived: () => 'Session archived. Unarchive it from the workspace webui first.',
   sessionResultForked: id => `Forked a new session \`${id}\`.`,
   sessionResultRenamed: title => `Renamed session to "${title}".`,
+  sessionResultPinned: label => `Pinned "${label}".`,
+  sessionResultUnpinned: label => `Unpinned "${label}".`,
+  sessionResultPinArchived: label => `"${label}" is archived, so it cannot be pinned - unarchive it first.`,
+  sessionResultPinFailed: label => `Could not pin "${label}" - see the log.`,
   sessionErrorOccupied: 'That session is already occupied — detach it first.',
   sessionErrorArchived: 'That session is archived — unarchive it from the workspace webui first.',
   sessionErrorInvalid: 'Invalid session.',
@@ -796,6 +818,8 @@ export const en: Translations = {
   sessionOpArchive: 'archive',
   sessionOpFork: 'fork',
   sessionOpRename: 'rename',
+  sessionOpPin: 'pin',
+  sessionOpUnpin: 'unpin',
   sessionConfirmDetailSwitch: label => `This chat will be switched to session \`${label}\`; if another chat owns it, the switch will take it over.`,
   sessionConfirmDetailDetach: label => `This will release session \`${label}\` (the current owner resets to a brand-new session).`,
   sessionConfirmDetailArchive: label => `This will archive session \`${label}\`.`,

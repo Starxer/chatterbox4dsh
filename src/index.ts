@@ -1215,7 +1215,7 @@ async function executeSlashCommand(
   busyCard?: { open: (chat: ConversationMessage) => Promise<string | undefined> },
   modelSelectMaps?: { cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> },
   onboardingHandle?: FeishuOnboardingHandle,
-  workspaceRegistry?: { list(): { path: string; name?: string }[] },
+  workspaceRegistry?: { list(): { path: string; name?: string }[]; readonly pinnedSessionIds?: readonly string[] },
   agentPresets?: { list(): Promise<Array<{ id: string; title?: string }>> },
   approvals?: ApprovalControl,
   showReasoning?: { get: () => boolean; toggle: () => void },
@@ -1368,7 +1368,8 @@ async function executeSlashCommand(
     }
     if (input === 'list') {
       const sessions = await bridge.listSessions()
-      return { kind: 'success', text: '', card: renderSessionListCard(sessions, translationsFor(localeControl?.current().id ?? 'zh')) }
+      const pinned = new Set(workspaceRegistry?.pinnedSessionIds ?? [])
+      return { kind: 'success', text: '', card: renderSessionListCard(sessions, translationsFor(localeControl?.current().id ?? 'zh'), pinned) }
     }
     const index = Number.parseInt(input, 10)
     if (!Number.isInteger(index) || index < 1) {
