@@ -15,7 +15,7 @@
 | 依赖范围 | **必须改**（关键坑 17）：`@deepseek-ai/dsh-*` `^0.1.6-alpha.1` → `^0.1.7-alpha.1`；`schemastery` → `^3.18.3`（新增 `.volatile()`）；`cordis` → `^4.0.3` |
 | 会话控制 / 流式 / 工具 / 附件 / 客户端 UI | **未被破坏**（逐项核对见 §1.3） |
 | 会话日志 | 格式升到 **V4**，但**不重写已存代次**；被继续写入的会话产生 V4 后继文件，V3 原件保留 |
-| 部署侧数据 | **1 项必搬**（legacy `settings.yaml` 的插件段，删一行即由官方 importer 导入）、**1 项确认等价**（默认 preset 回落）、**1 项推迟**（目录型 preset 不再被发现） |
+| 部署侧数据 | **1 项必搬**（legacy `settings.yaml` 的插件段，删一行即由官方 importer 导入）、**1 项确认等价**（默认 preset 回落）、**1 项处置**（目录型 preset 在新 registry 不再被发现 → 不迁移、直接删除） |
 | 上游修复红利 | 压缩死区（阈值改为 `min(W × ratio, W − O − headroom)`）与 `turn/end` 被静默拒绝导致「turn 永远开着」两条链**已修** |
 
 **一句话**：插件侧真正的破坏只有「设置服务换血」一处（改动面大但机械），其余是几处语义退化；风险集中在上游**改名/删除的包**与**跨 tag 的残留构建产物**上——后者已让本仓库的升级**栽过两次**，见 §3.2。
@@ -86,15 +86,20 @@
 
 `agent-presets:` 段映射的 entry id 在新版**已不存在** → 用户选的默认 preset 会**静默回落**到 bundle 默认。若原值就是 bundle 默认（本仓库部署即如此，`standard`），**无动作**；只有偏离时才需要在新 registry 行上写 `selectedDefault`。
 
-### B3 目录型 preset 在 0.1.7 不再被发现（**推迟到升级后处理**）
+### B3 目录型 preset 在 0.1.7 不再被发现（**处置：不迁移，直接删除**）
 
 新 registry **既不扫目录也不接受 preset 路径**（`roots` / `includeShippedRoot` / `includeUserRoot` 三个字段全删）。因此「放在用户 preset 目录里」的自建 preset **不再出现在 `agentPresets.list()`**。
 
-- **不丢数据**：目录与文件原样留在磁盘上，只是不再被发现。
-- 正规做法是搬成**声明式 preset 行**（`@deepseek-ai/dsh-agent-preset`：`id` 必填 + `name`/`description`/`order`/`plugins`），两条硬约束：
-  1. 若原文件含 `!!js` 标签，**必须文本级搬运**——用 YAML 解析器 round-trip 会把表达式销毁（该包声明了 `static readonly [EntryGroup.key] = true`，即"保留子表达式直到各自插件激活"，说明表达式是预期支持的）；
-  2. 原文件若在带 `isolate` 的组里，**搬迁时不要丢 `isolate`**，否则组合会发布到 root realm（关键坑 9/28 的领域）。
-- **为什么推迟**：正确形态要用**运行中的** schema 核对，盲改一个大 YAML 风险不成比例；升级后从容搬，期间该 preset 只是"不在列表里"。
+本部署的结论是**不再保留这个 preset、也不做迁移**：把整个用户 preset 目录移出即可。删除前的两道复核 —— ① **没有会话**记录过它（按会话 header 的 `agentPreset` 与 `agent-preset/selected` 事件精确解析，而不是全文 grep：正文里出现 `persistent-bash`、"state is persistent across command calls" 之类文本会造成大量假阳性）；② 删除前后组合配置**逐字节一致**，说明运行中的组合没有引用它，**因此不需要重启**。
+
+> **⚠️ 别混淆**：DSH 随附的 `minimal` preset **自己也用持久 shell**（`persistent-shell` 组 + `tool-bash-persistent`）。那是上游组合、不在用户 preset 目录里，不受本项处置影响；若想完全不要"持久 shell"的 preset，需要在 profile patch 里禁用 `preset-minimal`，那是另一件事。
+
+**如果将来要恢复/新建同类 preset**，正规做法是声明式 preset 行（`@deepseek-ai/dsh-agent-preset`：`id` 必填 + `name`/`description`/`order`/`plugins`），两条硬约束：
+
+1. 若原文件含 `!!js` 标签，**必须文本级搬运**——用 YAML 解析器 round-trip 会把表达式销毁（该包声明了 `static readonly [EntryGroup.key] = true`，即"保留子表达式直到各自插件激活"，说明表达式是预期支持的）；
+2. 服务行若在带 `isolate` 的组里，**不要丢 `isolate`**，否则组合会发布到 root realm（关键坑 9/28 的领域）。
+
+> 这也是为什么本项当初被推迟到升级后处理：正确形态要用**运行中的** schema 核对，盲改一个大 YAML 风险不成比例。最终的处置比迁移更简单——不需要它了。
 
 ---
 
@@ -188,7 +193,7 @@ node apps/cli/lib/bin.js --version             # 期望 0.1.7-alpha.1；失败�
 | V6 | 设置页读写；改一个开关**不重启即生效** | ✅（`GET` 200；用过期 revision 写入会被拒并报 `settings namespace "…" changed since it was read`，用当前 revision 写同值 → 200 且无需重启） |
 | V7 | legacy 导入：`settings.yaml.imported` 出现、profile 行 config 完整、日志无 `was not imported` | ✅（因为 B1 已在窗口内先删掉那一行） |
 | V8 | 默认 preset 与升级前一致 | ✅（本就等于 bundle 默认） |
-| V9 | 目录型 preset 出现在列表里 | ⏳ **未达成**——正是 B3 推迟项 |
+| V9 | 目录型 preset 出现在列表里 | ✅ **不适用**——B3 的处置是**不迁移、直接删除**（使用者决定不再保留该 preset）；删除前后组合逐字节一致，无需重启 |
 | V10 | 故意跑一个失败工具 → 卡片显示**失败**而不是成功 | ✅（并有单测锁死） |
 | V11 | 归档运行中的会话：要么成功停止、要么给出明确错误卡 | ✅ 错误卡（按 C2 的设计） |
 | V12 | DSH 语言切 English 后插件文案跟随 | ✅ |

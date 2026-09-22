@@ -67,7 +67,7 @@
 - ✅ **升级红利已兑现**：压缩死区（阈值改为 `min(W × ratio, W − O − headroom)`）与 `turn/end` 被 `Session.append` 静默拒绝两条链由上游修复；坑 28 的双实例症状在产物入口下**未复现**（但权宜之计未撤）。
 - 📋 **C2 归档运行中会话**：新增 `options.stopActivity`；插件**刻意不传**（对齐 WebUI「先问再停」），失败渲染成错误卡；更友好的「是否停止并归档」确认卡留作后续。
 - 📋 **C3 弃用 API**：`snapshotEvents` / `eventAt` / `ownEvents` 已 `@deprecated` → 后续迁 `sessionProjections` / `projections()`（与关键坑 8 同源）。
-- 🔲 **B3 目录型 preset 搬家（唯一未完成的迁移）**：0.1.7 的 registry 既不扫目录也不收 preset 路径 → 本地「持久模式」preset 不再出现在 `agentPresets.list()`。**不丢数据**；正确做法是搬成 `@deepseek-ai/dsh-agent-preset` 声明式行，且**必须文本级搬运**（保留 `!!js` 表达式）、**不要丢 `isolate` 组**。
+- ✅ **B3 目录型 preset：已决定不再保留（2026-09-22 处置完毕）**。0.1.7 的 registry 既不扫目录也不收 preset 路径 → 本地「持久模式」preset（`~/.dsh/.agent-presets/persistent/`）本就不再出现在 `agentPresets.list()`；使用者决定**不迁移、直接删除**，已把整个 `~/.dsh/.agent-presets/` 移出（含 6 份历史副本）。**原本的搬迁做法（留档备查）**：若要恢复，需搬成 `@deepseek-ai/dsh-agent-preset` 声明式行，且**必须文本级搬运**（保留 `!!js` 表达式）、**不要丢 `isolate` 组**。删除前已精确复核：**0 个会话**记录过该 preset；删除前后 `--dump-config` 逐字节一致（无引用，故无需重启）。
 - ✅ **升级后发现的插件 bug 已修**：重建冷会话时用**插件配置默认值**覆盖了会话自己记录的 preset → 「卡片写 `cordis`、工具集却是 `standard`」。与 0.1.7 无关（`0.1.6-alpha.2` 上已复现），已修并固化为**关键坑 33**。
 
 ---
