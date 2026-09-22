@@ -79,7 +79,7 @@
 
 | # | 项 | 收益 / 代价 |
 |---|---|---|
-| ~~P6-1~~ | ✅ **已完成（2026-09-22）** 设置页改走原生 **`ctx.configForms`**（ns = profile 行 id `lark-channel`）+ **`ctx.remote.credentials`**（密钥按引用读写） | **自建的 `SETTINGS_PATH` 路由与 `settings-api.ts`（140 行：字段白名单 / 脱敏 / revision 栅栏）已整块删除**；页面位置不变（仍是 Settings → 飞书与 Lark 标签页），仅保留 `/dsh-feishu/provision` 承载扫码与运行状态 |
+| ~~P6-1~~ | ✅ **已完成（2026-09-22）** 设置页改走原生 **`ctx.configForms`**（ns = profile 行 id `lark-channel`）+ **`ctx.remote.credentials`**（密钥按引用读写） | **自建的 `SETTINGS_PATH` 路由与 `settings-api.ts`（140 行：字段白名单 / 脱敏 / revision 栅栏）已整块删除**；页面位置不变（仍是 Settings → 飞书与 Lark 标签页），仅保留 `/dsh-feishu/provision` 承载扫码与运行状态。**已重启生效（2026-09-23 00:13）**：服务 active、journal 无 error、产物核对通过 |
 | ~~P6-2~~ | ✅ **已完成（2026-09-22）** | 「留空 = 保留 secret」由凭据域写入语义实现（只在用户输入时 `.set()`），不需要自建表单组件 |
 | P6-4 | 用 `sessionController.projections()` 替代剩余的全量日志读 | 与 C3 剩下那处（`summarizeTurn`）同源；**要等上游提供逐步计时类投影**，否则轮次指标会退化 |
 | P6-5 | `plugins.detail.badge` / `actions` / `section`（subject `{kind:'bundle'\|'row'\|'item'}`） | 把飞书连接状态 / 扫码 / 重连挂到插件详情页，替代现在散在设置页里的同等能力 |

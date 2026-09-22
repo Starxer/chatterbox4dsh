@@ -35,6 +35,8 @@
 - **附带清理**：`dsh.client.inject` 补上 `@deepseek-ai/dsh-client-ui-plugin-manager` 与 `@deepseek-ai/dsh-api-remotes`（与官方 `ui-settings-web-search` 的清单逐项一致，纯解析顺序提示，不新增 npm 依赖）；测试里一个私网 IP 字面量换成 RFC 5737 文档地址。
 - **验证**：typecheck 0 error、build ✅（`client/client.js` 重建）。测试数 472 → 458：删掉的 11 例属于已删除路由的专属用例，客户端用例改写为新的服务面（保存时 ops 与 revision 正确、留空不写 secret、删除 secret、四个显示开关的联动、凭据徽章、扫码与运行状态）。
 - **注意**：宿主与客户端的载荷形状一起变了（`{ runtime, provision }`），**两侧需同时重启**；只刷新页面会看到运行状态停在 `connecting`。
+- **实测（2026-09-23 00:13 重启后）**：服务 `active`、插件 `apply()` 正常、`[ws] ws client ready`、journal **无 error**；产物核对确认线上就是新代码——客户端含 `whileServed` / `lark-channel` / `settings.section` 且 `dsh-feishu/settings` **0 处**，宿主只剩 `dsh-feishu/provision`。**页面级行为**（保存、留空保留 Secret、删除 Secret、运行状态徽章）留给使用者在浏览器里目视确认。
+- **已知限制**：凭据徽章只反映**凭据域**（按 `appSecretRef` 引用查）。若某个部署仍在用已废弃的**字面量 `appSecret`**（明文写在配置里，原生表单快照会把它脱敏掉），徽章会显示「未配置」而通道其实可用——本机走 `appSecretRef`，不受影响。
 
 ### 新增：归档运行中的会话先问「停止并归档」（`src/feishu-session.ts` / `src/i18n.ts`）
 
