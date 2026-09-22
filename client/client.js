@@ -30,6 +30,836 @@ __deepseek_ai_dsh_client_ui_primitives = __toESM(__deepseek_ai_dsh_client_ui_pri
 let react_jsx_runtime = require("react/jsx-runtime");
 react_jsx_runtime = __toESM(react_jsx_runtime);
 
+//#region src/client/LarkSettingsCard.tsx
+/**
+* Render the plugin's one-liner or its settings page, as the Plugins page asks.
+* @param props - the view asked for, locale copy, the form snapshot, and its actions.
+* @returns the one-liner, or the settings page.
+*/
+function LarkSettingsCard(props) {
+	const { t } = props;
+	const state = props.useLarkSettings((snapshot) => snapshot);
+	if (props.view === "summary") return t("subtitle");
+	const form = state.form;
+	const blocked = !state.writable;
+	const toolsOff = !form.showToolCalls;
+	/** One labelled toggle row: title + one-line hint, control on the right. */
+	const toggleRow = (options) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+		className: options.nested === true ? "dsh-feishu-toggle dsh-feishu-toggle-nested" : "dsh-feishu-toggle",
+		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+			className: "dsh-feishu-toggle-text",
+			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: "dsh-feishu-toggle-label",
+				children: options.label
+			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: "dsh-feishu-toggle-hint",
+				children: options.hint
+			})]
+		}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Switch, {
+			checked: options.checked,
+			onChange: options.onToggle,
+			label: options.label,
+			...options.disabled === true ? {
+				disabled: true,
+				...options.nested === true ? { title: t("requiresToolCalls") } : {}
+			} : {}
+		})]
+	});
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+		className: "dsh-feishu-settings",
+		"aria-labelledby": "dsh-feishu-title",
+		children: [
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("header", {
+				className: "dsh-feishu-header",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", {
+						id: "dsh-feishu-title",
+						children: t("title")
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: t("subtitle") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "dsh-feishu-pointer",
+						children: t("connectionMoved")
+					})
+				] })
+			}),
+			state.status === "loading" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-loading",
+				children: t("loading")
+			}) : null,
+			state.status !== "loading" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
+				onSubmit: (event) => {
+					event.preventDefault();
+					props.save();
+				},
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dsh-feishu-card",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("application") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dsh-feishu-grid",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("appId") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+									"aria-label": "appId",
+									disabled: blocked,
+									value: form.appId,
+									onChange: (event) => {
+										props.edit("appId", event.target.value);
+									},
+									autoComplete: "off"
+								})] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("domain") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+									"aria-label": "domain",
+									disabled: blocked,
+									value: form.domain,
+									onChange: (event) => {
+										props.edit("domain", event.target.value);
+									},
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "feishu",
+										children: "Feishu"
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "lark",
+										children: "Lark"
+									})]
+								})] })]
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("appSecret") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+								"aria-label": "appSecret",
+								type: "password",
+								disabled: blocked || !state.secret.writable,
+								value: state.secret.value,
+								onChange: (event) => {
+									props.setSecret(event.target.value);
+								},
+								autoComplete: "new-password",
+								placeholder: t("secretPlaceholder")
+							})] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dsh-feishu-credential",
+								"aria-label": state.secret.configured ? t("credentialConfigured") : t("credentialMissing"),
+								"data-state": state.secret.configured ? "configured" : "missing",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+										className: "dsh-feishu-credential-badge",
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dsh-feishu-credential-dot",
+											"aria-hidden": "true"
+										}), state.secret.configured ? t("credentialConfigured") : t("credentialMissing")]
+									}),
+									state.secret.source !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: state.secret.source }) : null,
+									!state.secret.writable ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("readOnly") }) : null
+								]
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dsh-feishu-card",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("access") }),
+							toggleRow({
+								label: t("requireMention"),
+								hint: t("requireMentionHint"),
+								checked: form.requireMention,
+								onToggle: (next) => {
+									props.edit("requireMention", next);
+								},
+								disabled: blocked
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("dmMode") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+								"aria-label": "dmMode",
+								disabled: blocked,
+								value: form.dmMode,
+								onChange: (event) => {
+									props.edit("dmMode", event.target.value);
+								},
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "open",
+										children: t("open")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "allowlist",
+										children: t("allowlist")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "disabled",
+										children: t("disabled")
+									})
+								]
+							})] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dsh-feishu-grid",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("groupAllowlist") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+									"aria-label": "groupAllowlist",
+									disabled: blocked,
+									value: form.groupAllowlist,
+									onChange: (event) => {
+										props.edit("groupAllowlist", event.target.value);
+									},
+									placeholder: t("onePerLine")
+								})] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("dmAllowlist") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+									"aria-label": "dmAllowlist",
+									disabled: blocked,
+									value: form.dmAllowlist,
+									onChange: (event) => {
+										props.edit("dmAllowlist", event.target.value);
+									},
+									placeholder: t("onePerLine")
+								})] })]
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("reactEmoji") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+								"aria-label": "reactEmoji",
+								disabled: blocked,
+								value: form.reactEmoji,
+								onChange: (event) => {
+									props.edit("reactEmoji", event.target.value);
+								},
+								placeholder: t("reactEmojiHint")
+							})] })
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dsh-feishu-card",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("display") }),
+							toggleRow({
+								label: t("showReasoning"),
+								hint: t("showReasoningHint"),
+								checked: form.showReasoning,
+								onToggle: (next) => {
+									props.edit("showReasoning", next);
+								},
+								disabled: blocked
+							}),
+							toggleRow({
+								label: t("showToolCalls"),
+								hint: t("showToolCallsHint"),
+								checked: form.showToolCalls,
+								onToggle: (next) => {
+									props.edit("showToolCalls", next);
+								},
+								disabled: blocked
+							}),
+							toggleRow({
+								label: t("showToolArgs"),
+								hint: t("showToolArgsHint"),
+								checked: form.showToolArgs,
+								onToggle: (next) => {
+									props.edit("showToolArgs", next);
+								},
+								disabled: blocked || toolsOff,
+								nested: true
+							}),
+							toggleRow({
+								label: t("showToolResults"),
+								hint: t("showToolResultsHint"),
+								checked: form.showToolResults,
+								onToggle: (next) => {
+									props.edit("showToolResults", next);
+								},
+								disabled: blocked || toolsOff,
+								nested: true
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+								"aria-label": "locale",
+								disabled: blocked,
+								value: form.locale,
+								onChange: (event) => {
+									props.edit("locale", event.target.value);
+								},
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "auto",
+										children: t("localeAuto")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "zh",
+										children: t("localeZh")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "en",
+										children: t("localeEn")
+									})
+								]
+							})] })
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("footer", {
+						className: "dsh-feishu-actions",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Button, {
+								variant: "primary",
+								type: "submit",
+								disabled: state.busy || blocked,
+								children: state.busy ? t("saving") : t("save")
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Button, {
+								variant: "outline",
+								type: "button",
+								disabled: state.busy || blocked || !state.secret.configured || !state.secret.writable,
+								onClick: () => {
+									props.removeSecret();
+								},
+								children: t("removeSecret")
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								role: "status",
+								"aria-live": "polite",
+								children: state.notice
+							})
+						]
+					})
+				]
+			}) : null
+		]
+	});
+}
+
+//#endregion
+//#region src/client/snapshot-store.ts
+/** One published snapshot plus its listener set. */
+var SnapshotStore = class {
+	listeners = /* @__PURE__ */ new Set();
+	snapshot;
+	/** @param initial - first published state. */
+	constructor(initial) {
+		this.snapshot = initial;
+	}
+	/** @returns the current snapshot, stable until the next publish. */
+	getSnapshot = () => this.snapshot;
+	/** @param listener - invoked after each publish. @returns the disposer. */
+	subscribe = (listener) => {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	};
+	/** @param next - replacement state; notifies only when the reference changes. */
+	set(next) {
+		if (next === this.snapshot) return;
+		this.snapshot = next;
+		for (const listener of [...this.listeners]) listener();
+	}
+};
+
+//#endregion
+//#region src/client/LarkSettingsCardController.ts
+/**
+* Namespace of this plugin's Host entry (`options.id`): the profile row id,
+* which is what `settings.describe()` keys every descriptor on. Spelled here
+* rather than imported — the client half must not depend on a Host module.
+*/
+const LARK_SETTINGS_NAMESPACE = "lark-channel";
+/** Credential reference the plugin resolves when the section names none. */
+const LARK_APP_SECRET_REF = "DSH_LARK_APP_SECRET";
+/** The field order every save walks; also the only keys a save may write. */
+const EDITABLE_FIELDS = [
+	"appId",
+	"domain",
+	"requireMention",
+	"dmMode",
+	"groupAllowlist",
+	"dmAllowlist",
+	"reactEmoji",
+	"showReasoning",
+	"showToolCalls",
+	"showToolArgs",
+	"showToolResults",
+	"locale"
+];
+/** Bridges the `lark-channel` form and the credentials domain onto the page. */
+var LarkSettingsCardController = class {
+	store;
+	unsubscribeScope;
+	/** Fields the user edited since the last load; absent keys keep the Host value. */
+	edits = {};
+	/** Staged secret literal; blank means "keep whatever the Host holds". */
+	secretText = "";
+	credential = {
+		ref: "",
+		configured: false,
+		writable: true
+	};
+	busy = false;
+	noticeKey;
+	noticeDetail;
+	/**
+	* @param scope - the bound `lark-channel` settings form.
+	* @param host - the page plugin's context slice owning `remote.credentials`.
+	* @param t - the plugin's dictionary translator.
+	*/
+	constructor(scope, host, t) {
+		this.scope = scope;
+		this.host = host;
+		this.t = t;
+		this.store = new SnapshotStore(this.projection());
+		this.unsubscribeScope = scope.subscribe(() => {
+			this.onScopeChange();
+		});
+		this.onScopeChange();
+	}
+	/**
+	* Build the face the page's slot registration injects.
+	* @returns the page's snapshot observable and its actions.
+	*/
+	inject() {
+		return {
+			hooks: { larkSettings: this.store },
+			edit: (field, value) => {
+				this.edit(field, value);
+			},
+			setSecret: (value) => {
+				this.setSecret(value);
+			},
+			save: () => this.save(),
+			removeSecret: () => this.removeSecret()
+		};
+	}
+	/**
+	* Stage one edited control.
+	* @param field - control key.
+	* @param value - staged value.
+	*/
+	edit(field, value) {
+		const edits = { ...this.edits };
+		edits[field] = value;
+		this.edits = edits;
+		this.clearNotice();
+		this.publish();
+	}
+	/**
+	* Stage the secret literal. Leaving it blank never clears a stored secret;
+	* the separate remove control is the only way to clear one.
+	* @param value - staged literal.
+	*/
+	setSecret(value) {
+		this.secretText = value;
+		this.clearNotice();
+		this.publish();
+	}
+	/**
+	* Write every edited field in one revision-fenced mutate, then the staged
+	* secret when the user typed one. A refused mutate leaves the edits staged
+	* for a retry and does not write the secret.
+	* @returns a promise settling when the save attempt is reported.
+	*/
+	async save() {
+		if (this.busy) return;
+		this.busy = true;
+		this.noticeKey = "saving";
+		this.noticeDetail = void 0;
+		this.publish();
+		try {
+			const ops = this.buildOps();
+			const accepted = ops.length === 0 ? true : await this.scope.mutate(ops, this.scope.getSnapshot().revision);
+			let secretWritten = true;
+			if (accepted && this.secretText !== "") secretWritten = await this.writeSecret();
+			if (accepted && secretWritten) {
+				this.edits = {};
+				this.secretText = "";
+				this.noticeKey = "saved";
+				this.noticeDetail = void 0;
+			} else this.noticeKey = "saveFailed";
+		} catch (error) {
+			this.noticeKey = "saveFailed";
+			this.noticeDetail = messageOf$1(error);
+		} finally {
+			this.busy = false;
+			this.publish();
+		}
+	}
+	/**
+	* Clear the stored credential through the credentials domain, then re-read
+	* whether the Host still holds one.
+	* @returns a promise settling when the attempt is reported.
+	*/
+	async removeSecret() {
+		if (this.busy) return;
+		this.busy = true;
+		this.noticeKey = "removing";
+		this.noticeDetail = void 0;
+		this.publish();
+		try {
+			const response = await this.host.remote.credentials.unset(this.credentialRef());
+			if (!response.ok) throw new Error(response.error.message);
+			await this.readCredential();
+			this.noticeKey = "removed";
+		} catch (error) {
+			this.noticeKey = "removeFailed";
+			this.noticeDetail = messageOf$1(error);
+		} finally {
+			this.busy = false;
+			this.publish();
+		}
+	}
+	/**
+	* Re-read after the Host reports a change to the reference this page watches.
+	* @param ref - the reference the Host reports as changed.
+	*/
+	refreshCredential(ref) {
+		if (ref !== this.credential.ref) return;
+		this.readCredential();
+	}
+	/**
+	* Re-read the credential the section currently names.
+	*
+	* The scan-to-configure flow completes on another surface (the Plugins detail
+	* page) and the Host writes the secret there, so the badge has to be told.
+	*/
+	rereadCredential() {
+		this.readCredential();
+	}
+	/** Release the form subscription. */
+	dispose() {
+		this.unsubscribeScope();
+	}
+	/** Re-read the credential when the reference the section names changes. */
+	async onScopeChange() {
+		const ref = this.credentialRef();
+		if (ref !== this.credential.ref) {
+			this.credential = {
+				ref,
+				configured: false,
+				writable: true
+			};
+			this.publish();
+			await this.readCredential();
+			return;
+		}
+		this.publish();
+	}
+	/**
+	* Ask the credentials domain about the reference the section currently
+	* names. The answer is stored with the reference it describes, so a stale
+	* response for another reference is dropped.
+	*/
+	async readCredential() {
+		const ref = this.credentialRef();
+		try {
+			const response = await this.host.remote.credentials.describe([ref]);
+			if (!response.ok || ref !== this.credentialRef()) return;
+			const view = response.value[ref];
+			const source = view?.source;
+			this.credential = {
+				ref,
+				configured: view?.configured ?? false,
+				writable: view?.writable ?? true,
+				...source !== void 0 ? { source } : {}
+			};
+			this.publish();
+		} catch {}
+	}
+	/** @returns the credential reference the section names, or the plugin default. */
+	credentialRef() {
+		const declared = this.scope.getSnapshot().value?.appSecretRef;
+		return declared !== void 0 && declared.length > 0 ? declared : LARK_APP_SECRET_REF;
+	}
+	/** @returns the operations for exactly the fields the user edited. */
+	buildOps() {
+		const form = this.formValues();
+		const ops = [];
+		for (const field of EDITABLE_FIELDS) {
+			if (!Object.hasOwn(this.edits, field)) continue;
+			ops.push({
+				op: "set",
+				path: [field],
+				value: writeValue(field, form)
+			});
+		}
+		return ops;
+	}
+	/**
+	* Write the staged secret, then re-read whether the Host now holds one.
+	* @returns whether the credentials domain accepted the write.
+	*/
+	async writeSecret() {
+		const response = await this.host.remote.credentials.set(this.credentialRef(), this.secretText);
+		await this.readCredential();
+		if (!response.ok) {
+			this.noticeDetail = response.error.message;
+			return false;
+		}
+		return this.credential.configured;
+	}
+	/** @returns the staged form values, defaults and Host values folded under the edits. */
+	formValues() {
+		const value = this.scope.getSnapshot().value;
+		return {
+			appId: value?.appId ?? "",
+			domain: value?.domain ?? "feishu",
+			requireMention: value?.requireMention ?? true,
+			dmMode: value?.dmMode ?? "open",
+			groupAllowlist: (value?.groupAllowlist ?? []).join("\n"),
+			dmAllowlist: (value?.dmAllowlist ?? []).join("\n"),
+			reactEmoji: value?.reactEmoji ?? "",
+			showReasoning: value?.showReasoning ?? true,
+			showToolCalls: value?.showToolCalls ?? true,
+			showToolArgs: value?.showToolArgs ?? true,
+			showToolResults: value?.showToolResults ?? true,
+			locale: value?.locale ?? "auto",
+			...this.edits
+		};
+	}
+	/** @returns the published page state. */
+	projection() {
+		const snapshot = this.scope.getSnapshot();
+		const source = this.credential.source;
+		return {
+			status: snapshot.status,
+			writable: snapshot.writable,
+			form: this.formValues(),
+			secret: {
+				value: this.secretText,
+				configured: this.credential.configured,
+				writable: this.credential.writable,
+				...source !== void 0 ? { source } : {}
+			},
+			busy: this.busy,
+			notice: this.noticeText()
+		};
+	}
+	/** @returns the localized notice line. */
+	noticeText() {
+		const head = this.noticeKey === void 0 ? "" : this.t(this.noticeKey);
+		if (this.noticeDetail === void 0 || this.noticeDetail === "") return head;
+		return head === "" ? this.noticeDetail : `${head}: ${this.noticeDetail}`;
+	}
+	/** Drop any staged notice (edits and discards invalidate it). */
+	clearNotice() {
+		this.noticeKey = void 0;
+		this.noticeDetail = void 0;
+	}
+	/** Publish a fresh projection. */
+	publish() {
+		this.store.set(this.projection());
+	}
+};
+/** @param value - one staged form value. @returns its wire shape for a `set` op. */
+function writeValue(field, form) {
+	switch (field) {
+		case "appId": return form.appId.trim();
+		case "groupAllowlist": return lines(form.groupAllowlist);
+		case "dmAllowlist": return lines(form.dmAllowlist);
+		default: return form[field];
+	}
+}
+/** @param value - textarea content. @returns trimmed non-empty lines. */
+function lines(value) {
+	return value.split(/\n/u).map((item) => item.trim()).filter(Boolean);
+}
+/** @param error - a thrown value. @returns its message. */
+function messageOf$1(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+
+//#endregion
+//#region src/client/LarkChannelStatusController.ts
+/** The plugin's bounded HTTP route: channel runtime state plus provisioning. */
+const CHANNEL_STATUS_PATH = "/dsh-feishu/provision";
+/** Poll interval while the scan-to-configure flow is in flight. */
+const PROVISION_POLL_MS = 2e3;
+/** Bound on one channel-status request; a hung request must not pin a pending promise. */
+const CHANNEL_STATUS_TIMEOUT_MS = 1e4;
+/** Whether a provisioning run is still moving and therefore worth polling. */
+function isProvisionActive(phase) {
+	return phase === "waiting" || phase === "configuring";
+}
+/** Publishes the live channel status and drives the scan-to-configure flow. */
+var LarkChannelStatusController = class {
+	store;
+	view;
+	runtime = { state: "connecting" };
+	provision = { phase: "idle" };
+	loading = true;
+	provisioning = false;
+	statusFailed = false;
+	noticeKey;
+	noticeDetail;
+	timer;
+	subscribers = 0;
+	disposed = false;
+	/**
+	* @param t - the plugin's dictionary translator.
+	* @param deps - plugin-side collaborators; every one is optional.
+	*/
+	constructor(t, deps = {}) {
+		this.t = t;
+		this.deps = deps;
+		this.store = new SnapshotStore(this.projection());
+		this.view = {
+			getSnapshot: this.store.getSnapshot,
+			subscribe: this.subscribe
+		};
+	}
+	/**
+	* Build the face the detail entries inject.
+	* @returns the status observable and its actions.
+	*/
+	face() {
+		return {
+			hooks: { channelStatus: this.view },
+			startProvision: () => this.startProvision()
+		};
+	}
+	/**
+	* Start the scan-to-configure flow and begin polling its progress.
+	* @returns a promise settling when the start request is reported.
+	*/
+	async startProvision() {
+		if (this.disposed) return;
+		this.provisioning = true;
+		this.clearNotice();
+		this.publish();
+		try {
+			const response = await fetchChannelStatus({
+				method: "POST",
+				headers: { accept: "application/json" }
+			});
+			const value = await response.json();
+			if (!response.ok) throw new Error(value.error ?? this.t("provisionFailed"));
+			this.adoptStatus(value);
+			this.loading = false;
+			this.beginPolling();
+		} catch (error) {
+			this.noticeDetail = messageOf(error);
+			this.noticeKey = void 0;
+		} finally {
+			this.provisioning = false;
+			this.publish();
+		}
+	}
+	/** Stop the provisioning poll; the route reads carry their own abort deadline. */
+	dispose() {
+		this.disposed = true;
+		this.stopPolling();
+	}
+	/**
+	* The view's `subscribe`: the first subscriber starts the read, the last one
+	* ends the poll. Both halves are needed — the read keeps a page that never
+	* polls fresh, and the poll must not outlive the page that asked for it.
+	*/
+	subscribe = (listener) => {
+		const release = this.store.subscribe(listener);
+		this.subscribers += 1;
+		if (this.subscribers === 1) this.activate();
+		return () => {
+			release();
+			this.subscribers -= 1;
+			if (this.subscribers === 0) this.stopPolling();
+		};
+	};
+	/** Read the status once, then resume polling when a run is already in flight. */
+	async activate() {
+		await this.refreshStatus(false);
+		if (!this.disposed && isProvisionActive(this.provision.phase)) this.beginPolling();
+	}
+	/**
+	* Read the channel status route once.
+	* @param polling - true for a poll tick, false for an on-demand read.
+	*/
+	async refreshStatus(polling) {
+		if (this.disposed) return;
+		try {
+			const response = await fetchChannelStatus({
+				headers: { accept: "application/json" },
+				cache: "no-store"
+			});
+			const value = await response.json();
+			if (!response.ok) throw new Error(value.error ?? this.t("loadFailed"));
+			this.adoptStatus(value);
+			if (this.statusFailed) {
+				this.statusFailed = false;
+				this.noticeKey = void 0;
+				this.noticeDetail = void 0;
+			}
+			const phase = this.provision.phase;
+			if (polling && !isProvisionActive(phase)) {
+				this.stopPolling();
+				if (phase === "done") this.deps.onProvisionCompleted?.();
+			}
+		} catch (error) {
+			this.statusFailed = true;
+			this.noticeKey = "loadFailed";
+			this.noticeDetail = messageOf(error);
+		} finally {
+			this.loading = false;
+			this.publish();
+		}
+	}
+	/** @param value - a channel status payload; absent halves keep their last state. */
+	adoptStatus(value) {
+		if (value.runtime !== void 0) this.runtime = value.runtime;
+		if (value.provision !== void 0) this.provision = value.provision;
+		this.publish();
+	}
+	/** Begin polling the channel status route on the fixed cadence. */
+	beginPolling() {
+		if (this.disposed) return;
+		this.stopPolling();
+		this.timer = setInterval(() => {
+			this.refreshStatus(true);
+		}, PROVISION_POLL_MS);
+	}
+	/** Stop any provisioning poll. */
+	stopPolling() {
+		if (this.timer === void 0) return;
+		clearInterval(this.timer);
+		this.timer = void 0;
+	}
+	/** Drop any staged notice (a new attempt invalidates the previous one). */
+	clearNotice() {
+		this.noticeKey = void 0;
+		this.noticeDetail = void 0;
+		this.statusFailed = false;
+	}
+	/** @returns the published status state. */
+	projection() {
+		return {
+			loading: this.loading,
+			runtime: this.runtime,
+			provision: this.provision,
+			provisioning: this.provisioning,
+			notice: this.noticeText()
+		};
+	}
+	/** @returns the localized notice line. */
+	noticeText() {
+		const head = this.noticeKey === void 0 ? "" : this.t(this.noticeKey);
+		if (this.noticeDetail === void 0 || this.noticeDetail === "") return head;
+		return head === "" ? this.noticeDetail : `${head}: ${this.noticeDetail}`;
+	}
+	/** Publish a fresh projection. */
+	publish() {
+		this.store.set(this.projection());
+	}
+};
+/** @param error - a thrown value. @returns its message. */
+function messageOf(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+/**
+* One bounded request to the plugin's channel-status route. The route is
+* loopback-only, but a request that never settles would still leave a pending
+* promise behind, so every read carries its own abort deadline.
+* @param init - request init merged over the abort signal.
+* @returns the response.
+*/
+async function fetchChannelStatus(init) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => {
+		controller.abort();
+	}, CHANNEL_STATUS_TIMEOUT_MS);
+	try {
+		return await fetch(CHANNEL_STATUS_PATH, {
+			...init,
+			signal: controller.signal
+		});
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+//#endregion
 //#region node_modules/qrcode.react/lib/esm/index.js
 var __defProp = Object.defineProperty;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
@@ -990,9 +1820,9 @@ function getImageSettings(cells, size, margin, imageSettings) {
 	const defaultSize = Math.floor(size * DEFAULT_IMG_SCALE);
 	const scale = numCells / size;
 	const w = (imageSettings.width || defaultSize) * scale;
-	const h$1 = (imageSettings.height || defaultSize) * scale;
+	const h = (imageSettings.height || defaultSize) * scale;
 	const x = imageSettings.x == null ? cells.length / 2 - w / 2 : imageSettings.x * scale;
-	const y = imageSettings.y == null ? cells.length / 2 - h$1 / 2 : imageSettings.y * scale;
+	const y = imageSettings.y == null ? cells.length / 2 - h / 2 : imageSettings.y * scale;
 	const opacity = imageSettings.opacity == null ? 1 : imageSettings.opacity;
 	let excavation = null;
 	if (imageSettings.excavate) {
@@ -1002,14 +1832,14 @@ function getImageSettings(cells, size, margin, imageSettings) {
 			x: floorX,
 			y: floorY,
 			w: Math.ceil(w + x - floorX),
-			h: Math.ceil(h$1 + y - floorY)
+			h: Math.ceil(h + y - floorY)
 		};
 	}
 	const crossOrigin = imageSettings.crossOrigin;
 	return {
 		x,
 		y,
-		h: h$1,
+		h,
 		w,
 		excavation,
 		opacity,
@@ -1212,784 +2042,188 @@ var QRCodeSVG = react.default.forwardRef(function QRCodeSVG2(props, forwardedRef
 QRCodeSVG.displayName = "QRCodeSVG";
 
 //#endregion
-//#region src/client/LarkSettingsCard.tsx
+//#region src/client/plugin-detail-contract.ts
+/** This plugin's npm package name: the subject every entry here answers to. */
+const LARK_PLUGIN_PACKAGE = "@starxer/chatterbox4dsh";
 /**
-* Render the plugin's one-liner or its settings page, as the Plugins page asks.
-* @param props - the view asked for, locale copy, the form snapshot, and its actions.
-* @returns the one-liner, or the settings page.
+* Whether one opened detail page is about this plugin.
+*
+* This bundle declares a single row, so its own page and that row's page are
+* the only two subjects it has anything to show for. An official item is never
+* ours: this plugin occupies no `plugins.item` entry.
+* @param subject - the open page's subject, when the owner supplies one.
+* @returns true for this bundle and its rows.
 */
-function LarkSettingsCard(props) {
-	const { t } = props;
-	const state = props.useLarkSettings((snapshot) => snapshot);
-	if (props.view === "summary") return t("subtitle");
-	const form = state.form;
-	const blocked = !state.writable;
-	const toolsOff = !form.showToolCalls;
-	const provisionActive = state.provision.phase === "waiting" || state.provision.phase === "configuring";
-	/** One labelled toggle row: title + one-line hint, control on the right. */
-	const toggleRow = (options) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-		className: options.nested === true ? "dsh-feishu-toggle dsh-feishu-toggle-nested" : "dsh-feishu-toggle",
-		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-			className: "dsh-feishu-toggle-text",
-			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				className: "dsh-feishu-toggle-label",
-				children: options.label
-			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				className: "dsh-feishu-toggle-hint",
-				children: options.hint
-			})]
-		}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Switch, {
-			checked: options.checked,
-			onChange: options.onToggle,
-			label: options.label,
-			...options.disabled === true ? {
-				disabled: true,
-				...options.nested === true ? { title: t("requiresToolCalls") } : {}
-			} : {}
-		})]
+function isLarkSubject(subject) {
+	if (subject === void 0) return false;
+	return (subject.kind === "bundle" || subject.kind === "row") && subject.pkg.name === LARK_PLUGIN_PACKAGE;
+}
+
+//#endregion
+//#region src/client/LarkPluginDetail.tsx
+/**
+* Connection state beside a detail page's title.
+* @param props - the open subject, the status snapshot, and locale copy.
+* @returns the status pill, or null for a subject that is not this plugin's.
+*/
+function LarkConnectionBadge(props) {
+	if (!isLarkSubject(props.subject)) return null;
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LarkConnectionBadgeBody, { ...props });
+}
+/**
+* Page header control: start — or re-run — the scan-to-configure flow.
+* @param props - the open subject, the status snapshot, and locale copy.
+* @returns the control, or null for a subject that is not this plugin's.
+*/
+function LarkConnectionAction(props) {
+	if (!isLarkSubject(props.subject)) return null;
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LarkConnectionActionBody, { ...props });
+}
+/**
+* The section under a detail page's own content: connection state and the
+* authorization QR code. The flow is started from the header control, so this
+* section carries no second button for the same thing.
+* @param props - the open subject, the status snapshot, and locale copy.
+* @returns the section, or null for a subject that is not this plugin's.
+*/
+function LarkChannelSection(props) {
+	if (!isLarkSubject(props.subject)) return null;
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LarkChannelSectionBody, { ...props });
+}
+/** @param props - the bound status face and locale copy. @returns the status pill. */
+function LarkConnectionBadgeBody(props) {
+	const state = props.useChannelStatus((snapshot) => snapshot);
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusPill, {
+		t: props.t,
+		state
 	});
+}
+/** @param props - the bound status face and locale copy. @returns the scan control. */
+function LarkConnectionActionBody(props) {
+	const { t } = props;
+	const state = props.useChannelStatus((snapshot) => snapshot);
+	const provision = state.provision;
+	const repeated = provision.phase === "done" || provision.phase === "error" || state.runtime.state === "connected";
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Button, {
+		variant: "outline",
+		size: "sm",
+		disabled: state.provisioning || isProvisionActive(provision.phase),
+		onClick: () => {
+			props.startProvision();
+		},
+		children: state.provisioning ? t("provisionStarting") : repeated ? t("rescan") : t("scanToConfigure")
+	});
+}
+/** @param props - the bound status face and locale copy. @returns the connection section. */
+function LarkChannelSectionBody(props) {
+	const { t } = props;
+	const state = props.useChannelStatus((snapshot) => snapshot);
+	const provision = state.provision;
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
-		className: "dsh-feishu-settings",
-		"aria-labelledby": "dsh-feishu-title",
+		className: "dsh-feishu-detail-section",
+		"aria-labelledby": "dsh-feishu-connection-title",
 		children: [
-			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("header", {
-				className: "dsh-feishu-header",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", {
-					id: "dsh-feishu-title",
-					children: t("title")
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: t("subtitle") })] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dsh-feishu-runtime",
-					"aria-label": t("runtimeStatus"),
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.StateDot, {
-						state: dotState(state.runtime.state),
-						size: 8
-					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: state.runtime.state })]
+			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dsh-feishu-detail-head",
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h4", {
+					id: "dsh-feishu-connection-title",
+					children: t("connectionTitle")
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusPill, {
+					t,
+					state
 				})]
 			}),
-			state.status === "loading" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				className: "dsh-feishu-loading",
-				children: t("loading")
-			}) : null,
-			state.status !== "loading" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
-				onSubmit: (event) => {
-					event.preventDefault();
-					props.save();
-				},
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-detail-hint",
+				children: t("connectionHint")
+			}),
+			provision.phase === "waiting" && provision.qrUrl !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dsh-feishu-qr",
 				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dsh-feishu-card",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("application") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dsh-feishu-provision",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Button, {
-										variant: "outline",
-										type: "button",
-										disabled: state.provisionBusy || provisionActive || blocked,
-										onClick: () => {
-											props.startProvision();
-										},
-										children: state.provisionBusy ? t("provisionStarting") : t("scanToConfigure")
-									}),
-									state.provision.phase === "waiting" && state.provision.qrUrl !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dsh-feishu-qr",
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(QRCodeSVG, {
-												value: state.provision.qrUrl,
-												size: 220,
-												marginSize: 1
-											}),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: t("scanHint") }),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
-												className: "dsh-feishu-qr-link",
-												children: state.provision.qrUrl
-											})
-										]
-									}) : null,
-									state.provision.phase === "configuring" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-										className: "dsh-feishu-detail",
-										children: t("provisioning")
-									}) : null,
-									state.provision.phase === "error" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
-										className: "dsh-feishu-detail dsh-feishu-error",
-										children: [t("provisionFailed"), state.provision.message !== void 0 ? `: ${state.provision.message}` : ""]
-									}) : null
-								]
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dsh-feishu-grid",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("appId") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-									"aria-label": "appId",
-									disabled: blocked,
-									value: form.appId,
-									onChange: (event) => {
-										props.edit("appId", event.target.value);
-									},
-									autoComplete: "off"
-								})] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("domain") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-									"aria-label": "domain",
-									disabled: blocked,
-									value: form.domain,
-									onChange: (event) => {
-										props.edit("domain", event.target.value);
-									},
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "feishu",
-										children: "Feishu"
-									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "lark",
-										children: "Lark"
-									})]
-								})] })]
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("appSecret") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-								"aria-label": "appSecret",
-								type: "password",
-								disabled: blocked || !state.secret.writable,
-								value: state.secret.value,
-								onChange: (event) => {
-									props.setSecret(event.target.value);
-								},
-								autoComplete: "new-password",
-								placeholder: t("secretPlaceholder")
-							})] }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dsh-feishu-credential",
-								"aria-label": state.secret.configured ? t("credentialConfigured") : t("credentialMissing"),
-								"data-state": state.secret.configured ? "configured" : "missing",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										className: "dsh-feishu-credential-badge",
-										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dsh-feishu-credential-dot",
-											"aria-hidden": "true"
-										}), state.secret.configured ? t("credentialConfigured") : t("credentialMissing")]
-									}),
-									state.secret.source !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: state.secret.source }) : null,
-									!state.secret.writable ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("readOnly") }) : null
-								]
-							})
-						]
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(QRCodeSVG, {
+						value: provision.qrUrl,
+						size: 220,
+						marginSize: 1
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dsh-feishu-card",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("access") }),
-							toggleRow({
-								label: t("requireMention"),
-								hint: t("requireMentionHint"),
-								checked: form.requireMention,
-								onToggle: (next) => {
-									props.edit("requireMention", next);
-								},
-								disabled: blocked
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("dmMode") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-								"aria-label": "dmMode",
-								disabled: blocked,
-								value: form.dmMode,
-								onChange: (event) => {
-									props.edit("dmMode", event.target.value);
-								},
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "open",
-										children: t("open")
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "allowlist",
-										children: t("allowlist")
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "disabled",
-										children: t("disabled")
-									})
-								]
-							})] }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dsh-feishu-grid",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("groupAllowlist") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-									"aria-label": "groupAllowlist",
-									disabled: blocked,
-									value: form.groupAllowlist,
-									onChange: (event) => {
-										props.edit("groupAllowlist", event.target.value);
-									},
-									placeholder: t("onePerLine")
-								})] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("dmAllowlist") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-									"aria-label": "dmAllowlist",
-									disabled: blocked,
-									value: form.dmAllowlist,
-									onChange: (event) => {
-										props.edit("dmAllowlist", event.target.value);
-									},
-									placeholder: t("onePerLine")
-								})] })]
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("reactEmoji") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
-								"aria-label": "reactEmoji",
-								disabled: blocked,
-								value: form.reactEmoji,
-								onChange: (event) => {
-									props.edit("reactEmoji", event.target.value);
-								},
-								placeholder: t("reactEmojiHint")
-							})] })
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dsh-feishu-card",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h3", { children: t("display") }),
-							toggleRow({
-								label: t("showReasoning"),
-								hint: t("showReasoningHint"),
-								checked: form.showReasoning,
-								onToggle: (next) => {
-									props.edit("showReasoning", next);
-								},
-								disabled: blocked
-							}),
-							toggleRow({
-								label: t("showToolCalls"),
-								hint: t("showToolCallsHint"),
-								checked: form.showToolCalls,
-								onToggle: (next) => {
-									props.edit("showToolCalls", next);
-								},
-								disabled: blocked
-							}),
-							toggleRow({
-								label: t("showToolArgs"),
-								hint: t("showToolArgsHint"),
-								checked: form.showToolArgs,
-								onToggle: (next) => {
-									props.edit("showToolArgs", next);
-								},
-								disabled: blocked || toolsOff,
-								nested: true
-							}),
-							toggleRow({
-								label: t("showToolResults"),
-								hint: t("showToolResultsHint"),
-								checked: form.showToolResults,
-								onToggle: (next) => {
-									props.edit("showToolResults", next);
-								},
-								disabled: blocked || toolsOff,
-								nested: true
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-								"aria-label": "locale",
-								disabled: blocked,
-								value: form.locale,
-								onChange: (event) => {
-									props.edit("locale", event.target.value);
-								},
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "auto",
-										children: t("localeAuto")
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "zh",
-										children: t("localeZh")
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value: "en",
-										children: t("localeEn")
-									})
-								]
-							})] })
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("footer", {
-						className: "dsh-feishu-actions",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Button, {
-								variant: "primary",
-								type: "submit",
-								disabled: state.busy || blocked,
-								children: state.busy ? t("saving") : t("save")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Button, {
-								variant: "outline",
-								type: "button",
-								disabled: state.busy || blocked || !state.secret.configured || !state.secret.writable,
-								onClick: () => {
-									props.removeSecret();
-								},
-								children: t("removeSecret")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								role: "status",
-								"aria-live": "polite",
-								children: state.notice
-							})
-						]
-					}),
-					state.runtime.message !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-						className: "dsh-feishu-detail",
-						children: state.runtime.message
-					}) : null
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: t("scanHint") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
+						className: "dsh-feishu-qr-link",
+						children: provision.qrUrl
+					})
 				]
+			}) : null,
+			provision.phase === "configuring" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-detail",
+				children: t("provisioning")
+			}) : null,
+			provision.phase === "done" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-detail",
+				children: t("provisionDone")
+			}) : null,
+			provision.phase === "error" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				className: "dsh-feishu-detail dsh-feishu-error",
+				children: [t("provisionFailed"), provision.message !== void 0 ? `: ${provision.message}` : ""]
+			}) : null,
+			state.runtime.message !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-detail",
+				children: state.runtime.message
+			}) : null,
+			state.notice !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-detail dsh-feishu-error",
+				role: "status",
+				children: state.notice
 			}) : null
 		]
 	});
 }
-/** @param state - Feishu connection state. @returns the state dot's tone. */
-function dotState(state) {
-	switch (state) {
-		case "connected": return "done";
+/** One read-only status pill: a tone dot plus its localized label. */
+function StatusPill({ t, state }) {
+	const label = t(statusLabelKey(state));
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+		className: "dsh-feishu-status",
+		"data-state": statusTone(state),
+		"aria-label": label,
+		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.StateDot, {
+			state: statusDot(state),
+			size: 8
+		}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: label })]
+	});
+}
+/**
+* @param state - channel status. @returns the dictionary key for its label.
+*
+* `loading` wins over the reported state: before the first read settles the
+* runtime still holds its initial `connecting`, and claiming the channel is
+* connecting while nothing has been asked would be a guess.
+*/
+function statusLabelKey(state) {
+	if (state.loading) return "statusReading";
+	switch (state.runtime.state) {
+		case "connected": return "statusConnected";
+		case "connecting": return "statusConnecting";
+		case "unconfigured": return "statusUnconfigured";
+		case "stopped": return "statusStopped";
+		default: return "statusOffline";
+	}
+}
+/** @param state - channel status. @returns the pill's palette. */
+function statusTone(state) {
+	if (state.loading || state.runtime.state === "connecting") return "pending";
+	switch (state.runtime.state) {
+		case "connected": return "connected";
 		case "error": return "error";
+		default: return "idle";
+	}
+}
+/** @param state - channel status. @returns the state dot's tone. */
+function statusDot(state) {
+	if (state.loading) return "ongoing";
+	switch (state.runtime.state) {
+		case "connected": return "done";
 		case "connecting": return "ongoing";
-		default: return "warning";
-	}
-}
-
-//#endregion
-//#region src/client/LarkSettingsCardController.ts
-/**
-* Namespace of this plugin's Host entry (`options.id`): the profile row id,
-* which is what `settings.describe()` keys every descriptor on. Spelled here
-* rather than imported — the client half must not depend on a Host module.
-*/
-const LARK_SETTINGS_NAMESPACE = "lark-channel";
-/** Credential reference the plugin resolves when the section names none. */
-const LARK_APP_SECRET_REF = "DSH_LARK_APP_SECRET";
-/** The plugin's bounded HTTP route: channel runtime state plus provisioning. */
-const CHANNEL_STATUS_PATH = "/dsh-feishu/provision";
-/** Poll interval while the scan-to-configure flow is in flight. */
-const PROVISION_POLL_MS = 2e3;
-/** Bound on one channel-status request; a hung request must not pin a pending promise. */
-const CHANNEL_STATUS_TIMEOUT_MS = 1e4;
-/** The field order every save walks; also the only keys a save may write. */
-const EDITABLE_FIELDS = [
-	"appId",
-	"domain",
-	"requireMention",
-	"dmMode",
-	"groupAllowlist",
-	"dmAllowlist",
-	"reactEmoji",
-	"showReasoning",
-	"showToolCalls",
-	"showToolArgs",
-	"showToolResults",
-	"locale"
-];
-/** Minimal `getSnapshot` + `subscribe` store the slots renderer binds as a hook. */
-var CardStore = class {
-	listeners = /* @__PURE__ */ new Set();
-	snapshot;
-	/** @param initial - first published state. */
-	constructor(initial) {
-		this.snapshot = initial;
-	}
-	/** @returns the current snapshot, stable until the next publish. */
-	getSnapshot = () => this.snapshot;
-	/** @param listener - invoked after each publish. @returns the disposer. */
-	subscribe = (listener) => {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	};
-	/** @param next - replacement state; notifies only when the reference changes. */
-	set(next) {
-		if (next === this.snapshot) return;
-		this.snapshot = next;
-		for (const listener of [...this.listeners]) listener();
-	}
-};
-/** Bridges the `lark-channel` form, the credentials domain, and the channel status route onto the page. */
-var LarkSettingsCardController = class {
-	store;
-	unsubscribeScope;
-	/** Fields the user edited since the last load; absent keys keep the Host value. */
-	edits = {};
-	/** Staged secret literal; blank means "keep whatever the Host holds". */
-	secretText = "";
-	credential = {
-		ref: "",
-		configured: false,
-		writable: true
-	};
-	runtime = { state: "connecting" };
-	provision = { phase: "idle" };
-	busy = false;
-	provisionBusy = false;
-	noticeKey;
-	noticeDetail;
-	statusFailed = false;
-	timer;
-	/**
-	* @param scope - the bound `lark-channel` settings form.
-	* @param host - the page plugin's context slice owning `remote.credentials`.
-	* @param t - the plugin's dictionary translator.
-	*/
-	constructor(scope, host, t) {
-		this.scope = scope;
-		this.host = host;
-		this.t = t;
-		this.store = new CardStore(this.projection());
-		this.unsubscribeScope = scope.subscribe(() => {
-			this.onScopeChange();
-		});
-		this.onScopeChange();
-		this.readChannelStatus();
-	}
-	/**
-	* Build the face the page's slot registration injects.
-	* @returns the page's snapshot observable and its actions.
-	*/
-	inject() {
-		return {
-			hooks: { larkSettings: this.store },
-			edit: (field, value) => {
-				this.edit(field, value);
-			},
-			setSecret: (value) => {
-				this.setSecret(value);
-			},
-			save: () => this.save(),
-			removeSecret: () => this.removeSecret(),
-			startProvision: () => this.startProvision()
-		};
-	}
-	/**
-	* Stage one edited control.
-	* @param field - control key.
-	* @param value - staged value.
-	*/
-	edit(field, value) {
-		const edits = { ...this.edits };
-		edits[field] = value;
-		this.edits = edits;
-		this.clearNotice();
-		this.publish();
-	}
-	/**
-	* Stage the secret literal. Leaving it blank never clears a stored secret;
-	* the separate remove control is the only way to clear one.
-	* @param value - staged literal.
-	*/
-	setSecret(value) {
-		this.secretText = value;
-		this.clearNotice();
-		this.publish();
-	}
-	/**
-	* Write every edited field in one revision-fenced mutate, then the staged
-	* secret when the user typed one. A refused mutate leaves the edits staged
-	* for a retry and does not write the secret.
-	* @returns a promise settling when the save attempt is reported.
-	*/
-	async save() {
-		if (this.busy) return;
-		this.busy = true;
-		this.noticeKey = "saving";
-		this.noticeDetail = void 0;
-		this.publish();
-		try {
-			const ops = this.buildOps();
-			const accepted = ops.length === 0 ? true : await this.scope.mutate(ops, this.scope.getSnapshot().revision);
-			let secretWritten = true;
-			if (accepted && this.secretText !== "") secretWritten = await this.writeSecret();
-			if (accepted && secretWritten) {
-				this.edits = {};
-				this.secretText = "";
-				this.noticeKey = "saved";
-				this.noticeDetail = void 0;
-			} else this.noticeKey = "saveFailed";
-		} catch (error) {
-			this.noticeKey = "saveFailed";
-			this.noticeDetail = messageOf(error);
-		} finally {
-			this.busy = false;
-			this.publish();
-		}
-	}
-	/**
-	* Clear the stored credential through the credentials domain, then re-read
-	* whether the Host still holds one.
-	* @returns a promise settling when the attempt is reported.
-	*/
-	async removeSecret() {
-		if (this.busy) return;
-		this.busy = true;
-		this.noticeKey = "removing";
-		this.noticeDetail = void 0;
-		this.publish();
-		try {
-			const response = await this.host.remote.credentials.unset(this.credentialRef());
-			if (!response.ok) throw new Error(response.error.message);
-			await this.readCredential();
-			this.noticeKey = "removed";
-		} catch (error) {
-			this.noticeKey = "removeFailed";
-			this.noticeDetail = messageOf(error);
-		} finally {
-			this.busy = false;
-			this.publish();
-		}
-	}
-	/**
-	* Start the scan-to-configure flow and begin polling its progress.
-	* @returns a promise settling when the start request is reported.
-	*/
-	async startProvision() {
-		this.provisionBusy = true;
-		this.clearNotice();
-		this.publish();
-		try {
-			const response = await fetchChannelStatus({
-				method: "POST",
-				headers: { accept: "application/json" }
-			});
-			const value = await response.json();
-			if (!response.ok) throw new Error(value.error ?? this.t("provisionFailed"));
-			this.adoptStatus(value);
-			this.beginPolling();
-		} catch (error) {
-			this.noticeDetail = messageOf(error);
-			this.noticeKey = void 0;
-		} finally {
-			this.provisionBusy = false;
-			this.publish();
-		}
-	}
-	/**
-	* Re-read after the Host reports a change to the reference this page watches.
-	* @param ref - the reference the Host reports as changed.
-	*/
-	refreshCredential(ref) {
-		if (ref !== this.credential.ref) return;
-		this.readCredential();
-	}
-	/** Release the form subscription and any provisioning poll. */
-	dispose() {
-		this.stopPolling();
-		this.unsubscribeScope();
-	}
-	/** Re-read the credential when the reference the section names changes. */
-	async onScopeChange() {
-		const ref = this.credentialRef();
-		if (ref !== this.credential.ref) {
-			this.credential = {
-				ref,
-				configured: false,
-				writable: true
-			};
-			this.publish();
-			await this.readCredential();
-			return;
-		}
-		this.publish();
-	}
-	/**
-	* Ask the credentials domain about the reference the section currently
-	* names. The answer is stored with the reference it describes, so a stale
-	* response for another reference is dropped.
-	*/
-	async readCredential() {
-		const ref = this.credentialRef();
-		try {
-			const response = await this.host.remote.credentials.describe([ref]);
-			if (!response.ok || ref !== this.credentialRef()) return;
-			const view = response.value[ref];
-			const source = view?.source;
-			this.credential = {
-				ref,
-				configured: view?.configured ?? false,
-				writable: view?.writable ?? true,
-				...source !== void 0 ? { source } : {}
-			};
-			this.publish();
-		} catch {}
-	}
-	/** Read the channel status route once (runtime state plus provisioning). */
-	async readChannelStatus() {
-		await this.refreshStatus(false);
-	}
-	/** Poll the channel status route while provisioning is in flight. */
-	async pollChannelStatus() {
-		await this.refreshStatus(true);
-	}
-	/**
-	* @param polling - true for a poll tick, false for the initial read.
-	*/
-	async refreshStatus(polling) {
-		try {
-			const response = await fetchChannelStatus({
-				headers: { accept: "application/json" },
-				cache: "no-store"
-			});
-			const value = await response.json();
-			if (!response.ok) throw new Error(value.error ?? this.t("loadFailed"));
-			this.adoptStatus(value);
-			if (this.statusFailed) {
-				this.statusFailed = false;
-				this.noticeKey = void 0;
-				this.noticeDetail = void 0;
-			}
-			const phase = this.provision.phase;
-			if (polling && (phase === "done" || phase === "error" || phase === "idle")) {
-				this.stopPolling();
-				if (phase === "done") await this.readCredential();
-			}
-		} catch (error) {
-			this.statusFailed = true;
-			this.noticeKey = "loadFailed";
-			this.noticeDetail = messageOf(error);
-		}
-		this.publish();
-	}
-	/** @param value - a channel status payload; absent halves keep their last state. */
-	adoptStatus(value) {
-		if (value.runtime !== void 0) this.runtime = value.runtime;
-		if (value.provision !== void 0) this.provision = value.provision;
-		this.publish();
-	}
-	/** Begin polling the channel status route on the fixed cadence. */
-	beginPolling() {
-		this.stopPolling();
-		this.timer = setInterval(() => {
-			this.pollChannelStatus();
-		}, PROVISION_POLL_MS);
-	}
-	/** Stop any provisioning poll. */
-	stopPolling() {
-		if (this.timer === void 0) return;
-		clearInterval(this.timer);
-		this.timer = void 0;
-	}
-	/** @returns the credential reference the section names, or the plugin default. */
-	credentialRef() {
-		const declared = this.scope.getSnapshot().value?.appSecretRef;
-		return declared !== void 0 && declared.length > 0 ? declared : LARK_APP_SECRET_REF;
-	}
-	/** @returns the operations for exactly the fields the user edited. */
-	buildOps() {
-		const form = this.formValues();
-		const ops = [];
-		for (const field of EDITABLE_FIELDS) {
-			if (!Object.hasOwn(this.edits, field)) continue;
-			ops.push({
-				op: "set",
-				path: [field],
-				value: writeValue(field, form)
-			});
-		}
-		return ops;
-	}
-	/**
-	* Write the staged secret, then re-read whether the Host now holds one.
-	* @returns whether the credentials domain accepted the write.
-	*/
-	async writeSecret() {
-		const response = await this.host.remote.credentials.set(this.credentialRef(), this.secretText);
-		await this.readCredential();
-		if (!response.ok) {
-			this.noticeDetail = response.error.message;
-			return false;
-		}
-		return this.credential.configured;
-	}
-	/** @returns the staged form values, defaults and Host values folded under the edits. */
-	formValues() {
-		const value = this.scope.getSnapshot().value;
-		return {
-			appId: value?.appId ?? "",
-			domain: value?.domain ?? "feishu",
-			requireMention: value?.requireMention ?? true,
-			dmMode: value?.dmMode ?? "open",
-			groupAllowlist: (value?.groupAllowlist ?? []).join("\n"),
-			dmAllowlist: (value?.dmAllowlist ?? []).join("\n"),
-			reactEmoji: value?.reactEmoji ?? "",
-			showReasoning: value?.showReasoning ?? true,
-			showToolCalls: value?.showToolCalls ?? true,
-			showToolArgs: value?.showToolArgs ?? true,
-			showToolResults: value?.showToolResults ?? true,
-			locale: value?.locale ?? "auto",
-			...this.edits
-		};
-	}
-	/** @returns the published page state. */
-	projection() {
-		const snapshot = this.scope.getSnapshot();
-		const source = this.credential.source;
-		return {
-			status: snapshot.status,
-			writable: snapshot.writable,
-			form: this.formValues(),
-			secret: {
-				value: this.secretText,
-				configured: this.credential.configured,
-				writable: this.credential.writable,
-				...source !== void 0 ? { source } : {}
-			},
-			runtime: this.runtime,
-			provision: this.provision,
-			busy: this.busy,
-			provisionBusy: this.provisionBusy,
-			notice: this.noticeText()
-		};
-	}
-	/** @returns the localized notice line. */
-	noticeText() {
-		const head = this.noticeKey === void 0 ? "" : this.t(this.noticeKey);
-		if (this.noticeDetail === void 0 || this.noticeDetail === "") return head;
-		return head === "" ? this.noticeDetail : `${head}: ${this.noticeDetail}`;
-	}
-	/** Drop any staged notice (edits and discards invalidate it). */
-	clearNotice() {
-		this.noticeKey = void 0;
-		this.noticeDetail = void 0;
-		this.statusFailed = false;
-	}
-	/** Publish a fresh projection. */
-	publish() {
-		this.store.set(this.projection());
-	}
-};
-/** @param value - one staged form value. @returns its wire shape for a `set` op. */
-function writeValue(field, form) {
-	switch (field) {
-		case "appId": return form.appId.trim();
-		case "groupAllowlist": return lines(form.groupAllowlist);
-		case "dmAllowlist": return lines(form.dmAllowlist);
-		default: return form[field];
-	}
-}
-/** @param value - textarea content. @returns trimmed non-empty lines. */
-function lines(value) {
-	return value.split(/\n/u).map((item) => item.trim()).filter(Boolean);
-}
-/** @param error - a thrown value. @returns its message. */
-function messageOf(error) {
-	return error instanceof Error ? error.message : String(error);
-}
-/**
-* One bounded request to the plugin's channel-status route. The route is
-* loopback-only, but a request that never settles would still leave a pending
-* promise behind, so every read carries its own abort deadline.
-* @param init - request init merged over the abort signal.
-* @returns the response.
-*/
-async function fetchChannelStatus(init) {
-	const controller = new AbortController();
-	const timer = setTimeout(() => {
-		controller.abort();
-	}, CHANNEL_STATUS_TIMEOUT_MS);
-	try {
-		return await fetch(CHANNEL_STATUS_PATH, {
-			...init,
-			signal: controller.signal
-		});
-	} finally {
-		clearTimeout(timer);
+		case "error": return "error";
+		case "unconfigured": return "warning";
+		default: return "idle";
 	}
 }
 
@@ -1998,7 +2232,11 @@ async function fetchChannelStatus(init) {
 const CLIENT_CSS = `
 .dsh-feishu-settings{max-width:880px;padding:8px 2px 36px;color:var(--text-primary,#16181d)}
 .dsh-feishu-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:20px}.dsh-feishu-header h2{margin:0;font-size:22px}.dsh-feishu-header p{margin:6px 0 0;color:var(--text-secondary,#586174)}
-.dsh-feishu-runtime{display:flex;align-items:center;gap:8px;border:1px solid var(--border-subtle,#dfe3ea);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:600;white-space:nowrap}
+.dsh-feishu-status{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border-subtle,#dfe3ea);border-radius:999px;padding:4px 10px;font-size:12px;font-weight:700;white-space:nowrap}
+.dsh-feishu-status[data-state=connected]{color:var(--success-text,#137333);background:var(--success-surface,#e8f5e9);border-color:currentColor}
+.dsh-feishu-status[data-state=pending]{color:var(--warning-text,#9a6700);background:var(--warning-surface,#fff4ce);border-color:currentColor}
+.dsh-feishu-status[data-state=error]{color:var(--danger-text,#b3261e);background:var(--surface-secondary,#f2f4f7);border-color:currentColor}
+.dsh-feishu-status[data-state=idle]{color:var(--text-secondary,#586174);background:var(--surface-secondary,#f2f4f7)}
 .dsh-feishu-card{display:grid;gap:16px;margin:0 0 14px;padding:20px;border:1px solid var(--border-subtle,#dfe3ea);border-radius:12px;background:var(--surface-primary,#fff)}.dsh-feishu-card h3{margin:0;font-size:15px}
 .dsh-feishu-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.dsh-feishu-card label{display:grid;gap:7px;font-size:13px;font-weight:600}.dsh-feishu-card select,.dsh-feishu-card textarea{box-sizing:border-box;width:100%;border:1px solid var(--border-default,#cbd1dc);border-radius:8px;background:var(--surface-primary,#fff);color:inherit;font:inherit;padding:9px 11px}.dsh-feishu-card textarea{min-height:82px;resize:vertical}.dsh-feishu-card select:focus-visible,.dsh-feishu-card textarea:focus-visible{outline:2px solid var(--accent-primary,#3b72e8);outline-offset:2px}
 .dsh-feishu-check{display:flex!important;align-items:center;gap:9px}.dsh-feishu-check input{width:16px;height:16px}
@@ -2010,20 +2248,39 @@ const CLIENT_CSS = `
 .dsh-feishu-toggle button{flex:none;margin-top:2px}.dsh-feishu-credential{display:flex;align-items:center;gap:9px;color:var(--text-secondary,#586174);font-size:12px}.dsh-feishu-credential-badge{display:inline-flex;align-items:center;gap:7px;border:1px solid currentColor;border-radius:999px;padding:4px 9px;font-weight:700}.dsh-feishu-credential[data-state=configured] .dsh-feishu-credential-badge{color:var(--success-text,#137333);background:var(--success-surface,#e8f5e9)}.dsh-feishu-credential[data-state=missing] .dsh-feishu-credential-badge{color:var(--warning-text,#9a6700);background:var(--warning-surface,#fff4ce)}.dsh-feishu-credential-dot{width:7px;height:7px;border-radius:50%;background:currentColor}.dsh-feishu-credential code{padding:2px 6px;border-radius:5px;background:var(--surface-secondary,#f2f4f7)}
 .dsh-feishu-actions{display:flex;align-items:center;gap:10px;min-height:36px}.dsh-feishu-actions [role=status]{font-size:13px;color:var(--text-secondary,#586174)}.dsh-feishu-detail,.dsh-feishu-loading{color:var(--text-secondary,#586174);font-size:13px}
 .dsh-feishu-provision{display:grid;gap:12px;align-items:start}.dsh-feishu-provision>button{justify-self:start}.dsh-feishu-qr{display:grid;gap:8px;justify-items:center;padding:14px;border:1px dashed var(--border-default,#cbd1dc);border-radius:10px;background:var(--surface-secondary,#f2f4f7)}.dsh-feishu-qr svg{display:block}.dsh-feishu-qr p{margin:0;color:var(--text-secondary,#586174);font-size:13px}.dsh-feishu-qr-link{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-secondary,#586174)}.dsh-feishu-error{color:var(--danger-text,#b3261e)}
-@media(max-width:680px){.dsh-feishu-header{align-items:stretch;flex-direction:column}.dsh-feishu-runtime{align-self:flex-start}.dsh-feishu-grid{grid-template-columns:1fr}.dsh-feishu-actions{align-items:stretch;flex-direction:column}.dsh-feishu-actions button{width:100%}}
+.dsh-feishu-pointer{margin:10px 0 0;color:var(--text-secondary,#586174);font-size:13px}
+.dsh-feishu-detail-section{display:grid;gap:12px;padding:20px;border:1px solid var(--border-subtle,#dfe3ea);border-radius:12px;background:var(--surface-primary,#fff)}
+.dsh-feishu-detail-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.dsh-feishu-detail-head h4{margin:0;font-size:15px}
+.dsh-feishu-detail-hint{margin:0;color:var(--text-secondary,#586174);font-size:13px}
+@media(max-width:680px){.dsh-feishu-header{align-items:stretch;flex-direction:column}.dsh-feishu-grid{grid-template-columns:1fr}.dsh-feishu-actions{align-items:stretch;flex-direction:column}.dsh-feishu-actions button{width:100%}}
 @media(prefers-reduced-motion:reduce){.dsh-feishu-settings *{scroll-behavior:auto!important;transition:none!important}}
 `;
 
 //#endregion
 //#region src/client/index.ts
 const NS = "dsh-feishu";
+/**
+* Entry id every surface this plugin registers under. The Settings tab and the
+* three Plugins-detail contributions live in different slots, so one id is
+* unambiguous; it matches the profile row whose client half this is.
+*/
+const LARK_ENTRY_ID = "lark-channel";
 const dictionaries = {
 	zh: {
 		nav: "飞书与 Lark",
 		title: "飞书与 Lark",
 		subtitle: "配置消息渠道与卡片显示，保存后无需重启 Harness",
-		runtimeStatus: "运行状态",
-		loading: "正在读取配置......",
+		connectionMoved: "连接状态与扫码配置在「插件 → 飞书与 Lark」详情页。",
+		connectionTitle: "连接与扫码",
+		connectionHint: "扫码授权由飞书 App 完成：点本页右上角的「扫码配置」，二维码会显示在这里。",
+		rescan: "重新扫码",
+		provisionDone: "授权已完成",
+		statusReading: "读取中",
+		statusConnected: "已连接",
+		statusConnecting: "连接中",
+		statusUnconfigured: "未配置",
+		statusOffline: "未连接",
+		statusStopped: "已停止",
 		application: "应用凭据",
 		appId: "App ID",
 		domain: "平台",
@@ -2067,7 +2324,7 @@ const dictionaries = {
 		saving: "正在保存......",
 		saved: "已保存",
 		saveFailed: "保存失败",
-		loadFailed: "配置读取失败",
+		loadFailed: "读取失败",
 		removeSecret: "删除已保存的 Secret",
 		removing: "正在删除......",
 		removed: "Secret 已删除",
@@ -2077,8 +2334,17 @@ const dictionaries = {
 		nav: "Lark",
 		title: "Feishu & Lark",
 		subtitle: "Configure the message channel and card display without restarting Harness",
-		runtimeStatus: "Runtime status",
-		loading: "Loading settings...",
+		connectionMoved: "Connection status and scan-to-configure live on the Plugins → Lark detail page.",
+		connectionTitle: "Connection & scan",
+		connectionHint: "Authorization happens in the Feishu app: use Scan to configure in this page's header and the QR code appears here.",
+		rescan: "Scan again",
+		provisionDone: "Authorization complete",
+		statusReading: "Reading...",
+		statusConnected: "Connected",
+		statusConnecting: "Connecting",
+		statusUnconfigured: "Not configured",
+		statusOffline: "Not connected",
+		statusStopped: "Stopped",
 		application: "Application credentials",
 		appId: "App ID",
 		domain: "Platform",
@@ -2122,7 +2388,7 @@ const dictionaries = {
 		saving: "Saving...",
 		saved: "Saved",
 		saveFailed: "Save failed",
-		loadFailed: "Unable to load settings",
+		loadFailed: "Unable to read status",
 		removeSecret: "Remove stored secret",
 		removing: "Removing...",
 		removed: "Secret removed",
@@ -2151,17 +2417,41 @@ function apply(ctx) {
 	ctx.effect(() => () => {
 		card.dispose();
 	}, "dsh-feishu: settings form subscription");
+	const status = new LarkChannelStatusController(t, { onProvisionCompleted: () => {
+		card.rereadCredential();
+	} });
+	ctx.effect(() => () => {
+		status.dispose();
+	}, "dsh-feishu: channel status lifetime");
 	ctx.effect(() => ctx.remote.$on("credentials/reference-updated", (ref) => {
 		card.refreshCredential(ref);
 	}), "dsh-feishu: credential invalidations");
-	ctx.effect(() => ctx.configForms.whileServed([LARK_SETTINGS_NAMESPACE], () => ctx.slots.inject("settings.section", () => ctx.slots.register({
-		name: "settings.section",
-		id: "lark",
-		order: 45,
-		label: () => t("nav"),
-		locale: NS,
-		inject: () => card.inject()
-	}, LarkSettingsCard))), "dsh-feishu: settings page");
+	ctx.effect(() => ctx.configForms.whileServed([LARK_SETTINGS_NAMESPACE], () => {
+		const off = [];
+		off.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
+			name: "settings.section",
+			id: "lark",
+			order: 45,
+			label: () => t("nav"),
+			locale: NS,
+			inject: () => card.inject()
+		}, LarkSettingsCard)));
+		for (const [slot, component] of [
+			["plugins.detail.badge", LarkConnectionBadge],
+			["plugins.detail.actions", LarkConnectionAction],
+			["plugins.detail.section", LarkChannelSection]
+		]) off.push(ctx.slots.inject(slot, () => ctx.slots.register({
+			name: slot,
+			id: LARK_ENTRY_ID,
+			order: 60,
+			label: () => t("nav"),
+			locale: NS,
+			inject: () => status.face()
+		}, component)));
+		return () => {
+			for (const dispose of off) dispose();
+		};
+	}), "dsh-feishu: settings page and plugin detail");
 }
 
 //#endregion

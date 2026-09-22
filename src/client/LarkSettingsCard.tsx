@@ -1,14 +1,16 @@
 /**
- * The Lark settings page: application credentials (with the write-only secret
- * and the scan-to-configure flow), the access policy, and the card display.
+ * The Lark settings page: the application credentials (with the write-only
+ * secret), the access policy, and the card display.
+ *
  * It is driven entirely by {@link LarkSettingsCardController}'s snapshot; the
  * component owns no state of its own and never talks to the Host directly.
+ * The live channel — connection state and the scan-to-configure flow — is on
+ * the Plugins detail page, which this page points at.
  */
 
 import * as React from 'react'
-import { Button, Input, StateDot, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
-import { QRCodeSVG } from 'qrcode.react'
-import type { LarkCardProps, LarkFormValues, RuntimeState } from './LarkSettingsCardController.ts'
+import { Button, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { LarkCardProps, LarkFormValues } from './LarkSettingsCardController.ts'
 
 /**
  * Render the plugin's one-liner or its settings page, as the Plugins page asks.
@@ -23,7 +25,6 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
   const form = state.form
   const blocked = !state.writable
   const toolsOff = !form.showToolCalls
-  const provisionActive = state.provision.phase === 'waiting' || state.provision.phase === 'configuring'
 
   /** One labelled toggle row: title + one-line hint, control on the right. */
   const toggleRow = (options: {
@@ -56,10 +57,7 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
       <div>
         <h2 id="dsh-feishu-title">{t('title')}</h2>
         <p>{t('subtitle')}</p>
-      </div>
-      <div className="dsh-feishu-runtime" aria-label={t('runtimeStatus')}>
-        <StateDot state={dotState(state.runtime.state)} size={8} />
-        <span>{state.runtime.state}</span>
+        <p className="dsh-feishu-pointer">{t('connectionMoved')}</p>
       </div>
     </header>
 
@@ -67,25 +65,6 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
     {state.status !== 'loading' ? <form onSubmit={event => { event.preventDefault(); void props.save() }}>
       <div className="dsh-feishu-card">
         <h3>{t('application')}</h3>
-        <div className="dsh-feishu-provision">
-          <Button
-            variant="outline"
-            type="button"
-            disabled={state.provisionBusy || provisionActive || blocked}
-            onClick={() => { void props.startProvision() }}
-          >
-            {state.provisionBusy ? t('provisionStarting') : t('scanToConfigure')}
-          </Button>
-          {state.provision.phase === 'waiting' && state.provision.qrUrl !== undefined ? (
-            <div className="dsh-feishu-qr">
-              <QRCodeSVG value={state.provision.qrUrl} size={220} marginSize={1} />
-              <p>{t('scanHint')}</p>
-              <code className="dsh-feishu-qr-link">{state.provision.qrUrl}</code>
-            </div>
-          ) : null}
-          {state.provision.phase === 'configuring' ? <p className="dsh-feishu-detail">{t('provisioning')}</p> : null}
-          {state.provision.phase === 'error' ? <p className="dsh-feishu-detail dsh-feishu-error">{t('provisionFailed')}{state.provision.message !== undefined ? `: ${state.provision.message}` : ''}</p> : null}
-        </div>
         <div className="dsh-feishu-grid">
           <label><span>{t('appId')}</span><Input aria-label="appId" disabled={blocked} value={form.appId} onChange={event => { props.edit('appId', event.target.value) }} autoComplete="off" /></label>
           <label><span>{t('domain')}</span><select aria-label="domain" disabled={blocked} value={form.domain} onChange={event => { props.edit('domain', event.target.value as LarkFormValues['domain']) }}><option value="feishu">Feishu</option><option value="lark">Lark</option></select></label>
@@ -166,17 +145,6 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
         <Button variant="outline" type="button" disabled={state.busy || blocked || !state.secret.configured || !state.secret.writable} onClick={() => { void props.removeSecret() }}>{t('removeSecret')}</Button>
         <span role="status" aria-live="polite">{state.notice}</span>
       </footer>
-      {state.runtime.message !== undefined ? <p className="dsh-feishu-detail">{state.runtime.message}</p> : null}
     </form> : null}
   </section>
-}
-
-/** @param state - Feishu connection state. @returns the state dot's tone. */
-function dotState(state: RuntimeState): 'done' | 'error' | 'ongoing' | 'warning' {
-  switch (state) {
-    case 'connected': return 'done'
-    case 'error': return 'error'
-    case 'connecting': return 'ongoing'
-    default: return 'warning'
-  }
 }

@@ -89,9 +89,9 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 >
 > **Requires DSH `0.1.5-alpha.1` or newer on the same `0.1.5` prerelease line.** DSH is still pre-release and its API may change between prereleases; the plugin bumps its `@deepseek-ai/dsh-*` ranges in lockstep, so upgrade both together.
 
-**中文**：然后在 DSH **Settings** → 飞书与 Lark 中配置 App ID 和 App Secret。支持扫码一键配置（推荐）或手动创建应用。详见 [docs/feishu-setup.md](docs/feishu-setup.md)。
+**中文**：插件提供两个页面——**配置**（App ID / App Secret / 访问策略 / 卡片显示）在 DSH **Settings** → 飞书与 Lark；**连接状态与扫码一键配置**在 **Plugins** → 飞书与 Lark 详情页。扫码是推荐路径，也可以手动创建应用。详见 [docs/feishu-setup.md](docs/feishu-setup.md)。
 
-**English**: Then configure the App ID and App Secret in DSH **Settings** → Feishu & Lark. You can use the QR-code one-click setup (recommended) or create the app manually. See [docs/feishu-setup.md](docs/feishu-setup.md).
+**English**: The plugin adds two pages — **configuration** (App ID / App Secret / access policy / card display) lives in DSH **Settings** → Feishu & Lark, while **connection status and the QR-code one-click setup** live on the **Plugins** → Feishu & Lark detail page. Scanning is the recommended path; you can also create the app manually. See [docs/feishu-setup.md](docs/feishu-setup.md).
 
 ## 快速开始 / Quick start
 
@@ -99,15 +99,21 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 
 1. 安装插件（上方命令）
 2. 启动 DSH：`npx @deepseek-ai/dsh web`
-3. 在 Settings → 飞书与 Lark 中配置应用凭据
+3. 在 **Plugins** → 飞书与 Lark 详情页点「扫码配置」完成授权（二维码显示在该页的「连接与扫码」区块）
 4. 在飞书中找到机器人，发送消息即可
+5. 之后在 **Settings** → 飞书与 Lark 调整访问策略与卡片显示
+
+> 手动创建的应用：把 App ID / App Secret 填到 **Settings** → 飞书与 Lark（该页只管配置；连接状态与扫码已移到 Plugins 详情页）。
 
 **English**
 
 1. Install the plugin (command above)
 2. Start DSH: `npx @deepseek-ai/dsh web`
-3. Configure the app credentials in Settings → Feishu & Lark
+3. On the **Plugins** → Feishu & Lark detail page, click **Scan to configure** and authorize (the QR code appears in that page's connection section)
 4. Find the bot in Feishu and send it a message
+5. Afterwards, adjust the access policy and card display in **Settings** → Feishu & Lark
+
+> For a manually created app, put the App ID / App Secret in **Settings** → Feishu & Lark. That page is configuration only; connection status and scanning live on the Plugins detail page.
 
 ---
 

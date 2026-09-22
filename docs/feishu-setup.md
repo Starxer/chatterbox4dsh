@@ -4,9 +4,11 @@
 
 插件内置了飞书官方 `registerApp` 扫码建应用能力：
 
-1. 启动 DSH Web Profile，打开 **Settings → 飞书与 Lark**。
-2. 点击 **扫码配置**，用飞书 App 扫码并确认授权。
-3. 插件自动获取 App ID 和 App Secret，配置权限和事件，建立连接。
+1. 启动 DSH Web Profile，打开 **Plugins → 飞书与 Lark** 详情页。
+2. 点页面右上角的 **扫码配置**，用飞书 App 扫码并确认授权——二维码显示在该页的「连接与扫码」区块里。
+3. 插件自动获取 App ID 和 App Secret，配置权限和事件，建立连接。App ID 会写回配置，可在 **Settings → 飞书与 Lark** 查看。
+
+> **为什么这里是「扫码配置 / 重新扫码」而不是「重新连接」**：浏览器侧无法强制重连。宿主 `LarkRuntime.reconcile()` 是按**连接指纹**门控的（指纹不变就直接返回，不做任何事），而它的四个调用点全在宿主侧——扫码完成、凭据引用更新、配置热更新、进程启动。日常断线由飞书 SDK 自己维持与重连；确实需要重建连接时，可靠做法是**改一次连接相关配置**（App ID / 平台 / 访问策略等）触发宿主 reconcile，或重新走一遍授权流程。详情页因此给的是有真实副作用的「扫码配置」，而不是一个点了不会重连的按钮。
 
 ## 手动创建应用
 
@@ -52,7 +54,9 @@
 
 ### 通过 Settings 页面（推荐）
 
-在 DSH Settings → 飞书与 Lark 中填写 App ID 和 App Secret。Secret 保存到 `$DSH_HOME/.credentials.yaml`，不会回显到浏览器。
+在 DSH **Settings → 飞书与 Lark** 中填写 App ID 和 App Secret。Secret 保存到 `$DSH_HOME/.credentials.yaml`，不会回显到浏览器。
+
+该页只管**配置**（凭据、访问策略、卡片显示）；**连接状态与扫码**在 **Plugins → 飞书与 Lark** 详情页。
 
 ### 通过环境变量
 

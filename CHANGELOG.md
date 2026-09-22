@@ -28,6 +28,16 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：扫码与连接状态移到「插件」详情页，设置页只管配置（`src/client/`）
+
+- **分开摆放**：**配置**（凭据 / 访问策略 / 卡片显示）留在 DSH **Settings → 飞书与 Lark**；**连接状态与扫码授权**搬到 **Plugins → 飞书与 Lark 详情页**，通过三个根作用域槽位贡献——`plugins.detail.badge`（标题旁的状态标签）、`plugins.detail.actions`（头部的「扫码配置 / 重新扫码」）、`plugins.detail.section`（页面内容之下的「连接与扫码」区块，二维码在这里）。设置页保留一句指路。
+- **每个贡献点都认 subject**：只对 `kind: 'bundle' | 'row'` 且 `pkg.name` 是本插件的页面渲染，其它插件的详情页返回 `null`——**而且不订阅、不发请求**。三个 entry 都是「guard + body」两段：guard 先判 subject，订阅发生在只命中时才挂载的子组件里；这样既不会在早退之后调 hook（切页会打乱 hook 顺序），也不让别家的详情页触发我们的状态读取。
+- **注册 id 用自己的新值**：`plugins.detail.*` 的单元格 id 是 `lark-channel`（不是壳层的任何 id），所以是**在旁边新增单元格**，而不是遮蔽别人的条目（关键坑 35）。
+- **是「扫码配置」而不是「重新连接」**：浏览器侧强制重连**不可达**——宿主 `reconcile()` 按**连接指纹**门控（指纹不变直接返回），四个调用点全在宿主侧（扫码完成 / 凭据引用更新 / 配置热更新 / 进程启动）。所以这里给一个**有真实副作用**的动作，而不是一个点了不会重连的按钮；`docs/feishu-setup.md` 写明了这一点与两个可用替代（改一次连接相关配置触发 reconcile，或重走授权）。
+- **控制器拆分**：`LarkSettingsCardController` 只留表单 + 凭据（新增 `rereadCredential()`）；连接与扫码抽到新的 `LarkChannelStatusController`——**懒读**（第一个订阅者才发请求）、**最后一个订阅者离开即停轮询**、`dispose()` 兜底、每个请求另有 10s abort 上限（关键坑 29）。共享的 30 行 `SnapshotStore` 是零依赖实现；注释写明了为什么不用平台那份（采用它要 devDep + 打包 `external` + vitest alias 三处协同，就是关键坑 18 那个三件套），以及 `latest` dist-tag 陈旧这个坑。
+- **文档同步**：`README.md`（中英双语「两个页面」+ 快速开始第 3 步改为先去 Plugins 详情页扫码、新增第 5 步回 Settings 调策略/显示）与 `docs/feishu-setup.md`（扫码三步改从详情页进入、新增「为什么是扫码而不是重新连接」、注明设置页只管配置）。
+- **验证**：build ✅、typecheck **0 error**、全量 **497 passed / 36 files**；`tests/client.spec.ts` 11 → 25（新增覆盖 subject 过滤、徽章/按钮/区块渲染、懒读与「最后一个订阅者离开即停轮询」）。**页面级渲染仍留给使用者在浏览器里目视确认。**
+
 ### 变更：会话面板支持置顶 / 取消置顶（`src/feishu-session.ts` / `src/index.ts` / `src/i18n.ts`）
 
 - **宿主能力**：`workspaceRegistry` 上有一份 **registry 全局、按置顶顺序**的 `pinnedSessionIds`，外加两个**幂等**方法 `pinSession(id)` / `unpinSession(id)`（已置顶再 pin、未置顶再 unpin 都是空操作）。这与 WebUI 侧边栏的置顶是同一份数据。

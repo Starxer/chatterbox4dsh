@@ -1,20 +1,24 @@
 /**
  * The Lark settings page's staged form over the `lark-channel` settings
- * namespace plus the two concerns that have no native equivalent: the
- * application secret (which lives in the credentials domain, never in the
- * section) and the channel's runtime/provisioning state (served by the
- * plugin's own bounded HTTP route).
+ * namespace, plus the one concern that has no native equivalent: the
+ * application secret, which lives in the credentials domain and never in the
+ * section.
  *
  * One save writes every edited field through a single revision-fenced
  * `ConfigForm.mutate`; the secret rides the credentials domain and is written
  * only when the user typed one. The revision fence, Host validation,
  * persistence and reload-on-refusal all belong to the native form controller,
  * so this class only stages edits and projects state.
+ *
+ * Everything about the live channel — connection state, the scan-to-configure
+ * flow — belongs to {@link LarkChannelStatusController} and is rendered on the
+ * Plugins detail page. This page points there instead of duplicating it.
  */
 
 import type {
   ConfigForm, ConfigFormSnapshot, Observable, RemoteService, SettingsPathOpView, SnapshotSelectorHook,
 } from './config-form-types.ts'
+import { SnapshotStore } from './snapshot-store.ts'
 
 /**
  * Namespace of this plugin's Host entry (`options.id`): the profile row id,
@@ -26,39 +30,12 @@ export const LARK_SETTINGS_NAMESPACE = 'lark-channel'
 /** Credential reference the plugin resolves when the section names none. */
 export const LARK_APP_SECRET_REF = 'DSH_LARK_APP_SECRET'
 
-/** The plugin's bounded HTTP route: channel runtime state plus provisioning. */
-export const CHANNEL_STATUS_PATH = '/dsh-feishu/provision'
-
-/** Poll interval while the scan-to-configure flow is in flight. */
-const PROVISION_POLL_MS = 2_000
-
-/** Bound on one channel-status request; a hung request must not pin a pending promise. */
-const CHANNEL_STATUS_TIMEOUT_MS = 10_000
-
 /** Application domain. */
 export type DomainName = 'feishu' | 'lark'
 /** Direct-message access policy. */
 export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
 /** Plugin language; `auto` follows the DSH browser-language preference. */
 export type PluginLocale = 'auto' | 'zh' | 'en'
-/** Feishu connection state. */
-export type RuntimeState = 'unconfigured' | 'connecting' | 'connected' | 'error' | 'stopped'
-/** Scan-to-configure lifecycle. */
-export type ProvisionPhase = 'idle' | 'waiting' | 'configuring' | 'done' | 'error'
-
-/** Feishu connection state as the runtime reports it. */
-export interface RuntimeStatus {
-  state: RuntimeState
-  message?: string
-}
-
-/** Scan-to-configure state as the provision manager reports it. */
-export interface ProvisionState {
-  phase: ProvisionPhase
-  qrUrl?: string
-  expireIn?: number
-  message?: string
-}
 
 /**
  * The `lark-channel` fields this page reads. `provider`, `model`, `workspace`
@@ -131,14 +108,8 @@ export interface LarkCardState {
     /** Layer the Host reports the value coming from, when it names one. */
     source?: string
   }
-  /** Feishu connection state. */
-  runtime: RuntimeStatus
-  /** Scan-to-configure state. */
-  provision: ProvisionState
   /** A settings/credential save is in flight. */
   busy: boolean
-  /** A provisioning request is in flight. */
-  provisionBusy: boolean
   /** Localized result line, already translated. */
   notice: string
 }
@@ -157,8 +128,6 @@ export interface LarkCardFace {
   save: () => Promise<void>
   /** Clear the stored credential through the credentials domain. */
   removeSecret: () => Promise<void>
-  /** Start the scan-to-configure flow. */
-  startProvision: () => Promise<void>
 }
 
 /** The component-side props: the face with its hooks compartment bound. */
@@ -175,48 +144,18 @@ export interface LarkCardHost {
   remote: RemoteService
 }
 
-/** Minimal `getSnapshot` + `subscribe` store the slots renderer binds as a hook. */
-class CardStore implements Observable<LarkCardState> {
-  private listeners = new Set<() => void>()
-  private snapshot: LarkCardState
-
-  /** @param initial - first published state. */
-  constructor(initial: LarkCardState) { this.snapshot = initial }
-
-  /** @returns the current snapshot, stable until the next publish. */
-  getSnapshot = (): LarkCardState => this.snapshot
-
-  /** @param listener - invoked after each publish. @returns the disposer. */
-  subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
-  }
-
-  /** @param next - replacement state; notifies only when the reference changes. */
-  set(next: LarkCardState): void {
-    if (next === this.snapshot) return
-    this.snapshot = next
-    for (const listener of [...this.listeners]) listener()
-  }
-}
-
-/** Bridges the `lark-channel` form, the credentials domain, and the channel status route onto the page. */
+/** Bridges the `lark-channel` form and the credentials domain onto the page. */
 export class LarkSettingsCardController {
-  private readonly store: CardStore
+  private readonly store: SnapshotStore<LarkCardState>
   private readonly unsubscribeScope: () => void
   /** Fields the user edited since the last load; absent keys keep the Host value. */
   private edits: Partial<LarkFormValues> = {}
   /** Staged secret literal; blank means "keep whatever the Host holds". */
   private secretText = ''
   private credential: CredentialState = { ref: '', configured: false, writable: true }
-  private runtime: RuntimeStatus = { state: 'connecting' }
-  private provision: ProvisionState = { phase: 'idle' }
   private busy = false
-  private provisionBusy = false
   private noticeKey: string | undefined
   private noticeDetail: string | undefined
-  private statusFailed = false
-  private timer: ReturnType<typeof setInterval> | undefined
 
   /**
    * @param scope - the bound `lark-channel` settings form.
@@ -228,10 +167,9 @@ export class LarkSettingsCardController {
     private readonly host: LarkCardHost,
     private readonly t: (key: string) => string,
   ) {
-    this.store = new CardStore(this.projection())
+    this.store = new SnapshotStore(this.projection())
     this.unsubscribeScope = scope.subscribe(() => { void this.onScopeChange() })
     void this.onScopeChange()
-    void this.readChannelStatus()
   }
 
   /**
@@ -245,7 +183,6 @@ export class LarkSettingsCardController {
       setSecret: value => { this.setSecret(value) },
       save: () => this.save(),
       removeSecret: () => this.removeSecret(),
-      startProvision: () => this.startProvision(),
     }
   }
 
@@ -335,29 +272,6 @@ export class LarkSettingsCardController {
   }
 
   /**
-   * Start the scan-to-configure flow and begin polling its progress.
-   * @returns a promise settling when the start request is reported.
-   */
-  async startProvision(): Promise<void> {
-    this.provisionBusy = true
-    this.clearNotice()
-    this.publish()
-    try {
-      const response = await fetchChannelStatus({ method: 'POST', headers: { accept: 'application/json' } })
-      const value = await response.json() as ChannelStatusPayload
-      if (!response.ok) throw new Error(value.error ?? this.t('provisionFailed'))
-      this.adoptStatus(value)
-      this.beginPolling()
-    } catch (error) {
-      this.noticeDetail = messageOf(error)
-      this.noticeKey = undefined
-    } finally {
-      this.provisionBusy = false
-      this.publish()
-    }
-  }
-
-  /**
    * Re-read after the Host reports a change to the reference this page watches.
    * @param ref - the reference the Host reports as changed.
    */
@@ -366,9 +280,18 @@ export class LarkSettingsCardController {
     void this.readCredential()
   }
 
-  /** Release the form subscription and any provisioning poll. */
+  /**
+   * Re-read the credential the section currently names.
+   *
+   * The scan-to-configure flow completes on another surface (the Plugins detail
+   * page) and the Host writes the secret there, so the badge has to be told.
+   */
+  rereadCredential(): void {
+    void this.readCredential()
+  }
+
+  /** Release the form subscription. */
   dispose(): void {
-    this.stopPolling()
     this.unsubscribeScope()
   }
 
@@ -411,63 +334,6 @@ export class LarkSettingsCardController {
       // A transport failure leaves the last answer standing; the badge is a
       // report, not an authority, and must never break the page.
     }
-  }
-
-  /** Read the channel status route once (runtime state plus provisioning). */
-  private async readChannelStatus(): Promise<void> {
-    await this.refreshStatus(false)
-  }
-
-  /** Poll the channel status route while provisioning is in flight. */
-  private async pollChannelStatus(): Promise<void> {
-    await this.refreshStatus(true)
-  }
-
-  /**
-   * @param polling - true for a poll tick, false for the initial read.
-   */
-  private async refreshStatus(polling: boolean): Promise<void> {
-    try {
-      const response = await fetchChannelStatus({ headers: { accept: 'application/json' }, cache: 'no-store' })
-      const value = await response.json() as ChannelStatusPayload
-      if (!response.ok) throw new Error(value.error ?? this.t('loadFailed'))
-      this.adoptStatus(value)
-      if (this.statusFailed) {
-        this.statusFailed = false
-        this.noticeKey = undefined
-        this.noticeDetail = undefined
-      }
-      const phase = this.provision.phase
-      if (polling && (phase === 'done' || phase === 'error' || phase === 'idle')) {
-        this.stopPolling()
-        if (phase === 'done') await this.readCredential()
-      }
-    } catch (error) {
-      this.statusFailed = true
-      this.noticeKey = 'loadFailed'
-      this.noticeDetail = messageOf(error)
-    }
-    this.publish()
-  }
-
-  /** @param value - a channel status payload; absent halves keep their last state. */
-  private adoptStatus(value: ChannelStatusPayload): void {
-    if (value.runtime !== undefined) this.runtime = value.runtime
-    if (value.provision !== undefined) this.provision = value.provision
-    this.publish()
-  }
-
-  /** Begin polling the channel status route on the fixed cadence. */
-  private beginPolling(): void {
-    this.stopPolling()
-    this.timer = setInterval(() => { void this.pollChannelStatus() }, PROVISION_POLL_MS)
-  }
-
-  /** Stop any provisioning poll. */
-  private stopPolling(): void {
-    if (this.timer === undefined) return
-    clearInterval(this.timer)
-    this.timer = undefined
   }
 
   /** @returns the credential reference the section names, or the plugin default. */
@@ -535,10 +401,7 @@ export class LarkSettingsCardController {
         writable: this.credential.writable,
         ...(source !== undefined ? { source } : {}),
       },
-      runtime: this.runtime,
-      provision: this.provision,
       busy: this.busy,
-      provisionBusy: this.provisionBusy,
       notice: this.noticeText(),
     }
   }
@@ -554,18 +417,10 @@ export class LarkSettingsCardController {
   private clearNotice(): void {
     this.noticeKey = undefined
     this.noticeDetail = undefined
-    this.statusFailed = false
   }
 
   /** Publish a fresh projection. */
   private publish(): void { this.store.set(this.projection()) }
-}
-
-/** One channel status payload from the plugin's bounded HTTP route. */
-export interface ChannelStatusPayload {
-  runtime?: RuntimeStatus
-  provision?: ProvisionState
-  error?: string
 }
 
 /** @param value - one staged form value. @returns its wire shape for a `set` op. */
@@ -586,21 +441,4 @@ function lines(value: string): string[] {
 /** @param error - a thrown value. @returns its message. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-/**
- * One bounded request to the plugin's channel-status route. The route is
- * loopback-only, but a request that never settles would still leave a pending
- * promise behind, so every read carries its own abort deadline.
- * @param init - request init merged over the abort signal.
- * @returns the response.
- */
-async function fetchChannelStatus(init?: RequestInit): Promise<Response> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => { controller.abort() }, CHANNEL_STATUS_TIMEOUT_MS)
-  try {
-    return await fetch(CHANNEL_STATUS_PATH, { ...init, signal: controller.signal })
-  } finally {
-    clearTimeout(timer)
-  }
 }
