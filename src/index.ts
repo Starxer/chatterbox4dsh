@@ -21,13 +21,12 @@ import { HarnessConversationService, TurnDroppedError, type BusyMode } from './h
 import type { ConversationMessage } from './conversation.ts'
 import { startChannel, type SlashCommandHandler } from './channel.ts'
 import { LarkRuntime } from './runtime.ts'
-import { createSettingsApi } from './settings-api.ts'
 import { renderTerminalQr } from './provision.ts'
 import { ProvisionManager } from './provision-manager.ts'
 import { registerLarkCommands, formatRelativeTime, handleDisplayCommand, handleHelpCommand, handleModelCommand, handleReasoningCommand, handleApprovalCommand, handleListApprovalsCommand, renderFeishuCommandsOnly, type ApprovalControl, type CommandTranslations, type DisplayControl } from './commands.ts'
 import { commandTranslationsFor } from './commands-i18n.ts'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
-import { handleProvisionRequest, handleSettingsRequest, PROVISION_PATH, SETTINGS_PATH } from './web.ts'
+import { handleProvisionRequest, PROVISION_PATH } from './web.ts'
 import { startFeishuApprovals, type PendingApprovalView } from './feishu-approvals.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
@@ -959,27 +958,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
   })
 
-  const api = createSettingsApi({
-    getSettings: currentSettings,
-    revision: currentRevision,
-    beginUpdate: () => { apiUpdateDepth += 1 },
-    endUpdate: () => { apiUpdateDepth -= 1 },
-    updateSettings: (patch, unset, expectedRevision) => settings.mutate(namespace, [
-      ...Object.entries(patch).map(([key, value]) => ({ op: 'set' as const, path: [key], value })),
-      ...unset.map(key => ({ op: 'unset' as const, path: [key] })),
-    ], expectedRevision),
-    credentials: {
-      describe: ref => credentials.describe(credentialRef(ref)),
-      set: (ref, value) => credentials.set(credentialRef(ref), value),
-      unset: ref => credentials.unset(credentialRef(ref)),
-    },
+  // Settings and credential writes go through DSH's native settings form and
+  // credentials services (the client page uses `ctx.configForms` and
+  // `remote.credentials`); the plugin's own HTTP route carries only the two
+  // facts with no native equivalent — live provisioning and connection state.
+  const provisionApi = {
+    provision: () => provisionManager.start(),
+    provisionStatus: () => provisionManager.status(),
     runtimeStatus: () => runtime.status(),
-    reconcile: () => runtime.reconcile(),
-    provision: {
-      status: () => provisionManager.status(),
-      start: () => provisionManager.start(),
-    },
-  })
+  }
 
   // Persist the plugin's `locale` field (used by `/lang`). Passing `'auto'`
   // unsets the field so the plugin again follows the DSH preference.
@@ -1025,13 +1012,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   looseOn('credentials/reference-updated', onCredentialRefUpdated)
   ctx.effect(() => webServer.register({
     kind: 'exact',
-    path: SETTINGS_PATH,
-    handler: (req, res) => handleSettingsRequest(req, res, api),
-  }), 'dsh-feishu: settings page')
-  ctx.effect(() => webServer.register({
-    kind: 'exact',
     path: PROVISION_PATH,
-    handler: (req, res) => handleProvisionRequest(req, res, api),
+    handler: (req, res) => handleProvisionRequest(req, res, provisionApi),
   }), 'dsh-feishu: provision endpoint')
   ctx.effect(() => () => {
     provisionManager.dispose()

@@ -24,6 +24,18 @@
 >
 > Upgraded to DSH **`0.1.7-alpha.1`** (1299 commits). This release **replaced the settings service**, so the plugin needed four changes (see the first entry below). Session control, streaming, tools, attachments, the client slot contract, and the session-log format are unaffected.
 
+### 变更：设置页改用 DSH 原生配置表单与凭据服务，删除自建 HTTP 写路径（`src/client/` / `src/web.ts` / `src/index.ts`）
+
+- **背景**：插件此前自带一整套设置页后端——客户端把改动 `POST /dsh-feishu/settings`，宿主侧 `src/settings-api.ts`（140 行）负责**字段白名单、密钥脱敏、`expectedRevision` 版本栅栏**。DSH `0.1.7` 已提供等价且更完整的能力，这层自建基础设施可以整块删掉。
+- **字段读写改走 `ctx.configForms`**（`ui-settings` 的客户端服务）：`configForms.get('lark-channel')` 取得该 profile 行的表单控制器，`mutate(ops, revision)` **一次提交全部改动**；**版本栅栏、宿主校验、持久化、被拒后重载由 DSH 自己完成**。`whileServed(['lark-channel'])` 保证宿主没组合这一行时页面上不出现任何痕迹。
+- **密钥值不走配置字段，走凭据域**：`ctx.remote.credentials.describe([ref])` 读状态、`.set(ref, value)` 写、`.unset(ref)` 删除（引用默认 `DSH_LARK_APP_SECRET`），并用 `credentials/reference-updated` 事件在别处改了同一引用时刷新徽章。「留空 = 保留」由**只在用户真的输入了内容时才写**保证；清除只能走独立的删除按钮。
+- **页面位置不变**：仍是 Settings → 飞书与 Lark 标签页（`settings.section`，id / order / label 与之前一致），因此 README 与 `docs/feishu-setup.md` 的指路无需改动。这些字段都是 `.volatile()`，保存**不需要重启 Harness**。
+- **宿主只留一个自建路由**：`/dsh-feishu/provision` —— 扫码配置与飞书连接状态，这两件事没有原生对应物；GET/POST 统一返回 `{ runtime, provision }`。
+- **删除**：`src/settings-api.ts`、`tests/settings-api.spec.ts`、旧的 `src/client/LarkSettingsSection.tsx`（fetch 版）、`SETTINGS_PATH` 与 `handleSettingsRequest`。
+- **附带清理**：`dsh.client.inject` 补上 `@deepseek-ai/dsh-client-ui-plugin-manager` 与 `@deepseek-ai/dsh-api-remotes`（与官方 `ui-settings-web-search` 的清单逐项一致，纯解析顺序提示，不新增 npm 依赖）；测试里一个私网 IP 字面量换成 RFC 5737 文档地址。
+- **验证**：typecheck 0 error、build ✅（`client/client.js` 重建）。测试数 472 → 458：删掉的 11 例属于已删除路由的专属用例，客户端用例改写为新的服务面（保存时 ops 与 revision 正确、留空不写 secret、删除 secret、四个显示开关的联动、凭据徽章、扫码与运行状态）。
+- **注意**：宿主与客户端的载荷形状一起变了（`{ runtime, provision }`），**两侧需同时重启**；只刷新页面会看到运行状态停在 `connecting`。
+
 ### 新增：归档运行中的会话先问「停止并归档」（`src/feishu-session.ts` / `src/i18n.ts`）
 
 - **背景**：DSH `0.1.7` 起 `archiveSession(id)` 会**拒绝仍有活动的会话**（`WorkspaceActiveSessionError`，列出 turn / subagent / job / schedule）。此前的处理是让这个错误落到通用的「操作失败」卡上——安全（不会静默杀掉正在跑的 turn），但用户只看到一句英文报错，也没有"要不要停"的选择。

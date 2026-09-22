@@ -1,5 +1,7 @@
 import { createElement as h } from 'react'
-import { LarkSettingsSection } from './LarkSettingsSection.tsx'
+import { LarkSettingsCard } from './LarkSettingsCard.tsx'
+import { LarkSettingsCardController, LARK_SETTINGS_NAMESPACE } from './LarkSettingsCardController.ts'
+import type { ConfigFormsService, RemoteService } from './config-form-types.ts'
 import { CLIENT_CSS } from './styles.ts'
 
 const NS = 'dsh-feishu'
@@ -31,13 +33,20 @@ interface ClientContext {
     bind(namespace: string): (key: string) => string
   }
   slots: {
-    inject(slot: string, register: () => unknown): void
-    register(meta: Record<string, unknown>, component: () => unknown): unknown
+    inject(slot: string, register: () => unknown): () => void
+    register(meta: Record<string, unknown>, component: (props: any) => unknown): unknown
   }
+  /** Native configuration forms, one per Host entry, from ui-settings' client half. */
+  configForms: ConfigFormsService
+  /** Forwarded Remote namespaces; `credentials` addresses the secret by reference. */
+  remote: RemoteService
 }
 
 export const name = 'dsh-feishu'
-export const inject = ['slots', 'locale']
+// `remote.credentials` carries the write-only secret; `configForms` carries the
+// revision-fenced section writes. Both are browser-side services, so the host
+// half keeps working on a Harness that lacks either.
+export const inject = ['slots', 'locale', 'remote', 'remote.credentials', 'configForms']
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, dictionaries), 'dsh-feishu: client dictionaries')
@@ -54,17 +63,32 @@ export function apply(ctx: ClientContext): void {
   // a component that renders nothing; `priority: -1` fixes this contribution's
   // position in the list slot. Intent not re-verified (an earlier audit asked
   // whether suppressing the shell entry is deliberate) — but the identity must
-  // keep matching the shell's, or that action reappears next to our section.
+  // keep matching the shell's, or that action reappears next to our page.
   ctx.slots.inject('settings.action', () => ctx.slots.register({
     name: 'settings.action',
     id: 'open-document',
     priority: -1,
   }, () => null))
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
+  // The form controller owns the `lark-channel` scope, the credential badge
+  // and the provisioning/runtime reads for the page's whole lifetime.
+  const card = new LarkSettingsCardController(ctx.configForms.get(LARK_SETTINGS_NAMESPACE), ctx, t)
+  ctx.effect(() => () => { card.dispose() }, 'dsh-feishu: settings form subscription')
+  // A secret written on another surface changes no settings section, so its
+  // scope publishes nothing; this is the only signal that the Host replaced it.
+  ctx.effect(
+    () => ctx.remote.$on('credentials/reference-updated', ref => { card.refreshCredential(ref) }),
+    'dsh-feishu: credential invalidations',
+  )
+  // The page keeps its own Settings tab (which is where the README points) while
+  // every write goes through the native form. `settings.section` takes the same
+  // `inject` face as the Plugins page's items — `ui-settings-account` and
+  // `ui-settings-models` register their sections exactly this way.
+  ctx.effect(() => ctx.configForms.whileServed([LARK_SETTINGS_NAMESPACE], () => ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'lark',
     order: 45,
     label: () => t('nav'),
     locale: NS,
-  }, () => h(LarkSettingsSection, { t })))
+    inject: () => card.inject(),
+  }, LarkSettingsCard))), 'dsh-feishu: settings page')
 }

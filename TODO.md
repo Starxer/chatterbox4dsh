@@ -79,8 +79,8 @@
 
 | # | 项 | 收益 / 代价 |
 |---|---|---|
-| P6-1 | 设置页迁到 DSH 原生 **`plugins.row.config`**（key `@starxer/chatterbox4dsh#lark-channel`）+ 客户端 `ctx.configForms` | **可整块删掉自建的 `SETTINGS_PATH` HTTP 路由与 `settings-api.ts` 的 revision/脱敏逻辑**（密钥脱敏、冲突检测、持久化交给 DSH）。改动面最大，需先定"哪些字段仍由插件自管" |
-| P6-2 | 改用官方 `SettingsForm` 组件族（`SettingsForm` / `settingsTextField` / `SettingsSecretField` …） | 含官方「留空 = 保留 secret」语义；与 P6-1 同批做 |
+| ~~P6-1~~ | ✅ **已完成（2026-09-22）** 设置页改走原生 **`ctx.configForms`**（ns = profile 行 id `lark-channel`）+ **`ctx.remote.credentials`**（密钥按引用读写） | **自建的 `SETTINGS_PATH` 路由与 `settings-api.ts`（140 行：字段白名单 / 脱敏 / revision 栅栏）已整块删除**；页面位置不变（仍是 Settings → 飞书与 Lark 标签页），仅保留 `/dsh-feishu/provision` 承载扫码与运行状态 |
+| ~~P6-2~~ | ✅ **已完成（2026-09-22）** | 「留空 = 保留 secret」由凭据域写入语义实现（只在用户输入时 `.set()`），不需要自建表单组件 |
 | P6-4 | 用 `sessionController.projections()` 替代剩余的全量日志读 | 与 C3 剩下那处（`summarizeTurn`）同源；**要等上游提供逐步计时类投影**，否则轮次指标会退化 |
 | P6-5 | `plugins.detail.badge` / `actions` / `section`（subject `{kind:'bundle'\|'row'\|'item'}`） | 把飞书连接状态 / 扫码 / 重连挂到插件详情页，替代现在散在设置页里的同等能力 |
 | P6-6 | `locale` meta + `package.json` `icon`（相对路径、SVG/PNG/JPEG/WebP、≤256 KiB） | 插件在设置页/插件市场有图标；需要一个自绘资产（未做） |

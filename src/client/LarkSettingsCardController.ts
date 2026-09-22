@@ -1,0 +1,606 @@
+/**
+ * The Lark settings page's staged form over the `lark-channel` settings
+ * namespace plus the two concerns that have no native equivalent: the
+ * application secret (which lives in the credentials domain, never in the
+ * section) and the channel's runtime/provisioning state (served by the
+ * plugin's own bounded HTTP route).
+ *
+ * One save writes every edited field through a single revision-fenced
+ * `ConfigForm.mutate`; the secret rides the credentials domain and is written
+ * only when the user typed one. The revision fence, Host validation,
+ * persistence and reload-on-refusal all belong to the native form controller,
+ * so this class only stages edits and projects state.
+ */
+
+import type {
+  ConfigForm, ConfigFormSnapshot, Observable, RemoteService, SettingsPathOpView, SnapshotSelectorHook,
+} from './config-form-types.ts'
+
+/**
+ * Namespace of this plugin's Host entry (`options.id`): the profile row id,
+ * which is what `settings.describe()` keys every descriptor on. Spelled here
+ * rather than imported — the client half must not depend on a Host module.
+ */
+export const LARK_SETTINGS_NAMESPACE = 'lark-channel'
+
+/** Credential reference the plugin resolves when the section names none. */
+export const LARK_APP_SECRET_REF = 'DSH_LARK_APP_SECRET'
+
+/** The plugin's bounded HTTP route: channel runtime state plus provisioning. */
+export const CHANNEL_STATUS_PATH = '/dsh-feishu/provision'
+
+/** Poll interval while the scan-to-configure flow is in flight. */
+const PROVISION_POLL_MS = 2_000
+
+/** Bound on one channel-status request; a hung request must not pin a pending promise. */
+const CHANNEL_STATUS_TIMEOUT_MS = 10_000
+
+/** Application domain. */
+export type DomainName = 'feishu' | 'lark'
+/** Direct-message access policy. */
+export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
+/** Plugin language; `auto` follows the DSH browser-language preference. */
+export type PluginLocale = 'auto' | 'zh' | 'en'
+/** Feishu connection state. */
+export type RuntimeState = 'unconfigured' | 'connecting' | 'connected' | 'error' | 'stopped'
+/** Scan-to-configure lifecycle. */
+export type ProvisionPhase = 'idle' | 'waiting' | 'configuring' | 'done' | 'error'
+
+/** Feishu connection state as the runtime reports it. */
+export interface RuntimeStatus {
+  state: RuntimeState
+  message?: string
+}
+
+/** Scan-to-configure state as the provision manager reports it. */
+export interface ProvisionState {
+  phase: ProvisionPhase
+  qrUrl?: string
+  expireIn?: number
+  message?: string
+}
+
+/**
+ * The `lark-channel` fields this page reads. `provider`, `model`, `workspace`
+ * and `agentPreset` exist in the schema but are deliberately not edited here.
+ */
+export interface LarkSettingsValues {
+  appId?: string
+  appSecretRef?: string
+  domain?: DomainName
+  requireMention?: boolean
+  dmMode?: DirectMessageMode
+  groupAllowlist?: string[]
+  dmAllowlist?: string[]
+  reactEmoji?: string
+  showReasoning?: boolean
+  showToolCalls?: boolean
+  showToolArgs?: boolean
+  showToolResults?: boolean
+  locale?: PluginLocale
+}
+
+/** The page's staged controls, after defaults and edits are folded together. */
+export interface LarkFormValues {
+  appId: string
+  domain: DomainName
+  requireMention: boolean
+  dmMode: DirectMessageMode
+  /** Textarea content: one id per line. */
+  groupAllowlist: string
+  /** Textarea content: one id per line. */
+  dmAllowlist: string
+  reactEmoji: string
+  showReasoning: boolean
+  showToolCalls: boolean
+  showToolArgs: boolean
+  showToolResults: boolean
+  locale: PluginLocale
+}
+
+/** The field order every save walks; also the only keys a save may write. */
+const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
+  'appId', 'domain', 'requireMention', 'dmMode', 'groupAllowlist', 'dmAllowlist', 'reactEmoji',
+  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'locale',
+]
+
+/** What the credentials domain last reported, and for which reference. */
+interface CredentialState {
+  ref: string
+  configured: boolean
+  writable: boolean
+  source?: string
+}
+
+/** What the Lark settings page renders. */
+export interface LarkCardState {
+  /** Native form sync state; `loading` until the first accepted section. */
+  status: 'loading' | 'ready' | 'unavailable'
+  /** Whether the Host document accepts writes. */
+  writable: boolean
+  /** The staged form values. */
+  form: LarkFormValues
+  /** The write-only secret control and the credential badge. */
+  secret: {
+    /** Staged literal, blank on every load and after every write. */
+    value: string
+    /** Whether the Host reports a credential configured for the referenced key. */
+    configured: boolean
+    /** Whether the credentials domain accepts a write; false disables the control. */
+    writable: boolean
+    /** Layer the Host reports the value coming from, when it names one. */
+    source?: string
+  }
+  /** Feishu connection state. */
+  runtime: RuntimeStatus
+  /** Scan-to-configure state. */
+  provision: ProvisionState
+  /** A settings/credential save is in flight. */
+  busy: boolean
+  /** A provisioning request is in flight. */
+  provisionBusy: boolean
+  /** Localized result line, already translated. */
+  notice: string
+}
+
+/** The registration-side face the page's slot entry injects. */
+export interface LarkCardFace {
+  hooks: {
+    /** Page snapshot bound by the renderer as `useLarkSettings`. */
+    larkSettings: Observable<LarkCardState>
+  }
+  /** Stage one edited control. */
+  edit: <K extends keyof LarkFormValues>(field: K, value: LarkFormValues[K]) => void
+  /** Stage the secret literal; blank means "keep whatever the Host holds". */
+  setSecret: (value: string) => void
+  /** Write every edited field in one revision-fenced mutate, then the secret. */
+  save: () => Promise<void>
+  /** Clear the stored credential through the credentials domain. */
+  removeSecret: () => Promise<void>
+  /** Start the scan-to-configure flow. */
+  startProvision: () => Promise<void>
+}
+
+/** The component-side props: the face with its hooks compartment bound. */
+export type LarkCardProps = Omit<LarkCardFace, 'hooks'> & {
+  useLarkSettings: SnapshotSelectorHook<LarkCardState>
+  /** Plugins-page view: the card one-liner or the settings page. */
+  view?: 'summary' | 'page'
+  /** Localized copy, injected by the slots renderer from the locale namespace. */
+  t: (key: string) => string
+}
+
+/** The slice of the client context the controller reaches. */
+export interface LarkCardHost {
+  remote: RemoteService
+}
+
+/** Minimal `getSnapshot` + `subscribe` store the slots renderer binds as a hook. */
+class CardStore implements Observable<LarkCardState> {
+  private listeners = new Set<() => void>()
+  private snapshot: LarkCardState
+
+  /** @param initial - first published state. */
+  constructor(initial: LarkCardState) { this.snapshot = initial }
+
+  /** @returns the current snapshot, stable until the next publish. */
+  getSnapshot = (): LarkCardState => this.snapshot
+
+  /** @param listener - invoked after each publish. @returns the disposer. */
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /** @param next - replacement state; notifies only when the reference changes. */
+  set(next: LarkCardState): void {
+    if (next === this.snapshot) return
+    this.snapshot = next
+    for (const listener of [...this.listeners]) listener()
+  }
+}
+
+/** Bridges the `lark-channel` form, the credentials domain, and the channel status route onto the page. */
+export class LarkSettingsCardController {
+  private readonly store: CardStore
+  private readonly unsubscribeScope: () => void
+  /** Fields the user edited since the last load; absent keys keep the Host value. */
+  private edits: Partial<LarkFormValues> = {}
+  /** Staged secret literal; blank means "keep whatever the Host holds". */
+  private secretText = ''
+  private credential: CredentialState = { ref: '', configured: false, writable: true }
+  private runtime: RuntimeStatus = { state: 'connecting' }
+  private provision: ProvisionState = { phase: 'idle' }
+  private busy = false
+  private provisionBusy = false
+  private noticeKey: string | undefined
+  private noticeDetail: string | undefined
+  private statusFailed = false
+  private timer: ReturnType<typeof setInterval> | undefined
+
+  /**
+   * @param scope - the bound `lark-channel` settings form.
+   * @param host - the page plugin's context slice owning `remote.credentials`.
+   * @param t - the plugin's dictionary translator.
+   */
+  constructor(
+    private readonly scope: ConfigForm<LarkSettingsValues>,
+    private readonly host: LarkCardHost,
+    private readonly t: (key: string) => string,
+  ) {
+    this.store = new CardStore(this.projection())
+    this.unsubscribeScope = scope.subscribe(() => { void this.onScopeChange() })
+    void this.onScopeChange()
+    void this.readChannelStatus()
+  }
+
+  /**
+   * Build the face the page's slot registration injects.
+   * @returns the page's snapshot observable and its actions.
+   */
+  inject(): LarkCardFace {
+    return {
+      hooks: { larkSettings: this.store },
+      edit: (field, value) => { this.edit(field, value) },
+      setSecret: value => { this.setSecret(value) },
+      save: () => this.save(),
+      removeSecret: () => this.removeSecret(),
+      startProvision: () => this.startProvision(),
+    }
+  }
+
+  /**
+   * Stage one edited control.
+   * @param field - control key.
+   * @param value - staged value.
+   */
+  edit<K extends keyof LarkFormValues>(field: K, value: LarkFormValues[K]): void {
+    const edits: Partial<LarkFormValues> = { ...this.edits }
+    edits[field] = value
+    this.edits = edits
+    this.clearNotice()
+    this.publish()
+  }
+
+  /**
+   * Stage the secret literal. Leaving it blank never clears a stored secret;
+   * the separate remove control is the only way to clear one.
+   * @param value - staged literal.
+   */
+  setSecret(value: string): void {
+    this.secretText = value
+    this.clearNotice()
+    this.publish()
+  }
+
+  /**
+   * Write every edited field in one revision-fenced mutate, then the staged
+   * secret when the user typed one. A refused mutate leaves the edits staged
+   * for a retry and does not write the secret.
+   * @returns a promise settling when the save attempt is reported.
+   */
+  async save(): Promise<void> {
+    if (this.busy) return
+    this.busy = true
+    this.noticeKey = 'saving'
+    this.noticeDetail = undefined
+    this.publish()
+    try {
+      const ops = this.buildOps()
+      const accepted = ops.length === 0
+        ? true
+        : await this.scope.mutate(ops, this.scope.getSnapshot().revision)
+      let secretWritten = true
+      if (accepted && this.secretText !== '') secretWritten = await this.writeSecret()
+      if (accepted && secretWritten) {
+        this.edits = {}
+        this.secretText = ''
+        this.noticeKey = 'saved'
+        this.noticeDetail = undefined
+      } else {
+        this.noticeKey = 'saveFailed'
+      }
+    } catch (error) {
+      this.noticeKey = 'saveFailed'
+      this.noticeDetail = messageOf(error)
+    } finally {
+      this.busy = false
+      this.publish()
+    }
+  }
+
+  /**
+   * Clear the stored credential through the credentials domain, then re-read
+   * whether the Host still holds one.
+   * @returns a promise settling when the attempt is reported.
+   */
+  async removeSecret(): Promise<void> {
+    if (this.busy) return
+    this.busy = true
+    this.noticeKey = 'removing'
+    this.noticeDetail = undefined
+    this.publish()
+    try {
+      const response = await this.host.remote.credentials.unset(this.credentialRef())
+      if (!response.ok) throw new Error(response.error.message)
+      await this.readCredential()
+      this.noticeKey = 'removed'
+    } catch (error) {
+      this.noticeKey = 'removeFailed'
+      this.noticeDetail = messageOf(error)
+    } finally {
+      this.busy = false
+      this.publish()
+    }
+  }
+
+  /**
+   * Start the scan-to-configure flow and begin polling its progress.
+   * @returns a promise settling when the start request is reported.
+   */
+  async startProvision(): Promise<void> {
+    this.provisionBusy = true
+    this.clearNotice()
+    this.publish()
+    try {
+      const response = await fetchChannelStatus({ method: 'POST', headers: { accept: 'application/json' } })
+      const value = await response.json() as ChannelStatusPayload
+      if (!response.ok) throw new Error(value.error ?? this.t('provisionFailed'))
+      this.adoptStatus(value)
+      this.beginPolling()
+    } catch (error) {
+      this.noticeDetail = messageOf(error)
+      this.noticeKey = undefined
+    } finally {
+      this.provisionBusy = false
+      this.publish()
+    }
+  }
+
+  /**
+   * Re-read after the Host reports a change to the reference this page watches.
+   * @param ref - the reference the Host reports as changed.
+   */
+  refreshCredential(ref: string): void {
+    if (ref !== this.credential.ref) return
+    void this.readCredential()
+  }
+
+  /** Release the form subscription and any provisioning poll. */
+  dispose(): void {
+    this.stopPolling()
+    this.unsubscribeScope()
+  }
+
+  /** Re-read the credential when the reference the section names changes. */
+  private async onScopeChange(): Promise<void> {
+    const ref = this.credentialRef()
+    if (ref !== this.credential.ref) {
+      // A new reference knows nothing yet; keeping the old answer would claim
+      // the key is configured under a name nobody has checked.
+      this.credential = { ref, configured: false, writable: true }
+      this.publish()
+      await this.readCredential()
+      return
+    }
+    this.publish()
+  }
+
+  /**
+   * Ask the credentials domain about the reference the section currently
+   * names. The answer is stored with the reference it describes, so a stale
+   * response for another reference is dropped.
+   */
+  private async readCredential(): Promise<void> {
+    const ref = this.credentialRef()
+    try {
+      const response = await this.host.remote.credentials.describe([ref])
+      if (!response.ok || ref !== this.credentialRef()) return
+      const view = response.value[ref]
+      const source = view?.source
+      this.credential = {
+        ref,
+        configured: view?.configured ?? false,
+        // An unknown reference is treated as writable: the control stays
+        // usable and the Host is what refuses, rather than the page guessing.
+        writable: view?.writable ?? true,
+        ...(source !== undefined ? { source } : {}),
+      }
+      this.publish()
+    } catch {
+      // A transport failure leaves the last answer standing; the badge is a
+      // report, not an authority, and must never break the page.
+    }
+  }
+
+  /** Read the channel status route once (runtime state plus provisioning). */
+  private async readChannelStatus(): Promise<void> {
+    await this.refreshStatus(false)
+  }
+
+  /** Poll the channel status route while provisioning is in flight. */
+  private async pollChannelStatus(): Promise<void> {
+    await this.refreshStatus(true)
+  }
+
+  /**
+   * @param polling - true for a poll tick, false for the initial read.
+   */
+  private async refreshStatus(polling: boolean): Promise<void> {
+    try {
+      const response = await fetchChannelStatus({ headers: { accept: 'application/json' }, cache: 'no-store' })
+      const value = await response.json() as ChannelStatusPayload
+      if (!response.ok) throw new Error(value.error ?? this.t('loadFailed'))
+      this.adoptStatus(value)
+      if (this.statusFailed) {
+        this.statusFailed = false
+        this.noticeKey = undefined
+        this.noticeDetail = undefined
+      }
+      const phase = this.provision.phase
+      if (polling && (phase === 'done' || phase === 'error' || phase === 'idle')) {
+        this.stopPolling()
+        if (phase === 'done') await this.readCredential()
+      }
+    } catch (error) {
+      this.statusFailed = true
+      this.noticeKey = 'loadFailed'
+      this.noticeDetail = messageOf(error)
+    }
+    this.publish()
+  }
+
+  /** @param value - a channel status payload; absent halves keep their last state. */
+  private adoptStatus(value: ChannelStatusPayload): void {
+    if (value.runtime !== undefined) this.runtime = value.runtime
+    if (value.provision !== undefined) this.provision = value.provision
+    this.publish()
+  }
+
+  /** Begin polling the channel status route on the fixed cadence. */
+  private beginPolling(): void {
+    this.stopPolling()
+    this.timer = setInterval(() => { void this.pollChannelStatus() }, PROVISION_POLL_MS)
+  }
+
+  /** Stop any provisioning poll. */
+  private stopPolling(): void {
+    if (this.timer === undefined) return
+    clearInterval(this.timer)
+    this.timer = undefined
+  }
+
+  /** @returns the credential reference the section names, or the plugin default. */
+  private credentialRef(): string {
+    const declared = this.scope.getSnapshot().value?.appSecretRef
+    return declared !== undefined && declared.length > 0 ? declared : LARK_APP_SECRET_REF
+  }
+
+  /** @returns the operations for exactly the fields the user edited. */
+  private buildOps(): SettingsPathOpView[] {
+    const form = this.formValues()
+    const ops: SettingsPathOpView[] = []
+    for (const field of EDITABLE_FIELDS) {
+      if (!Object.hasOwn(this.edits, field)) continue
+      ops.push({ op: 'set', path: [field], value: writeValue(field, form) })
+    }
+    return ops
+  }
+
+  /**
+   * Write the staged secret, then re-read whether the Host now holds one.
+   * @returns whether the credentials domain accepted the write.
+   */
+  private async writeSecret(): Promise<boolean> {
+    const response = await this.host.remote.credentials.set(this.credentialRef(), this.secretText)
+    await this.readCredential()
+    if (!response.ok) {
+      this.noticeDetail = response.error.message
+      return false
+    }
+    return this.credential.configured
+  }
+
+  /** @returns the staged form values, defaults and Host values folded under the edits. */
+  private formValues(): LarkFormValues {
+    const value = this.scope.getSnapshot().value
+    const base: LarkFormValues = {
+      appId: value?.appId ?? '',
+      domain: value?.domain ?? 'feishu',
+      requireMention: value?.requireMention ?? true,
+      dmMode: value?.dmMode ?? 'open',
+      groupAllowlist: (value?.groupAllowlist ?? []).join('\n'),
+      dmAllowlist: (value?.dmAllowlist ?? []).join('\n'),
+      reactEmoji: value?.reactEmoji ?? '',
+      showReasoning: value?.showReasoning ?? true,
+      showToolCalls: value?.showToolCalls ?? true,
+      showToolArgs: value?.showToolArgs ?? true,
+      showToolResults: value?.showToolResults ?? true,
+      locale: value?.locale ?? 'auto',
+    }
+    return { ...base, ...this.edits }
+  }
+
+  /** @returns the published page state. */
+  private projection(): LarkCardState {
+    const snapshot: ConfigFormSnapshot<LarkSettingsValues> = this.scope.getSnapshot()
+    const source = this.credential.source
+    return {
+      status: snapshot.status,
+      writable: snapshot.writable,
+      form: this.formValues(),
+      secret: {
+        value: this.secretText,
+        configured: this.credential.configured,
+        writable: this.credential.writable,
+        ...(source !== undefined ? { source } : {}),
+      },
+      runtime: this.runtime,
+      provision: this.provision,
+      busy: this.busy,
+      provisionBusy: this.provisionBusy,
+      notice: this.noticeText(),
+    }
+  }
+
+  /** @returns the localized notice line. */
+  private noticeText(): string {
+    const head = this.noticeKey === undefined ? '' : this.t(this.noticeKey)
+    if (this.noticeDetail === undefined || this.noticeDetail === '') return head
+    return head === '' ? this.noticeDetail : `${head}: ${this.noticeDetail}`
+  }
+
+  /** Drop any staged notice (edits and discards invalidate it). */
+  private clearNotice(): void {
+    this.noticeKey = undefined
+    this.noticeDetail = undefined
+    this.statusFailed = false
+  }
+
+  /** Publish a fresh projection. */
+  private publish(): void { this.store.set(this.projection()) }
+}
+
+/** One channel status payload from the plugin's bounded HTTP route. */
+export interface ChannelStatusPayload {
+  runtime?: RuntimeStatus
+  provision?: ProvisionState
+  error?: string
+}
+
+/** @param value - one staged form value. @returns its wire shape for a `set` op. */
+function writeValue(field: keyof LarkFormValues, form: LarkFormValues): unknown {
+  switch (field) {
+    case 'appId': return form.appId.trim()
+    case 'groupAllowlist': return lines(form.groupAllowlist)
+    case 'dmAllowlist': return lines(form.dmAllowlist)
+    default: return form[field]
+  }
+}
+
+/** @param value - textarea content. @returns trimmed non-empty lines. */
+function lines(value: string): string[] {
+  return value.split(/\n/u).map(item => item.trim()).filter(Boolean)
+}
+
+/** @param error - a thrown value. @returns its message. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * One bounded request to the plugin's channel-status route. The route is
+ * loopback-only, but a request that never settles would still leave a pending
+ * promise behind, so every read carries its own abort deadline.
+ * @param init - request init merged over the abort signal.
+ * @returns the response.
+ */
+async function fetchChannelStatus(init?: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => { controller.abort() }, CHANNEL_STATUS_TIMEOUT_MS)
+  try {
+    return await fetch(CHANNEL_STATUS_PATH, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
