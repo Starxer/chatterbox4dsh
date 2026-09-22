@@ -44,6 +44,34 @@
 
 ---
 
+## DSH 0.1.6-alpha.2 适配（已评估并升级，2026-09-18）
+
+> 完整评估与事故记录见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](./docs/migration-0.1.6-alpha.1-to-alpha.2.md)（**887 commits / 2622 个改动文件**）。
+
+- ✅ **插件运行时代码零必改**：四个被消费的 `sessionController` 方法签名逐字节未变、client slot 契约零差异；依赖范围因同属 `0.1.6` tuple 无需改（只重装了工作区依赖）。
+- ⚠️ **Creator preset 工具集替换**：`cordis_define/run/stop/undefine` 全部删除，改由 `plugin_manager` 承担（自建 preset 需跟着改）。
+- ⚠️ **解析模式默认值 `link` → `runtime`**，核心包必须只有**一份物理副本**；本机当天因此在 `tsx` 源码入口触发 `@deepseek-ai/dsh-tools` 双实例 → **每次工具调用**报 `Cannot read properties of undefined (reading 'prepare')`。
+- ✅ **临时措施（仍生效）**：服务入口从 `tsx src/bin.ts` 改为**构建产物入口**（关键坑 28；**不动 DSH 源码、等上游**）。代价：改 host 源码必须重建、**dsh 运行期间绝不 `pnpm run build`**、跨 tag 切版本必须先清产物（关键坑 32）。
+- 🔲 上游修复落地后：把服务入口切回源码入口并复验一次工具调用。**2026-09-22 复核：0.1.7 里 `TOOL_RUNTIME_SCHEDULER` 仍是局部 `Symbol(...)`（未改 `Symbol.for`），且 alpha.2 的默认解析模式开关已随解析模型重写消失 → 权宜之计仍未退休，只能靠实测实验撤。**
+
+---
+
+## DSH 0.1.7-alpha.1 适配（已评估并升级，2026-09-22）
+
+> 完整方案、执行记录、两次 build 失败的根因与逐项实测见 [`docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md`](./docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md)（**1299 commits**）。
+
+- ✅ **A1 设置服务换血**：`settings.register()` / `settingsScope.get()` / `scope.watch()` 全删（服务变 `SettingsForms`），配置改读 `apply()` 收到的 live Config；`ConfigSchema` 字段**必须 `.volatile()`**（否则设置页空白、所有写路径抛错）；`ns` 改为**从自身 fiber 反查**（不再依赖"碰巧同名"）；`scope.watch` → `ctx.on('loader/volatile-update')`。
+- ✅ **A2 preset 包改名**：`@deepseek-ai/dsh-agent-presets` → `@deepseek-ai/dsh-agent-preset-registry`（服务名与 `list/resolve/mount/defaultId` 不变）；依赖范围整体升 `^0.1.7-alpha.1`（关键坑 17）、`schemastery` → `^3.18.3`、`cordis` → `^4.0.3`。
+- ✅ **C1 `tool/result` 拍平**：改读 message 自身的 `content` / `isError`（旧读法会把**失败渲染成成功**），并加回归测试锁死「失败必须渲染成 ❌ 失败」。
+- ✅ **C4 `locale:'auto'`** 恢复跟随 DSH 语言（改走 `settings.describe()` + 1s TTL 缓存）。
+- ✅ **升级红利已兑现**：压缩死区（阈值改为 `min(W × ratio, W − O − headroom)`）与 `turn/end` 被 `Session.append` 静默拒绝两条链由上游修复；坑 28 的双实例症状在产物入口下**未复现**（但权宜之计未撤）。
+- 📋 **C2 归档运行中会话**：新增 `options.stopActivity`；插件**刻意不传**（对齐 WebUI「先问再停」），失败渲染成错误卡；更友好的「是否停止并归档」确认卡留作后续。
+- 📋 **C3 弃用 API**：`snapshotEvents` / `eventAt` / `ownEvents` 已 `@deprecated` → 后续迁 `sessionProjections` / `projections()`（与关键坑 8 同源）。
+- 🔲 **B3 目录型 preset 搬家（唯一未完成的迁移）**：0.1.7 的 registry 既不扫目录也不收 preset 路径 → 本地「持久模式」preset 不再出现在 `agentPresets.list()`。**不丢数据**；正确做法是搬成 `@deepseek-ai/dsh-agent-preset` 声明式行，且**必须文本级搬运**（保留 `!!js` 表达式）、**不要丢 `isolate` 组**。
+- ✅ **升级后发现的插件 bug 已修**：重建冷会话时用**插件配置默认值**覆盖了会话自己记录的 preset → 「卡片写 `cordis`、工具集却是 `standard`」。与 0.1.7 无关（`0.1.6-alpha.2` 上已复现），已修并固化为**关键坑 33**。
+
+---
+
 ## 已完成
 
 | # | 功能 | 说明 |

@@ -490,6 +490,6 @@ llm-deepseek:
 
 > 读测试日志时注意：里面出现的 `reconcile failed: …` / `moves to an error state when …` 是**测试用例刻意构造的失败路径**的 stdout，不是失败；判据只看 `Test Files / Tests` 汇总与退出码。
 
-### 仍未做的收尾
+### 收尾（✅ 已完成）
 
-- 插件仓库的 `package.json` / `package-lock.json`（已升到 `^0.1.6-alpha.1`）与本文档仍**未提交**。
+- 插件仓库的 `package.json` / `package-lock.json`（已升到 `^0.1.6-alpha.1`）与本文档**已随对应的兼容批次提交**。

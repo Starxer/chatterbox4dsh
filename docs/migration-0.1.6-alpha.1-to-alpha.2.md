@@ -223,8 +223,15 @@ find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete
 rm -rf apps/web/dist
 
 # ⚠️ 先清跨版本残留产物，再跑【完整】构建（不是 build:native-system，它不产 lib/）
-find packages apps -maxdepth 3 -type d \( -name lib -o -name dist \) -not -path '*/node_modules/*' -exec rm -rf {} +
-find . -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete
+# 用仓库自带的清理入口，checkout 前后各一次（它有"未知文件就整体拒绝"的保护）。
+# 不要手写 `find -name lib`：清不掉"包目录本身已被删除、只剩 lib/ 和 node_modules/"的残留
+# ——那正是本次与后续 0.1.7 升级两次构建失败的根因（关键坑 32）。
+pnpm run clean        # 若已 checkout 完成，就地清一次
+git checkout dsh-v0.1.6-alpha.2
+pnpm run clean        # checkout 后再清一次（清掉目标 tag 残留 + 全部构建输出）
+for d in packages/*/* apps/* vendor/*; do
+  [ -d "$d" ] && [ ! -f "$d/package.json" ] && echo "RESIDUE: $d"
+done
 pnpm run build
 
 # 服务入口当前是构建产物，就用同一个入口验版本
@@ -354,10 +361,11 @@ git diff --name-only dsh-v0.1.6-alpha.1 dsh-v0.1.6-alpha.2 | wc -l    # 2622
 
 **两个教训（都已固化进 §2 的处理项与升级/回滚脚本）**：
 
-1. **回滚失败的直接原因是跨版本残留的构建产物**：alpha.2 的 `plugin-manager/lib/types/index.js` 引用了 alpha.1 不存在的 `readProfilePatches` / `reconcileProfilePatches`，`git checkout` 回 alpha.1 后这些**未被 git 跟踪的 `lib/`** 让 `pnpm run build` 在 rolldown 报 `[MISSING_EXPORT]`。必须**先清 `lib/`+`dist/`+`*.tsbuildinfo` 再构建**。
+1. **回滚失败的直接原因是跨版本残留的构建产物**：alpha.2 的 `plugin-manager/lib/types/index.js` 引用了 alpha.1 不存在的 `readProfilePatches` / `reconcileProfilePatches`，`git checkout` 回 alpha.1 后这些**未被 git 跟踪的 `lib/`** 让 `pnpm run build` 在 rolldown 报 `[MISSING_EXPORT]`。必须**先清产物再构建**。
+   > **2026-09-22 追加（重要）**：当时写下的修法是手写 `find … -name lib -exec rm -rf`，**它不够**——清不掉「包目录本身已被删除、只剩 `lib/` 与 `node_modules/`」这一类残留（`git checkout` 不删未跟踪产物，而目标 tag 会改名/删除包）。同一个根因在 **0.1.7-alpha.1 升级时再次导致构建失败**（`Cannot find entry`）。**正确做法是调用仓库自带的清理入口 `pnpm run clean`（checkout 前后各一次）+ 覆盖 `apps/*`、`vendor/*` 的残留断言**，详见 [docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md](./migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md) §3.2 与关键坑 32。
 2. **构建失败时不要启动服务**。上一轮把半成品树拉起来，才是「会话彻底不可用」的那一步。
 
-**上游状态**：`#7011` / `#6986` 均 **open**（`#7011` 的根因分析与本机实测完全一致）。**已定策略：不改 DSH 源码、不往检出打补丁，等上游修复**；修复进入正式 release 后再把服务入口切回源码入口并复验一次工具调用。可选的两种临时改法（`Symbol.for` 一行、把默认值改回 `link`）记录在 `notes/upstream-and-compat.md`，**当前不采用**。
+**上游状态（2026-09-22 复核）**：`#7011` / `#6986` 当时均 **open**。0.1.7-alpha.1 里 `TOOL_RUNTIME_SCHEDULER` **仍是局部 `Symbol(...)`**（未改成 `Symbol.for`），而 alpha.2 那个「默认解析模式」开关在 0.1.7 已随解析模型重写而**消失**：即上面列的两种源码级改法，一个上游仍未采用，一个已无处可改。好消息是 0.1.7 的 "resolve linked plugin peers from the running installation" + `linkedRoots()`（显式跳过悬空链）**可能**从结构上避免 link 插件再带第二份核心包，升级后实测**未复现** `prepare` 报错；但符号身份**没有兜底**。**结论：权宜之计（服务入口走构建产物）继续保留**，要撤只能做实测实验，不要凭推断撤。**已定策略不变：不改 DSH 源码、不往检出打补丁。**
 
 **会话完整性**：上游提示「在 `tool/call` 之后崩溃的会话可能缺配对 `tool/result`，建议新建会话」。本会话实测**干净**，无需重建：260 次 `tool/call` / 259 已配对（唯一未配对的是当时正在执行的调用），`turn/end` 为 7 `completed` + 1 `interrupted`、**0 `error`**。会话日志里出现的 `reading 'prepare'` 字样全部来自事后读取的文本（单元文件注释、讨论内容、journal 摘录），不是真实报错。
 
@@ -368,4 +376,5 @@ git diff --name-only dsh-v0.1.6-alpha.1 dsh-v0.1.6-alpha.2 | wc -l    # 2622
 - 版本兼容台账与历史基线：`notes/upstream-and-compat.md`
 - 关键坑全文（13 / 14 / 17 / 24 / **28**）：`notes/pitfalls.md`
 - 上一跳（0.1.5-rc.2 → 0.1.6-alpha.1）：`docs/migration-0.1.5-rc.2-to-0.1.6-alpha.1.md`
+- 下一跳（0.1.6-alpha.2 → 0.1.7-alpha.1，含本页「清产物」教训的**修正**）：[docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md](./migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md)
 - 评估期间发现、**本次不改**的插件侧问题：见 `TODO.md`「已知问题」段

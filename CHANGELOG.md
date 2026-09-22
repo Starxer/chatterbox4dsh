@@ -20,7 +20,7 @@
 >
 > 同批次修掉：**在群里新建话题建会话时，创建流程的卡片被发到另一个话题**——卡片所属话题不能按「群」推断（一个群只有一个 `chatId`、却有很多话题），改成按**被点击卡片的 message id** 精确回查。见下。
 >
-> 已升级到 DSH **`0.1.7-alpha.1`**（1299 commits）：这一版**换掉了设置服务**，插件侧有 4 处必改（见下节）。会话控制 / 流式 / 工具 / 附件 / 客户端 UI / 会话日志格式**均未破坏**。
+> 已升级到 DSH **`0.1.7-alpha.1`**（1299 commits）：这一版**换掉了设置服务**，插件侧有 4 处必改（见下节）。会话控制 / 流式 / 工具 / 附件 / 客户端 UI / 会话日志格式**均未破坏**。完整评估、升级/回滚步骤与**两次构建失败的根因**见 [`docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md`](./docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md)。
 >
 > Upgraded to DSH **`0.1.7-alpha.1`** (1299 commits). This release **replaced the settings service**, so the plugin needed four changes (see the first entry below). Session control, streaming, tools, attachments, the client slot contract, and the session-log format are unaffected.
 
