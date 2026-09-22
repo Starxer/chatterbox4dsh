@@ -5,6 +5,55 @@
 
 ---
 
+## ⬜ 未完成清单（2026-09-23 逐条核实）
+
+> **这是唯一的未完成台账。** 下面各历史章节里的「未动工 / 只剩一条」等字样可能已过期，**以本表为准**。
+> 核实方式：每条都在当期 `src/` 里 grep / 读代码确认过，不采信文档里的旧结论（旧结论正是本次要修的东西）。
+> 分类：**功能缺口**（用户可感知）→ **上游阻塞**（我们能做的都做完了）→ **可选项**（无明确需求）→ **开发卫生**。
+
+### 功能缺口
+
+| # | 项 | 优先级 | 状态与出处 |
+|---|---|---|---|
+| O1 | **思考期占位卡（方案 A）** | 中 | 🔲 **未实现**。`step/start` 目前只 `resetStep` + 记时间（[`feishu-streaming.ts:955`](./src/feishu-streaming.ts)），**不发卡** → 首卡延迟 = 整个思考时长 + 150ms 首发防抖。方案与四个边角已定，见下文「已知问题 → 思考期无反馈」 |
+| O2 | **`/subagents` 子代理卡片命令** | 中 | 🔲 **未实现**（`src/` 内无该命令，只在历史 `.bak` 文件里留有注释）。数据源 `ctx.subagents.listChildren` / `listDescendants`；与 rc.1 评估的 **C2** 是同一件事 |
+| O3 | **补 `produced` 交付物**（write/edit 成功改过的文件） | 中 | 🔲 **未实现**。插件只订阅 `deliverables/presented`（[`feishu-streaming.ts:992`](./src/feishu-streaming.ts)），WebUI 的 produced 那一半没有对应物 → 实测 **32%（18/56 轮）** WebUI 有产物行而飞书完全没有。同节另两个缺口：complete 卡只对**飞书触发的**轮次发；`renderReplyCards` 的 else 分支不带 `turnStats`（交付清单与指标整块不渲染） |
+| O4 | **两处残留的就地更新上限** | **高**（交互可靠性） | 🔲 **仍在**（2026-09-23 复核）：① [`feishu-session.ts:380`](./src/feishu-session.ts) 的「🔄 刷新」按钮；② [`feishu-model-select.ts`](./src/feishu-model-select.ts) 整个选择向导（`updateCardInstanceOnMessage` 四处调用：563/577/668/674）。飞书对**带按钮**的卡片就地更新 2–3 次后停止投递回调 → 改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
+| O5 | **`#18` reasoning 代码块可折叠** | 中 | 🔲 **未实现**（`src/` 内无 `collapsible`） |
+| O6 | **错误详情三选一** | 低 | 🔲 **未定/未动工**。现状上限：工具结果 1500 字符、reasoning 200、正文 3000（溢出会拆卡，**不丢**）、插件侧非 turn 错误 600 字符且丢 `cause` / 堆栈。三个可选方向（详细错误卡 / `/error` 回看全文 / 落文件后交 `feishu_send_file` 推送）都没做 |
+| O7 | **`renderMode: auto\|card\|text`** | 低 | 🔲 **未实现**（2026-09-23 复核：`src/` 内仍无）。超长回复回退纯文本的能力，来自「飞书消息长度限制调研」的「待定」 |
+| O8 | reasoning 预览字数是否可配置 | 低 | 🔍 **待定**。`REASONING_CAP = 200` 硬编码在两处（[`channel.ts:33`](./src/channel.ts)、[`feishu-streaming.ts:1197`](./src/feishu-streaming.ts)） |
+
+### 上游阻塞（我们能做的都做完了，只能等 DSH）
+
+| # | 项 | 卡在哪 |
+|---|---|---|
+| B1 | **C3 的最后一处弃用 API**：`summarizeTurn` 仍需读单轮原始事件（逐 step 计时 / 首 token 时间） | 等上游提供**逐步计时类投影**；现有 `sessionProjections` 不提供。代码注释已写明这是**有意保留** |
+| B2 | **P6-4**：用投影替代剩余的全量日志扫描 | 与 B1 同一上游缺口。**2026-09-23 alpha.2 复核：仍无新投影**（`sessionProjections` 的方法集与 alpha.1 完全一致） |
+| B3 | **坑 28 撤权宜之计**（服务入口从构建产物切回源码入口） | 上游 `#7011` / `#6986` **仍未修**（alpha.2 范围内**没有任何 commit 引用**这两个编号）。要撤必须**先做实测实验**，不要凭推断撤 |
+
+### 可选项（无明确需求，记录备查）
+
+| # | 项 | 说明 |
+|---|---|---|
+| X1 | **P6-5** `plugins.detail.badge` / `actions` / `section` | 把飞书连接状态 / 扫码 / 重连挂到插件详情页，替代现在散在设置页里的同等能力 |
+| X2 | **P6-6** `locale` meta + `package.json` `icon` | 插件在设置页 / 插件市场有图标；需要一个自绘资产（未做） |
+| X3 | **P6-7** 借新宿主服务 | `job-controller`（任务卡）、`speech-to-text`（飞书语音转文字）、`readBytes`（原生 `Uint8Array`）、工作区 pin/unpin、`modelCatalog()` —— 每个都是独立功能项 |
+| X4 | **MiniMax M3 思考强度** | 修法已定（**纯 settings，插件与 DSH 都不用改**：`compat.forceAdaptiveThinking` + `reasoningEfforts`），**尚未执行** —— 等确认要不要用 M3 再说。真机验证要点见「问题追踪」 |
+| X5 | **C5 代理环境** | 入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；**暂不处理** |
+| X6 | **V13 压缩阈值实测** | **不是待改项**。要长会话自然跑到 ~680k 才会出现 `compaction/start`，**至今未触发**；公式已在代码侧核对 |
+| X7 | 流式输出（CardKit `streaming_mode`） | ❌ **已取消**（2026-09-02 使用者决定）。下方技术方案仅作留档，**不要当待办** |
+
+### 开发卫生（非功能，但会咬人）
+
+| # | 项 | 说明 |
+|---|---|---|
+| H1 | `src/harness.ts.bak.20260902_172344` / `_215829` | 坑 3 要求「验证启动正常后**手动删** `.bak.*`」；这两份 2026-09-02 的临时备份**至今未删** |
+| H2 | 本机旧产物 | `~/.dsh/plugin-node-modules.pre-017`（168M）、`plugin-package-lock.json.pre-017`、8 个 `settings.yaml.bak.*`；确认没有回退需求后可删 |
+| H3 | 检出根 `lib/types/{index,invariant,startup}.js`（各 11 字节存根） | ⚠️ **别删**：`pnpm run clean` 不会碰它，但它已穿过两次完整构建；删了可能立刻回到 `Cannot find entry` 一类失败。见坑 32 与 `notes/upgrade-0.1.7-alpha.2.md` §6 |
+
+---
+
 ## 0.1.2-alpha.1 适配（已完成，2026-08-28）
 
 - 删除 `apiproxy` 依赖（DSH 0.1.2-alpha.1 整包移除 `packages/host/apiproxy`）
@@ -52,7 +101,7 @@
 - ⚠️ **Creator preset 工具集替换**：`cordis_define/run/stop/undefine` 全部删除，改由 `plugin_manager` 承担（自建 preset 需跟着改）。
 - ⚠️ **解析模式默认值 `link` → `runtime`**，核心包必须只有**一份物理副本**；本机当天因此在 `tsx` 源码入口触发 `@deepseek-ai/dsh-tools` 双实例 → **每次工具调用**报 `Cannot read properties of undefined (reading 'prepare')`。
 - ✅ **临时措施（仍生效）**：服务入口从 `tsx src/bin.ts` 改为**构建产物入口**（关键坑 28；**不动 DSH 源码、等上游**）。代价：改 host 源码必须重建、**dsh 运行期间绝不 `pnpm run build`**、跨 tag 切版本必须先清产物（关键坑 32）。
-- 🔲 上游修复落地后：把服务入口切回源码入口并复验一次工具调用。**2026-09-22 复核：0.1.7 里 `TOOL_RUNTIME_SCHEDULER` 仍是局部 `Symbol(...)`（未改 `Symbol.for`），且 alpha.2 的默认解析模式开关已随解析模型重写消失 → 权宜之计仍未退休，只能靠实测实验撤。**
+- 🔲 上游修复落地后：把服务入口切回源码入口并复验一次工具调用。**2026-09-22 复核：0.1.7 里 `TOOL_RUNTIME_SCHEDULER` 仍是局部 `Symbol(...)`（未改 `Symbol.for`），且 alpha.2 的默认解析模式开关已随解析模型重写消失 → 权宜之计仍未退休，只能靠实测实验撤。2026-09-23 alpha.2 复核：仍未修**（alpha.2 范围内无任何 commit 引用 `#7011` / `#6986`）——详见上方 **B3**。
 
 ---
 
@@ -88,9 +137,10 @@
 
 ---
 
-## 迁移遗留：P6 可选重构（**均未动工**，2026-09-22 盘点）
+## 迁移遗留：P6 可选重构（2026-09-22 盘点，2026-09-23 复核）
 
-> 来源：升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进；建议各自单独立项。
+> 来源：0.1.7 升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进。
+> **状态（2026-09-23）**：P6-1 / P6-2 已完成；**P6-4 被上游阻塞**（见 B2）；**P6-5 / P6-6 / P6-7 未动工**（见 X1–X3）。
 
 | # | 项 | 收益 / 代价 |
 |---|---|---|
@@ -166,9 +216,10 @@
 | — | 去掉用户消息的 `[Feishu] ` 前缀 | ✅ **已完成（2026-09-08）**：`reply()`/`steer()` 都不再拼通道前缀，用户文本原样进模型；纯图片/文件消息只带 image/file 块（不再补空文本块）。通道归属由 session↔chat 绑定记录，回复路由由插件决定，与文本无关。见 CHANGELOG |
 | — | 步骤卡标题色带"变白底"定性 | ✅ **已定性（2026-09-08）**：插件发出的 `header.template` 始终正确，飞书服务端实体也是正确颜色；**部分客户端在卡片更新后不重绘标题背景**，属飞书客户端渲染问题，非插件 bug。取证方法：`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`。不再往代码里查（详见下方「已知问题」） |
 
-## 下一轮待办（2026-08-30 定，未动工）
+## 下一轮待办（2026-08-30 定）—— 5 项里只剩 1 项
 
-> 用户最后明确：**先更新 TODO 文件，暂不动手改代码**。以下 5 项为下一轮实现计划。
+> 原记录：「用户最后明确：**先更新 TODO 文件，暂不动手改代码**」。
+> **2026-09-23 复核：第 2/3/4/5 项已全部完成，只剩第 1 项的「专门命令」没做**（已并入上方 **O2**）。
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
@@ -184,7 +235,7 @@
 
 > ⚠️ 状态已刷新（2026-08-30）：`#16 权限系统接入`、`/thread→/session` 改名均已**完成**，从本表移除。
 >
-> 下表是**条目状态归档**（含已完成项，保留以便追溯）。真正还没动工的只剩一条：**#18 reasoning 代码块折叠**。
+> 下表是**条目状态归档**（含已完成项，保留以便追溯）。**未完成项一律以上方「⬜ 未完成清单」为准**——「真正还没动工的只剩一条 #18」是 2026-08-30 的旧结论，2026-09-23 复核已被刷新（实际还有 O1–O8）。
 
 | # | 功能 | 优先级 | 说明 |
 |---|---|---|---|
@@ -192,8 +243,8 @@
 | 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-09-08 核实**：reasoning 已收紧为 **200 字预览**（`REASONING_CAP`，不展示完整思维链）、text 超 3000 字改为拆溢出续卡；仅 `collapsible` 未实现 |
 | — | **step 卡片可见性开关**（过程透明可配置） | **中** | ✅ **已完成（2026-09-09）**：新增 `showToolCalls` / `showToolArgs` / `showToolResults` 三个布尔配置（连同已有的 `showReasoning`，默认全 `true`），分别门控工具段落、`⚙️ 参数`、`📤 结果`、思考过程；`showToolCalls=false` 时工具段落整体不渲染、且**只有工具、无文字/思考的步骤不发卡**；WebUI 面板新增「卡片显示」卡承载四个 `Switch` + 插件语言。见 CHANGELOG「新增：卡片显示粒度开关 + 精简 WebUI 面板」。原记录：**后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
 | 3 | ~~工作区候选补全~~ → 目录浏览器 | **中** | ✅ **已完成（2026-09-08）**：改为**目录浏览器**（比输入前缀补全更直接）——`/new` 工作区卡片新增「📂 浏览目录…」，可导航 / 分页 / 显示隐藏目录 / 选当前目录为工作区。目录来源优先 DSH `directoryPicker` 的 `browse` 能力，`native` 或缺失时回退插件自带只读列举。见 CHANGELOG「新增：/new 工作区卡片支持浏览目录」。**前缀补全本身不再做**（浏览器已覆盖）。**2026-09-08 追加**：工作区列表与目录浏览最终统一用 **`interactive_container`**（Card 2.0 整块可点击区域，官方定位就是「卡片内的列表项」）：每个工作区 / 目录一整行可点、无按钮外观、名字与路径不省略——按钮宫格 / 按内容宽度分行（飞书不认列内 `width: 'fill'`）、编号下拉框（要先选号再提交，太绕）、整行按钮（有多余按钮外观）均已弃用。控制按钮行用 `column_set` + `flex_mode: 'stretch'`（窄屏堆叠，避免手机端被压缩截断） |
-| — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查（2026-09-11 复核，仍在）**：`feishu-session.ts` 面板仍有就地更新——但**只剩「🔄 刷新」一个按钮**（`src/feishu-session.ts:340`）；切换/归档/fork/改名都走「发新卡」，结果卡也是新卡，不受影响 |
-| — | **交互卡片就地更新上限** | **高** | ✅ **已修复（2026-09-08）**：飞书对同一条消息的卡片**就地更新约 2–3 次后停止投递按钮回调**（patch 与 CardKit 实例**同样**受限）。目录浏览器改「每次导航发新卡片」；`sendCard` 已不再用 `updateCardInstance`。**仍待排查（2026-09-11 复核，仍在）**：`feishu-session.ts` 的「🔄 刷新」按钮；`feishu-model-select.ts` 整个选择向导（provider→model→reasoning→confirm→成功卡，同一张卡就地更新 3+ 次，`updateCardInstanceOnMessage`）。两者都可能到第 2–3 次点击后回调失效——改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
+| — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查（2026-09-23 复核，**仍在**）：`feishu-session.ts` 面板仍有就地更新——但**只剩「🔄 刷新」一个按钮**（`src/feishu-session.ts:380`，行号已按 2026-09-23 的 `src/` 更新）；切换/归档/fork/改名都走「发新卡」，结果卡也是新卡，不受影响 |
+| — | **交互卡片就地更新上限** | **高** | ✅ **已修复（2026-09-08）**：飞书对同一条消息的卡片**就地更新约 2–3 次后停止投递按钮回调**（patch 与 CardKit 实例**同样**受限）。目录浏览器改「每次导航发新卡片」；`sendCard` 已不再用 `updateCardInstance`。**仍待排查（2026-09-23 复核，**仍在** → O4）：`feishu-session.ts` 的「🔄 刷新」按钮（`:380`）；`feishu-model-select.ts` 整个选择向导（provider→model→reasoning→confirm→成功卡，同一张卡就地更新 3+ 次，`updateCardInstanceOnMessage` 四处调用：`:563`/`:577`/`:668`/`:674`）。两者都可能到第 2–3 次点击后回调失效——改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
 | — | **step 卡编辑次数上限** | **中** | ✅ **已修复（2026-09-08）**：step 卡改走 CardKit 卡片实例（`cardkit.v1.card.update` + 单调 `sequence`），通道未提供时回退 patch。**重要澄清**：飞书对**带按钮**的卡片就地更新约 2–3 次后停止投递回调；**step 卡没有按钮**，因此连续原地更新是安全的（详见上一条「交互卡片就地更新上限」）。见 CHANGELOG「修复：step 卡片改用 CardKit 卡片实例」 |
 | — | **step 卡丢失更新（工具状态不刷新 / 卡片只剩 reasoning）** | **高** | ✅ **已修复（2026-09-08）**：① `assistant/message` 曾无条件发新卡 → 工具先开卡时旧卡被弃、再也收不到结果；改为「已有卡就更新」。② 防抖表按 session state 键 → 下一步骤的更新取消上一步骤待触发的定时器；改为按卡片 ref 键。另加 `[send]`/`[update]` 诊断日志。见 CHANGELOG「修复：step 卡片丢失工具状态更新 / 只剩 reasoning」 |
 | 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
@@ -232,7 +283,7 @@
 
 ## 已知问题
 
-### 思考期无反馈：发卡时机偏慢（**2026-09-22 定性，方案 A 待实现**）
+### 思考期无反馈：发卡时机偏慢（**2026-09-22 定性，2026-09-23 复核仍未实现 → O1**）
 
 **现象**：使用者报告「模型正在思考的时候并不会发卡」——长思考（`high`/`max` 推理等级）期间聊天里完全没有动静，第一张步骤卡直到**本步模型输出落地**才出现。
 
@@ -286,7 +337,7 @@
 
 > 相关：本文档「飞书消息长度限制调研记录」已给出卡片 30KB 请求体 / 单 markdown 元素约 10k 字符的隐式上限与推荐拆卡阈值（~6k–8k 字符）；本次修法与该阈值选择无耦合。
 
-### 飞书侧报错内容比 WebUI 简略（**turn 级已修 2026-09-17，工具/思考仍有上限**）
+### 飞书侧报错内容比 WebUI 简略（**turn 级已修 2026-09-17；工具/思考的部分仍是上限 → O6**）
 
 **现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」——同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
 
@@ -310,11 +361,11 @@
 
 **处理**：turn 级已于 **2026-09-17 修复**；其余三项 2026-09-16 决定先记录、不改。
 
-### 交付物面比 WebUI 窄：produced 整半未实现 + complete 卡只对飞书触发的轮次发送（**2026-09-17 记录，未动工**）
+### 交付物面比 WebUI 窄：produced 整半未实现 + complete 卡只对飞书触发的轮次发送（**2026-09-17 记录，2026-09-23 复核仍未做 → O3**）
 
 **现象**：使用者报告「产物信息有的时候出现在最后一个卡片，这是步骤卡片而不是 complete 卡片」。
 
-**核实一：步骤卡上那条不是 bug。** 步骤卡里的「交付文件：xxx +N」是 DSH `present` **工具调用**的渲染（`feishu-streaming.ts:1235` 的 `deriveToolSummary` 摘要 + 紧随的 `⚙️ 参数` / `📤 结果`）；WebUI 对同一个工具调用也是照样渲染，两端一致。`📦 **交付文件（N）**` 清单只可能出现在 complete 卡上：唯一渲染点 `channel.ts:765`（`renderFooterCard`），唯一调用点 `channel.ts:498`。实测 DM 1500 条消息 + 群 25 个话题 2005 条消息，**0 例**出现在步骤卡。
+**核实一：步骤卡上那条不是 bug。** 步骤卡里的「交付文件：xxx +N」是 DSH `present` **工具调用**的渲染（`feishu-streaming.ts:1235` 的 `deriveToolSummary` 摘要 + 紧随的 `⚙️ 参数` / `📤 结果`）；WebUI 对同一个工具调用也是照样渲染，两端一致。`📦 **交付文件（N）**` 清单只可能出现在 complete 卡上：唯一渲染点 `channel.ts:770`（`renderFooterCard`，清单取自 `turnStats.deliverables`），唯一调用点 `channel.ts:525`（**行号已按 2026-09-23 的 `src/` 更新**）。实测 DM 1500 条消息 + 群 25 个话题 2005 条消息，**0 例**出现在步骤卡。
 
 > 排查方法（可复现）：`im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回用户可见卡片 JSON，再**按元素开头精确匹配** `^📦 **(交付文件|Present files)**`；判定步骤卡里的那条用 `^> 交付文件：`。⚠️ 不要用「正文含『交付文件』」这种粗筛——工具参数/结果里可能字面含这四个字（例如 grep 过 CHANGELOG），会大量假阳性。
 
@@ -326,9 +377,9 @@
 
 **这解释了现象本身**：不调 `present` 的轮次（18/23 的多数），飞书侧唯一的产物线索就是步骤卡里 `write`/`edit` 工具调用的 `⚙️ 参数`（`file_path`）与 `📤 结果`（`<path>…`）；WebUI 轮末那行「改动的文件」在飞书没有对应物。而"有时候"＝模型恰好调了 `present` 的轮次——那时 📦 清单才出现在 complete 卡上。
 
-**缺口 2（origin）**：complete 卡只在**飞书入站消息触发的轮次**发送（唯一发送点在 `channel.ts:498`，位于 `bridge.reply().then()` 内），而 WebUI 的交付行挂在 `turn/start` 上、与来源无关。实测第 **251** 轮（此前 6.5 小时无飞书消息，最后停在「回复 · 第 251 轮 · 第 8 步」）**没有 complete 卡**，第 203 轮同样。本窗口内没有「`present` + 非飞书触发」的轮次，故尚未造成实际丢失，属逻辑风险。
+**缺口 2（origin）**：complete 卡只在**飞书入站消息触发的轮次**发送（唯一发送点在 `channel.ts:525`，位于 `bridge.reply().then()` 内），而 WebUI 的交付行挂在 `turn/start` 上、与来源无关。实测第 **251** 轮（此前 6.5 小时无飞书消息，最后停在「回复 · 第 251 轮 · 第 8 步」）**没有 complete 卡**，第 203 轮同样。本窗口内没有「`present` + 非飞书触发」的轮次，故尚未造成实际丢失，属逻辑风险。
 
-**缺口 3（整块丢）**：`channel.ts:505-518` 的 else 分支（`intermediateSent === false`）走 `renderReplyCards`，其签名没有 `turnStats`，**交付清单与本轮指标都不渲染**，只发一张蓝色 `Reply` 卡——群里实测命中 **15 次**，DM 0 次。
+**缺口 3（整块丢）**：`channel.ts:531-544` 的 else 分支（`intermediateSent === false`）走 `renderReplyCards`，而它的入参只有 `meta` + 一个 `tps` 数字，**拿不到 `turnStats.deliverables`** ⇒ 交付清单不渲染，也没有 Turn Complete 的指标行（tok/s 那一行有，是从 `turnStats` 单独算出 `tps` 传进去的）。群里实测命中 **15 次**，DM 0 次。
 
 **✅ 顺带隐患已修（2026-09-17）**：`markIntermediateSent` 原先只在卡片**首次发出**时判断有无文本（`feishu-streaming.ts` 的 `actuallySendStepCard`）；若该步先被 `tool/call` 开卡、正文后到（走 `updateStepCard`），标记不会补上 → channel.ts 会再发一张**重复**的蓝色 `Reply` 卡（正文出现两遍）并且不发 complete 卡。现抽成 `noteStepCardText(sessionId, state)`、**发送与更新两条路径都调用**（`SessionStepState` 因此带上 `sessionId`），3 例新测试；这也**缩小了下面缺口 3 的触发面**。详见 CHANGELOG「工具先开卡、正文后到时误判…」。
 
@@ -338,7 +389,7 @@
 2. **complete 卡改为「轮次结束即发」**：让 streaming 在 `turn/end` 补发，并与 channel.ts 约定「谁负责这一轮的 footer」，覆盖飞书没触发的轮次；
 3. **else 分支接上 `turnStats`**，至少把交付清单渲染出来。
 
-**处理**：2026-09-17 使用者决定**三个缺口先只记录、不改**；同轮只修了上面那个已复现的隐患。
+**处理**：2026-09-17 使用者决定**三个缺口先只记录、不改**；同轮只修了上面那个已复现的隐患。**2026-09-23 复核：三个缺口一个都没动 → O3。**
 
 ### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
 
@@ -490,7 +541,7 @@ llm-pi-ai:
 - **Session 事件**：`sandbox/mode`、`permission/preset`，持久化在 session log
 - **飞书接入**：`/permission [模式]`（`feishu-permission.ts`）交互式选择卡 + 带参直接切换；`/sandbox` 保留为隐藏别名；命名/显示名对齐 WebUI `ui-permission-presets`（Read Only / Workspace Write / Full access）；`/status` 显示 Permission。复用 `ctx.get('sandboxPolicy')` 服务 + 会话日志 log-only `sandbox/mode` 事件
 
-## #18 思考内容展示 —— ✅ 基本完成（仅 `collapsible` 未做）
+## #18 思考内容展示 —— ✅ 基本完成（仅 `collapsible` 未做 → O5）
 
 - **已完成**：
   - `feishu-streaming.ts` 从 `assistant/chunk`（旧版）与 `assistant/message.stream`（0.1.3）两条路径累积 reasoning-delta
@@ -587,5 +638,5 @@ POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
 4. **静默截断防护**：发送前按已知上限（30KB 请求体 / ~10k 元素）本地校验并主动分段，**不要依赖飞书静默截断**。
 
 ### 待定
-- 是否需要 `renderMode: auto|card|text` 配置（对齐 openclaw 建议，让超长回复回退纯文本）。**仍未做**（2026-09-11 核实：`src/` 内无 `renderMode`）。
+- 是否需要 `renderMode: auto|card|text` 配置（对齐 openclaw 建议，让超长回复回退纯文本）。**仍未做**（**2026-09-23 复核**：`src/` 内无 `renderMode` → O7）。
 - 分段后是否在每卡加 `Part i/N` 标注：**reply 卡已有**（`channel.ts` `Part ${i}/${total}`），**step 溢出续卡也已有**（`feishu-streaming.ts` `Reply (continued ${part}/${total})`）——2026-09-11 核实，此项实际已完成。
