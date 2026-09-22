@@ -347,6 +347,18 @@ export interface Translations {
   questionCustomPlaceholder: string
   questionSubmitCustom: string
   questionSkipButton: string
+  // Background job cards (feishu-jobs.ts)
+  jobUntitled: string
+  jobKindLabel: string
+  jobIdLabel: string
+  jobProgressLabel: string
+  jobDetailLabel: string
+  jobDurationLabel: string
+  jobStatusRunning: string
+  jobStatusStopping: string
+  jobStatusCompleted: string
+  jobStatusFailed: string
+  jobStatusKilled: string
 }
 
 /** The zh dictionary: terminology aligned with the DSH native UI. */
@@ -634,6 +646,18 @@ export const zh = {
   questionCustomPlaceholder: '在此输入...',
   questionSubmitCustom: '✏️ 提交自定义回答',
   questionSkipButton: '⏭️ 跳过本题',
+  // Background job cards (feishu-jobs.ts)
+  jobUntitled: '未命名任务',
+  jobKindLabel: '类型',
+  jobIdLabel: '编号',
+  jobProgressLabel: '进度：',
+  jobDetailLabel: '详情：',
+  jobDurationLabel: '耗时',
+  jobStatusRunning: '运行中',
+  jobStatusStopping: '正在停止',
+  jobStatusCompleted: '已完成',
+  jobStatusFailed: '失败',
+  jobStatusKilled: '已停止',
 } as const satisfies Translations
 
 /** The en dictionary, keyed identically to the zh dictionary. */
@@ -921,6 +945,19 @@ export const en: Translations = {
   questionCustomPlaceholder: 'Type here…',
   questionSubmitCustom: '✏️ Submit custom answer',
   questionSkipButton: '⏭️ Skip this question',
+
+  // Background job cards (feishu-jobs.ts)
+  jobUntitled: 'Untitled job',
+  jobKindLabel: 'Kind',
+  jobIdLabel: 'ID',
+  jobProgressLabel: 'Progress:',
+  jobDetailLabel: 'Detail:',
+  jobDurationLabel: 'Duration',
+  jobStatusRunning: 'Running',
+  jobStatusStopping: 'Stopping',
+  jobStatusCompleted: 'Completed',
+  jobStatusFailed: 'Failed',
+  jobStatusKilled: 'Stopped',
 }
 
 /**

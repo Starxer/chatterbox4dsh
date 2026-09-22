@@ -28,6 +28,15 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：后台任务卡（`src/feishu-jobs.ts` / `src/index.ts` / `src/i18n.ts`）
+
+- **一个后台任务一张卡**，发在**它所属会话绑定的那个飞书会话**里：`registered` 建卡 → `progress` / `stopping` **就地更新同一张卡** → `settled` 立刻刷新为终态（completed 绿 / failed 红 / killed 灰 / stopping 橙）→ `removed` 用 `renderSupersededCard` 改写为「已失效」。卡上**没有按钮**（带按钮的卡不能连续就地更新，关键坑 11），因此也不提供 kill；**未绑定会话或无主的任务一张卡都不发**——绝不按群猜话题（关键坑 31）。
+- **首次发卡永不防抖**：`progress` 变化比合并窗口（300ms）还快的长任务，如果首发也进防抖就会被一次次推迟，直到它安静下来才出现——正好反了。所以只有**就地更新**参与合并，首发立即发；发送失败后的重试也不早于这个窗口（不会变成无界重试）。
+- **按 job 串行链**：同一任务的 send/update 串起来，避免「首次 send 还没返回就 update」——那会拿着还不知道的 messageId 去 patch，或者干脆多发一张卡（关键坑 12）。
+- **记账有界**：`removed` 直接删；宿主不发 `removed` 时，已结算的记账在下一次**结算**或下一次建卡时按 30 分钟 TTL 清掉。注册表监听器是同步派发的，整个 handler 被 try/catch 包住（监听器抛错会打断注册表派发）；`dispose()` 退订并清掉所有待触发定时器。
+- **可选服务**：`ctx.get('jobs')` 判 undefined、不进 `inject`（关键坑 2）——组合里没有该服务时只记一行 info，插件照常启动，只是没有任务卡。
+- **测试**：新增 `tests/feishu-jobs.spec.ts` **18 例**（建卡、就地更新不重复发卡、三种终态、未绑定会话一张都不发、重复 `registered` 不重发、`dispose()` 之后不再发、发送抛错不打挂订阅、首发不被防抖吞掉、300ms 合并）。全量 **499 passed / 36 files**、typecheck 0 error。
+
 ### 变更：扫码与连接状态移到「插件」详情页，设置页只管配置（`src/client/`）
 
 - **分开摆放**：**配置**（凭据 / 访问策略 / 卡片显示）留在 DSH **Settings → 飞书与 Lark**；**连接状态与扫码授权**搬到 **Plugins → 飞书与 Lark 详情页**，通过三个根作用域槽位贡献——`plugins.detail.badge`（标题旁的状态标签）、`plugins.detail.actions`（头部的「扫码配置 / 重新扫码」）、`plugins.detail.section`（页面内容之下的「连接与扫码」区块，二维码在这里）。设置页保留一句指路。

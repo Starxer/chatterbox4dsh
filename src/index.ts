@@ -29,6 +29,7 @@ import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { handleProvisionRequest, PROVISION_PATH } from './web.ts'
 import { startFeishuApprovals, type PendingApprovalView } from './feishu-approvals.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
+import { startFeishuJobs, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
@@ -201,6 +202,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let consumeLastStepHadContent: (sessionId: string) => boolean = () => false
   let flushed: (sessionId: string) => Promise<TurnStats | undefined> = () => Promise.resolve(undefined)
   let stopTodos: () => void = () => undefined
+  let stopJobs: () => void = () => undefined
   let stopSendFileTool: () => void = () => undefined
   let stopReceiveFileTool: () => void = () => undefined
   let modelSelectHandle: { dispose: () => void; cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> } | undefined = undefined
@@ -689,6 +691,22 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
     })
+    // Read optional: the abstract background-job registry. `ctx.get` keeps it
+    // out of `inject`, so a composition without it still boots (关键坑 2) — it
+    // just gets no job cards. Only jobs whose owning session is bound to a
+    // Feishu chat are mirrored, and the module filters on `resolveChat`.
+    const jobs = ctx.get('jobs') as JobsServiceLike | undefined
+    if (jobs === undefined) {
+      ctx.logger('dsh-feishu').info('dsh-feishu: no background-job registry in this composition; job cards stay off')
+    } else {
+      stopJobs = startFeishuJobs({
+        jobs,
+        channel: cardChannel,
+        bridgeHolder,
+        logger: ctx.logger('dsh-feishu'),
+        getTranslations: () => translationsFor(currentLocale().id),
+      })
+    }
     const streamingResult = startFeishuStreaming({
       ctx,
       channel: cardChannel,
@@ -925,6 +943,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopQuestions()
     stopApprovals()
     stopTodos()
+    stopJobs()
     stopStreaming()
     stopSendFileTool()
     stopReceiveFileTool()
@@ -934,7 +953,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     displayHandle?.stop()
     sessionHandle?.stop()
     stopNewSessionConfirmer?.()
-  }, 'dsh-feishu: feishu questions + approvals + todos + streaming + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
+  }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
 
   let lastPrintedQrUrl: string | undefined
   const provisionManager = new ProvisionManager({

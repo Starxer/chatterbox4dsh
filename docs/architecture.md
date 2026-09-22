@@ -32,6 +32,8 @@ Harness Agent (模型、工具、会话日志)
 | `src/feishu-approvals.ts` | 工具审批处理 |
 | `src/feishu-questions.ts` | ask_user_question 卡片 |
 | `src/commands.ts` | 斜杠命令注册和处理 |
+| `src/feishu-jobs.ts` | 后台任务卡：订阅宿主 `ctx.jobs` 的事件扇出（`registered` / `progress` / `stopping` / `settled` / `removed`），为**所属会话已绑定到飞书**的任务发**一张**卡并就地跟随其状态，结算即刷新为终态、`removed` 改写为失效卡；`dispose()` 退订并清掉全部待触发定时器 |
+| `src/client/` | Web 客户端半边：设置页（`LarkSettingsCard` + `LarkSettingsCardController`，**只管配置与凭据**）与**插件详情页**的三处贡献（`LarkPluginDetail` 的 badge / actions / section，配合 `LarkChannelStatusController` 的连接状态与扫码轮询）。经 `ctx.slots` 注册、`ctx.configForms` 读写配置、`ctx.remote.credentials` 读写密钥 |
 
 ## 事件流
 
@@ -61,6 +63,7 @@ turn/end          → flush 待发卡 + pending debounce → 发送溢出文本 
 - **Turn Complete 卡片**：turn 结束后发送，绿色。若本轮有交付物，`📦 交付物（N）` 清单**排在卡片最前面**，其后以分隔线接性能指标（耗时 / LLM / 工具、TTFT / tok/s / 步数、token 明细与缓存命中率），再一条分隔线接配置信息（工作区 / 模型 / 推理强度 / 上下文占用 / Enter while busy）
 - **Todo 卡片**：turquoise，含进度条
 - **审批卡片**：orange，含 approve/deny 按钮
+- **任务卡（后台任务）**：一个后台任务一张卡，发在**它所属会话绑定的飞书会话**里。`registered` 建卡 → `progress`/`stopping` **就地更新同一张卡**（卡上没有按钮，所以可以连续原地更新；带按钮的卡不行，见关键坑 11）→ `settled` 立刻刷新为终态（completed 绿 / failed 红 / killed 灰 / stopping 橙）→ `removed` 改写为「已失效」。**未绑定会话或无主的任务不发卡**——绝不按群猜话题（关键坑 31）。`progress` 突发按 300ms 合并，结算走立即刷新
 
 ## 技术要点
 
