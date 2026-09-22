@@ -28,6 +28,15 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 上线：P6 批次已重启生效（2026-09-23 02:33），逐项核对结果
+
+- **重启**：`MainPID` 3017371 → 3110625，启动时刻 01:50:34 → **02:33:24**；重启单元 `Result=success`（`systemd-run` 独立 cgroup，关键坑 14）。
+- **启动序列**：`apply() called, sessionController= available userQuestions= available approval= available` → `startFeishuStreaming` → `[ws] ws client ready` → `dsh web:` banner；**journal error 计数 0**。
+- **后台任务注册表**：`ctx.get('jobs')` **拿到了**服务——那条「no background-job registry in this composition」出现 **0** 次，任务卡功能是开的；job 卡失败告警 **0** 次。
+- **产物**：`lib/index.js` 与 `client/client.js` 均为本批次重建（分别含 `startFeishuJobs` 与 `plugins.detail.*`）；工具调用正常（关键坑 28 的双实例未复现），飞书入站/出站链路正常。
+- ⚠️ **一个观测局限（如实记录）**：`src/feishu-jobs.ts` 只在**失败时**记日志，而它的卡走 `channel.send`（**不打日志**）——`[send] instance card=` 那条日志是 `feishu-streaming.ts` 的**步骤卡专用**。因此 **journal 无法证明任务卡是否送达**，只能证明「没有失败」；任务卡到没到只能在飞书里目视。
+- ⚠️ **页面级效果仍留给使用者确认**：插件详情页的徽章 / 「扫码配置」按钮 / 「连接与扫码」区块（含二维码），以及设置页「打开配置文件」按钮回归与那句指路。
+
 ### 变更：后台任务卡（`src/feishu-jobs.ts` / `src/index.ts` / `src/i18n.ts`）
 
 - **一个后台任务一张卡**，发在**它所属会话绑定的那个飞书会话**里：`registered` 建卡 → `progress` / `stopping` **就地更新同一张卡** → `settled` 立刻刷新为终态（completed 绿 / failed 红 / killed 灰 / stopping 橙）→ `removed` 用 `renderSupersededCard` 改写为「已失效」。卡上**没有按钮**（带按钮的卡不能连续就地更新，关键坑 11），因此也不提供 kill；**未绑定会话或无主的任务一张卡都不发**——绝不按群猜话题（关键坑 31）。
