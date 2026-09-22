@@ -32,7 +32,7 @@ function fixture() {
     return { agent, dispose: vi.fn(async () => undefined) }
   }
   const create = vi.fn(async ({ sessionId }: { sessionId: string }) => createHandle(sessionId))
-  const resume = vi.fn(async ({ resumeSessionId }: { resumeSessionId: string }) => createHandle(resumeSessionId))
+  const resume = vi.fn(async ({ resumeSessionId }: { resumeSessionId: string; setup?: (ctx: unknown) => Promise<void> }) => createHandle(resumeSessionId))
   const flush = vi.fn(async () => true)
   const workspace = { path: '/first-workspace', attachSession: vi.fn(async () => undefined) }
   const mount = vi.fn(async () => undefined)
@@ -86,6 +86,114 @@ describe('HarnessConversationService', () => {
     expect(agent).toBeDefined()
     expect(f.create).not.toHaveBeenCalled()
     expect(liveHandle.agent).toBe(agent)
+  })
+
+  it('creates a brand-new session under the configured preset', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionPersistence.list = vi.fn(async () => [])
+    const service = new HarnessConversationService(deps, { domain: 'feishu', agentPreset: 'ptc' })
+
+    await service.reply({ chatId: 'oc_1', chatType: 'p2p', content: 'one' })
+
+    expect(f.create).toHaveBeenCalledTimes(1)
+    expect(f.resolve).toHaveBeenCalledWith('ptc')
+  })
+
+  it('resumes a persisted session under the preset it recorded, not the bridge default', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({ meta: { agentPreset: 'cordis' }, events: [] }))
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })
+
+    // The mounted composition is built by `setup`; the creation header's preset
+    // is the authority for a resumed session.
+    const setup = f.resume.mock.calls[0]?.[0]?.setup as (ctx: unknown) => Promise<void>
+    await setup?.({})
+    expect(f.mount).toHaveBeenCalledWith({}, 'cordis')
+    expect(f.resolve).toHaveBeenCalledWith('cordis')
+  })
+
+  it('prefers the latest agent-preset/selected over the creation header on resume', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    // A blank-session switch never rewrites the creation header, so the event
+    // is the authority — the host's `agentPreset` projection does the same.
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: { agentPreset: 'standard' },
+      events: [
+        { seq: 1, type: 'agent-preset/selected', data: { agentPreset: 'cordis' } },
+        { seq: 2, type: 'turn/start', data: {} },
+      ],
+    }))
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })
+
+    const setup = f.resume.mock.calls[0]?.[0]?.setup as (ctx: unknown) => Promise<void>
+    await setup?.({})
+    expect(f.mount).toHaveBeenCalledWith({}, 'cordis')
+  })
+
+  it('recovers the recorded preset from the head of a long session log, not the whole log', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    const read = vi.fn(async (_offset?: number, length?: number) => {
+      const events = [
+        { seq: 1, type: 'agent-preset/selected', data: { agentPreset: 'cordis' } },
+        { seq: 2, type: 'turn/start', data: {} },
+        ...Array.from({ length: 500 }, (_, index) => ({ seq: index + 3, type: 'assistant/message', data: {} })),
+      ]
+      return { events: events.slice(0, length ?? events.length) }
+    })
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    deps.sessionPersistence.open = vi.fn(async () => ({
+      header: { agentPreset: 'standard' },
+      read,
+      close: vi.fn(async () => undefined),
+    }))
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })
+
+    // One bounded read: the selection event can only be appended while the
+    // session is blank, so it always sits in the log's head — a long history is
+    // never pulled into memory just to remount a preset.
+    expect(read.mock.calls).toEqual([[0, 64]])
+    const setup = f.resume.mock.calls[0]?.[0]?.setup as (ctx: unknown) => Promise<void>
+    await setup?.({})
+    expect(f.mount).toHaveBeenCalledWith({}, 'cordis')
+  })
+
+  it('falls back to the configured preset when a resumed session records an unknown one', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    // `persistent` only ever existed as a scanned directory, which the 0.1.7
+    // registry no longer discovers: the resume must still open the session.
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({ meta: { agentPreset: 'persistent' }, events: [] }))
+    f.resolve.mockImplementation(async (id?: string) => {
+      if (id === 'persistent') throw new Error('Unknown agent preset: persistent')
+      return { id: id ?? 'default-preset' }
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })).resolves.toBe('answer:again')
+
+    const setup = f.resume.mock.calls[0]?.[0]?.setup as (ctx: unknown) => Promise<void>
+    await setup?.({})
+    expect(f.mount).toHaveBeenCalledWith({}, 'default-preset')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recorded agent preset "persistent"'))
+    warn.mockRestore()
   })
 
   it('resolveAgentOrResume rehydrates a cold persisted session (commands work after restart)', async () => {

@@ -9,6 +9,12 @@ import type { ConversationMessage } from './conversation.ts'
 import type { DomainName } from './config.ts'
 import { TurnFailureError, displayFailure } from './turn-failure.ts'
 
+/** Events read from a cold session log when recovering its recorded preset.
+ *  `agent-preset/selected` can only be appended while the session is blank, so
+ *  it always sits in the log's head — this bound keeps that read off the path
+ *  of a multi-megabyte history. */
+const PRESET_SCAN_EVENTS = 64
+
 /** Minimum surface of {@link Agent} the conversation service depends on. */
 interface AgentLike {
   session: { id: unknown; seq: number; events?: readonly { seq: number; type: string; data: any }[] }
@@ -389,9 +395,13 @@ export class HarnessConversationService {
   /** Read a cold session's header + events from persistence across DSH
    *  versions. 0.1.3 uses `open(id,'read') + handle.read(0)`; alpha.4 uses
    *  `readFrom(id, 0)`. Returns `undefined` when the service (or backend) is
-   *  absent so callers can fall back to live-session data. */
+   *  absent so callers can fall back to live-session data.
+   *  @param maxEvents - cap the events returned (a perf bound for callers that
+   *    only need the log's head); the alpha.4 `readFrom` fallback has no length
+   *    argument and can only truncate after reading. */
   private async readColdSession(
     sessionId: unknown,
+    maxEvents?: number,
   ): Promise<{ meta: unknown; events: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> } | undefined> {
     const persistence = this.deps.sessionPersistence
     // 0.1.3: SessionHandle seam.
@@ -405,7 +415,7 @@ export class HarnessConversationService {
           //  seq/type/data/time), so a single destructure is safe to call
           //  on either. `result?.events ?? result` covers the alpha.4 path
           //  without an extra branch.
-          const result = await handle.read(0)
+          const result = maxEvents === undefined ? await handle.read(0) : await handle.read(0, maxEvents)
           const events = (result as { events?: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> })?.events
             ?? (result as unknown as ReadonlyArray<{ seq: number; type: string; data: any; time?: number }>)
           return { meta: handle.header, events }
@@ -421,7 +431,9 @@ export class HarnessConversationService {
     // alpha.4: readFrom primitive.
     if (typeof persistence.readFrom === 'function') {
       try {
-        return await persistence.readFrom.call(persistence, sessionId as never, 0)
+        const result = await persistence.readFrom.call(persistence, sessionId as never, 0)
+        if (result === undefined || maxEvents === undefined) return result
+        return { meta: result.meta, events: result.events.slice(0, maxEvents) }
       } catch {
         return undefined
       }
@@ -1403,11 +1415,21 @@ export class HarnessConversationService {
     // Use the workspace's actual path as cwd to ensure consistency
     // When no workspace is configured, use the first workspace's path
     const cwd = workspace?.path ?? configuredWorkspace ?? process.cwd()
-    const agentPreset = (await this.deps.agentPresets.resolve(creation?.agentPreset ?? this.config.agentPreset)).id
+    const persisted = (await this.deps.sessionPersistence.list()).some(item => this.persistedIdOf(item) === sessionId)
+    // A rehydrated session must run under the preset it recorded, not under the
+    // bridge's configured default. The creation header is only a creation fact
+    // (a blank-session switch records `agent-preset/selected` instead), and the
+    // host recomposes from its `agentPreset` Session projection; mounting
+    // `configuredPreset` here silently swapped every resumed chat onto
+    // `agentPresets.defaultId` — the header kept saying `cordis` while the
+    // toolset and skill catalog were `standard`'s.
+    const configuredPreset = creation?.agentPreset ?? this.config.agentPreset
+    const agentPreset = persisted
+      ? await this.resumePreset(sessionId, configuredPreset)
+      : (await this.deps.agentPresets.resolve(configuredPreset)).id
     const setup = async (agentCtx: import('@deepseek-ai/cordis').Context) => {
       await this.deps.agentPresets.mount(agentCtx, agentPreset)
     }
-    const persisted = (await this.deps.sessionPersistence.list()).some(item => this.persistedIdOf(item) === sessionId)
     const handle = persisted
       ? await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions: initial, setup })
       : await this.deps.agents.create({
@@ -1430,6 +1452,61 @@ export class HarnessConversationService {
       await this.applyCreationRoute(sessionId, creation)
     }
     return handle
+  }
+
+  /**
+   * Resolve the preset to mount when rehydrating a persisted session.
+   *
+   * The preset the session actually ran under wins over the bridge's configured
+   * default. A stored id the running install cannot resolve (for example a
+   * preset that only existed as a scanned directory, which 0.1.7's registry no
+   * longer discovers) must not block the resume: fall back to the configured
+   * preset and say so, instead of failing every message in the chat.
+   * @param sessionId - persisted session being rehydrated.
+   * @param configuredPreset - bridge-configured preset, used for new sessions and as the fallback.
+   * @returns the resolved preset id to mount.
+   */
+  private async resumePreset(sessionId: string, configuredPreset: string | undefined): Promise<string> {
+    const stored = await this.storedAgentPreset(sessionId)
+    if (stored === undefined) return (await this.deps.agentPresets.resolve(configuredPreset)).id
+    try {
+      return (await this.deps.agentPresets.resolve(stored)).id
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`dsh-feishu: session ${sessionId} recorded agent preset "${stored}", which this install cannot resolve; resuming with ${configuredPreset ?? 'the default preset'} instead: ${message}`)
+      return (await this.deps.agentPresets.resolve(configuredPreset)).id
+    }
+  }
+
+  /**
+   * Read the preset a persisted session actually ran under: its durable header,
+   * overridden by the latest committed `agent-preset/selected`. This mirrors the
+   * host's `agentPreset` Session projection — the same rule
+   * {@link getSessionMeta} follows for display — so what a card prints and what
+   * the agent mounts cannot disagree.
+   * @param sessionId - persisted session to read.
+   * @returns the recorded preset id, or `undefined` when persistence has no seam.
+   */
+  private async storedAgentPreset(sessionId: string): Promise<string | undefined> {
+    // `agent-preset/selected` is only ever appended while the session is blank
+    // (the registry guards it with the `turnBoundary` projection), so it always
+    // precedes the first `turn/start`. Reading the log's head is therefore
+    // enough, and keeps a resume from pulling a 100 MB session log into memory.
+    let cold = await this.readColdSession(sessionId, PRESET_SCAN_EVENTS)
+    if (cold === undefined) return undefined
+    if (cold.events.length >= PRESET_SCAN_EVENTS && !cold.events.some(event => event.type === 'turn/start')) {
+      // Truncated without reaching a turn boundary: only then read it all.
+      cold = await this.readColdSession(sessionId) ?? cold
+    }
+    const header = cold.meta as { agentPreset?: unknown } | undefined
+    let preset = typeof header?.agentPreset === 'string' && header.agentPreset !== '' ? header.agentPreset : undefined
+    for (const event of cold.events) {
+      const row = event as { type?: string; data?: { agentPreset?: unknown } }
+      if (row.type === 'agent-preset/selected' && typeof row.data?.agentPreset === 'string' && row.data.agentPreset !== '') {
+        preset = row.data.agentPreset
+      }
+    }
+    return preset
   }
 
   /**

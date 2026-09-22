@@ -24,6 +24,13 @@
 >
 > Upgraded to DSH **`0.1.7-alpha.1`** (1299 commits). This release **replaced the settings service**, so the plugin needed four changes (see the first entry below). Session control, streaming, tools, attachments, the client slot contract, and the session-log format are unaffected.
 
+### 修复：恢复会话时按**会话记录的 preset** 挂载，不再静默套用插件配置默认（`src/harness.ts`）
+
+- **现象**：进程重启后第一次收到消息（或 `/session` 切换到一个未激活的会话）时，会话**实际运行在 `agentPresets.defaultId`（`standard`）下**，与它记录的 preset 不一致。DSH `0.1.7-alpha.1` 上表现为：会话 header、`/status`、footer 都写 `cordis`，但工具集里没有 `cordis_inspect` / `plugin_manager`，随附技能目录也是空的（`standard` 的预期行为）。**这不是 0.1.7 的回归**——同一现象在 `0.1.6-alpha.2` 上已复现过。
+- **根因**：插件的冷会话重建路径（`createAgent`）在**恢复**分支里也用 `creation?.agentPreset ?? config.agentPreset` 解析 preset；本部署的 profile 行没有配 `agentPreset` → `agentPresets.resolve(undefined)` 回落到默认 preset，随后把这个 preset 的 `setup` 交给 `agents.resume(...)`，**覆盖掉会话自己记录的组合**。宿主自己的恢复路径（`session-controller` → `presetForObservation`）读的是 `agentPreset` Session 投影（`header.agentPreset`，被较晚的 `agent-preset/selected` 覆盖），插件绕过了它。
+- **改法**：恢复分支先读会话记录——`header.agentPreset`，被日志里最后一条 `agent-preset/selected` 覆盖（与 `getSessionMeta`、`/session list` 已在使用的规则一致）——再挂载它；**新建会话仍用配置 / `/new` 指定的 preset**。记录里的 preset 在当前安装中无法解析时（例如只以扫描目录形式存在过的 preset）不阻塞恢复：回落到配置默认并打一条 `console.warn`。
+- **验证**：新增 5 例（新建会话仍用配置 preset；恢复按 header 挂载；`agent-preset/selected` 覆盖 header；未知 preset 回落并告警；只读日志头部恢复 preset）。464 passed / 36 files，typecheck 0 error，build ✅（`client/client.js` 未变）。
+
 ### 兼容：对齐 DSH `0.1.7-alpha.1`——设置服务换代为 `SettingsForms`、preset 包改名、扁平的 `tool/result`、归档语义（`src/config.ts` / `src/index.ts` / `src/feishu-streaming.ts` / `src/feishu-toolcalls.ts` / `src/feishu-session.ts` / `package.json`）
 
 - **依赖范围**：`@deepseek-ai/dsh-*` 整体 `^0.1.6-alpha.1` → `^0.1.7-alpha.1`（预发布 comparator 只在同一 `major.minor.patch` 内生效，旧范围永远不会满足新版本）；`@deepseek-ai/schemastery` `^3.18.1` → `^3.18.3`（新增 `.volatile()`）；`@deepseek-ai/cordis` `^4.0.1` → `^4.0.3`。
