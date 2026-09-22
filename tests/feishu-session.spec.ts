@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  activeSessionActivity,
   renderSessionPanelCard, renderSessionListCard, renderSessionConfirmCard,
   startFeishuSession, type SessionEntry,
 } from '../src/feishu-session.ts'
@@ -83,6 +84,140 @@ describe('renderSessionConfirmCard', () => {
     }, t) as any
     expect(markdownOf(card)).toContain('将把会话')
     expect(markdownOf(card)).toContain('Fix the bug')
+  })
+})
+
+describe('renderSessionConfirmCard (archive while running)', () => {
+  it('names the running work and offers stop-and-archive', () => {
+    const card = renderSessionConfirmCard({
+      token: 't1', chat: { chatId: 'oc_x', chatType: 'p2p' }, op: 'archive',
+      sessionId: 's1', sessionLabel: 'Fix the bug', stopActivity: true, activity: ['turn', 'job'],
+    }, t) as any
+    const md = markdownOf(card)
+    expect(md).toContain('仍在运行')
+    expect(md).toContain('正在运行的一轮')
+    expect(md).toContain('后台任务')
+    const buttons = card.body.elements.filter((el: any) => el.tag === 'button')
+    expect(buttons[0].text.content).toBe('✅ 停止并归档')
+  })
+
+  it('keeps the plain archive wording when the session is idle', () => {
+    const card = renderSessionConfirmCard({
+      token: 't1', chat: { chatId: 'oc_x', chatType: 'p2p' }, op: 'archive',
+      sessionId: 's1', sessionLabel: 'Fix the bug',
+    }, t) as any
+    expect(markdownOf(card)).toBe('将归档会话 `Fix the bug`。')
+  })
+})
+
+describe('activeSessionActivity', () => {
+  it('reads the families off a duck-typed WorkspaceActiveSessionError', () => {
+    expect(activeSessionActivity({
+      name: 'WorkspaceActiveSessionError',
+      activity: [{ kind: 'turn' }, { kind: 'job', items: [] }],
+    })).toEqual(['turn', 'job'])
+  })
+
+  it('ignores any other error, and stays usable when the families are missing', () => {
+    // `instanceof` would be wrong here: the host throws its own copy of the
+    // class and this plugin may hold a different one (关键坑 28 的领域).
+    expect(activeSessionActivity(new Error('boom'))).toBeUndefined()
+    expect(activeSessionActivity({ name: 'WorkspaceActiveSessionError' })).toEqual(['active'])
+  })
+})
+
+describe('archive while the session is running', () => {
+  it('archiving a running session asks again before stopping it, then stops and archives', async () => {
+    const harness: any = { sentCards: [], cardActionHandler: undefined }
+    const activeError = Object.assign(new Error('cannot archive session: the session is active (turn)'), {
+      name: 'WorkspaceActiveSessionError',
+      activity: [{ kind: 'turn' }],
+    })
+    const archiveSession = vi.fn(async (_id: string, options?: { stopActivity?: boolean }) => {
+      // Mirrors DSH 0.1.7: without `stopActivity` a running session is refused.
+      if (options?.stopActivity !== true) throw activeError
+      return undefined
+    })
+    const bridge = {
+      listSessions: vi.fn(async () => SESSIONS),
+      attachSession: vi.fn(() => 'ok' as const),
+      detachSession: vi.fn(() => ({ kind: 'free' as const })),
+      describeChatKey: vi.fn((k: string) => k),
+    }
+    const { channel, cleanup } = buildChannel(harness)
+    const handle = startFeishuSession({
+      channel: channel as any,
+      bridge: () => bridge as any,
+      workspaceRegistry: { archiveSession } as any,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    })
+    try {
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      // Pick s2 and click 归档: nothing is archived before the first confirm.
+      await harness.cardActionHandler!({
+        messageId: 'om_card',
+        action: { value: { action: 'archive' } },
+        raw: { action: { form_value: { session: 's2' } } },
+      })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(archiveSession).not.toHaveBeenCalled()
+      expect(harness.sentCards[1].card.header.title.content).toBe('确认归档？')
+      // Confirm: the first attempt passes no `stopActivity`, so DSH refuses and
+      // a second card must name the running work instead of showing an error.
+      await harness.cardActionHandler!({ messageId: 'om_card', action: { value: { action: 'confirm-ok' } } })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(archiveSession).toHaveBeenCalledWith('s2', undefined)
+      const stopCard = harness.sentCards[harness.sentCards.length - 1].card
+      expect(markdownOf(stopCard)).toContain('仍在运行')
+      expect(markdownOf(stopCard)).toContain('正在运行的一轮')
+      expect(stopCard.body.elements.filter((el: any) => el.tag === 'button')[0].text.content).toBe('✅ 停止并归档')
+      // Confirming that card is the only path that stops the session's work.
+      await harness.cardActionHandler!({ messageId: 'om_card', action: { value: { action: 'confirm-ok' } } })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(archiveSession).toHaveBeenLastCalledWith('s2', { stopActivity: true })
+      expect(harness.sentCards[harness.sentCards.length - 1].card.header.title.content).toBe('🗄️ 已归档')
+    } finally {
+      handle.stop()
+      cleanup()
+    }
+  })
+
+  it('still renders the error card when archiving fails for an unrelated reason', async () => {
+    const harness: any = { sentCards: [], cardActionHandler: undefined }
+    const archiveSession = vi.fn(async () => { throw new Error('archive backend refused') })
+    const bridge = {
+      listSessions: vi.fn(async () => SESSIONS),
+      attachSession: vi.fn(() => 'ok' as const),
+      detachSession: vi.fn(() => ({ kind: 'free' as const })),
+      describeChatKey: vi.fn((k: string) => k),
+    }
+    const { channel, cleanup } = buildChannel(harness)
+    const handle = startFeishuSession({
+      channel: channel as any,
+      bridge: () => bridge as any,
+      workspaceRegistry: { archiveSession } as any,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    })
+    try {
+      await handle.open({ chatId: 'oc_x', chatType: 'p2p' })
+      await harness.cardActionHandler!({
+        messageId: 'om_card',
+        action: { value: { action: 'archive' } },
+        raw: { action: { form_value: { session: 's2' } } },
+      })
+      await new Promise((resolve) => setImmediate(resolve))
+      await harness.cardActionHandler!({ messageId: 'om_card', action: { value: { action: 'confirm-ok' } } })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(archiveSession).toHaveBeenCalledTimes(1)
+      const failed = harness.sentCards[harness.sentCards.length - 1].card
+      expect(failed.header.title.content).toBe('❌ 操作失败')
+      expect(markdownOf(failed)).toContain('archive backend refused')
+    } finally {
+      handle.stop()
+      cleanup()
+    }
   })
 })
 

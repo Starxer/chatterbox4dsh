@@ -70,6 +70,10 @@ export interface Translations {
   sessionConfirmBody: (action: string, name: string) => string
   sessionConfirmOk: string
   sessionConfirmCancel: string
+  /** Confirm button when archiving must stop the session's running work first. */
+  sessionConfirmOkStopArchive: string
+  /** Display label for one running-work family reported by `WorkspaceActiveSessionError`. */
+  sessionActivityKind: (kind: string) => string
   sessionRenameTitle: string
   sessionRenamePlaceholder: string
   sessionRenameConfirm: string
@@ -232,6 +236,8 @@ export interface Translations {
   sessionConfirmDetailSwitch: (label: string) => string
   sessionConfirmDetailDetach: (label: string) => string
   sessionConfirmDetailArchive: (label: string) => string
+  /** Shown when the session still has running work: archiving would stop it first. */
+  sessionConfirmDetailArchiveActive: (label: string, activity: string) => string
   sessionConfirmDetailFork: (label: string) => string
   sessionConfirmDetailRename: (label: string) => string
   sessionResultEmptyTitle: string
@@ -369,6 +375,8 @@ export const zh = {
   sessionConfirmBody: (action, name) => `确定要${action}「${name}」吗？`,
   sessionConfirmOk: '确认',
   sessionConfirmCancel: '取消',
+  sessionConfirmOkStopArchive: '停止并归档',
+  sessionActivityKind: kind => ({ turn: '正在运行的一轮', subagent: '子代理', job: '后台任务', schedule: '定时任务' })[kind] ?? kind,
   sessionRenameTitle: '✏️ 重命名会话',
   sessionRenamePlaceholder: '输入新的会话标题…',
   sessionRenameConfirm: '确认',
@@ -512,6 +520,7 @@ export const zh = {
   sessionConfirmDetailSwitch: label => `将把这个对话切换到会话 \`${label}\`，若它被其它对话占用会先接管。`,
   sessionConfirmDetailDetach: label => `将释放会话 \`${label}\` 的占用（原持有者重置为新会话）。`,
   sessionConfirmDetailArchive: label => `将归档会话 \`${label}\`。`,
+  sessionConfirmDetailArchiveActive: (label, activity) => `会话 \`${label}\` **仍在运行**（${activity}）。\n\n继续归档会**先停止**它当前的活动，然后归档该会话。`,
   sessionConfirmDetailFork: label => `将从会话 \`${label}\` 分叉出一个新会话（保留到当前事件的对话）。`,
   sessionConfirmDetailRename: label => `将把会话 \`${label}\` 改成新的标题。`,
   sessionResultEmptyTitle: '⚠️ 标题为空',
@@ -645,6 +654,8 @@ export const en: Translations = {
   sessionConfirmBody: (action, name) => `Are you sure you want to ${action} "${name}"?`,
   sessionConfirmOk: 'Confirm',
   sessionConfirmCancel: 'Cancel',
+  sessionConfirmOkStopArchive: 'Stop and archive',
+  sessionActivityKind: kind => ({ turn: 'a running turn', subagent: 'subagents', job: 'background jobs', schedule: 'schedules' })[kind] ?? kind,
   sessionRenameTitle: '✏️ Rename session',
   sessionRenamePlaceholder: 'Enter a new session title…',
   sessionRenameConfirm: 'Confirm',
@@ -788,6 +799,7 @@ export const en: Translations = {
   sessionConfirmDetailSwitch: label => `This chat will be switched to session \`${label}\`; if another chat owns it, the switch will take it over.`,
   sessionConfirmDetailDetach: label => `This will release session \`${label}\` (the current owner resets to a brand-new session).`,
   sessionConfirmDetailArchive: label => `This will archive session \`${label}\`.`,
+  sessionConfirmDetailArchiveActive: (label, activity) => `Session \`${label}\` is **still running** (${activity}).\n\nArchiving will **stop** that work first, then archive the session.`,
   sessionConfirmDetailFork: label => `This will fork a new session from \`${label}\` (keeps the conversation up to the current event).`,
   sessionConfirmDetailRename: label => `This will rename session \`${label}\` to a new title.`,
   sessionResultEmptyTitle: '⚠️ Empty title',

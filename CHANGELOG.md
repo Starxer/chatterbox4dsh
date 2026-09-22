@@ -24,6 +24,24 @@
 >
 > Upgraded to DSH **`0.1.7-alpha.1`** (1299 commits). This release **replaced the settings service**, so the plugin needed four changes (see the first entry below). Session control, streaming, tools, attachments, the client slot contract, and the session-log format are unaffected.
 
+### 新增：归档运行中的会话先问「停止并归档」（`src/feishu-session.ts` / `src/i18n.ts`）
+
+- **背景**：DSH `0.1.7` 起 `archiveSession(id)` 会**拒绝仍有活动的会话**（`WorkspaceActiveSessionError`，列出 turn / subagent / job / schedule）。此前的处理是让这个错误落到通用的「操作失败」卡上——安全（不会静默杀掉正在跑的 turn），但用户只看到一句英文报错，也没有"要不要停"的选择。
+- **改法**：对齐 Web UI 的「先问再停」。第一次归档**不带** `stopActivity`，因此任何情况下都不会静默停止正在跑的工作；若 DSH 回以活动错误，就发**第二张确认卡**，写明仍在运行的活动类型（turn / 子代理 / 后台任务 / 定时任务），确认按钮变成「停止并归档」；**只有这张卡的确认**才调用 `archiveSession(id, { stopActivity: true })`。其它错误仍走原来的失败卡。
+- **错误识别用鸭子类型**（`name === 'WorkspaceActiveSessionError'` + 读 `activity[].kind`），不用 `instanceof`——错误由宿主抛出，而插件可能持有同一类的另一份副本（与关键坑 28 同源的风险）。
+- **验证**：新增 6 例（卡片文案与按钮、鸭子类型识别、二次确认后才停、非活动错误仍出失败卡）。472 passed / 36 files，typecheck 0 error，build ✅。
+
+### 变更：会话列表改读宿主投影，不再重放实时会话日志（`src/harness.ts` / `src/index.ts`）
+
+- `Session.snapshotEvents()` / `eventAt()` / `ownEvents()` 已被 DSH 弃用（2026-09-09 决策：「既有逻辑可以暂不迁移，但**禁止新增调用**」）。`/session` 列表过去对**活动中的**会话读实时事件快照，用来取标题、预设和「是否空白」。
+- 现在改为读宿主自己维护的**投影**：`title`、`agentPreset`、`sessionListMetadata`（空白位 + 最近一次提示时间），活跃度用与 Web UI 相同的口径 `max(header.createdAt, lastPromptAt)`——于是聊天列表与 Web UI 列表由**同一个来源**得出，不再各扫各的日志。投影服务用 `ctx.get` 读取（**不进 `inject`**，宿主没有该服务也能启动，关键坑 2）；服务缺失时保留原有的日志回放路径。
+- 剩下的一处弃用调用（`summarizeTurn`）**有意保留**，并在注释里写明原因：它需要**单轮**的原始事件（逐步计时、assistant 流、tool/result 配对、事件时间）才能还原 Web UI 的轮次指标，而现有投影不提供逐步计时；它也没有新增任何事件依赖。
+
+### 清理：客户端清单里解析不到的包 + 影子注册补注释（`package.json` / `src/client/index.ts`）
+
+- `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-runtime` 在 `0.1.6` / `0.1.7` 都解析不到（该字段只是解析提示，不报错）→ 移除；单测同步改为断言「不含它」。
+- `settings.action` 的影子注册（`id: 'open-document'` + `priority: -1`）补注释：说明它与壳层 `ui-settings-general` 的注册**同 id、因而替换掉**那个「打开文档」动作，以及 id 必须保持一致、否则该动作会重新出现。意图未再核实，注释如实标注。
+
 ### 修复：恢复会话时按**会话记录的 preset** 挂载，不再静默套用插件配置默认（`src/harness.ts`）
 
 - **现象**：进程重启后第一次收到消息（或 `/session` 切换到一个未激活的会话）时，会话**实际运行在 `agentPresets.defaultId`（`standard`）下**，与它记录的 preset 不一致。DSH `0.1.7-alpha.1` 上表现为：会话 header、`/status`、footer 都写 `cordis`，但工具集里没有 `cordis_inspect` / `plugin_manager`，随附技能目录也是空的（`standard` 的预期行为）。**这不是 0.1.7 的回归**——同一现象在 `0.1.6-alpha.2` 上已复现过。

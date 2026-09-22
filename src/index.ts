@@ -480,6 +480,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     start: async config => {
       const dshHome = process.env.DSH_HOME || `${homedir()}/.dsh`
       const statePath = `${dshHome}/lark-session-map.json`
+      // Read optional: listing sessions prefers the host's maintained
+      // projection state over replaying the live log (`snapshotEvents` is
+      // deprecated for new callers). `ctx.get` keeps this out of `inject`, so a
+      // host without the service still boots (关键坑 2 的教训).
+      const projectionsReader = ctx.get('sessionProjections') as { stateOf(session: unknown, key: string): unknown } | undefined
       const bridge = new HarnessConversationService({
         agents,
         sessions,
@@ -488,6 +493,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         agentPresets,
         workspaceRegistry,
         sessionController,
+        // Read optional: listing sessions prefers the host's maintained
+        // projection state over replaying the live log (`snapshotEvents` is
+        // deprecated for new callers). `ctx.get` keeps this out of `inject`,
+        // so a host without the service still boots (关键坑 2 的教训).
+        ...(projectionsReader === undefined ? {} : { sessionProjections: projectionsReader }),
       }, { ...config, statePath })
       bridgeHolder.current = bridge
       return startChannel(

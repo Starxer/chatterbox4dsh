@@ -49,6 +49,12 @@ export function apply(ctx: ClientContext): void {
     return () => style.remove()
   }, 'dsh-feishu: client styles')
   const t = ctx.locale.bind(NS)
+  // Same slot identity (`name` + `id`) as the shell's own `open-document`
+  // action in `ui-settings-general`, so this registration **replaces** it with
+  // a component that renders nothing; `priority: -1` fixes this contribution's
+  // position in the list slot. Intent not re-verified (an earlier audit asked
+  // whether suppressing the shell entry is deliberate) — but the identity must
+  // keep matching the shell's, or that action reappears next to our section.
   ctx.slots.inject('settings.action', () => ctx.slots.register({
     name: 'settings.action',
     id: 'open-document',

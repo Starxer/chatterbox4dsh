@@ -53,8 +53,8 @@
 | # | 现象 | 改法 |
 |---|---|---|
 | **C1** | **`tool/result` 消息被拍平**：0.1.6 是 `{role:'user', content:[ToolResultBlock]}`，0.1.7 是 `{role:'tool', toolCallId, isError?, content}`。仍按旧形态读 `content[0].content` / `content[0].isError` → 文本靠兜底侥幸显示，但**失败会被渲染成成功** | 读 message 自身的 `content` / `isError`；判定 `isError = event.data?.error !== undefined \|\| event.data?.message?.isError === true`。关联没断：`ToolMessageSource.callId` 两版都在 |
-| **C2** | **`archiveSession(id)` 拒绝运行中的会话**：新增 `options.stopActivity`，未传且会话仍有活动（turn / subagent / job / schedule）时抛 `WorkspaceActiveSessionError`；归档还会顺手清 pin | 传 `{ stopActivity: true }`，或接住该错误并把 `activity[].kind` 回显到卡片。本插件**刻意不传**——WebUI 在停掉一个 turn 之前会先征求确认，而这里的失败已被既有 `try/catch` 渲染成一张报错卡，不会静默杀掉正在跑的 turn；更友好的确认卡留作后续 |
-| **C3** | `snapshotEvents` / `eventAt` / `ownEvents` 打了 `@deprecated`（仍可用） | 后续迁 `sessionProjections` / `projections()`（与关键坑 8 同源：不要无参全量拉历史） |
+| **C2** | **`archiveSession(id)` 拒绝运行中的会话**：新增 `options.stopActivity`，未传且会话仍有活动（turn / subagent / job / schedule）时抛 `WorkspaceActiveSessionError`；归档还会顺手清 pin | ✅ **已实现**：第一次归档**不带** `stopActivity`（绝不静默停止正在跑的工作）；接住该错误后发**第二张确认卡**，写明活动类型、按钮变「停止并归档」，只有它的确认才传 `{ stopActivity: true }`——即 Web UI 的「先问再停」。错误按 `name` + `activity[].kind` 鸭子类型识别（宿主抛的类，插件可能持有另一份副本） |
+| **C3** | `snapshotEvents` / `eventAt` / `ownEvents` 打了 `@deprecated`（上游决策：既有逻辑可暂不迁移，**禁止新增调用**） | 🟡 **会话列表已迁**：活动会话读宿主投影 `title` / `agentPreset` / `sessionListMetadata`（活跃度用与 Web UI 相同的 `max(createdAt, lastPromptAt)`），不再重放实时日志；服务缺失时回退旧路径。仍保留 `summarizeTurn` 一处：它需要**单轮原始事件**（逐步计时等，现有投影不提供），已在注释写明理由 |
 | **C4** | `settings.get('locale')` 抛 TypeError（被本地 try/catch 吞）→ `locale:'auto'` **不再跟随 DSH 语言** | 随 A1 改成 `settings.describe({redactSecrets:true}).find(r => r.ns === 'locale')?.value?.preference`。注意 `describe()` 会重建表单并读 profile 目录，**不能进热路径**（本插件加了 1s TTL 缓存 + 写入即失效） |
 | **C5** | `sessionController.prompt()` 的 content 契约换了（image 走 base64 `data`、file 走 `{type:'file', receiptId}`，**不再收 durable attachment ref**） | 本插件本就有 `return false` 回落到 `agent.steer/followup` —— **必须保留这条绕行，不要"顺手修好"** |
 

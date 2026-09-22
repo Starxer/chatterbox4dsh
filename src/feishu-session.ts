@@ -48,7 +48,9 @@ export interface SessionControllerLike {
 
 /** DSH archive (optional). */
 export interface WorkspaceRegistryLike {
-  archiveSession?(sessionId: string): Promise<unknown>
+  /** 0.1.7 adds `options.stopActivity`: without it a session that still has
+   *  running work is refused with `WorkspaceActiveSessionError`. */
+  archiveSession?(sessionId: string, options?: { stopActivity?: boolean }): Promise<unknown>
 }
 
 /** Narrow card channel surface. */
@@ -94,6 +96,32 @@ interface ConfirmState {
   op: Op
   sessionId: string
   sessionLabel: string
+  /** Archive only: the session still has running work, so archive must stop it. */
+  stopActivity?: boolean
+  /** Archive only: the running-work families reported by DSH, for the card text. */
+  activity?: readonly string[]
+}
+
+/**
+ * Read the running-work families off a `WorkspaceActiveSessionError`.
+ *
+ * Duck-typed on purpose: the error is thrown by the host, and this plugin can
+ * hold its own copy of the class (`instanceof` across two module instances is
+ * exactly the trap behind 关键坑 28). Returns `undefined` for any other error.
+ * @param error - value thrown by `archiveSession`.
+ * @returns the reported families, or `undefined` when this is not that error.
+ */
+export function activeSessionActivity(error: unknown): readonly string[] | undefined {
+  if (error === null || typeof error !== 'object') return undefined
+  const candidate = error as { name?: unknown; activity?: unknown }
+  if (candidate.name !== 'WorkspaceActiveSessionError') return undefined
+  const kinds = (Array.isArray(candidate.activity) ? candidate.activity : [])
+    .map(entry => (entry !== null && typeof entry === 'object' && typeof (entry as { kind?: unknown }).kind === 'string'
+      ? (entry as { kind: string }).kind
+      : undefined))
+    .filter((kind): kind is string => kind !== undefined)
+  // The error always carries at least one family; keep a usable card if not.
+  return kinds.length > 0 ? kinds : ['active']
 }
 
 /** State for an in-flight rename card (name input + confirm). */
@@ -201,10 +229,13 @@ function buildOpButtons(t: Translations): object[] {
 
 /** Render a confirm/cancel card for a destructive op. */
 export function renderSessionConfirmCard(state: ConfirmState, t: Translations): object {
+  const stoppingArchive = state.op === 'archive' && state.stopActivity === true
   const detail: Record<Op, string> = {
     switch: t.sessionConfirmDetailSwitch(state.sessionLabel),
     detach: t.sessionConfirmDetailDetach(state.sessionLabel),
-    archive: t.sessionConfirmDetailArchive(state.sessionLabel),
+    archive: stoppingArchive
+      ? t.sessionConfirmDetailArchiveActive(state.sessionLabel, activityText(state.activity, t))
+      : t.sessionConfirmDetailArchive(state.sessionLabel),
     fork: t.sessionConfirmDetailFork(state.sessionLabel),
     rename: t.sessionConfirmDetailRename(state.sessionLabel),
   }
@@ -220,7 +251,7 @@ export function renderSessionConfirmCard(state: ConfirmState, t: Translations): 
         { tag: 'markdown', content: detail[state.op] },
         {
           tag: 'button',
-          text: { tag: 'plain_text', content: `✅ ${t.sessionConfirmOk}` },
+          text: { tag: 'plain_text', content: `✅ ${stoppingArchive ? t.sessionConfirmOkStopArchive : t.sessionConfirmOk}` },
           type: 'primary',
           behaviors: [{ type: 'callback', value: { action: 'confirm-ok', token: state.token } }],
         },
@@ -233,6 +264,12 @@ export function renderSessionConfirmCard(state: ConfirmState, t: Translations): 
       ],
     },
   }
+}
+
+/** Render running-work families as one localized, comma-joined phrase. */
+function activityText(activity: readonly string[] | undefined, t: Translations): string {
+  const kinds = activity === undefined || activity.length === 0 ? ['active'] : activity
+  return kinds.map(kind => t.sessionActivityKind(kind)).join(' / ')
 }
 
 /** Render a green result card. */
@@ -416,10 +453,15 @@ export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle
       return
     }
     confirmCards.delete(evt.messageId!)
-    await execOp(state.chat, { op: state.op, sessionId: state.sessionId, sessionLabel: state.sessionLabel })
+    await execOp(state.chat, {
+      op: state.op,
+      sessionId: state.sessionId,
+      sessionLabel: state.sessionLabel,
+      ...(state.stopActivity === undefined ? {} : { stopActivity: state.stopActivity }),
+    })
   }
 
-  const execOp = async (chat: ConversationMessage, st: { op: Op; sessionId: string; sessionLabel: string }): Promise<void> => {
+  const execOp = async (chat: ConversationMessage, st: { op: Op; sessionId: string; sessionLabel: string; stopActivity?: boolean }): Promise<void> => {
     const brid = bridge()
     if (brid === undefined) return
     try {
@@ -442,12 +484,21 @@ export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle
       }
       if (st.op === 'archive') {
         if (workspaceRegistry?.archiveSession === undefined) { await unsupported(chat, getTranslations().sessionOpArchive); return }
-        // DSH 0.1.7 refuses to archive a Session that still has running work
-        // (`WorkspaceActiveSessionError`) unless the caller passes
-        // `{ stopActivity: true }`. Deliberately not passed: the Web UI asks
-        // before it stops a turn, and the failure below already renders the
-        // Harness error on a card instead of killing the turn silently.
-        await workspaceRegistry.archiveSession(st.sessionId)
+        try {
+          // DSH 0.1.7 refuses to archive a Session that still has running work
+          // (`WorkspaceActiveSessionError`) unless the caller passes
+          // `{ stopActivity: true }`. We mirror the Web UI's "ask before you
+          // stop": the first attempt never stops anything — if the session is
+          // active we come back with a second card that names what would stop,
+          // and only that card's confirm passes `stopActivity`.
+          await workspaceRegistry.archiveSession(st.sessionId, st.stopActivity === true ? { stopActivity: true } : undefined)
+        } catch (error: unknown) {
+          const activity = st.stopActivity === true ? undefined : activeSessionActivity(error)
+          if (activity === undefined) throw error
+          logger.warn(`dsh-feishu: session ${st.sessionId} is still active (${activity.join(', ')}); asking before stopping it`)
+          await openConfirm(chat, { op: 'archive', sessionId: st.sessionId, sessionLabel: st.sessionLabel, stopActivity: true, activity })
+          return
+        }
         await channel.send(chat.chatId, { card: renderSessionResultCard(getTranslations().sessionResultArchivedOk, [getTranslations().sessionResultArchivedBody(st.sessionLabel)]) }, replyOpts(chat)).catch(() => undefined)
         return
       }

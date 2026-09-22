@@ -21,14 +21,16 @@ describe('release configuration', () => {
 
   it('declares a Harness web client that contributes the embedded settings section', async () => {
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+    // Only resolvable packages belong in this list (it is a resolution hint):
+    // `@deepseek-ai/dsh-client-runtime` exists in neither 0.1.6 nor 0.1.7.
     expect(pkg.dsh.client).toEqual({
       platform: 'web',
       inject: expect.arrayContaining([
-        '@deepseek-ai/dsh-client-runtime',
         '@deepseek-ai/dsh-client-locale',
         '@deepseek-ai/dsh-client-ui-settings',
       ]),
     })
+    expect(pkg.dsh.client.inject).not.toContain('@deepseek-ai/dsh-client-runtime')
     expect(pkg.exports['./client']).toBe('./client/client.js')
     expect(pkg.files).toContain('client/client.js')
   })

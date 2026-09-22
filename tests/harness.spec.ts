@@ -468,6 +468,49 @@ describe('HarnessConversationService', () => {
     expect(snapshotEvents).not.toHaveBeenCalledWith()
   })
 
+  it('lists a live session from the host projections instead of replaying its log', async () => {
+    const f = fixture()
+    const sessionId = 'lark-v2-test-projected'
+    await f.create({ sessionId: sessionId as never })
+    const deps = dependencies(f)
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId, header: { id: sessionId, createdAt: 1000 } }])
+    // The host maintains title / preset / list metadata; reading them is the
+    // intended replacement for the deprecated in-memory event snapshot.
+    const stateOf = vi.fn((_session: unknown, key: string) => {
+      if (key === 'title') return 'Projected title'
+      if (key === 'agentPreset') return 'cordis'
+      if (key === 'sessionListMetadata') return { blank: false, lastPromptAt: 5000 }
+      return undefined
+    })
+    deps.sessionProjections = { stateOf }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+
+    const sessions = await service.listSessions()
+
+    expect(sessions).toEqual([{ id: sessionId, updatedAt: 5000, title: 'Projected title', agentPreset: 'cordis' }])
+    // No log read at all: not the live snapshot, not the persisted log.
+    expect(deps.sessionPersistence.readFrom).not.toHaveBeenCalled()
+  })
+
+  it('keeps the log replay as the fallback when no projection service is present', async () => {
+    const f = fixture()
+    const sessionId = 'lark-v2-test-fallback'
+    const handle = await f.create({ sessionId: sessionId as never })
+    handle.agent.session.events.push(
+      { seq: 1, type: 'turn/start', data: {}, time: 2000 },
+      { seq: 2, type: 'session/title', data: { title: 'From the log' }, time: 2000 },
+    )
+    const deps = dependencies(f)
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId, header: { id: sessionId, createdAt: 1000 } }])
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+
+    const sessions = await service.listSessions()
+
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.title).toBe('From the log')
+    expect(sessions[0]!.updatedAt).toBe(2000)
+  })
+
   it('listSessions filters out the workspace archive set', async () => {
     const f = fixture()
     const deps = dependencies(f)

@@ -69,6 +69,17 @@ export interface HarnessDependencies {
     open?(id: unknown, access: 'read' | 'write'): Promise<{ read(offset?: number, length?: number): Promise<{ eventState?: unknown; events: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> }>; header?: unknown; close(): Promise<void> }>
   }
   selection(): { provider: string; model: string; reasoningEffort?: ReasoningEffortId }
+  /**
+   * DSH's Session projection reader. Listing a live Session prefers this over
+   * replaying its event log: `Session.snapshotEvents()` is deprecated for new
+   * callers (the 2026-09-09 "deprecate synchronous reads of arbitrary Session
+   * events" decision — state a domain needs should be read from a projection
+   * rather than by looking back through history). Optional, and resolved with
+   * `ctx.get`, so a host without the service still boots (关键坑 2).
+   */
+  sessionProjections?: {
+    stateOf(session: unknown, key: string): unknown
+  }
   agentPresets: {
     resolve(id?: string): Promise<{ id: string }>
     mount(agentCtx: import('@deepseek-ai/cordis').Context, id?: string): Promise<unknown>
@@ -369,6 +380,17 @@ export class HarnessConversationService {
    * with `seq < firstSeq`), so snapshotting the full history is pure overhead
    * and was the amplifier behind the "JavaScript heap out of memory" crashes on
    * bloated sessions.
+   *
+   * **Status against DSH's deprecation** (`snapshotEvents` / `eventAt` /
+   * `ownEvents`, 2026-09-09 Agent Note: "existing logic may remain unmigrated
+   * for now, but new calls are prohibited"): the session-list path no longer
+   * calls this — live sessions read the host's `title` / `agentPreset` /
+   * `sessionListMetadata` projections instead. The remaining caller is
+   * `summarizeTurn`, which needs one turn's **raw** events (per-step
+   * `step/start`, assistant streams, tool/result pairs, event times) to
+   * reproduce the Web UI's turn metrics; no registered projection exposes
+   * per-step timing, so this read stays until one does. It adds no new event
+   * dependency beyond what the turn card already needed.
    */
   private readSessionEvents(
     agent: AgentLike,
@@ -1022,21 +1044,26 @@ export class HarnessConversationService {
       let subagent = false
       let events: ReadonlyArray<{ seq: number; type: string; data: any; time?: number }> | undefined
       if (live !== undefined) {
-        events = this.readSessionEvents(live as unknown as AgentLike)
-        // The live session's in-memory log has no header, so read the on-disk
-        // meta for the creation preset (also catches the docs getSessionMeta path).
-        const result = await this.readColdSession(itemId)
-        if (result !== undefined) {
-          const meta = result.meta as { agentPreset?: string; origin?: unknown } | undefined
-          presetId = meta?.agentPreset ?? ''
-          subagent = meta?.origin === 'subagent'
+        // A live session's facts come from the host's maintained projection
+        // state (`title`, `agentPreset`, and the list metadata's blank bit and
+        // last-prompt time). That is the intended replacement for the
+        // deprecated in-memory event snapshot, and it is what the Web UI's own
+        // list reads — so `/session` cannot disagree with it.
+        const projected = this.liveListState(live)
+        if (projected !== undefined) {
+          title = projected.title
+          presetId = projected.agentPreset
+          blank = projected.blank
+          updatedAt = projected.updatedAt
         } else {
-          // No persistence seam: fall back to the live session header. A DSH
-          // subagent session carries `origin: 'subagent'` on its durable
-          // header, so detection does not depend on the persistence service.
-          const header = (live as unknown as { session?: { header?: { origin?: unknown } } })?.session?.header
-          subagent = header?.origin === 'subagent'
+          // No projection service (older host): keep the existing replay.
+          // `snapshotEvents` may stay unmigrated, but this adds no new caller.
+          events = this.readSessionEvents(live as unknown as AgentLike)
+          const header = item.header as { agentPreset?: unknown } | undefined
+          presetId = typeof header?.agentPreset === 'string' ? header.agentPreset : ''
         }
+        // `origin` is a durable-header fact in both paths.
+        subagent = (item.header as { origin?: unknown } | undefined)?.origin === 'subagent'
       } else {
         // Cold session: ask SessionPersistence for the on-disk log (0.1.3
         // `open(id,'read')`/alpha.4 `readFrom`) so cold sessions still expose
@@ -1475,6 +1502,43 @@ export class HarnessConversationService {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`dsh-feishu: session ${sessionId} recorded agent preset "${stored}", which this install cannot resolve; resuming with ${configuredPreset ?? 'the default preset'} instead: ${message}`)
       return (await this.deps.agentPresets.resolve(configuredPreset)).id
+    }
+  }
+
+  /**
+   * Read one live Session's list facts from the host's projection state.
+   *
+   * `title` and `agentPreset` are the units the host maintains for exactly this
+   * purpose, and `sessionListMetadata` is what the Web UI's session list uses
+   * for its blank bit and recency (`updatedAt = max(header.createdAt,
+   * lastPromptAt)`), so the chat list and the Web UI list agree by
+   * construction instead of by two independent log scans.
+   * @param agent - live agent whose session is read.
+   * @returns the list facts, or `undefined` when the projection service or the
+   *   list-metadata unit is unavailable (the caller then replays the log).
+   */
+  private liveListState(agent: AgentLike): { title: string; agentPreset: string; blank: boolean; updatedAt: number } | undefined {
+    const projections = this.deps.sessionProjections
+    if (projections === undefined) return undefined
+    try {
+      const session = (agent as unknown as { session: unknown }).session
+      const metadata = projections.stateOf(session, 'sessionListMetadata') as { blank?: unknown; lastPromptAt?: unknown } | undefined
+      // The blank bit decides whether the session is listed at all, so without
+      // it there is nothing worth projecting.
+      if (metadata === undefined) return undefined
+      const title = projections.stateOf(session, 'title')
+      const preset = projections.stateOf(session, 'agentPreset')
+      const createdAt = Number((session as { header?: { createdAt?: unknown } })?.header?.createdAt ?? 0)
+      const lastPromptAt = Number(metadata.lastPromptAt ?? 0)
+      return {
+        title: typeof title === 'string' ? title : '',
+        agentPreset: typeof preset === 'string' ? preset : '',
+        blank: metadata.blank === true,
+        updatedAt: Math.max(Number.isFinite(createdAt) ? createdAt : 0, Number.isFinite(lastPromptAt) ? lastPromptAt : 0),
+      }
+    } catch {
+      // A projection read must never break the session list.
+      return undefined
     }
   }
 
