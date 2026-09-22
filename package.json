@@ -2,6 +2,7 @@
   "name": "@starxer/chatterbox4dsh",
   "version": "0.2.0",
   "description": "A Feishu/Lark channel plugin for DeepSeek Harness (dsh): use the same agent from Feishu chat, with every step (reasoning, tool calls, results, timing) shown as a card.",
+  "icon": "./icon.svg",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -11,6 +12,7 @@
       "default": "./lib/index.js"
     },
     "./client": "./client/client.js",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -28,6 +30,8 @@
     }
   },
   "files": [
+    "icon.svg",
+    "locale/*.json",
     "lib/index.js",
     "lib/types/**/*.d.ts",
     "lib/types/**/*.d.ts.map",

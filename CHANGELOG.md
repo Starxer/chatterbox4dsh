@@ -28,6 +28,13 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：插件在「插件」页有了本地化名称与图标（`package.json` / `locale/` / `icon.svg`）
+
+- **本地化显示名**：新增 `locale/en.json` 与 `locale/zh.json`（各含 `meta.title` / `meta.description`），并在 `exports` 里放行 `./locale/*.json`。DSH 的插件清单按「**语言 id 作文件名**、且必须与 `en.json` 同目录」的规则读取这些文件，`title` 缺失时回落成包名——所以此前插件页显示的是 `@starxer/chatterbox4dsh` 这个技术名。
+- **图标**：新增 `icon.svg`（64×64 圆角蓝底 + 白色对话气泡），在 `package.json` 顶层声明 `icon` 为**相对路径**。清单读取器接受 SVG/PNG/JPEG/WebP、≤256 KiB、且必须落在 manifest 目录内；越界路径、非法扩展名或超限会让整个 `meta` **只剩一条 `error`**（标题描述也一起没有），所以这三条约束是硬要求。
+- **`files` 白名单**同步加入 `icon.svg` 与 `locale/*.json`——否则 npm 包里不会有这两个资源，安装后图标与本地化名都会消失。
+- **验证**：直接调用宿主自己的 `readPluginMeta('<包名>', '<profile>/package.json')`（由 `@deepseek-ai/dsh-app-boot` 导出，**就是插件清单用的那个函数**），返回中英两套标题与描述 + `data:image/svg+xml;base64,…`，且**没有 `error` 字段**。
+
 ### 变更：设置页改用 DSH 原生配置表单与凭据服务，删除自建 HTTP 写路径（`src/client/` / `src/web.ts` / `src/index.ts`）
 
 - **背景**：插件此前自带一整套设置页后端——客户端把改动 `POST /dsh-feishu/settings`，宿主侧 `src/settings-api.ts`（140 行）负责**字段白名单、密钥脱敏、`expectedRevision` 版本栅栏**。DSH `0.1.7` 已提供等价且更完整的能力，这层自建基础设施可以整块删掉。

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Feishu & Lark",
+    "description": "Use the same DSH agent from Feishu/Lark chat: every step, tool call, result and delivered file is shown as a card."
+  }
+}
