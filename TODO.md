@@ -69,6 +69,24 @@
 - 🟡 **C3 弃用 API**（部分完成）：`snapshotEvents` / `eventAt` / `ownEvents` 已被上游弃用（2026-09-09 决策：既有逻辑可暂不迁移、**禁止新增调用**）。**会话列表已迁**：活动会话的标题/预设/空白位改读宿主投影 `title` / `agentPreset` / `sessionListMetadata`，活跃度用与 WebUI 相同的 `max(createdAt, lastPromptAt)`（关键坑 8 同源）；投影服务缺失时保留日志回放。**仍保留一处**：`summarizeTurn` 需要单轮的原始事件（逐步计时等，现有投影不提供），已在注释写明理由。
 - ✅ **B3 目录型 preset：已决定不再保留（2026-09-22 处置完毕）**。0.1.7 的 registry 既不扫目录也不收 preset 路径 → 本地「持久模式」preset（`~/.dsh/.agent-presets/persistent/`）本就不再出现在 `agentPresets.list()`；使用者决定**不迁移、直接删除**，已把整个 `~/.dsh/.agent-presets/` 移出（含 6 份历史副本）。**原本的搬迁做法（留档备查）**：若要恢复，需搬成 `@deepseek-ai/dsh-agent-preset` 声明式行，且**必须文本级搬运**（保留 `!!js` 表达式）、**不要丢 `isolate` 组**。删除前已精确复核：**0 个会话**记录过该 preset；删除前后 `--dump-config` 逐字节一致（无引用，故无需重启）。
 - ✅ **升级后发现的插件 bug 已修**：重建冷会话时用**插件配置默认值**覆盖了会话自己记录的 preset → 「卡片写 `cordis`、工具集却是 `standard`」。与 0.1.7 无关（`0.1.6-alpha.2` 上已复现），已修并固化为**关键坑 33**。
+- ✅ **C2 / C3 / P6-8 批次已上线**（2026-09-22 22:40 重启后确认）：`apply()` 三项服务 available、`[ws] ws client ready`、`dsh web:` banner 在、journal **0 error**；并已用 `cordis_inspect` 证实宿主 `sessionProjections` 服务在 **host 平面**存在，`stateOf(session, key)` 契约与代码假设一致，且 `ctx.get(...)` + 判 `undefined` 正是官方许可的**可选访问**方式（`requiresUndefinedCheck: true`）。
+
+---
+
+## 迁移遗留：P6 可选重构（**均未动工**，2026-09-22 盘点）
+
+> 来源：升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进；建议各自单独立项。
+
+| # | 项 | 收益 / 代价 |
+|---|---|---|
+| P6-1 | 设置页迁到 DSH 原生 **`plugins.row.config`**（key `@starxer/chatterbox4dsh#lark-channel`）+ 客户端 `ctx.configForms` | **可整块删掉自建的 `SETTINGS_PATH` HTTP 路由与 `settings-api.ts` 的 revision/脱敏逻辑**（密钥脱敏、冲突检测、持久化交给 DSH）。改动面最大，需先定"哪些字段仍由插件自管" |
+| P6-2 | 改用官方 `SettingsForm` 组件族（`SettingsForm` / `settingsTextField` / `SettingsSecretField` …） | 含官方「留空 = 保留 secret」语义；与 P6-1 同批做 |
+| P6-4 | 用 `sessionController.projections()` 替代剩余的全量日志读 | 与 C3 剩下那处（`summarizeTurn`）同源；**要等上游提供逐步计时类投影**，否则轮次指标会退化 |
+| P6-5 | `plugins.detail.badge` / `actions` / `section`（subject `{kind:'bundle'\|'row'\|'item'}`） | 把飞书连接状态 / 扫码 / 重连挂到插件详情页，替代现在散在设置页里的同等能力 |
+| P6-6 | `locale` meta + `package.json` `icon`（相对路径、SVG/PNG/JPEG/WebP、≤256 KiB） | 插件在设置页/插件市场有图标；需要一个自绘资产（未做） |
+| P6-7 | 借用新宿主服务：`job-controller`（任务卡）、`speech-to-text`（飞书语音转文字）、`readBytes`、工作区 pin/unpin、`modelCatalog()` | 每个都是独立功能项，按需求取 |
+
+- ⏳ **V13 压缩阈值实测**：上游把触发公式改为 `min(W × ratio, W − O − headroom)`（本机 = `min(800000, 680000)` = **680000**）；需要一个长会话自然跑到该水位才能确认日志出现 `compaction/start`，**至今未触发**。公式已在代码侧核对，**不是待改项**，只是"待观察"。
 
 ---
 
@@ -76,6 +94,7 @@
 
 | # | 功能 | 说明 |
 |---|---|---|
+| — | 归档运行中的会话 | ✅ **已完成（2026-09-22）**：DSH 0.1.7 起拒绝归档仍有活动的会话（`WorkspaceActiveSessionError`）→ 插件发**第二张确认卡**写明活动类型（turn / 子代理 / 后台任务 / 定时任务）、按钮「✅ 停止并归档」，**只有它确认**才传 `{ stopActivity: true }`；错误按 `name` + `activity[].kind` 鸭子类型识别（宿主抛的类，插件可能持有另一份副本）。对齐 WebUI 的「先问再停」，绝不静默停止正在跑的工作 |
 | 1 | 卡片化 + footer | 最终回复卡片底部标注 workspace + preset + **模型名** + **推理等级** + **上下文使用量** |
 | 4 | `/status` 命令 | 展示 session id / title / workspace / preset / model / **reasoning** / tokens / context / **缓存命中率** / **TTFT** / **吞吐量** / **LLM 时间** / **工具时间** |
 | 5 | 工具调用展示 | 订阅 `ctx.on('session/event')` → `tool/call` + `tool/result`，wathet/green/red 卡片。**原地更新**：`tool/call` 发卡片后保存 `messageId`，`tool/result` 用 `updateCard` 更新同一张卡片 |
