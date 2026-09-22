@@ -443,13 +443,39 @@ describe('step card delivery', () => {
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'thinking' } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
-    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'out.txt' }] } })
+    emit('tool/result', { message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'out.txt' }] } })
     await tick(250)
     expect(channel.createCardInstance).toHaveBeenCalledOnce()
     expect(channel.sendCardByReference).toHaveBeenCalledOnce()
     // The single card already carries the tool result.
     expect(mdOf(channel.createCardInstance!.mock.calls[0]![0])).toContain('out.txt')
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('reads a failed tool result from the flattened message', async () => {
+    // DSH 0.1.7 flattens the result onto the message
+    // (`{ role: 'tool', toolCallId, content, isError }`). Reading the removed
+    // nested `tool-result` block yielded no content and no error flag, so every
+    // failure was silently rendered as a success.
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"false"}' })
+    emit('tool/result', {
+      message: { toolCallId: 'c1', source: { callId: 'c1' }, isError: true, content: [{ type: 'text', text: 'boom' }] },
+    })
+    await tick(250)
+    const markdown = mdOf(channel.createCardInstance!.mock.calls[0]![0])
+    expect(markdown).toContain('boom')
+    expect(markdown).toContain('❌')
+    expect(markdown).not.toContain('✅')
     streaming.stop()
   })
 
@@ -473,7 +499,7 @@ describe('step card delivery', () => {
     // in flight — then the result arrives and schedules an update.
     await tick(200)
     expect(channel.sendCardByReference).toHaveBeenCalledOnce()
-    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'out.txt' }] } })
+    emit('tool/result', { message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'out.txt' }] } })
     await tick(250)
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
 
@@ -500,13 +526,13 @@ describe('step card delivery', () => {
     emit('turn/start')
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{}' })
     await tick(200)
-    emit('tool/result', { message: { source: { callId: 'c1' }, content: [{ content: 'ok' }] } })
+    emit('tool/result', { message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'ok' }] } })
     // Next step starts (and schedules its own update) BEFORE the previous
     // step's 150ms debounce has fired.
     emit('step/start')
     emit('tool/call', { callId: 'c2', name: 'read', arguments: '{}' })
     await tick(200)
-    emit('tool/result', { message: { source: { callId: 'c2' }, content: [{ content: 'ok' }] } })
+    emit('tool/result', { message: { toolCallId: 'c2', source: { callId: 'c2' }, content: [{ type: 'text', text: 'ok' }] } })
     await tick(250)
     // Both step cards were updated — neither debounce cancelled the other.
     const cardIds = channel.updateCardInstance!.mock.calls.map(call => call[0])
@@ -712,7 +738,7 @@ describe('display toggles', () => {
     emit('turn/start')
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
     emit('tool/result', {
-      message: { source: { callId: 'c1' }, content: [{ type: 'tool-result', content: [{ type: 'text', text: 'ok' }] }] },
+      message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'ok' }] },
     })
     await tick(250)
     expect(cards).toHaveLength(0)

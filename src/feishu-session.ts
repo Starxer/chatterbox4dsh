@@ -442,6 +442,11 @@ export function startFeishuSession(deps: FeishuSessionDeps): FeishuSessionHandle
       }
       if (st.op === 'archive') {
         if (workspaceRegistry?.archiveSession === undefined) { await unsupported(chat, getTranslations().sessionOpArchive); return }
+        // DSH 0.1.7 refuses to archive a Session that still has running work
+        // (`WorkspaceActiveSessionError`) unless the caller passes
+        // `{ stopActivity: true }`. Deliberately not passed: the Web UI asks
+        // before it stops a turn, and the failure below already renders the
+        // Harness error on a card instead of killing the turn silently.
         await workspaceRegistry.archiveSession(st.sessionId)
         await channel.send(chat.chatId, { card: renderSessionResultCard(getTranslations().sessionResultArchivedOk, [getTranslations().sessionResultArchivedBody(st.sessionLabel)]) }, replyOpts(chat)).catch(() => undefined)
         return

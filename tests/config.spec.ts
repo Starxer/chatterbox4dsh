@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LARK_APP_SECRET_REF, connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig } from '../src/config.ts'
+import type { ConfigInput } from '../src/config.ts'
 
 describe('resolveSettingsConfig', () => {
   it('allows an installed plugin to remain unconfigured', () => {
@@ -35,6 +36,30 @@ describe('resolveSettingsConfig', () => {
 
   it('rejects an unbounded error response', () => {
     expect(() => resolveSettingsConfig({ appId: 'id', errorMessage: 'x'.repeat(501) })).toThrow(/errorMessage/)
+  })
+})
+
+describe('live config references (DSH 0.1.7)', () => {
+  /** Stand-in for the loader's volatile reference: stable identity, committed value. */
+  const live = <T>(value: T) => {
+    let current = value
+    return { get: (): T => current, commit: (next: T): void => { current = next } }
+  }
+
+  it('reads each field through its reference, so a committed write is visible immediately', () => {
+    // 0.1.7 commits a settings write into the running reference instead of
+    // remounting the plugin, so reading the raw field would freeze the value
+    // the plugin started with.
+    const appId = live('id')
+    const config = { appId } as unknown as ConfigInput
+    expect(resolveSettingsConfig(config).appId).toBe('id')
+    appId.commit('other')
+    expect(resolveSettingsConfig(config).appId).toBe('other')
+  })
+
+  it('copies array fields instead of handing out the read-only snapshot', () => {
+    const groupAllowlist = live(['oc_a'] as readonly string[])
+    expect(resolveSettingsConfig({ groupAllowlist } as unknown as ConfigInput).groupAllowlist).toEqual(['oc_a'])
   })
 })
 

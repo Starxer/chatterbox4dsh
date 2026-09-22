@@ -19,6 +19,27 @@
 > 同批次修掉：**一次永不返回的出站请求会永久冻结整个聊天的卡片投递**（Agent 答完、WebUI 能看见、飞书什么都没有）；同一次挂起还会让**卡片排序屏障静默失效**，于是「老问题重新出现」——问题卡片又抢在步骤卡片前面。两条见下。
 >
 > 同批次修掉：**在群里新建话题建会话时，创建流程的卡片被发到另一个话题**——卡片所属话题不能按「群」推断（一个群只有一个 `chatId`、却有很多话题），改成按**被点击卡片的 message id** 精确回查。见下。
+>
+> 已升级到 DSH **`0.1.7-alpha.1`**（1299 commits）：这一版**换掉了设置服务**，插件侧有 4 处必改（见下节）。会话控制 / 流式 / 工具 / 附件 / 客户端 UI / 会话日志格式**均未破坏**。
+>
+> Upgraded to DSH **`0.1.7-alpha.1`** (1299 commits). This release **replaced the settings service**, so the plugin needed four changes (see the first entry below). Session control, streaming, tools, attachments, the client slot contract, and the session-log format are unaffected.
+
+### 兼容：对齐 DSH `0.1.7-alpha.1`——设置服务换代为 `SettingsForms`、preset 包改名、扁平的 `tool/result`、归档语义（`src/config.ts` / `src/index.ts` / `src/feishu-streaming.ts` / `src/feishu-toolcalls.ts` / `src/feishu-session.ts` / `package.json`）
+
+- **依赖范围**：`@deepseek-ai/dsh-*` 整体 `^0.1.6-alpha.1` → `^0.1.7-alpha.1`（预发布 comparator 只在同一 `major.minor.patch` 内生效，旧范围永远不会满足新版本）；`@deepseek-ai/schemastery` `^3.18.1` → `^3.18.3`（新增 `.volatile()`）；`@deepseek-ai/cordis` `^4.0.1` → `^4.0.3`。
+- **设置：`settings.register()` / `settingsScope.get()` / `scope.watch()` 在 0.1.7 全部被删除**（服务更名为 `SettingsForms`，只剩 `configure / describe / update / replace / mutate / prepareDocument / documentPath`）。改法：
+  1. 配置**直接从 `apply(ctx, config)` 收到的 live Config 读**——每个可编辑字段现在是 `.volatile()` 引用，`Volatile.get()` 才是当前生效值。`resolveSettingsConfig()` 因此接受 `ConfigInput`（`LiveConfig | Config`），新增 `readField()` 同时兼容引用与普通值（单测、以及任何直接传已解析值的宿主仍可用）。
+  2. `ConfigSchema` 的**每个字段都声明 `.volatile()`**：0.1.7 拒绝写非 volatile 字段（`has no volatile fields` / `Config field "…" is not volatile`），而 volatile 字段正是原来 `{ applies: 'live' }` 的语义——写入进运行中的引用、**不重挂插件**。
+  3. 命名空间 **`ns` 现在是 profile 行 id**（`describe()` 按 `entry.options.id` 索引），改为从自身 fiber 反查（`ctx.fiber.entry.options.id`），不再依赖「插件恰好叫 `lark-channel`」。
+  4. `scope.watch(cb)` → `ctx.on('loader/volatile-update', cb)`（0.1.7 把值提交进引用之后，向**该配置所属 fiber** 发这个本地事件）。`/display`、`/lang`、设置页写的仍是 `settings.mutate(ns, ops, revision)`，签名未变。
+  5. 插件自带设置页，按官方约定用 `settings.configure({ auto: false }, ctx.fiber)` 关掉「自动生成页面」（不改变配置读写能力）。
+  6. `locale: 'auto'`（跟随 DSH 界面语言）此前用 `settings.get('locale')` 读取，该 API 已删除；改为从 `describe()` 的表单投影里取，并**加了一秒 TTL + 「写入即失效」的缓存**——`currentLocale()` 在每次卡片重绘时都会走，而 `describe()` 会重建每个条目的表单并读 profile 目录，不能放在热路径上。
+- **preset 包改名**：`@deepseek-ai/dsh-agent-presets` 整包删除 → `@deepseek-ai/dsh-agent-preset-registry`。服务名与 `list / resolve / mount / defaultId` **全都不变**，插件逻辑零改动，只换了类型引入的包名与依赖项。
+- **`tool/result` 消息被拍平**：旧形态是 user 角色、真正的 `{ content, isError }` 嵌在 `content[0]`（一个 `tool-result` 块）里；0.1.7 直接把 `{ role: 'tool', toolCallId, content, isError }` 放在 message 上。插件原来读嵌套块，**失败会被渲染成成功**（内容靠兜底侥幸显示）。改为读 message 自身的 `content` / `isError`，并新增回归测试锁死「失败必须渲染成 ❌ 失败」。
+- **`archiveSession()` 拒绝运行中的会话**：0.1.7 新增 `options.stopActivity`，不传且会话仍有活动时抛 `WorkspaceActiveSessionError`（列明是 turn / subagent / job / schedule）。插件**刻意不传 `stopActivity`**——Web UI 在停掉一个 turn 之前会先征求确认，而这里的失败已由既有 `try/catch` 渲染成一张报错卡，不会静默杀掉正在跑的 turn。飞书侧更友好的「是否停止并归档」确认卡留作后续。
+- **未改但要留意的语义**：`snapshotEvents / eventAt / ownEvents` 已被标 `@deprecated`（仍可用，后续迁 `sessionProjections`）；`sessionController.prompt()` 的 content 契约换成 base64 / `{ type: 'file', receiptId }`——插件里那条 `return false` 回落到 `agent.steer/followup` 的绕行**必须保留**。
+- **验证**：`npm run typecheck` 0 error，`npm test` **459 passed / 36 files**（新增 3 例：扁平 `tool/result` 的失败态、live Config 引用读取、数组字段拷贝），`npm run build` ✅（`lib/index.js` 与受跟踪的 `client/client.js` 一起更新；本次客户端代码零改动）。
+- **其余升级前置项属于部署数据**（legacy `settings.yaml` 的段导入、默认 preset 回落、目录型 preset 在 0.1.7 不再被发现），不在插件代码范围内。
 
 ### 修复：群里新建话题建 DSH 会话时，创建流程的卡片被发到另一个话题（`src/card-topics.ts`（新）/ `src/index.ts` / `src/feishu-onboarding.ts` / `src/feishu-model-select.ts` / `tests/card-topics.spec.ts`（新））
 

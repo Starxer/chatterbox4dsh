@@ -2,16 +2,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type { CommandRuntime, CommandResult, CommandExecution } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-host-directory-picker'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
@@ -120,15 +120,51 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     ctx.logger('dsh-feishu').info('dsh-feishu: all capability seams present — will start streaming/questions/approvals listeners')
   }
 
-  const settingsScope = settings.register(
-    LARK_SETTINGS_NAMESPACE as SettingsNamespace,
-    ConfigSchema,
-    { base: rawConfig, applies: 'live' },
-  )
-  const namespace = LARK_SETTINGS_NAMESPACE as SettingsNamespace
-  const currentSettings = (): SettingsConfig => resolveSettingsConfig(settingsScope.get())
+  // DSH 0.1.7 addresses a settings namespace by its PROFILE ROW id — every
+  // descriptor is keyed on `entry.options.id` — so the plugin reads its own
+  // entry instead of assuming the id its bundle patch happens to ship. The
+  // write paths below use the same id.
+  const namespace = String(ctx.fiber.entry?.options.id ?? LARK_SETTINGS_NAMESPACE)
+  // The plugin ships its own settings page (`settings.section` id `lark`), so
+  // it opts out of an auto-generated one — the convention documented for a
+  // plugin that owns its page. It does not remove config reads or writes.
+  ctx.effect(() => settings.configure({ auto: false }, ctx.fiber), 'dsh-feishu: settings presentation')
+  // `rawConfig` is the live Config the loader handed to `apply()`: DSH commits
+  // a settings write into its volatile references, so this reads whatever is
+  // in force right now and needs no re-registration after a write.
+  const currentSettings = (): SettingsConfig => resolveSettingsConfig(rawConfig)
   const currentRevision = () => settings.describe({ redactSecrets: true }).find(item => item.ns === namespace)?.revision ?? 0
   let apiUpdateDepth = 0
+
+  /**
+   * The DSH browser-language preference (`locale` namespace, owned by the
+   * client-locale plugin).
+   *
+   * 0.1.7 removed the direct namespace readout (`settings.get`) and every
+   * `describe()` rebuilds each entry's form from the profile document, so the
+   * value is cached: `currentLocale()` runs on every card repaint and must not
+   * touch the disk. The entry expires after a second, and any settings write
+   * drops it outright, so a language switch shows up on the next repaint.
+   */
+  let dshLocale: { value: string | undefined; readAt: number } | undefined
+  const DSH_LOCALE_TTL_MS = 1_000
+  const dshLocaleValue = (): string | undefined => {
+    const now = Date.now()
+    if (dshLocale === undefined || now - dshLocale.readAt >= DSH_LOCALE_TTL_MS) {
+      let value: string | undefined
+      try {
+        const row = settings.describe({ redactSecrets: true }).find(item => item.ns === 'locale')
+        value = (row?.value as { preference?: string } | undefined)?.preference
+      } catch {
+        // A host without the locale plugin (or an unreadable projection) just
+        // leaves the plugin on its `zh` fallback; localization must never be
+        // able to break card rendering.
+        value = undefined
+      }
+      dshLocale = { value, readAt: now }
+    }
+    return dshLocale.value
+  }
 
   // Active plugin language. The plugin `locale` field wins; `auto` (default)
   // follows the DSH browser-language preference (the host `locale` namespace
@@ -136,13 +172,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // a preference, fall back to `zh`.
   const currentLocale = (): { id: LocaleId; plugin: 'zh' | 'en' | 'auto'; dsh: string | undefined } => {
     const plugin = currentSettings().locale ?? 'auto'
-    let dsh: string | undefined
-    try {
-      const localeNs = settings.get('locale' as Parameters<typeof settings.get>[0]) as { preference?: string } | undefined
-      dsh = localeNs?.preference
-    } catch {
-      dsh = undefined
-    }
+    const dsh = dshLocaleValue()
     return { id: resolveLocale(plugin, dsh), plugin, dsh }
   }
   // Keep the module-level command translations in sync with the resolved
@@ -951,7 +981,6 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     return settings.mutate(namespace, ops, expected).then(() => refreshLocale())
   }
 
-  settingsScope.watch(() => apiUpdateDepth > 0 ? undefined : runtime.reconcile())
   // Credentials-change event was renamed `credentials/updated` →
   // `credentials/reference-updated` in a newer Harness. Register under BOTH
   // names via a loose cast so `tsc` typechecks against either version; the
@@ -963,6 +992,25 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   const looseOn = (name: string, handler: (ref: string) => void): void => {
     ;(ctx as unknown as { on(name: string, handler: (ref: string) => void): unknown }).on(name, handler)
   }
+  // DSH 0.1.7 dropped the namespace watcher (`settings.register(...).watch`):
+  // a config write is committed into the live Config references and the OWNING
+  // fiber is notified through `loader/volatile-update` (a fiber-local event, so
+  // this fires for this plugin's own row only). Values are committed before the
+  // event, so re-reading them here is safe. `/display`, `/lang`, and the
+  // settings page write through `settings.mutate` and land here too, but they
+  // already reconcile themselves — `reconcile()` is fingerprint-gated, so the
+  // repeat is a no-op.
+  ctx.on('loader/volatile-update', () => {
+    refreshLocale()
+    if (apiUpdateDepth > 0) return
+    void runtime.reconcile()
+  })
+  // A settings write anywhere invalidates the cached DSH language so the next
+  // repaint re-reads it. Deliberately does NOT call `describe()` here: this
+  // handler runs inside the `describe()` that emitted the event.
+  ctx.on('settings/document-updated', (ns) => {
+    if (ns === 'locale') dshLocale = undefined
+  })
   looseOn('credentials/updated', onCredentialRefUpdated)
   looseOn('credentials/reference-updated', onCredentialRefUpdated)
   ctx.effect(() => webServer.register({

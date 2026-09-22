@@ -1,4 +1,5 @@
 import z from '@deepseek-ai/schemastery'
+import type { Volatile } from '@deepseek-ai/cordis'
 import type { PluginLocale } from './i18n.ts'
 
 export type DomainName = 'feishu' | 'lark'
@@ -39,6 +40,35 @@ export interface Config {
   locale?: PluginLocale
 }
 
+/**
+ * The live configuration the Cordis loader hands to `apply()` (DSH 0.1.7+).
+ *
+ * Every field is a `Volatile` reference: a settings write is committed into
+ * the running reference instead of remounting the plugin, so `get()` is the
+ * only way to read the value that is in force right now. A plain object is
+ * still accepted — see {@link ConfigInput} — which keeps unit tests (and any
+ * host that passes resolved values directly) working unchanged.
+ */
+export type LiveConfig = { readonly [K in keyof Config]-?: Volatile<Config[K]> }
+
+/** Either shape a host may hand to `apply()`. */
+export type ConfigInput = LiveConfig | Config
+
+/**
+ * Read one configuration field.
+ *
+ * DSH declares every editable field `.volatile()` so a write updates the
+ * reference in place; anything else (a plain value, or the `undefined` of an
+ * absent field) is returned as it is. Duck-typing `get` instead of importing
+ * the reference protocol keeps this working for both shapes.
+ */
+export function readField<T>(field: Volatile<T> | T | undefined): T | undefined {
+  if (field !== null && typeof field === 'object' && typeof (field as Volatile<T>).get === 'function') {
+    return (field as Volatile<T>).get() as unknown as T
+  }
+  return field as T | undefined
+}
+
 export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
   'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
@@ -57,53 +87,66 @@ export interface RuntimeConfig extends Omit<SettingsConfig, 'appSecretRef'> {
   appSecretRef: string
 }
 
-export const ConfigSchema: z<Config> = z.object({
-  appId: z.string().default('').description('Feishu/Lark application ID'),
-  appSecret: z.string().role('secret').description('Legacy literal application secret'),
-  appSecretRef: z.string().role('credential-ref').default(LARK_APP_SECRET_REF).description('Harness credential reference for the application secret'),
-  domain: z.union(['feishu', 'lark']).default('feishu'),
-  requireMention: z.boolean().default(true),
-  dmMode: z.union(['open', 'allowlist', 'disabled']).default('open'),
-  groupAllowlist: z.array(z.string()).default([]),
-  dmAllowlist: z.array(z.string()).default([]),
-  provider: z.string(),
-  model: z.string(),
-  workspace: z.string(),
-  agentPreset: z.string(),
-  errorMessage: z.string().default(DEFAULT_ERROR_MESSAGE),
-  reactEmoji: z.string().default(DEFAULT_REACTION_EMOJI).description('Emoji reaction added to each inbound message; empty string disables it'),
-  showReasoning: z.boolean().default(true).description('Show model reasoning/thinking content in tool call cards and final reply'),
-  showToolCalls: z.boolean().default(true).description('Show tool calls on step cards; when false a tool-only step sends no card'),
-  showToolArgs: z.boolean().default(true).description('Show each tool call\'s arguments block'),
-  showToolResults: z.boolean().default(true).description('Show each tool call\'s result preview'),
-  locale: z.union(['auto', 'zh', 'en']).default('auto').description('Plugin language; auto follows the DSH browser-language preference'),
+/**
+ * Every field is `.volatile()`: DSH 0.1.7 refuses to write a field that is not
+ * volatile, and a volatile field is committed into the running Config
+ * reference — which is exactly the contract this plugin had under
+ * `settings.register(..., { applies: 'live' })`: a settings write takes effect
+ * without remounting the plugin, and `currentSettings()` re-reads it.
+ */
+export const ConfigSchema = z.object({
+  appId: z.string().default('').volatile().description('Feishu/Lark application ID'),
+  appSecret: z.string().role('secret').volatile().description('Legacy literal application secret'),
+  appSecretRef: z.string().role('credential-ref').default(LARK_APP_SECRET_REF).volatile().description('Harness credential reference for the application secret'),
+  domain: z.union(['feishu', 'lark']).default('feishu').volatile(),
+  requireMention: z.boolean().default(true).volatile(),
+  dmMode: z.union(['open', 'allowlist', 'disabled']).default('open').volatile(),
+  groupAllowlist: z.array(z.string()).default([]).volatile(),
+  dmAllowlist: z.array(z.string()).default([]).volatile(),
+  provider: z.string().volatile(),
+  model: z.string().volatile(),
+  workspace: z.string().volatile(),
+  agentPreset: z.string().volatile(),
+  errorMessage: z.string().default(DEFAULT_ERROR_MESSAGE).volatile(),
+  reactEmoji: z.string().default(DEFAULT_REACTION_EMOJI).volatile().description('Emoji reaction added to each inbound message; empty string disables it'),
+  showReasoning: z.boolean().default(true).volatile().description('Show model reasoning/thinking content in tool call cards and final reply'),
+  showToolCalls: z.boolean().default(true).volatile().description('Show tool calls on step cards; when false a tool-only step sends no card'),
+  showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
+  showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
+  locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
 })
 
-export function resolveSettingsConfig(config: Config): SettingsConfig {
-  const appSecretRef = config.appSecretRef ?? LARK_APP_SECRET_REF
+export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
+  const appSecretRef = readField(config.appSecretRef) ?? LARK_APP_SECRET_REF
   if (!CREDENTIAL_REF_PATTERN.test(appSecretRef)) throw new TypeError('appSecretRef must be a POSIX environment variable name')
-  const errorMessage = config.errorMessage ?? DEFAULT_ERROR_MESSAGE
+  const errorMessage = readField(config.errorMessage) ?? DEFAULT_ERROR_MESSAGE
   if (errorMessage.length > 500) throw new TypeError('errorMessage must not exceed 500 characters')
+  const appSecret = readField(config.appSecret)
+  const provider = readField(config.provider)
+  const model = readField(config.model)
+  const workspace = readField(config.workspace)
+  const agentPreset = readField(config.agentPreset)
+  const locale = readField(config.locale)
   return {
-    appId: config.appId ?? '',
+    appId: readField(config.appId) ?? '',
     appSecretRef,
-    domain: config.domain ?? 'feishu',
-    requireMention: config.requireMention ?? true,
-    dmMode: config.dmMode ?? 'open',
-    groupAllowlist: config.groupAllowlist ?? [],
-    dmAllowlist: config.dmAllowlist ?? [],
+    domain: readField(config.domain) ?? 'feishu',
+    requireMention: readField(config.requireMention) ?? true,
+    dmMode: readField(config.dmMode) ?? 'open',
+    groupAllowlist: [...(readField(config.groupAllowlist) ?? [])],
+    dmAllowlist: [...(readField(config.dmAllowlist) ?? [])],
     errorMessage,
-    reactEmoji: config.reactEmoji ?? DEFAULT_REACTION_EMOJI,
-    showReasoning: config.showReasoning ?? true,
-    showToolCalls: config.showToolCalls ?? true,
-    showToolArgs: config.showToolArgs ?? true,
-    showToolResults: config.showToolResults ?? true,
-    ...(config.appSecret === undefined ? {} : { appSecret: config.appSecret }),
-    ...(config.provider === undefined ? {} : { provider: config.provider }),
-    ...(config.model === undefined ? {} : { model: config.model }),
-    ...(config.workspace === undefined ? {} : { workspace: config.workspace }),
-    ...(config.agentPreset === undefined ? {} : { agentPreset: config.agentPreset }),
-    ...(config.locale === undefined ? {} : { locale: config.locale }),
+    reactEmoji: readField(config.reactEmoji) ?? DEFAULT_REACTION_EMOJI,
+    showReasoning: readField(config.showReasoning) ?? true,
+    showToolCalls: readField(config.showToolCalls) ?? true,
+    showToolArgs: readField(config.showToolArgs) ?? true,
+    showToolResults: readField(config.showToolResults) ?? true,
+    ...(appSecret === undefined ? {} : { appSecret }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(agentPreset === undefined ? {} : { agentPreset }),
+    ...(locale === undefined ? {} : { locale }),
   }
 }
 
@@ -149,7 +192,7 @@ export function connectionFingerprint(config: RuntimeConfig): string {
 }
 
 /** @deprecated Use resolveSettingsConfig and resolveRuntimeConfig. */
-export function resolveConfig(config: Config): RuntimeConfig {
+export function resolveConfig(config: ConfigInput): RuntimeConfig {
   const settings = resolveSettingsConfig(config)
   return resolveRuntimeConfig(settings, settings.appSecret)
 }

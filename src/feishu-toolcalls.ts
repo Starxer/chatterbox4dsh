@@ -140,13 +140,17 @@ export function startFeishuToolCalls(deps: FeishuToolCallsDeps): { stop: () => v
         chat,
       })
     } else if (event.type === 'tool/result') {
-      const toolCallId = String(event.data?.message?.source?.callId ?? '')
+      // DSH 0.1.7 flattened the result into the message: `{ role: 'tool',
+      // toolCallId, content, isError }`, with `content` already the block list.
+      // (`ToolMessageSource.callId` is still the same id, kept as a fallback.)
+      const message = event.data?.message
+      const toolCallId = String(message?.toolCallId ?? message?.source?.callId ?? '')
       const pending = state.pending.get(toolCallId)
       logger.info(`dsh-feishu: [toolcall] session=${sessionId} event=tool/result callId=${toolCallId} hasPending=${pending !== undefined}`)
 
       const toolName = pending?.toolName ?? 'unknown'
-      const isError = event.data?.error !== undefined || event.data?.message?.content?.[0]?.isError === true
-      const resultContent = event.data?.message?.content
+      const isError = event.data?.error !== undefined || message?.isError === true
+      const resultContent = message?.content
       const result = Array.isArray(resultContent)
         ? resultContent.map((b: { type: string; text?: string }) => b.type === 'text' ? b.text ?? '' : '').filter(Boolean).join('\n')
         : resultContent

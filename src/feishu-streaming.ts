@@ -908,23 +908,22 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
         }
       } else if (event.type === 'tool/result') {
-        const toolCallId = String(event.data?.message?.source?.callId ?? '')
+        const message = event.data?.message
+        const content = message?.content
+        const toolCallId = String(message?.toolCallId ?? message?.source?.callId ?? '')
         const toolCall = state.toolCalls.find(t => t.callId === toolCallId)
         console.log(`dsh-feishu: [result] callId=${toolCallId} found=${toolCall !== undefined} toolsInState=${state.toolCalls.length} stepCardSent=${state.stepCardSent}`)
 
         if (toolCall !== undefined) {
-          // `ToolResultMessage.content` is `[ToolResultBlock]` whose real
-          // content blocks nest at `.content[0].content`. Reading the outer
-          // array directly yielded nothing (its block type is `tool-result`,
-          // not `text`), which is why tool output had disappeared. Mirror the
-          // Web UI, which reads `message.content[0]` → `{ content, isError }`.
-          const resultBlock = Array.isArray(event.data?.message?.content)
-            ? event.data.message.content[0]
-            : undefined
-          const isError = event.data?.error !== undefined
-            || resultBlock?.isError === true
-            || event.data?.message?.content?.[0]?.isError === true
-          const resultContent = resultBlock?.content ?? event.data?.message?.content
+          // DSH 0.1.7 flattened the tool result into the message itself:
+          // `{ role: 'tool', toolCallId, content, isError }` with `content`
+          // already the block list the model saw. Before that it was a
+          // user-role message whose single `tool-result` block held the real
+          // `content` and `isError`, and reading the outer array directly
+          // yielded nothing — which is why tool output had once disappeared.
+          // Mirror the Web UI: read the message's own fields.
+          const isError = event.data?.error !== undefined || message?.isError === true
+          const resultContent = content
           const result = Array.isArray(resultContent)
             ? resultContent.map((b: { type: string; text?: string }) => b.type === 'text' ? b.text ?? '' : '').filter(Boolean).join('\n')
             : resultContent
