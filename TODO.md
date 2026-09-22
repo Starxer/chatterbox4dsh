@@ -140,12 +140,16 @@
 ## 迁移遗留：P6 可选重构（2026-09-22 盘点，2026-09-23 复核）
 
 > 来源：0.1.7 升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进。
-> **状态（2026-09-23）**：P6-1 / P6-2 已完成；**P6-4 被上游阻塞**（见 B2）；**P6-5 / P6-6 / P6-7 未动工**（见 X1–X3）。
+> **状态（2026-09-23 复核，8 项里 4 项完成 / 1 项阻塞 / 3 项未动工）**：P6-1 / P6-2 / **P6-3** / P6-8 ✅ 已完成；**P6-4 被上游阻塞**（见 B2）；**P6-5 / P6-6 / P6-7 未动工**（见 X1–X3）。
+>
+> ⚠️ 本表原先**漏了 P6-3**（从 P6-2 直接跳到 P6-4），2026-09-23 补上——它的内容随 P6-1 一起落地了。
 
 | # | 项 | 收益 / 代价 |
 |---|---|---|
 | ~~P6-1~~ | ✅ **已完成（2026-09-22）** 设置页改走原生 **`ctx.configForms`**（ns = profile 行 id `lark-channel`）+ **`ctx.remote.credentials`**（密钥按引用读写） | **自建的 `SETTINGS_PATH` 路由与 `settings-api.ts`（140 行：字段白名单 / 脱敏 / revision 栅栏）已整块删除**；页面位置不变（仍是 Settings → 飞书与 Lark 标签页），仅保留 `/dsh-feishu/provision` 承载扫码与运行状态。**已重启生效（2026-09-23 00:13）**：服务 active、journal 无 error、产物核对通过 |
 | ~~P6-2~~ | ✅ **已完成（2026-09-22）** | 「留空 = 保留 secret」由凭据域写入语义实现（只在用户输入时 `.set()`），不需要自建表单组件 |
+| ~~P6-3~~ | ✅ **已完成（随 P6-1 一并落地，2026-09-23 复核确认）** `.volatile()` 免重启、**不杀正在跑的 turn** → 替代原来的「保存后重连」 | ① 19 个可编辑字段**全部** `.volatile()`（`src/config.ts:98-116`）→ 保存立即生效、**不需要重启 Harness**；② 「不杀正在跑的 turn」由 `connectionFingerprint`（`src/config.ts:181`）保证——指纹**只覆盖连接字段**（`appId` / `appSecret` / `domain` / `requireMention` / `dmMode` / 两个 allowlist / `reactEmoji`），显示开关、语言、`provider`/`model`/`workspace`/`agentPreset`、`errorMessage` **都不在指纹里** ⇒ 改它们不会推倒 runtime（坑 20；注释里还留着 2026-09-10 那次「跑 turn 时切显示开关 → `flush on a closed handle`」的事故记录）；③ `loader/volatile-update` 仍会调 `runtime.reconcile()`，但它是**指纹门控**的，非连接字段的重复写是空操作 |
+| ~~P6-8~~ | ✅ **已完成（2026-09-22）** 两项清理 | ① `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-runtime` 已删（现为 locale / ui-settings / ui-plugin-manager / api-remotes）；② `settings.action` 的 `id:'open-document'` + `priority:-1` 影子注册**已补注释**（`src/client/index.ts:61-71`），写明它必须与壳层同名同 id 才能压掉壳层入口。⚠️ 注释里仍留着一句「Intent not re-verified」——**当初为什么要压掉壳层那条 action，仍未复核** |
 | P6-4 | 用 `sessionController.projections()` 替代剩余的全量日志读 | 与 C3 剩下那处（`summarizeTurn`）同源；**要等上游提供逐步计时类投影**，否则轮次指标会退化 |
 | P6-5 | `plugins.detail.badge` / `actions` / `section`（subject `{kind:'bundle'\|'row'\|'item'}`） | 把飞书连接状态 / 扫码 / 重连挂到插件详情页，替代现在散在设置页里的同等能力 |
 | P6-6 | `locale` meta + `package.json` `icon`（相对路径、SVG/PNG/JPEG/WebP、≤256 KiB） | 插件在设置页/插件市场有图标；需要一个自绘资产（未做） |
