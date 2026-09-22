@@ -2147,11 +2147,6 @@ function apply(ctx) {
 		return () => style.remove();
 	}, "dsh-feishu: client styles");
 	const t = ctx.locale.bind(NS);
-	ctx.slots.inject("settings.action", () => ctx.slots.register({
-		name: "settings.action",
-		id: "open-document",
-		priority: -1
-	}, () => null));
 	const card = new LarkSettingsCardController(ctx.configForms.get(LARK_SETTINGS_NAMESPACE), ctx, t);
 	ctx.effect(() => () => {
 		card.dispose();

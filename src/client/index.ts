@@ -58,17 +58,20 @@ export function apply(ctx: ClientContext): void {
     return () => style.remove()
   }, 'dsh-feishu: client styles')
   const t = ctx.locale.bind(NS)
-  // Same slot identity (`name` + `id`) as the shell's own `open-document`
-  // action in `ui-settings-general`, so this registration **replaces** it with
-  // a component that renders nothing; `priority: -1` fixes this contribution's
-  // position in the list slot. Intent not re-verified (an earlier audit asked
-  // whether suppressing the shell entry is deliberate) — but the identity must
-  // keep matching the shell's, or that action reappears next to our page.
-  ctx.slots.inject('settings.action', () => ctx.slots.register({
-    name: 'settings.action',
-    id: 'open-document',
-    priority: -1,
-  }, () => null))
+  // This plugin used to shadow the shell's `settings.action` cell — the same
+  // `name` + `id` (`open-document`) at `priority: -1` — with a component that
+  // renders nothing. Removed 2026-09-23, after the audit the old comment asked
+  // for, because its reach was wider than it looked and the intent was never
+  // ours: the registration came verbatim from the upstream dsh-lark release
+  // with no rationale in any comment or commit message, and `settings.action`
+  // is a ROOT-scoped list slot whose cells shadow by `name` + `id` with the
+  // LOWEST `priority` winning. Our `-1` therefore replaced the shell's "open
+  // configuration file" button on EVERY settings page, not just this section.
+  // The shell's action is a legitimate affordance — the Host reports
+  // `hasDocument: true` unconditionally and `prepareDocument()` creates the
+  // file before opening it — and this plugin's configuration lived in exactly
+  // that document before DSH 0.1.7. Do not re-add this without a reason that
+  // names the shell's own behaviour as the problem.
   // The form controller owns the `lark-channel` scope, the credential badge
   // and the provisioning/runtime reads for the page's whole lifetime.
   const card = new LarkSettingsCardController(ctx.configForms.get(LARK_SETTINGS_NAMESPACE), ctx, t)

@@ -28,6 +28,14 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 修复：不再压掉壳层的「打开配置文件」按钮（`src/client/index.ts`）
+
+- **背景**：插件从上游 dsh-lark 继承了一条 `settings.action` 注册——与壳层 `ui-settings-general` 的 `open-document` **同名同 id**、`priority: -1`，渲染一个什么都不画的分支，旧注释写的是「替换掉壳层那个按钮」。这条注册**没有任何代码、注释或提交信息解释过为什么**要压它（在 fork 点上就已经是这样）。
+- **为什么它其实是错的**：`settings.action` 是**根作用域**的 list 槽位，单元格按 `name` + `id` 遮蔽、且 **`priority` 最小者渲染**。所以 `-1` 压掉的不是「我们这一节」，而是**设置页里每一个 section** 的同一个按钮——包括壳层自己的「常规」页。
+- **那个按钮该不该在**：该在。宿主 `settings-controller` 对 `hasDocument` **无条件返回 `true`**，`openSettingsDocument()` 会先 `prepareDocument()`（文件不存在就创建）再交给系统原生打开器；而且 0.1.7 之前我们的配置**正是**写在那份文档里（`settings.yaml` 的 `lark-channel` 段）。
+- **改法**：删掉这条注册，并把结论写进代码注释（说明为什么删、以及"别按『压掉壳层』的思路加回来"）。
+- **验证**：`client/client.js` 里 `open-document` 出现次数 **0**；typecheck 0 error、458 tests 全绿。页面上重新出现「打开配置文件」按钮这一**视觉效果**留给使用者在浏览器里目视确认。
+
 ### 变更：插件在「插件」页有了本地化名称与图标（`package.json` / `locale/` / `icon.svg`）
 
 - **本地化显示名**：新增 `locale/en.json` 与 `locale/zh.json`（各含 `meta.title` / `meta.description`），并在 `exports` 里放行 `./locale/*.json`。DSH 的插件清单按「**语言 id 作文件名**、且必须与 `en.json` 同目录」的规则读取这些文件，`title` 缺失时回落成包名——所以此前插件页显示的是 `@starxer/chatterbox4dsh` 这个技术名。
