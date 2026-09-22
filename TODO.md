@@ -138,6 +138,7 @@
 | — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
 | 8 | 文档与版本一致性 | **低** | **README / docs/architecture.md / TODO / CHANGELOG 已同步（2026-09-08 二轮）**：per-step 卡片/footer/定位信息、reasoning 耗时与思考 token、原生附件库、busy 提示、`[Feishu] ` 前缀移除、标题色带客户端问题均已写入；README/TODO 里指向未公开 `AGENTS.md` 的链接已改指 `CHANGELOG.md`/`README.md`。版本号 `package.json` 已是 **`0.2.0`**（旧记录误写 0.1.0），发版时统一 bump |
 | — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
+| — | **思考期反馈 / 发卡时机** | **中** | ⚠️ **已定性（2026-09-22），方案 A 待实现**：思考期间完全无反馈，第一张卡只在本步模型输出落地后才出现，用户感知延迟 = **思考时长 + 150ms 首发防抖**。根因：0.1.3 起 `assistant/chunk` 被移除、token 级增量不再是持久事件（实时增量只以 client-only `assistant/live-chunk` 存在于 Web 的 follow 流），而插件订阅的是持久事件总线 `session/event`；`step/start`（思考开始时就到）目前只重置状态、不发卡。**方案 A（已定）**：`step/start` 立即发「深度思考中…」占位卡，`assistant/message` 到达后原地更新为 reasoning 区。**明确不做流式**（原方案 B）。详见「已知问题 → 思考期无反馈：发卡时机偏慢」。 |
 | — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | ✅ **已实现**（2026-09-08）：step 卡 text 超 `TEXT_STEP_CAP=3000` 自动拆溢出卡（`renderOverflowCard` + `chunkText`），不再截断丢弃；reasoning 收紧 200 字；args 改 pretty 打印 2k 上限。见 CHANGELOG「修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送」 |
 
 > ✅ 已从本表移除（2026-08-30 确认完成）：
@@ -168,6 +169,35 @@
 ---
 
 ## 已知问题
+
+### 思考期无反馈：发卡时机偏慢（**2026-09-22 定性，方案 A 待实现**）
+
+**现象**：使用者报告「模型正在思考的时候并不会发卡」——长思考（`high`/`max` 推理等级）期间聊天里完全没有动静，第一张步骤卡直到**本步模型输出落地**才出现。
+
+**根因（三条，都是宿主契约变更后遗留的）**：
+
+| # | 事实 | 后果 |
+|---|---|---|
+| 1 | DSH **0.1.3 移除了 `assistant/chunk`**，token 级增量**不再是持久事件**（0.1.6 的 `packages/core/agent-loop/tests/loop.spec.ts` 直接断言该事件不存在）。实时增量改为 **client-only** 的 `assistant/live-chunk`，只存在于 Web 客户端的 follow 流（`packages/api/session-controller/src/client/sessions/assistant-stream.ts`；其 README：「every stream member becomes a **Client-only** `assistant/live-chunk` entry」） | 宿主侧看不到"正在生成"的增量 |
+| 2 | 插件订阅的是**持久事件总线** `ctx.on('session/event', …)`（`src/feishu-streaming.ts`） | 结构上就看不到任何未提交的内容；插件里唯一的"早期触发"正是那条已死事件——文件头注释与 `assistant/chunk` 分支仍是 0.1.3 之前的契约，现在是**只累加、不发卡**的死代码 |
+| 3 | **`step/start` 才是"思考开始"的信号**（`packages/core/agent-loop/src/agent.ts` 在 `await this.step(...)` **之前** append，必然早于模型请求发出），但插件收到它只 `resetStep` + 记时间，**不发卡**；其余发卡点（`assistant/message` / `tool/call` / `tool/result`）全在本步输出落地之后 | 首卡延迟 = 完整思考时长 + 150ms 首发防抖 |
+
+⇒ 代码注释里那句「card still appears ~150ms after the step starts」是 0.1.3 之前的描述，**现已不成立**（实际是"本步内容落地后 150ms"）。
+
+> 补充事实：`assistant/attempt` 是**持久**事件且带 `{turn,step,stream}`（部分思考流），但只在 abort / error / retry 的 settle 时刻 append → 可用于渲染"被打断的思考"，**当不了思考开始的节拍器**。
+
+**方案 A（已定，待实现；`step/start` 占位卡）**：`step/start` 立即发一张「深度思考中…」占位卡（带已用时），`assistant/message` 到达后**原地更新**成 reasoning 区——现有 `stepCardSent` → `updateStepCard` 路径可直接复用。
+
+要处理的边角：
+
+1. 需要一个**占位态渲染**（现在卡片标题/颜色只看工具状态，无 reasoning/text/tools 时没有专门形态）；
+2. 现有 `stepHasVisibleContent` 门控在无内容时**跳过发卡**，占位阶段需放行；
+3. 要定「本步最终无可见内容」（例如只调工具且关掉工具显示）时占位卡的去留——现有设计明确不产生噪音卡，倾向撤掉或改写为一行极简结果；
+4. 文案进 i18n（zh/en 各一条）。
+
+**成本**：常见路径**不增加发卡次数**（占位卡就是那张步骤卡，后续只是 update），仅"最终无内容"的步骤多一次创建。
+
+**明确不做**：方案 B —— 订阅 `sessionController.follow()` 消费 `assistant/live-chunk` 逐字渲染（对齐 Web UI）。改动大（新增消费链、卡片更新限流、有界等待纪律、与 `session/event` 去重），且 **2026-09-22 使用者决定不做流式**。
 
 ### ✅ 超阈值分卡会切坏 Markdown（表格等）—— **已修复（2026-09-18）**
 
