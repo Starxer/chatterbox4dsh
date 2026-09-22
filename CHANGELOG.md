@@ -28,6 +28,13 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：模型选择改走宿主自己的模型目录（`src/feishu-model-select.ts`）
+
+- **背景**：模型选择器此前自己拼三份数据——`llm.listProviders()`、`llm.listModels(provider)`，再对**单个**模型调 `llm.resolveModelInfo()` 取推理档位。宿主的 `sessionController.modelCatalog()` **一次**就答完这三件事，还带上**可读模型名**（`name`）与每个模型的 `reasoning.efforts`。
+- **改法**：新增两个内部助手 `discoverProviders()` 与 `discoverModels(provider)`，内部先读 `sessionController.modelCatalog()`；`modelCatalog` **不存在、或读取抛错**时回落到原来的 llm 目录路径（并留一条 warn 日志）。`resolveModelInfo` 现在只出现在回落路径里。
+- **为什么能如实映射**：`LlmProviderInfo` 恰好就是 `{id, name}`，而 `LlmModelInfo` 除 `provider`/`id`/`name` 外全是可选字段 —— 所以目录项可以直接构造成这两个类型，**没有类型强转**。
+- **测试**：`tests/feishu-model-select.spec.ts` 新增 4 例——目录路径渲染可读名且**完全不碰 llm**、目录读取失败时回落并告警、宿主没有目录时走 llm、确认时按目录的档位自动降级（给 `low` 而目录只有 `high` → 落 `high`）。本文件 7 → 11 例。
+
 ### 修复：不再压掉壳层的「打开配置文件」按钮（`src/client/index.ts`）
 
 - **背景**：插件从上游 dsh-lark 继承了一条 `settings.action` 注册——与壳层 `ui-settings-general` 的 `open-document` **同名同 id**、`priority: -1`，渲染一个什么都不画的分支，旧注释写的是「替换掉壳层那个按钮」。这条注册**没有任何代码、注释或提交信息解释过为什么**要压它（在 fork 点上就已经是这样）。

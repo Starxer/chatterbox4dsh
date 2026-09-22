@@ -58,9 +58,35 @@ interface LlmDirectoryLike {
   resolveModelInfo(provider: string, model: string): Promise<{ reasoning?: { efforts: readonly { id: string }[]; defaultEffort?: string } | undefined }>
 }
 
+/** Reasoning metadata for one exact model route, as either discovery source reports it. */
+interface ReasoningLike {
+  readonly efforts: readonly { readonly id: string; readonly name?: string }[]
+  readonly defaultEffort?: string
+}
+
+/** The Host's own provider/model catalog, as `sessionController.modelCatalog()` answers it. */
+interface ModelCatalogLike {
+  readonly groups: readonly {
+    readonly id: string
+    readonly name: string
+    readonly models: readonly {
+      readonly id: string
+      readonly name: string
+      readonly description?: string
+      readonly reasoning?: ReasoningLike
+    }[]
+  }[]
+}
+
 /** Narrow SessionController view — what feishu-model-select actually uses. */
 interface SessionControllerLike {
   selectModel(request: { sessionId: string; provider: string; model: string; reasoningEffort?: string }): Promise<unknown>
+  /**
+   * The Host's model catalog: one call for every provider, its models, and each
+   * model's reasoning efforts. Optional so this module still runs against a Host
+   * that predates it — discovery then falls back to the llm directory below.
+   */
+  modelCatalog?(): Promise<ModelCatalogLike>
 }
 
 /** A resolved model selection. */
@@ -446,6 +472,74 @@ export function startFeishuModelSelect(deps: {
 }): { dispose: () => void; cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> } {
   const { llm, agentDefaultModel, bridgeHolder, sessionController, channel, logger, getTranslations, onNewSessionConfirm, topicFor, cardTopics } = deps
 
+  /**
+   * Read the Host's model catalog, or `undefined` when this Host has none or the
+   * read failed. Failure is never fatal: discovery falls back to the llm
+   * directory, which is what this module used before the catalog existed.
+   */
+  async function loadCatalog(): Promise<ModelCatalogLike | undefined> {
+    if (sessionController.modelCatalog === undefined) return undefined
+    try {
+      return await sessionController.modelCatalog()
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: model catalog read failed, falling back to the llm directory: ${msg}`)
+      return undefined
+    }
+  }
+
+  /** The provider list the cards render: the Host's catalog when available, else the llm directory. */
+  async function discoverProviders(): Promise<readonly LlmProviderInfo[]> {
+    const catalog = await loadCatalog()
+    if (catalog !== undefined) return catalog.groups.map(group => ({ id: group.id, name: group.name }))
+    return llm.listProviders()
+  }
+
+  /**
+   * One provider's models plus a lazy reasoning lookup for a single model id.
+   * The catalog answers both from one read — including the human-readable model
+   * names it carries — while the llm fallback lists models per provider and
+   * resolves reasoning per model, exactly as this module did before.
+   * @param provider - provider route key.
+   * @returns the models to offer and a resolver for one model's efforts.
+   */
+  async function discoverModels(provider: string): Promise<{
+    readonly models: readonly LlmModelInfo[]
+    reasoning(modelId: string): Promise<ReasoningLike | undefined>
+  }> {
+    const catalog = await loadCatalog()
+    const group = catalog?.groups.find(candidate => candidate.id === provider)
+    if (group !== undefined) {
+      return {
+        models: group.models.map(model => ({
+          provider: group.id,
+          id: model.id,
+          name: model.name,
+          ...(model.description === undefined ? {} : { description: model.description }),
+        })),
+        reasoning: async (modelId: string) => group.models.find(model => model.id === modelId)?.reasoning,
+      }
+    }
+    let models: readonly LlmModelInfo[]
+    try {
+      models = await llm.listModels(provider)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: failed to list models for ${provider}: ${msg}`)
+      models = []
+    }
+    return {
+      models,
+      reasoning: async (modelId: string) => {
+        try {
+          return (await llm.resolveModelInfo(provider, modelId)).reasoning
+        } catch {
+          return undefined
+        }
+      },
+    }
+  }
+
   const processing = new Map<string, true>()
   const actionQueue = new Map<string, QueuedAction[]>()
   const MIN_UPDATE_INTERVAL_MS = 500
@@ -521,14 +615,7 @@ export function startFeishuModelSelect(deps: {
     if (bridge === undefined) return
     const current = await resolveCurrent(chatMessage)
 
-    let models: readonly LlmModelInfo[]
-    try {
-      models = await llm.listModels(provider)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      logger.warn(`dsh-feishu: failed to list models for ${provider}: ${msg}`)
-      models = []
-    }
+    const { models, reasoning } = await discoverModels(provider)
 
     // Resolve the model's actual supported reasoning efforts.
     // Prefer the session's current model if it belongs to this provider,
@@ -538,18 +625,14 @@ export function startFeishuModelSelect(deps: {
     let supportedEfforts: readonly { id: string; name?: string }[] = []
     let modelDefaultEffort: string | undefined
     if (defaultForEfforts !== undefined) {
-      try {
-        const info = await llm.resolveModelInfo(provider, defaultForEfforts.id)
-        if (info.reasoning !== undefined && info.reasoning.efforts.length > 0) {
-          supportedEfforts = info.reasoning.efforts
-          modelDefaultEffort = info.reasoning.defaultEffort
-        }
-      } catch {
-        // Non-fatal — no reasoning dropdown shown.
+      const info = await reasoning(defaultForEfforts.id)
+      if (info !== undefined && info.efforts.length > 0) {
+        supportedEfforts = info.efforts
+        modelDefaultEffort = info.defaultEffort
       }
     }
 
-    const providers = llm.listProviders()
+    const providers = await discoverProviders()
     // The dropdown must open on a model that BELONGS to the provider just
     // picked. Handing it the session's current model blindly produced a
     // `select_static` whose value is not among its own options whenever the
@@ -572,7 +655,7 @@ export function startFeishuModelSelect(deps: {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
     const current = await resolveCurrent(chatMessage)
-    const providers = llm.listProviders()
+    const providers = await discoverProviders()
     const card = renderProviderSelectCard(providers, current, flow, getTranslations())
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
@@ -601,7 +684,7 @@ export function startFeishuModelSelect(deps: {
       return
     }
 
-    const providers = new Set(llm.listProviders().map(p => p.id))
+    const providers = new Set((await discoverProviders()).map(p => p.id))
     if (!providers.has(provider)) {
       logger.warn(`dsh-feishu: model-select attempted to switch to unknown provider ${provider}`)
       return
@@ -611,21 +694,12 @@ export function startFeishuModelSelect(deps: {
     let modelName: string | undefined
     let supportedEffortIds: string[] | undefined
     let modelDefaultEffort: string | undefined
-    try {
-      const models = await llm.listModels(provider)
-      const found = models.find(m => m.id === model)
-      modelName = found?.name
-    } catch {
-      // Non-fatal
-    }
-    try {
-      const info = await llm.resolveModelInfo(provider, model)
-      if (info.reasoning !== undefined && info.reasoning.efforts.length > 0) {
-        supportedEffortIds = info.reasoning.efforts.map(e => e.id)
-        modelDefaultEffort = info.reasoning.defaultEffort
-      }
-    } catch {
-      // Unknown — pass through as-is.
+    const discovered = await discoverModels(provider)
+    modelName = discovered.models.find(m => m.id === model)?.name
+    const reasoning = await discovered.reasoning(model)
+    if (reasoning !== undefined && reasoning.efforts.length > 0) {
+      supportedEffortIds = reasoning.efforts.map(e => e.id)
+      modelDefaultEffort = reasoning.defaultEffort
     }
 
     // Auto-downgrade: if the chosen effort isn't supported by this model,
@@ -723,7 +797,7 @@ export function startFeishuModelSelect(deps: {
               const bridge = bridgeHolder.current
               if (bridge === undefined) break
               const current = await resolveCurrent(item.chatMessage)
-              const providers = llm.listProviders()
+              const providers = await discoverProviders()
               const card = renderProviderSelectCard(providers, current, item.flow, getTranslations())
               await updateCardInstanceOnMessage(item.messageId, item.chatMessage, card)
               break

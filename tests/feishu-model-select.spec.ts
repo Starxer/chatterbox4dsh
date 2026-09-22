@@ -14,6 +14,7 @@ const t = translationsFor('zh')
  */
 function harness(overrides: {
   models?: unknown
+  sessionController?: unknown
   topicFor?: (message: { chatId: string; messageId?: string }) => { rootId?: string; threadId?: string }
   onNewSessionConfirm?: (chatMessage: any, selection: any, messageId: string | undefined) => Promise<void>
 } = {}) {
@@ -46,19 +47,22 @@ function harness(overrides: {
     provB: [{ id: 'b1' }, { id: 'b2' }],
   }
   const llm = {
-    listProviders: () => [{ id: 'provA', name: 'A' }, { id: 'provB', name: 'B' }],
-    listModels: async (provider: string) => models[provider] ?? [],
-    resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }], defaultEffort: 'low' } }),
+    listProviders: vi.fn(() => [{ id: 'provA', name: 'A' }, { id: 'provB', name: 'B' }]),
+    listModels: vi.fn(async (provider: string) => models[provider] ?? []),
+    resolveModelInfo: vi.fn(async () => ({ reasoning: { efforts: [{ id: 'low' }], defaultEffort: 'low' } })),
   } as any
   const bridgeHolder = {
-    current: { sessionCurrentSelection: async () => ({ provider: 'provA', model: 'a1' }) },
+    current: {
+      sessionCurrentSelection: async () => ({ provider: 'provA', model: 'a1' }),
+      resolveSessionIdFor: () => 'sess-1',
+    },
   } as any
   const onNewSessionConfirm = overrides.onNewSessionConfirm ?? vi.fn(async () => undefined)
   const handle = startFeishuModelSelect({
     llm,
     agentDefaultModel: { currentSelection: () => ({ provider: 'provA', model: 'a1' }) } as any,
     bridgeHolder,
-    sessionController: {} as any,
+    sessionController: (overrides.sessionController ?? {}) as any,
     channel,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
     getTranslations: () => t,
@@ -66,7 +70,7 @@ function harness(overrides: {
     topicFor: overrides.topicFor ?? (() => ({})),
   })
   const fire = (evt: any) => Promise.all(handlers.map(h => h(evt)))
-  return { channel, cards, fire, handle, onNewSessionConfirm }
+  return { channel, cards, fire, handle, onNewSessionConfirm, llm }
 }
 
 /** The `model` <select_static> of the most recently rendered card. */
@@ -214,5 +218,95 @@ describe('sendModelCardV2 topic bookkeeping', () => {
       { replyInThread: true, replyTo: 'om_root_new' },
     )
     expect(topics.for('m-card')).toEqual({ threadId: 'omt_new', rootId: 'om_root_new' })
+  })
+})
+
+/**
+ * Model discovery now asks the Session Controller's own catalog first
+ * (`sessionController.modelCatalog()`): one read answers every provider, its
+ * models with human-readable names, and each model's reasoning efforts. The llm
+ * directory stays as the fallback for a Host that has no catalog or whose read
+ * fails — the path every pre-existing case in this file still exercises, since
+ * the default harness injects `{}` as the session controller.
+ */
+describe('feishu-model-select model catalog discovery', () => {
+  const catalog = {
+    groups: [
+      {
+        id: 'provA',
+        name: 'Provider A',
+        models: [
+          { id: 'a1', name: 'Alpha One', reasoning: { efforts: [{ id: 'high' }], defaultEffort: 'high' } },
+        ],
+      },
+    ],
+  }
+
+  it('renders the catalog provider and model names without touching the llm directory', async () => {
+    const { fire, cards, handle, llm } = harness({
+      sessionController: { modelCatalog: vi.fn(async () => catalog) },
+    })
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { tag: 'button', option: 'provA', value: { action: 'select-provider' } },
+    })
+    const select = modelSelect(cards)
+    expect(select.value).toBe('a1')
+    // The readable name is the whole point of preferring the catalog.
+    expect(select.options).toEqual([{ text: { tag: 'plain_text', content: 'Alpha One (a1)' }, value: 'a1' }])
+    expect(llm.listModels).not.toHaveBeenCalled()
+    expect(llm.resolveModelInfo).not.toHaveBeenCalled()
+    handle.dispose()
+  })
+
+  it('drops to the llm directory, with a warning, when the catalog read fails', async () => {
+    const { fire, cards, handle, llm } = harness({
+      sessionController: {
+        modelCatalog: vi.fn(async () => { throw new Error('catalog offline') }),
+      },
+    })
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { tag: 'button', option: 'provB', value: { action: 'select-provider' } },
+    })
+    expect(modelSelect(cards).value).toBe('b1')
+    expect(llm.listModels).toHaveBeenCalledWith('provB')
+    handle.dispose()
+  })
+
+  it('uses the llm directory when the Host exposes no catalog at all', async () => {
+    const { fire, cards, handle, llm } = harness()
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { tag: 'button', option: 'provB', value: { action: 'select-provider' } },
+    })
+    expect(modelSelect(cards).value).toBe('b1')
+    expect(llm.listModels).toHaveBeenCalledWith('provB')
+    expect(llm.listProviders).toHaveBeenCalled()
+    handle.dispose()
+  })
+
+  it('auto-downgrades an unsupported effort to the catalog default on confirm', async () => {
+    const selectModel = vi.fn(async () => undefined)
+    const { fire, handle } = harness({
+      sessionController: { modelCatalog: vi.fn(async () => catalog), selectModel },
+    })
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { value: { action: 'confirm-select', provider: 'provA' } },
+      raw: { action: { form_value: { model: 'a1', reasoning_effort: 'low' } } },
+    })
+    // `low` is not in the catalog's effort set, so the catalog's default wins.
+    expect(selectModel).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      provider: 'provA',
+      model: 'a1',
+      reasoningEffort: 'high',
+    })
+    handle.dispose()
   })
 })
