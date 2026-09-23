@@ -332,6 +332,7 @@ function stepHarness(
     showToolArgs?: () => boolean
     showToolResults?: () => boolean
   } = {},
+  extra: { noteDetachedJob?: (notice: any) => void } = {},
 ) {
   const listeners: Array<(session: any, event: any) => void> = []
   const bridge = {
@@ -347,6 +348,7 @@ function stepHarness(
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     getTranslations: () => t,
     ...display,
+    ...extra,
   })
   const emit = (type: string, data?: any): void => {
     for (const handler of listeners) handler({ id: 's-1' }, { type, time: Date.now(), data })
@@ -975,5 +977,96 @@ describe('a stuck card send must not wedge the chat', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Thinking placeholder (O1): the step card opens at `step/start`, before the
+// model has produced anything, and every later stage updates that same card.
+// ---------------------------------------------------------------------------
+
+describe('thinking placeholder', () => {
+  const plainChannel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-1' })),
+    updateCard: vi.fn(async () => undefined),
+  })
+
+  it('opens a thinking card the moment the step starts', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('step/start', { turn: 2, step: 3 })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    const card = channel.send.mock.calls[0]![1].card as any
+    expect(card.header.title.content).toBe(`${t.stepPlaceholderTitle} · ${t.stepPosition(2, 3)}`)
+    expect(mdOf(card)).toContain(t.stepPlaceholderBody)
+    h.streaming.stop()
+  })
+
+  it('turns that same card into the step card when the message lands', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('step/start', { turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '你好' } })
+    h.emit('assistant/message', {
+      usage: { inputTokens: 5, outputTokens: 2 },
+    })
+    await vi.waitFor(() => { expect(channel.updateCard).toHaveBeenCalled() })
+    const card = channel.updateCard.mock.calls.at(-1)![1] as any
+    // One card per step: the placeholder was updated, never re-posted.
+    expect(channel.send).toHaveBeenCalledTimes(1)
+    expect(card.header.title.content).toBe(`${t.stepCardTitleReply} · ${t.stepPosition(1, 1)}`)
+    expect(mdOf(card)).toContain('你好')
+    expect(mdOf(card)).not.toContain(t.stepPlaceholderBody)
+    h.streaming.stop()
+  })
+
+  it('folds a step that ends with nothing to show instead of leaving it thinking', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('step/start', { turn: 1, step: 2 })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    h.emit('step/end', { turn: 1, step: 2 })
+    await vi.waitFor(() => { expect(channel.updateCard).toHaveBeenCalled() })
+    const card = channel.updateCard.mock.calls.at(-1)![1] as any
+    expect(card.header.title.content).toBe(`${t.stepEmptyTitle} · ${t.stepPosition(1, 2)}`)
+    expect(mdOf(card)).toContain(t.stepEmptyBody)
+    h.streaming.stop()
+  })
+
+  it('refreshes the placeholder while the model is still thinking', async () => {
+    vi.useFakeTimers()
+    try {
+      const channel = plainChannel()
+      const h = stepHarness(channel)
+      h.emit('step/start', { turn: 1, step: 1 })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(channel.send).toHaveBeenCalledTimes(1)
+      // No output yet → the tick keeps the elapsed time (and liveness) honest.
+      await vi.advanceTimersByTimeAsync(5_200)
+      expect(channel.updateCard.mock.calls.length).toBeGreaterThanOrEqual(1)
+      const card = channel.updateCard.mock.calls.at(-1)![1] as any
+      expect(card.header.title.content).toContain(t.stepPlaceholderTitle)
+      h.streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('forwards every tool result to the background-job mirror', () => {
+    const noteDetachedJob = vi.fn()
+    const channel = plainChannel()
+    const h = stepHarness(channel, {}, { noteDetachedJob })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"x","run_in_background":true}' })
+    h.emit('tool/result', {
+      message: { toolCallId: 'c1', content: [{ type: 'text', text: 'started background job bash-9' }], isError: false },
+    })
+    expect(noteDetachedJob).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'bash',
+      resultText: 'started background job bash-9',
+      sessionId: 's-1',
+    }))
+    h.streaming.stop()
   })
 })

@@ -20,6 +20,7 @@ import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
+import type { DetachedJobNotice } from './feishu-jobs.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { chunkText } from './text-chunk.ts'
 import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
@@ -109,6 +110,12 @@ export interface FeishuStreamingDeps {
   showToolResults?: () => boolean
   /** Current translations for the user's language. */
   getTranslations?: () => Translations
+  /**
+   * Forward every tool result to the job mirror, which posts a card only for
+   * the background jobs the model was handed a handle for (关键坑 37).
+   * Optional: tests and deployments without the mirror simply never call it.
+   */
+  noteDetachedJob?: (notice: DetachedJobNotice) => void
 }
 
 /** Per-step usage from assistant/message event. */
@@ -205,6 +212,16 @@ interface SessionStepState {
   /** Sent step card identity (message id + optional CardKit instance). */
   stepCardRef: StepCardRef | undefined
   /**
+   * Whether this step's `step/end` already arrived. A card that never got any
+   * visible content must stop claiming to think once the step is over.
+   */
+  stepEnded: boolean
+  /**
+   * Tick that refreshes the thinking placeholder's elapsed time. Cleared at
+   * every step/turn boundary and on dispose, so it can never leak.
+   */
+  placeholderTimer: ReturnType<typeof setTimeout> | undefined
+  /**
    * Debounced-but-not-yet-sent first card for the current step. While this is
    * set, `stepCardSent` is already true but `stepCardRef` is still undefined,
    * so later events skip the update path — the pending send rebuilds the card
@@ -245,7 +262,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations, noteDetachedJob } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -259,6 +276,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         toolCalls: [],
         stepCardSent: false,
         stepCardRef: undefined,
+        stepEnded: false,
+        placeholderTimer: undefined,
         pendingSend: undefined,
         chat: undefined,
         lastStepHadContent: false,
@@ -290,6 +309,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.stepCardSent = false
     state.stepCardRef = undefined
     state.pendingSend = undefined
+    state.stepEnded = false
+    stopPlaceholderTick(state)
     // NOTE: do NOT clear state.chat — it is session-level chat coordinates,
     // not per-step data. Clearing it prevents step 2+ from sending cards
     // when the step has only tool calls (no text/reasoning), causing tool
@@ -322,8 +343,49 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     || (reasoningShown() && state.reasoning.trim() !== '')
     || (toolsShown() && state.toolCalls.length > 0)
 
+  /** Whether the step has nothing the card can render (yet, or at all). */
+  const stepIsEmpty = (state: SessionStepState): boolean => !stepHasVisibleContent(state)
+
+  /** Stop the placeholder's elapsed-time tick, if one is armed. */
+  const stopPlaceholderTick = (state: SessionStepState): void => {
+    if (state.placeholderTimer === undefined) return
+    clearTimeout(state.placeholderTimer)
+    state.placeholderTimer = undefined
+  }
+
+  /**
+   * Keep a content-free step card's elapsed time honest: refresh it every
+   * {@link PLACEHOLDER_TICK_MS} while the step still has nothing to show.
+   *
+   * The tick exists because DSH stopped publishing token deltas to the
+   * persistent event bus (`assistant/chunk` is gone), so this module only sees
+   * the reasoning once the whole message lands — without the tick a long
+   * `high`/`max` thinking phase would sit on a frozen "0.2s". One chained
+   * `setTimeout`, never `setInterval`, so a slow Feishu call cannot pile up
+   * refreshes; every boundary (step/end, turn/end, resetStep, dispose) clears
+   * it.
+   */
+  const startPlaceholderTick = (sessionId: string, state: SessionStepState): void => {
+    if (state.placeholderTimer !== undefined) return
+    const tick = (): void => {
+      state.placeholderTimer = undefined
+      const current = sessionStates.get(sessionId)
+      if (current !== state || state.stepEnded || !stepIsEmpty(state)) return
+      // While the first send is still in flight there is nothing to update:
+      // the pending send rebuilds the card from this state anyway.
+      if (state.stepCardRef !== undefined) updateStepCard(state)
+      state.placeholderTimer = setTimeout(tick, PLACEHOLDER_TICK_MS)
+    }
+    state.placeholderTimer = setTimeout(tick, PLACEHOLDER_TICK_MS)
+  }
+
   /** Build the unified card content for the current step state. */
   const buildStepCard = (state: SessionStepState): object => {
+    // Nothing to render yet (thinking placeholder) or ever (terminal empty
+    // step): the card says so instead of showing a body with no content.
+    const emptyPhase: 'thinking' | 'done' | undefined = stepHasVisibleContent(state)
+      ? undefined
+      : state.stepEnded ? 'done' : 'thinking'
     const showR = reasoningShown() && state.reasoning.trim() !== ''
     const reasoning = showR ? state.reasoning.trim() : undefined
     const text = state.text.trim() !== '' ? state.text.trim() : undefined
@@ -360,6 +422,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       {
         showToolArgs: showToolArgs?.() !== false,
         showToolResults: showToolResults?.() !== false,
+        ...(emptyPhase !== undefined ? { empty: emptyPhase } : {}),
       },
     )
   }
@@ -927,6 +990,20 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           const result = Array.isArray(resultContent)
             ? resultContent.map((b: { type: string; text?: string }) => b.type === 'text' ? b.text ?? '' : '').filter(Boolean).join('\n')
             : resultContent
+          // A result that hands the model a background job id is the ONLY fact
+          // that separates real background work from the foreground calls DSH
+          // also registers as jobs (关键坑 37). Forward it to the job mirror,
+          // which owns the matching and the gate.
+          try {
+            noteDetachedJob?.({
+              toolName: toolCall.toolName,
+              resultText: typeof result === 'string' ? result : '',
+              chat,
+              sessionId,
+            })
+          } catch (error: unknown) {
+            console.log(`dsh-feishu: [result] job notification failed: ${describeError(error)}`)
+          }
           const elapsed = Date.now() - toolCall.startedAt
 
           toolCall.result = {
@@ -957,6 +1034,21 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         state.stepStartTime = event.time ?? Date.now()
         state.turnNumber = (event.data?.turn as number | undefined) ?? 0
         state.stepNumber = (event.data?.step as number | undefined) ?? 0
+        // Stage 1 of the step card: say "thinking" NOW instead of after the
+        // output lands. `step/start` is appended before the model request is
+        // sent, so it is the only event that predates the reasoning. The card
+        // it opens is the SAME card every later stage updates in place —
+        // `assistant/message` (reasoning/text) → `tool/call` → `tool/result`.
+        queueStepCardSend(chat, sessionId, state)
+        startPlaceholderTick(sessionId, state)
+      } else if (event.type === 'step/end') {
+        // A step that never produced anything visible must not leave its
+        // placeholder claiming to think forever: fold it into the terminal
+        // "empty step" form. Rare (it needs no text, no visible reasoning and
+        // no visible tool call).
+        state.stepEnded = true
+        stopPlaceholderTick(state)
+        if (state.stepCardSent && stepIsEmpty(state)) updateStepCard(state)
       } else if (event.type === 'turn/start') {
         resetStep(state)
         lastStepSendPromises.delete(sessionId)
@@ -1154,6 +1246,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       pendingUpdates.clear()
       for (const state of sessionStates.values()) {
         if (state.pendingSend !== undefined) clearTimeout(state.pendingSend.timer)
+        stopPlaceholderTick(state)
       }
       sessionStates.clear()
       turnStatsMap.clear()
@@ -1189,6 +1282,14 @@ const DELIVERABLE_CAP = 16
  * the step starts, and updated when the tool finishes.
  */
 const STEP_CARD_DEBOUNCE_MS = 150
+
+/**
+ * How often a content-free step card refreshes its elapsed time while the model
+ * is thinking. Deliberately slow: the card exists to prove the step is alive,
+ * not to animate — DSH publishes no token deltas on the persistent event bus,
+ * so there is nothing more frequent to show.
+ */
+const PLACEHOLDER_TICK_MS = 5_000
 
 /** Cap for one tool result preview rendered into the card (characters). */
 const RESULT_PREVIEW_CAP = 1500
@@ -1430,9 +1531,22 @@ export function renderStepCard(
   reasoningMs?: number,
   turn?: number,
   step?: number,
-  options?: { showToolArgs?: boolean; showToolResults?: boolean },
+  options?: { showToolArgs?: boolean; showToolResults?: boolean; empty?: 'thinking' | 'done' },
 ): object {
   const elements: object[] = []
+
+  // A step with nothing to render still needs a body: name what the step is
+  // doing (thinking) or that it produced nothing, rather than leaving the card
+  // blank. `thinking` is the placeholder opened at `step/start`; `done` is its
+  // terminal form when the step ends without ever producing visible content.
+  const emptyPhase = options?.empty
+  if (emptyPhase !== undefined) {
+    elements.push({
+      tag: 'markdown',
+      content: emptyPhase === 'thinking' ? t.stepPlaceholderBody : t.stepEmptyBody,
+      text_size: 'notation',
+    })
+  }
 
   // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning).
   // Reasoning is a preview only: keep a short window, never the full chain.
@@ -1587,7 +1701,14 @@ export function renderStepCard(
 
   let title: string
   let template: string
-  if (hasTools && allToolsDone && anyToolError) {
+  if (emptyPhase === 'thinking') {
+    // Placeholder: the step exists but has produced nothing yet.
+    title = t.stepPlaceholderTitle
+    template = 'violet'
+  } else if (emptyPhase === 'done') {
+    title = t.stepEmptyTitle
+    template = 'grey'
+  } else if (hasTools && allToolsDone && anyToolError) {
     title = t.stepCardTitleError
     template = 'red'
   } else if (hasTools && allToolsDone) {

@@ -147,6 +147,14 @@ export interface Translations {
   stepCardTitleDone: string
   stepCardTitleCall: string
   stepCardTitleReply: string
+  /** Title of the placeholder card posted the moment a step starts, before any output exists. */
+  stepPlaceholderTitle: string
+  /** One-line body of that placeholder, telling the reader it updates in place. */
+  stepPlaceholderBody: string
+  /** Title of a step that ended without anything to show (the placeholder's terminal form). */
+  stepEmptyTitle: string
+  /** Body of that same terminal form. */
+  stepEmptyBody: string
   /** Step position suffix on the card title, e.g. `第 2 轮 · 第 3 步`. */
   stepPosition: (turn: number, step: number) => string
   turnCompleteTitle: string
@@ -465,6 +473,10 @@ export const zh = {
   stepCardTitleDone: '工具完成',
   stepCardTitleCall: '工具调用',
   stepCardTitleReply: '回复',
+  stepPlaceholderTitle: '🧠 深度思考中…',
+  stepPlaceholderBody: '⏳ 模型正在思考，输出会就地更新在这张卡上',
+  stepEmptyTitle: '本步无输出',
+  stepEmptyBody: '（本步没有可显示的内容）',
   stepPosition: (turn, step) => `第 ${turn} 轮 · 第 ${step} 步`,
   turnCompleteTitle: '✅ Turn 已完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
@@ -764,6 +776,10 @@ export const en: Translations = {
   stepCardTitleDone: 'Tool Done',
   stepCardTitleCall: 'Tool Call',
   stepCardTitleReply: 'Reply',
+  stepPlaceholderTitle: '🧠 Thinking…',
+  stepPlaceholderBody: '⏳ The model is thinking — output updates this card in place',
+  stepEmptyTitle: 'Empty step',
+  stepEmptyBody: '(nothing to show for this step)',
   stepPosition: (turn, step) => `Turn ${turn} · Step ${step}`,
   turnCompleteTitle: '✅ Turn complete',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,

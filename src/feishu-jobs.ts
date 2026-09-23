@@ -1,8 +1,17 @@
 /**
  * Feishu UI bridge for background jobs: subscribes to the Host's abstract job
  * registry (`ctx.jobs`) and keeps one card per job in the chat that owns the
- * job's session — created on `registered`, updated in place as the job
- * progresses, and resolved to its terminal state on `settled`.
+ * job's session — created once the job is confirmed detached, updated in place
+ * as it progresses, and left in place carrying its terminal state.
+ *
+ * ONLY jobs the model was actually handed a handle for are mirrored. DSH
+ * registers every foreground `bash`/`pwsh` call (and every background terminal
+ * send) as a job so the command stays visible, killable, and promotable, so
+ * "the registry has a job" is NOT "there is background work" — a mirror keyed
+ * on registration alone posted one extra card beside every tool call (关键坑
+ * 37). The fact that separates the two lives in the TOOL RESULT
+ * (`started background job <id>` and friends), which reaches this module
+ * through {@link FeishuJobsHandle.noteDetached}.
  *
  * One card per job, never a new card per event: job cards carry no buttons, and
  * Feishu only stops delivering *button* callbacks after a few in-place edits
@@ -13,9 +22,7 @@
  * @module @starxer/chatterbox4dsh/feishu-jobs
  */
 
-import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
-import { renderSupersededCard } from './card-supersede.ts'
 import type { Translations } from './i18n.ts'
 
 /** Minimal logger surface. */
@@ -23,11 +30,6 @@ interface PluginLogger {
   info(message: string): unknown
   warn(message: string): unknown
   error(message: string): unknown
-}
-
-/** Source of the current bridge. */
-interface BridgeHolder {
-  current: HarnessConversationService | undefined
 }
 
 /** Channel adapter for sending and updating cards. */
@@ -87,11 +89,38 @@ export interface JobsServiceLike {
   readonly events: JobEventsLike
 }
 
+/**
+ * A tool result that handed the model a background job id. This is the ONLY
+ * fact that separates real background work from the foreground calls DSH also
+ * registers as jobs (关键坑 37); its text is matched literally inside
+ * {@link detachedJobIdFromToolResult}.
+ */
+export interface DetachedJobNotice {
+  /** Tool that produced the result; only job-producing tools are matched. */
+  toolName: string
+  /** The result text exactly as the model saw it. */
+  resultText: string
+  /** Chat bound to the session that made the call — never guessed (关键坑 31). */
+  chat: ConversationMessage
+  /** Session whose tool result this is, used as an ownership guard. */
+  sessionId: string
+}
+
+/** Handle returned by {@link startFeishuJobs}. */
+export interface FeishuJobsHandle {
+  /** Unsubscribe and drop every pending timer. */
+  dispose: () => void
+  /**
+   * Confirm that the model was handed the background job this notice names.
+   * Only confirmed jobs ever get a card.
+   */
+  noteDetached: (notice: DetachedJobNotice) => void
+}
+
 /** Public deps for the jobs module. */
 export interface FeishuJobsDeps {
   jobs: JobsServiceLike
   channel: FeishuJobsChannel
-  bridgeHolder: BridgeHolder
   logger: PluginLogger
   /** Return the strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
@@ -173,6 +202,88 @@ export function formatDuration(ms: number): string {
 }
 
 /**
+ * One producer sentence that hands the model a background job id, plus where in
+ * a result it may appear.
+ */
+interface DetachedJobSentence {
+  readonly pattern: RegExp
+  /**
+   * `first` — only the FIRST non-empty line may carry it. A `bash` result can
+   * echo arbitrary text (a log, a source file), so the plain announcement is
+   * trusted only at the top, where every producer puts it.
+   * `any` — a self-labelled bracket line a producer appends after the output it
+   * already produced (a foreground call promoted to the background).
+   */
+  readonly scope: 'first' | 'any'
+}
+
+/** `tool-bash` / `tool-pwsh` / `tool-terminal` with `run_in_background: true`. */
+const ANNOUNCEMENT_AT_TOP: DetachedJobSentence = {
+  pattern: /^started background job ([a-z][a-z0-9-]*-\d+)$/,
+  scope: 'first',
+}
+
+/** A foreground `bash`/`pwsh` call promoted after its deadline passed. */
+const PROMOTED_ANYWHERE: DetachedJobSentence = {
+  pattern: /^\[still running after \d+ms; moved to background job ([a-z][a-z0-9-]*-\d+)\]$/,
+  scope: 'any',
+}
+
+/** `tool-subagent` (background one-shot child). */
+const SUBAGENT_ANNOUNCEMENT: DetachedJobSentence = {
+  pattern: /^started background subagent job ([a-z][a-z0-9-]*-\d+)$/,
+  scope: 'first',
+}
+
+/** `tool-workflow` (always detached). */
+const WORKFLOW_ANNOUNCEMENT: DetachedJobSentence = {
+  pattern: /^workflow .* started in the background as job ([a-z][a-z0-9-]*-\d+)\./,
+  scope: 'first',
+}
+
+/**
+ * Tools whose result can hand the model a background job id, each pinned to the
+ * exact sentences its producer renders. Owned by the tools, so they are matched
+ * literally and pinned by `tests/feishu-jobs.spec.ts` — a rewording must be
+ * noticed, not silently swallowed. Keying by tool name also keeps one tool's
+ * sentence from being credited to another (a `bash` result echoing
+ * `started background subagent job …` must not claim that job).
+ */
+const DETACHED_JOB_SENTENCES: ReadonlyMap<string, readonly DetachedJobSentence[]> = new Map([
+  ['bash', [ANNOUNCEMENT_AT_TOP, PROMOTED_ANYWHERE]],
+  ['pwsh', [ANNOUNCEMENT_AT_TOP, PROMOTED_ANYWHERE]],
+  ['terminal_send', [ANNOUNCEMENT_AT_TOP]],
+  ['subagent', [SUBAGENT_ANNOUNCEMENT]],
+  ['subagent_fork', [SUBAGENT_ANNOUNCEMENT]],
+  ['workflow', [WORKFLOW_ANNOUNCEMENT]],
+])
+
+/**
+ * Recover the background job id a tool result announced, if any.
+ *
+ * @param toolName - the tool that produced the result.
+ * @param resultText - the result text exactly as the model saw it.
+ * @returns the job id, or `undefined` when this result is not a job handle.
+ */
+export function detachedJobIdFromToolResult(toolName: string, resultText: string): string | undefined {
+  const sentences = DETACHED_JOB_SENTENCES.get(toolName)
+  if (sentences === undefined) return undefined
+  const lines = resultText
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '')
+  const firstLine = lines[0]
+  if (firstLine === undefined) return undefined
+  for (const sentence of sentences) {
+    for (const line of sentence.scope === 'first' ? [firstLine] : lines) {
+      const id = sentence.pattern.exec(line)?.[1]
+      if (id !== undefined) return id
+    }
+  }
+  return undefined
+}
+
+/**
  * Render one job's card.
  *
  * @param view - the job projection to render.
@@ -206,16 +317,26 @@ export function renderJobCard(view: JobViewLike, t: Translations, now: number): 
 }
 
 /**
- * Subscribe to the Host job registry and mirror every job that belongs to a
- * Feishu-bound session as a card in that chat.
+ * Subscribe to the Host job registry and mirror every CONFIRMED background job
+ * that belongs to a Feishu-bound session as a card in that chat.
  *
- * @param deps - the registry, channel, bridge, logger, and locale reader.
- * @returns a disposer that unsubscribes and drops every pending timer.
+ * @param deps - the registry, channel, logger, and locale reader.
+ * @returns the handle: a disposer plus the confirmation entry point.
  */
-export function startFeishuJobs(deps: FeishuJobsDeps): () => void {
-  const { jobs, channel, bridgeHolder, logger, getTranslations } = deps
+export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
+  const { jobs, channel, logger, getTranslations } = deps
   const debounceMs = deps.debounceMs ?? JOB_CARD_DEBOUNCE_MS
   const states = new Map<string, JobCardState>()
+  /**
+   * Latest projection of every job the registry announced, confirmed or not. A
+   * background job is confirmed by its TOOL RESULT, which arrives after
+   * `registered` and normally before `settled`, so the card is built from the
+   * projection cached here. Foreground calls are cached too and dropped on
+   * `removed`, which the registry issues the moment the tool collects them.
+   */
+  const pendingViews = new Map<string, JobViewLike>()
+  /** Jobs confirmed as detached: id → the chat and session that claimed them. */
+  const confirmed = new Map<string, { chat: ConversationMessage; sessionId: string }>()
 
   const warn = (message: string, error: unknown): void => {
     // Never log the error object itself: the SDK's errors carry the request
@@ -238,6 +359,13 @@ export function startFeishuJobs(deps: FeishuJobsDeps): () => void {
   const sweep = (now: number): void => {
     for (const [id, state] of states) {
       if (state.settledAt !== undefined && now - state.settledAt > JOB_CARD_TTL_MS) states.delete(id)
+    }
+    // Unconfirmed projections are bookkeeping only. A live one must survive
+    // (its result may still be in flight); a settled one this old belongs to a
+    // host that never announced its removal.
+    for (const [id, view] of pendingViews) {
+      if (confirmed.has(id)) continue
+      if (view.finishedAt !== undefined && now - view.finishedAt > JOB_CARD_TTL_MS) pendingViews.delete(id)
     }
   }
 
@@ -298,24 +426,21 @@ export function startFeishuJobs(deps: FeishuJobsDeps): () => void {
     }, debounceMs)
   }
 
-  /** A job left the visible set: retire its card instead of leaving it live-looking. */
-  const retire = (jobId: string): void => {
+  /**
+   * A job left the registry's visible set: drop the bookkeeping and KEEP the
+   * card. `settled` always precedes `removed` (the registry only removes
+   * settled records, and the producing tool removes its own once it has
+   * collected the terminal state), so the card already carries the outcome.
+   * Rewriting it into a grey "this card is stale" shell threw away exactly the
+   * information the human came for, and the shell's text pointed at a newer
+   * card that never existed (2026-09-23).
+   */
+  const forget = (jobId: string): void => {
     const state = states.get(jobId)
-    if (state === undefined) return
-    if (state.timer !== undefined) {
-      clearTimeout(state.timer)
-      state.timer = undefined
-    }
+    if (state?.timer !== undefined) clearTimeout(state.timer)
     states.delete(jobId)
-    const messageId = state.messageId
-    if (messageId === undefined) return
-    state.chain = state.chain.then(async () => {
-      try {
-        await channel.updateCard(messageId, renderSupersededCard(getTranslations()))
-      } catch (error: unknown) {
-        warn('job card retire failed', error)
-      }
-    })
+    pendingViews.delete(jobId)
+    confirmed.delete(jobId)
   }
 
   /** Registry listeners are synchronous and contained — this must not throw. */
@@ -324,23 +449,26 @@ export function startFeishuJobs(deps: FeishuJobsDeps): () => void {
       const job = event.job
       if (job === undefined || typeof job.id !== 'string') return
       if (event.type === 'removed') {
-        retire(job.id)
+        forget(job.id)
+        return
+      }
+      // Cache every projection first, then ignore everything that was never
+      // confirmed as detached: a foreground `bash` call is a job too, and
+      // mirroring it put one extra card beside every tool call (关键坑 37).
+      pendingViews.set(job.id, job)
+      const claim = confirmed.get(job.id)
+      if (claim === undefined) return
+      // The card goes to the chat that saw THIS session's tool result, never to
+      // a chat resolved from an id we did not verify (关键坑 31).
+      if (job.owner !== undefined && job.owner !== claim.sessionId) {
+        warn(`job ${job.id} is owned by ${job.owner}, not ${claim.sessionId}`, new Error('job owner mismatch'))
         return
       }
       let state = states.get(job.id)
       if (state === undefined) {
-        // Only jobs whose owner session is bound to a Feishu chat get a card.
-        // An unowned job, or a session nobody talks to from Feishu, is skipped
-        // — never guessed into a chat (关键坑 31).
-        if (job.owner === undefined) return
-        const bridge = bridgeHolder.current
-        if (bridge === undefined) return
-        const chat = bridge.resolveChat(job.owner)
-        if (chat === undefined) return
-        const now = Date.now()
-        sweep(now)
+        sweep(Date.now())
         state = {
-          chat,
+          chat: claim.chat,
           view: job,
           messageId: undefined,
           timer: undefined,
@@ -366,13 +494,58 @@ export function startFeishuJobs(deps: FeishuJobsDeps): () => void {
     }
   }
 
+  /**
+   * The model was handed background job `notice` names — that is the gate.
+   * The card goes out at once: a confirmed job may already be running, and for
+   * most jobs this is the only event before it settles.
+   */
+  const noteDetached = (notice: DetachedJobNotice): void => {
+    try {
+      const jobId = detachedJobIdFromToolResult(notice.toolName, notice.resultText)
+      if (jobId === undefined || confirmed.has(jobId)) return
+      const view = pendingViews.get(jobId)
+      if (view === undefined) {
+        // Nothing to render from. Say so instead of staying silent: a host that
+        // reorders or renames its events must not turn into a card-less
+        // deployment without a trace.
+        logger.info(`dsh-feishu: background job ${jobId} announced by ${notice.toolName} but not in the registry; no card`)
+        return
+      }
+      if (view.owner !== undefined && view.owner !== notice.sessionId) {
+        warn(`job ${jobId} announced by ${notice.toolName} belongs to ${view.owner}, not ${notice.sessionId}`, new Error('job owner mismatch'))
+        return
+      }
+      confirmed.set(jobId, { chat: notice.chat, sessionId: notice.sessionId })
+      const now = Date.now()
+      sweep(now)
+      const state: JobCardState = {
+        chat: notice.chat,
+        view,
+        messageId: undefined,
+        timer: undefined,
+        chain: Promise.resolve(),
+        settledAt: isTerminal(view.status) ? now : undefined,
+        sendState: 'idle',
+      }
+      states.set(jobId, state)
+      schedule(state, true)
+    } catch (error: unknown) {
+      warn('job confirmation handling failed', error)
+    }
+  }
+
   const unsubscribe = jobs.events.subscribe({ owners: 'all' }, handle)
 
-  return () => {
-    unsubscribe()
-    for (const state of states.values()) {
-      if (state.timer !== undefined) clearTimeout(state.timer)
-    }
-    states.clear()
+  return {
+    dispose: () => {
+      unsubscribe()
+      for (const state of states.values()) {
+        if (state.timer !== undefined) clearTimeout(state.timer)
+      }
+      states.clear()
+      pendingViews.clear()
+      confirmed.clear()
+    },
+    noteDetached,
   }
 }

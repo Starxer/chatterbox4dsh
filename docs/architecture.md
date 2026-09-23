@@ -26,13 +26,13 @@ Harness Agent (模型、工具、会话日志)
 | `src/index.ts` | 插件入口，注册服务和命令 |
 | `src/channel.ts` | 飞书 Channel 封装，入站图片/文件接收（`admitImagesForMessage`/`admitFilesForMessage`），回复卡片渲染，Turn Complete 卡片 |
 | `src/harness.ts` | Harness 会话服务，session 映射持久化；用户文本原样进入模型（不加 `[Feishu] ` 之类的通道前缀，纯图片/文件消息只带 image/file 块），通道归属由 session↔chat 绑定记录 |
-| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览 + 思考耗时/思考 token）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览；标题带「第 N 轮 · 第 M 步」，footer 两行（时长/token · tok/s/上下文） |
+| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览 + 思考耗时/思考 token）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览；标题带「第 N 轮 · 第 M 步」，footer 两行（时长/token · tok/s/上下文）。**四阶段一张卡**：`step/start` 立即发「🧠 深度思考中…」占位卡（5s 刷新已用时）→ `assistant/message` 写入 reasoning/文本 → `tool/call` → `tool/result`，全部就地更新；某步最终无可见内容时在 `step/end` 折叠为「本步无输出」 |
 | `src/card-supersede.ts` | 交互流程「每步发新卡」的配套：把被替换的旧卡片改写成无按钮的失效提示（zh/en 双语，优先 CardKit 实例、best-effort） |
 | `src/feishu-todos.ts` | Todo 进度卡片 |
 | `src/feishu-approvals.ts` | 工具审批处理 |
 | `src/feishu-questions.ts` | ask_user_question 卡片 |
 | `src/commands.ts` | 斜杠命令注册和处理 |
-| `src/feishu-jobs.ts` | 后台任务卡：订阅宿主 `ctx.jobs` 的事件扇出（`registered` / `progress` / `stopping` / `settled` / `removed`），为**所属会话已绑定到飞书**的任务发**一张**卡并就地跟随其状态，结算即刷新为终态、`removed` 改写为失效卡；`dispose()` 退订并清掉全部待触发定时器 |
+| `src/feishu-jobs.ts` | 后台任务卡：**只镜像模型真的拿到 jobId 的后台任务**（判据 = 工具结果句式，见关键坑 37；前台 bash/pwsh 调用也是宿主 job，但不出卡）。订阅宿主 `ctx.jobs` 的事件扇出（`registered` / `progress` / `stopping` / `settled` / `removed`），为已确认的任务发**一张**卡并就地跟随其状态，结算即刷新为终态；`removed` 只清账、**终态卡保留**；`dispose()` 退订并清掉全部待触发定时器 |
 | `src/client/` | Web 客户端半边：设置页（`LarkSettingsCard` + `LarkSettingsCardController`，**只管配置与凭据**）与**插件详情页**的三处贡献（`LarkPluginDetail` 的 badge / actions / section，配合 `LarkChannelStatusController` 的连接状态与扫码轮询）。经 `ctx.slots` 注册、`ctx.configForms` 读写配置、`ctx.remote.credentials` 读写密钥 |
 
 ## 事件流

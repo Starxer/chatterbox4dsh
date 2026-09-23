@@ -15,7 +15,7 @@
 
 | # | 项 | 优先级 | 状态与出处 |
 |---|---|---|---|
-| O1 | **思考期占位卡（方案 A）** | 中 | 🔲 **未实现**。`step/start` 目前只 `resetStep` + 记时间（[`feishu-streaming.ts:955`](./src/feishu-streaming.ts)），**不发卡** → 首卡延迟 = 整个思考时长 + 150ms 首发防抖。方案与四个边角已定，见下文「已知问题 → 思考期无反馈」 |
+| O1 | **思考期占位卡（方案 A）** | 中 | ✅ **已实现（2026-09-23，待重启生效）**。`step/start`（模型请求发出前）立即发「🧠 深度思考中…」占位卡，并按 5s 刷新已用时；`assistant/message` / `tool/call` / `tool/result` 全部在**同一张卡**上就地更新；某步最终没有可显示内容时在 `step/end` 折叠为「本步无输出」。四个边角（占位态渲染、`stepHasVisibleContent` 放行、无内容步的去留、i18n）按原方案处理；方案 B（逐字流式）仍不做，见下文「已知问题 → 思考期无反馈」 |
 | O2 | **`/subagents` 子代理卡片命令** | 中 | 🔲 **未实现**（`src/` 内无该命令，只在历史 `.bak` 文件里留有注释）。数据源 `ctx.subagents.listChildren` / `listDescendants`；与 rc.1 评估的 **C2** 是同一件事 |
 | O3 | **补 `produced` 交付物**（write/edit 成功改过的文件） | 中 | 🔲 **未实现**。插件只订阅 `deliverables/presented`（[`feishu-streaming.ts:992`](./src/feishu-streaming.ts)），WebUI 的 produced 那一半没有对应物 → 实测 **32%（18/56 轮）** WebUI 有产物行而飞书完全没有。同节另两个缺口：complete 卡只对**飞书触发的**轮次发；`renderReplyCards` 的 else 分支不带 `turnStats`（交付清单与指标整块不渲染） |
 | O4 | **两处残留的就地更新上限** | **高**（交互可靠性） | 🔲 **仍在**（2026-09-23 复核）：① [`feishu-session.ts:380`](./src/feishu-session.ts) 的「🔄 刷新」按钮；② [`feishu-model-select.ts`](./src/feishu-model-select.ts) 整个选择向导（`updateCardInstanceOnMessage` 四处调用：563/577/668/674）。飞书对**带按钮**的卡片就地更新 2–3 次后停止投递回调 → 改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
@@ -140,7 +140,7 @@
 ## 迁移遗留：P6 可选重构（2026-09-22 盘点，2026-09-23 复核）
 
 > 来源：0.1.7 升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进。
-> **状态（2026-09-23 收口：8 项里 6 项完成 / 1 项阻塞 / 1 项按收窄后的范围完成）**：P6-1 / P6-2 / **P6-3** / **P6-5** / **P6-6** / P6-8 ✅ 已完成；**P6-4 被上游阻塞**（见 B2）；**P6-7 完成 3 项**（modelCatalog / 工作区 pin-unpin / job 任务卡），`speech-to-text` 与 `readBytes` 按使用者 2026-09-23 的决定**本次不做**（见 X3）。
+> **状态（2026-09-23 收口：8 项里 6 项完成 / 1 项阻塞 / 1 项按收窄后的范围完成）**：P6-1 / P6-2 / **P6-3** / **P6-5** / **P6-6** / P6-8 ✅ 已完成；**P6-4 被上游阻塞**（见 B2）；**P6-7 完成 3 项**（modelCatalog / 工作区 pin-unpin / job 任务卡），`speech-to-text` 与 `readBytes` 按使用者 2026-09-23 的决定**本次不做**（见 X3）。**后续修复（2026-09-23）**：P6-7c 的 job 任务卡原本把**前台** bash/pwsh 调用也镜像成卡（每个工具调用多一张，关键坑 37）→ 已改为只镜像工具结果确认过的后台任务，`removed` 不再改写终态卡；同批实现 **O1** 思考期占位卡。
 >
 > **已重启生效（2026-09-23 02:33）**：`MainPID` 3017371 → 3110625、启动时刻 01:50:34 → 02:33:24；journal **0 error**；`ctx.get('jobs')` **拿到服务**（那条 `no background-job registry` 出现 0 次 → 任务卡功能开着）；产物含 `startFeishuJobs` 与 `plugins.detail.*`。⚠️ 任务卡是否送达 **journal 证明不了**（只在失败时记日志），与页面级效果一样待使用者目视。
 >
@@ -155,7 +155,7 @@
 | P6-4 | 用 `sessionController.projections()` 替代剩余的全量日志读 | 与 C3 剩下那处（`summarizeTurn`）同源；**要等上游提供逐步计时类投影**，否则轮次指标会退化 |
 | ~~P6-5~~ | ✅ **已完成（2026-09-23，commit `cff2c91`）** `plugins.detail.badge` / `actions` / `section`（新单元格 id `lark-channel`，关键坑 35） | 设置页只留**配置**，**连接状态与扫码**搬到插件详情页：badge = 状态标签、actions = 「扫码配置 / 重新扫码」、section = 连接与扫码区块（二维码在这里）。三个 entry 都认 subject（非本插件返回 `null`，且**不订阅、不发请求**）。**「重新连接」在客户端不可达**（宿主 `reconcile()` 按连接指纹门控、调用点全在宿主侧）→ 给的是有真实副作用的扫码动作；限制与两个替代做法写在 `docs/feishu-setup.md`。文档同步：README（中英双语「两个页面」+ 快速开始改指向）与 `docs/feishu-setup.md` |
 | ~~P6-6~~ | ✅ **已完成（2026-09-23，commit `f43750b`）** `locale` meta + `package.json` `icon` | `locale/en.json` + `locale/zh.json`（`meta.title` / `meta.description`）+ `icon.svg`；`package.json` 顶层 `icon`、`exports` 放行 `./locale/*.json`、`files` 补两个资源。**验证用宿主自己的 `readPluginMeta()`**：返回中英两套文案 + base64 SVG 且**无 `error`** |
-| ~~P6-7~~ | 🟡 **按收窄后的范围完成 3/5（2026-09-23）** | ✅ `modelCatalog()`（`sessionController.modelCatalog()` 一次拿 provider + **可读模型名** + 每模型推理档位，llm 目录降为回落；`eb33289`）、✅ 工作区 **pin/unpin**（面板两个幂等按钮 + 📌 标记，归档互斥走专门文案；`825e273`）、✅ **job 任务卡**（一人一卡、就地更新、首发不防抖、`dispose()` 退订；`663a96a`）。**本次不做**：`speech-to-text`（本机无语音供应商，无法端到端验证）、`readBytes`（纯内部重构、用户不可见） |
+| ~~P6-7~~ | 🟡 **按收窄后的范围完成 3/5（2026-09-23）** | ✅ `modelCatalog()`（`sessionController.modelCatalog()` 一次拿 provider + **可读模型名** + 每模型推理档位，llm 目录降为回落；`eb33289`）、✅ 工作区 **pin/unpin**（面板两个幂等按钮 + 📌 标记，归档互斥走专门文案；`825e273`）、✅ **job 任务卡**（一人一卡、就地更新、首发不防抖、`dispose()` 退订；`663a96a`）。**本次不做**：`speech-to-text`（本机无语音供应商，无法端到端验证）、`readBytes`（纯内部重构、用户不可见）。**2026-09-23 修复**：job 任务卡的判据曾是「registry 里有 job 就发卡」，而前台 bash/pwsh 调用也是 job → 每个工具调用多一张卡（关键坑 37）；现改为只镜像**工具结果确认过**的后台任务，且 `removed` 只清账、终态卡保留 |
 
 - ⏳ **V13 压缩阈值实测**：上游把触发公式改为 `min(W × ratio, W − O − headroom)`（本机 = `min(800000, 680000)` = **680000**）；需要一个长会话自然跑到该水位才能确认日志出现 `compaction/start`，**至今未触发**。公式已在代码侧核对，**不是待改项**，只是"待观察"。
 
@@ -289,7 +289,9 @@
 
 ## 已知问题
 
-### 思考期无反馈：发卡时机偏慢（**2026-09-22 定性，2026-09-23 复核仍未实现 → O1**）
+### 思考期无反馈：发卡时机偏慢（**2026-09-22 定性 → 2026-09-23 方案 A 已实现**）
+
+**已实现（2026-09-23，O1 收口）**：`step/start`（模型请求发出前）立即发「🧠 深度思考中…」占位卡（带轮/步号，`PLACEHOLDER_TICK_MS = 5s` 刷新已用时）→ `assistant/message` 写入 reasoning / 文本 → `tool/call` → `tool/result`，四阶段**同一张卡**就地更新；`step/end` 时若该步始终没有可见内容，占位卡折叠为「本步无输出」（新增 i18n：`stepPlaceholderTitle` / `stepPlaceholderBody` / `stepEmptyTitle` / `stepEmptyBody`）。方案 B（消费 client-only `assistant/live-chunk` 做逐字流式）**仍不做**：真流式只在 Web 客户端 follow 流里，改动面大（新增消费链 + 卡片更新限流 + 与 `session/event` 去重），使用者 2026-09-22 已决定不做。
 
 **现象**：使用者报告「模型正在思考的时候并不会发卡」——长思考（`high`/`max` 推理等级）期间聊天里完全没有动静，第一张步骤卡直到**本步模型输出落地**才出现。
 

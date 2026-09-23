@@ -28,6 +28,22 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 修复：任务卡只镜像真后台任务（关键坑 37）+ 步骤卡思考期占位（O1，2026-09-23）
+
+**问题（使用者报）**：每个工具调用旁边多出一张卡，标题就是那条命令 —— 看起来像某一步的卡片被拆了出来。
+
+**根因**：DSH 里「job」≠「后台任务」。`promoteOnTimeout` 默认开，所以**每个前台 `bash`/`pwsh` 调用**（以及后台 `terminal_send`）都会注册成 job（让命令一开始就可见、可 kill、超时可提升），而 `src/feishu-jobs.ts` 原本的判据是「registry 里有 job 就发卡」→ **每个工具调用多一张卡**（实测同窗口 51 次 bash 调用 ↔ 51 张这种卡）。`JobView` 里没有前台/后台标志，会话事件流里也没有 job 事件；唯一能区分两者的事实是**工具结果文本**（`JobSpec.label` 的官方定义即「the command; the delegation description」，所以卡标题才会是命令 / 委派描述）。
+
+**修复**：
+
+- 判据改为「模型真的拿到了 jobId」：`src/feishu-streaming.ts` 把每条 `tool/result` 转发给任务卡模块，后者用**按工具名固定的整行句式**（`started background job <id>` / `started background subagent job <id>` / `workflow "…" started in the background as job <id>.`，只认第一非空行，工具名限制为 `bash` / `pwsh` / `terminal_send` / `subagent` / `subagent_fork` / `workflow`）提取 id，**只有确认过的任务才建卡**；owner 与会话不一致、或 registry 里查不到该句柄时记日志并跳过（不猜聊天，关键坑 31）。
+- 首卡从**已缓存的最近投影**构建（确认通常在 `registered` 之后、`settled` 之前到达），仍然不防抖。
+- **不再把终态卡改写成灰色「已失效」**：`settled` 必然先于 `removed`，卡上已经是终态事实，改写只会丢信息（那句文案还指向一张并不存在的「最新卡片」）。现在任务离开可见集合只清账、不动卡。
+
+**同时实现 O1（步骤卡思考期占位）**：`step/start`（模型请求发出前）立即发出「🧠 深度思考中…」卡（带轮/步号），并按 **5s** 刷新已用时；`assistant/message`（reasoning / 文本）、`tool/call`、`tool/result` 全部在**同一张卡**上就地更新 —— 即「占位 → 思考 → 工具调用 → 结果」四阶段一张卡。某步最终没有任何可显示内容时，占位卡在 `step/end` 折叠为「本步无输出」，不会一直停在思考中。
+
+**验证**：typecheck（host + client）0 error；**512 passed / 36 files**（新增 13 例：句式正反例、门控、owner 守卫、`removed` 不再改灰卡、占位卡四个阶段 + 结果转发）；`npm run build` 通过，`client/client.js` 逐字节未变（本次只改 host 侧）。
+
 ### 上线：P6 批次已重启生效（2026-09-23 02:33），逐项核对结果
 
 - **重启**：`MainPID` 3017371 → 3110625，启动时刻 01:50:34 → **02:33:24**；重启单元 `Result=success`（`systemd-run` 独立 cgroup，关键坑 14）。

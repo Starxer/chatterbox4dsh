@@ -29,7 +29,7 @@ import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { handleProvisionRequest, PROVISION_PATH } from './web.ts'
 import { startFeishuApprovals, type PendingApprovalView } from './feishu-approvals.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
-import { startFeishuJobs, type JobsServiceLike } from './feishu-jobs.ts'
+import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
@@ -696,16 +696,21 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // just gets no job cards. Only jobs whose owning session is bound to a
     // Feishu chat are mirrored, and the module filters on `resolveChat`.
     const jobs = ctx.get('jobs') as JobsServiceLike | undefined
+    // The job mirror only cards jobs the MODEL was handed a handle for, and the
+    // handle is announced in the tool result — so it starts first, and streaming
+    // feeds it every result it sees (关键坑 37).
+    let noteDetachedJob: ((notice: DetachedJobNotice) => void) | undefined
     if (jobs === undefined) {
       ctx.logger('dsh-feishu').info('dsh-feishu: no background-job registry in this composition; job cards stay off')
     } else {
-      stopJobs = startFeishuJobs({
+      const jobsMirror = startFeishuJobs({
         jobs,
         channel: cardChannel,
-        bridgeHolder,
         logger: ctx.logger('dsh-feishu'),
         getTranslations: () => translationsFor(currentLocale().id),
       })
+      stopJobs = jobsMirror.dispose
+      noteDetachedJob = jobsMirror.noteDetached
     }
     const streamingResult = startFeishuStreaming({
       ctx,
@@ -717,6 +722,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
       getTranslations: () => translationsFor(currentLocale().id),
+      ...(noteDetachedJob !== undefined ? { noteDetachedJob } : {}),
     })
     stopStreaming = streamingResult.stop
     consumeReasoning = streamingResult.consumeReasoning
