@@ -930,6 +930,46 @@ describe('intermediate-sent note (the duplicate-reply guard channel.ts reads)', 
     streaming.stop()
   })
 
+  it('waits for a text-carrying write that is still in flight instead of withdrawing the note', async () => {
+    // Media hydration makes one card write take seconds (a video upload). The
+    // debounce entry is already gone when turn/end arrives, so `flushed()` used
+    // to read `turnTextDelivered === false` while the write was still on its
+    // way: it withdrew the note and channel.ts posted a full reply card next to
+    // the step card that then received the same text — the duplicate reply
+    // reported on 2026-09-24.
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async (_messageId: string, card: any) => {
+        // Only the write carrying the answer is slow, like a hydrated card.
+        if (mdOf(card).includes('the answer')) await gate
+      }),
+    }
+    const { streaming, emit, bridge } = stepHarness(channel)
+    emit('turn/start')
+    // A tool call opens the card bare; the answer only arrives later, so it can
+    // only reach the screen through an update.
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    // Let the 150ms debounce fire: the write is now in flight and gated.
+    await tick(250)
+    expect(bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+
+    emit('turn/end')
+    let flushed = false
+    const done = streaming.flushed('s-1').then(() => { flushed = true })
+    await tick(50)
+    expect(flushed).toBe(false)
+
+    release()
+    await done
+    expect(bridge.clearIntermediateSent).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
   it('does not carry the delivery note over into the next turn', async () => {
     // Turn 1 delivers, turn 2's card never leaves: the stale mark from turn 1
     // must not make channel.ts skip turn 2's reply.

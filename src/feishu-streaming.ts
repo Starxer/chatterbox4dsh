@@ -738,6 +738,51 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const lastStepSendPromises = new Map<string, Promise<string | undefined>>()
 
   /**
+   * Step-card UPDATE promises still in flight, per session.
+   *
+   * `flushed()` reads `turnTextDelivered` to decide whether the turn's answer is
+   * already on screen. That read is only meaningful once every write that could
+   * carry the text has finished: a write that is still in flight would be judged
+   * as "never reached Feishu", the optimistic mark would be withdrawn, and
+   * channel.ts would post a full reply card next to the step card that is about
+   * to receive exactly the same text.
+   *
+   * The window used to be sub-second (the debounce is 150ms), so the race was
+   * theoretical; card media hydration (2026-09-24) made one write take SECONDS
+   * (a video upload), and the duplicate reply became reproducible — observed as
+   * "a second reply card after the reply" while the step card's own update
+   * landed with the same text a moment later. `flushPendingUpdate` only covers
+   * the write that is still INSIDE the debounce window; this covers the one
+   * whose timer already fired.
+   */
+  const inFlightUpdates = new Map<string, Set<Promise<void>>>()
+
+  /**
+   * Run one step-card write, keeping it visible to {@link flushed} for as long
+   * as it is in flight (and never rejecting: every caller is fire-and-forget).
+   *
+   * @param sessionId - the session whose turn is being written.
+   * @param run - the write to perform.
+   * @returns the tracked promise.
+   */
+  const trackUpdate = (sessionId: string, run: () => Promise<void>): Promise<void> => {
+    const promise = run().catch(() => undefined)
+    let set = inFlightUpdates.get(sessionId)
+    if (set === undefined) {
+      set = new Set()
+      inFlightUpdates.set(sessionId, set)
+    }
+    set.add(promise)
+    void promise.finally(() => {
+      const current = inFlightUpdates.get(sessionId)
+      if (current === undefined) return
+      current.delete(promise)
+      if (current.size === 0) inFlightUpdates.delete(sessionId)
+    })
+    return promise
+  }
+
+  /**
    * Whether this turn's assistant text is CONFIRMED to be in the chat, per
    * session. Reset on `turn/start`, set by {@link noteTextDelivered}, read and
    * cleared by `flushed()`.
@@ -910,7 +955,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     clearTimeout(entry.timer)
     pendingUpdates.delete(ref)
     console.log('dsh-feishu: [update] flushing pending update for turn/end')
-    return applyPendingUpdate(ref, entry.card, entry.hasText)
+    return trackUpdate(ref.sessionId, () => applyPendingUpdate(ref, entry.card, entry.hasText))
   }
 
   /** Update the existing step card with current state (debounced). */
@@ -939,7 +984,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       hasText,
       timer: setTimeout(() => {
         pendingUpdates.delete(ref)
-        void applyPendingUpdate(ref, card, hasText)
+        void trackUpdate(ref.sessionId, () => applyPendingUpdate(ref, card, hasText))
       }, STEP_CARD_DEBOUNCE_MS),
     })
   }
@@ -1392,6 +1437,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // Wait for the last step card's message to be created so the Turn
         // Complete footer never overtakes the final step card in the chat.
         .then(() => lastSend)
+        // Then for every write that is still in flight: their confirmations are
+        // what `turnTextDelivered` below reports, and a write delayed by media
+        // hydration used to be read as "nothing reached the chat" (duplicate
+        // reply card, 2026-09-24). Read the map HERE, not before the awaits, so
+        // a write registered by the turn/end flush is included.
+        .then(() => Promise.all([...(inFlightUpdates.get(sessionId) ?? [])]))
         .then(() => turnStatsMap.get(sessionId)),
       'turn flush',
       FLUSH_TIMEOUT_MS,
@@ -1423,6 +1474,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       sessionStates.clear()
       turnStatsMap.clear()
       lastStepSendPromises.clear()
+      inFlightUpdates.clear()
       lastCardSendByChat.clear()
       turnTextDelivered.clear()
       for (const entry of flushPromises.values()) entry.resolve()

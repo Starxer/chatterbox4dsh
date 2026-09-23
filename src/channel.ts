@@ -547,6 +547,7 @@ export async function startChannel(
           if (intermediateSent) {
             // Streaming already sent a step card with the text content:
             // send only the Turn Complete footer.
+            console.log('dsh-feishu: [reply] a step card carried the text → footer only')
             const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats)
             if (footerCard !== undefined) {
               await sendCard(chatId, footerCard, {
@@ -563,6 +564,7 @@ export async function startChannel(
             // tok/s line like every other assistant card.
             const tps = turnTokensPerSecond(turnStats)
             const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
+            console.log(`dsh-feishu: [reply] no step card carried the text → posting ${cards.length} reply card(s)`)
             for (const card of cards) {
               await sendCard(chatId, card, {
                 replyTo: replyToId,

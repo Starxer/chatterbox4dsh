@@ -41,6 +41,22 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 修复：媒体内联让卡片写入变慢，交付守卫读到过期状态 → 回复后多发一张 reply 卡（`src/feishu-streaming.ts` / `src/channel.ts`，2026-09-24）
+
+**现象**（使用者报告）：「在 reply 以后又生成了一张 reply 卡」——同一段回答先随步骤卡上屏，紧接着又出现一张正文相同的回复卡。
+
+**根因（不是新逻辑写错，而是旧竞态被拉宽）**：`channel.ts` 靠两个标记决定"这段文字是不是已经在屏上了"——流式侧 `noteStepCardText()` 在把带文字的卡**交给飞书的那一刻**乐观地打标（`markIntermediateSent`），确认送达后再由 `noteTextDelivered()` 记 `turnTextDelivered`；`flushed()` 在 turn/end 时**如果没有任何确认送达，就撤回那个乐观标记**，channel 于是走"没人显示过正文"的分支、把整段回复再发一遍（这是为了让"卡片根本没发出去"时不吞掉答案，2026-09-21 的修复）。
+
+问题在"撤回"这一侧的判据：`flushed()` 只等 `flushPromises`（turn/end 的 flush，覆盖**还在 150ms 防抖窗口里**的那次写入）和最后一次 send，**不等已经出窗口、正在飞的那次 update**。媒体内联把这一次写入从毫秒级拉到**秒级**（要上传整段视频/音频、可能还要 ffmpeg 转封装）——于是 turn/end 到来时：防抖条目早就删了 → `flushPromises` 立刻 resolve → `flushed()` 读到 `turnTextDelivered === false` → 撤回乐观标记 → channel 发完整回复卡；而那次在飞的写入随后落地（02:17:20 的 `[update] seq=2`），步骤卡也拿到了同一段文字 ⇒ 两张卡内容重复，且第二张出现在 reply 之后。journal 时间线完全对上：`02:17:18 assistant/message → updating` → 三次 `[media] uploaded` → `02:17:20 [update] seq=2`。单看旧行为（只内联图片）也能命中，但窗口只有几百毫秒，所以一直没被踩到。
+
+**修法**：跟踪**在飞的步骤卡写入**（`inFlightUpdates`，按 session 记一组 promise），`flushed()` 在读完 `flushPromises`/最后一次 send **之后**再 `Promise.all` 等它们落地，然后才读 `turnTextDelivered`。等待是有界的（`FLUSH_TIMEOUT_MS = 120s`，而单卡媒体预算最多 15s）；写入失败仍会保持"未送达"→ 照旧回退到发回复卡，所以"卡片发不出去"的兜底没有被削弱。
+
+**顺带加了两行诊断日志**（这类问题以前在 journal 里完全看不见）：命中步骤卡分支打 `[reply] a step card carried the text → footer only`，回退分支打 `[reply] no step card carried the text → posting N reply card(s)`。
+
+**验证**：新增回归用例 `tests/feishu-streaming.spec.ts`「waits for a text-carrying write that is still in flight instead of withdrawing the note」——门控 `updateCard` 只在带正文的那次写入上挂起，断言 `flushed()` 在写入落地前**不会** resolve、且 `clearIntermediateSent` 不被调用。**反向验证过**：把 `flushed()` 里新加的 `Promise.all(inFlightUpdates…)` 那一行去掉，该用例立刻转红（`expected true to be false`），恢复后转绿。全量 **683 tests / 42 files** 全绿，typecheck 0 error，产物已重建。
+
+**English**：The duplicate reply was a pre-existing race that media hydration widened. `channel.ts` trusts two marks to decide whether the turn's text is already on screen: an optimistic one set when a text-carrying card is handed to Feishu, and a confirmed one set when that write lands; `flushed()` withdraws the optimistic mark when nothing was confirmed, so the fallback reply card is posted. It only awaited the turn/end flush (which covers a write still inside the 150 ms debounce) and the last `send` — never a write that had left the debounce and was in flight. Uploading a video/audio file for card media turns that write into a multi-second operation, so `flushed()` read `turnTextDelivered === false` while the card that would receive the very same text was still on its way, posted the full reply card, and the in-flight update landed right after it. `flushed()` now awaits every in-flight step-card write (bounded by the existing 120 s flush timeout; per-card media budgets are 15 s at most) before reading the delivery record, and two journal lines now say which branch was taken. A regression test gates the text-carrying write and asserts the flush waits; removing the new await makes it fail.
+
 ### 新增：卡片内联媒体——视频与音频也能进消息（`src/media-upload.ts`（新）/ `src/card-images.ts` / `src/card-markdown.ts` / `src/media-sniff.ts` / `src/config.ts` / `src/client/`，2026-09-24）
 
 **动机（对齐 DSH，而非自造功能）**：DSH 的 Web UI 把模型正文里的工作区路径解析成可打开的文件（`[图](runs/a.png)` 内联成图、`[clip](runs/a.mp4)` 是可点击的文件链接、正文里的 `` `report.pdf` `` 会变成可点开的文件 chip），模型因此习惯用 Markdown 引用自己产出的文件。飞书卡片**没有**指向本地文件的链接能力，但**有真正的媒体组件**——所以对齐方式就是把媒体直接渲染在消息里。
