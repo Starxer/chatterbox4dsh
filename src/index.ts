@@ -30,6 +30,7 @@ import { handleProvisionRequest, PROVISION_PATH } from './web.ts'
 import { startFeishuApprovals, type PendingApprovalView } from './feishu-approvals.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
+import { startFeishuSubagents } from './feishu-subagents.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
@@ -203,6 +204,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let flushed: (sessionId: string) => Promise<TurnStats | undefined> = () => Promise.resolve(undefined)
   let stopTodos: () => void = () => undefined
   let stopJobs: () => void = () => undefined
+  let stopSubagents: () => void = () => undefined
   let stopSendFileTool: () => void = () => undefined
   let stopReceiveFileTool: () => void = () => undefined
   let modelSelectHandle: { dispose: () => void; cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> } | undefined = undefined
@@ -691,6 +693,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
     })
+    // The subagent roster panel. Independent of the questions/approvals seams:
+    // it needs the session-event fan-out (parent catalogs), the Host's
+    // subagent lifecycle events, and the bridge's session → chat lookup.
+    stopSubagents = startFeishuSubagents({
+      ctx,
+      channel: cardChannel,
+      bridgeHolder,
+      logger: ctx.logger('dsh-feishu'),
+      getTranslations: () => translationsFor(currentLocale().id),
+    })
     // Read optional: the abstract background-job registry. `ctx.get` keeps it
     // out of `inject`, so a composition without it still boots (关键坑 2) — it
     // just gets no job cards. Only jobs whose owning session is bound to a
@@ -950,6 +962,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopApprovals()
     stopTodos()
     stopJobs()
+    stopSubagents()
     stopStreaming()
     stopSendFileTool()
     stopReceiveFileTool()

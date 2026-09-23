@@ -355,18 +355,43 @@ export interface Translations {
   questionCustomPlaceholder: string
   questionSubmitCustom: string
   questionSkipButton: string
-  // Background job cards (feishu-jobs.ts)
+  // Background-task panel (feishu-jobs.ts)
+  jobPanelTitle: string
+  jobPanelSummary: (running: number, total: number) => string
+  jobPanelColStatus: string
+  jobPanelColTask: string
+  jobPanelColId: string
+  jobPanelColDuration: string
+  jobPanelColProgress: string
   jobUntitled: string
-  jobKindLabel: string
-  jobIdLabel: string
-  jobProgressLabel: string
-  jobDetailLabel: string
-  jobDurationLabel: string
   jobStatusRunning: string
   jobStatusStopping: string
   jobStatusCompleted: string
   jobStatusFailed: string
   jobStatusKilled: string
+
+  // Subagent panel (feishu-subagents.ts)
+  subagentPanelTitle: string
+  subagentPanelSummary: (running: number, total: number) => string
+  subagentPanelColStatus: string
+  subagentPanelColAgent: string
+  subagentPanelColSession: string
+  subagentPanelColMode: string
+  subagentPanelColDuration: string
+  subagentUntitled: string
+  subagentStatusRunning: string
+  subagentStatusCompleted: string
+  subagentStatusFailed: string
+  subagentStatusAborted: string
+  subagentStatusRefused: string
+  subagentStatusMaxTokens: string
+  subagentStatusInactive: string
+  subagentModeOneShot: string
+  subagentModeContinuable: string
+  subagentModeUnknown: string
+
+  /** Shared by both panels: how many older roster entries a card left out. */
+  panelMoreRows: (count: number) => string
 }
 
 /** The zh dictionary: terminology aligned with the DSH native UI. */
@@ -658,18 +683,42 @@ export const zh = {
   questionCustomPlaceholder: '在此输入...',
   questionSubmitCustom: '✏️ 提交自定义回答',
   questionSkipButton: '⏭️ 跳过本题',
-  // Background job cards (feishu-jobs.ts)
+  // Background-task panel (feishu-jobs.ts)
+  jobPanelTitle: '🧩 后台任务',
+  jobPanelSummary: (running, total) => `运行中 ${running} · 共 ${total} 个`,
+  jobPanelColStatus: '状态',
+  jobPanelColTask: '任务',
+  jobPanelColId: '编号',
+  jobPanelColDuration: '耗时',
+  jobPanelColProgress: '进度 / 结果',
   jobUntitled: '未命名任务',
-  jobKindLabel: '类型',
-  jobIdLabel: '编号',
-  jobProgressLabel: '进度：',
-  jobDetailLabel: '详情：',
-  jobDurationLabel: '耗时',
   jobStatusRunning: '运行中',
   jobStatusStopping: '正在停止',
   jobStatusCompleted: '已完成',
   jobStatusFailed: '失败',
   jobStatusKilled: '已停止',
+
+  // Subagent panel (feishu-subagents.ts)
+  subagentPanelTitle: '🤖 子代理',
+  subagentPanelSummary: (running, total) => `运行中 ${running} · 共 ${total} 个`,
+  subagentPanelColStatus: '状态',
+  subagentPanelColAgent: '子代理',
+  subagentPanelColSession: '子会话',
+  subagentPanelColMode: '模式',
+  subagentPanelColDuration: '耗时',
+  subagentUntitled: '未命名子代理',
+  subagentStatusRunning: '运行中',
+  subagentStatusCompleted: '已完成',
+  subagentStatusFailed: '失败',
+  subagentStatusAborted: '已中止',
+  subagentStatusRefused: '已拒绝',
+  subagentStatusMaxTokens: '超出 token 上限',
+  subagentStatusInactive: '已结束',
+  subagentModeOneShot: '一次性',
+  subagentModeContinuable: '可续谈',
+  subagentModeUnknown: '未知',
+
+  panelMoreRows: count => `另有 ${count} 条更早的记录未列出`,
 } as const satisfies Translations
 
 /** The en dictionary, keyed identically to the zh dictionary. */
@@ -962,18 +1011,42 @@ export const en: Translations = {
   questionSubmitCustom: '✏️ Submit custom answer',
   questionSkipButton: '⏭️ Skip this question',
 
-  // Background job cards (feishu-jobs.ts)
+  // Background-task panel (feishu-jobs.ts)
+  jobPanelTitle: '🧩 Background jobs',
+  jobPanelSummary: (running, total) => `${running} running · ${total} total`,
+  jobPanelColStatus: 'State',
+  jobPanelColTask: 'Task',
+  jobPanelColId: 'ID',
+  jobPanelColDuration: 'Duration',
+  jobPanelColProgress: 'Progress / result',
   jobUntitled: 'Untitled job',
-  jobKindLabel: 'Kind',
-  jobIdLabel: 'ID',
-  jobProgressLabel: 'Progress:',
-  jobDetailLabel: 'Detail:',
-  jobDurationLabel: 'Duration',
   jobStatusRunning: 'Running',
   jobStatusStopping: 'Stopping',
   jobStatusCompleted: 'Completed',
   jobStatusFailed: 'Failed',
   jobStatusKilled: 'Stopped',
+
+  // Subagent panel (feishu-subagents.ts)
+  subagentPanelTitle: '🤖 Subagents',
+  subagentPanelSummary: (running, total) => `${running} running · ${total} total`,
+  subagentPanelColStatus: 'State',
+  subagentPanelColAgent: 'Subagent',
+  subagentPanelColSession: 'Session',
+  subagentPanelColMode: 'Mode',
+  subagentPanelColDuration: 'Duration',
+  subagentUntitled: 'Untitled subagent',
+  subagentStatusRunning: 'Running',
+  subagentStatusCompleted: 'Completed',
+  subagentStatusFailed: 'Failed',
+  subagentStatusAborted: 'Aborted',
+  subagentStatusRefused: 'Refused',
+  subagentStatusMaxTokens: 'Token limit',
+  subagentStatusInactive: 'Ended',
+  subagentModeOneShot: 'one-shot',
+  subagentModeContinuable: 'continuable',
+  subagentModeUnknown: 'unknown',
+
+  panelMoreRows: count => `${count} older entries not shown`,
 }
 
 /**

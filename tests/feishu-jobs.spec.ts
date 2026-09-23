@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   detachedJobIdFromToolResult,
-  formatDuration,
-  renderJobCard,
+  jobRosterSignature,
+  renderJobPanelCard,
   startFeishuJobs,
   type DetachedJobNotice,
   type JobEventLike,
+  type JobPanelRow,
   type JobViewLike,
 } from '../src/feishu-jobs.ts'
+import { PANEL_MAX_ROWS } from '../src/feishu-panel.ts'
 import { en, zh } from '../src/i18n.ts'
 
 /** One job projection with only the fields a test cares about overridden. */
@@ -23,6 +25,11 @@ function job(overrides: Partial<JobViewLike> = {}): JobViewLike {
   }
 }
 
+/** One roster row for the renderer tests. */
+function row(overrides: Partial<JobViewLike> = {}, settledAt: number | undefined = undefined): JobPanelRow {
+  return { view: job(overrides), settledAt }
+}
+
 /** The card's markdown text, so assertions read like the rendered output. */
 function markdownOf(card: any): string {
   return card.body.elements
@@ -31,10 +38,9 @@ function markdownOf(card: any): string {
     .join('\n')
 }
 
-function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number } = {}) {
+function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number; refreshMs?: number } = {}) {
   const listeners = new Set<(event: JobEventLike) => void>()
   const sent: Array<{ to: string; card: any; opts: any }> = []
-  const updates: Array<{ messageId: string; card: any }> = []
   const warns: string[] = []
   const infos: string[] = []
   let sendAttempts = 0
@@ -56,7 +62,6 @@ function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number } 
         sent.push({ to, card: input.card, opts })
         return { messageId: `m-${sent.length}` }
       },
-      updateCard: async (messageId, card) => { updates.push({ messageId, card }) },
     },
     logger: {
       info: (message: string) => { infos.push(message); return undefined },
@@ -64,9 +69,10 @@ function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number } 
       error: () => undefined,
     },
     getTranslations: () => zh,
-    // Zero by default: every event flushes on the microtask chain, so the tests
-    // never race a timer. The coalescing tests below opt into a real window.
+    // Zero by default: every trigger flushes on the microtask chain, so the
+    // tests never race a timer. The floor tests below opt into real windows.
     debounceMs: options.debounceMs ?? 0,
+    refreshMs: options.refreshMs ?? 0,
   })
   /** The tool result that hands the model a background job handle. */
   const notice = (jobId: string, overrides: Partial<DetachedJobNotice> = {}): DetachedJobNotice => ({
@@ -79,7 +85,6 @@ function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number } 
   return {
     mirror,
     sent,
-    updates,
     warns,
     infos,
     chat,
@@ -141,49 +146,82 @@ describe('detachedJobIdFromToolResult', () => {
   })
 })
 
-describe('renderJobCard', () => {
-  it('titles the card with the producer label and shows kind, id and elapsed time', () => {
-    const card = renderJobCard(job(), zh, 5_300) as any
-    expect(card.header.title.content).toContain('npm run build')
+describe('renderJobPanelCard', () => {
+  it('titles the card with the fixed panel title, never with the command', () => {
+    const card = renderJobPanelCard([row()], zh, 5_300) as any
+    expect(card.header.title.content).toBe(zh.jobPanelTitle)
+    expect(card.header.title.content).not.toContain('npm run build')
     expect(card.header.template).toBe('wathet')
-    expect(markdownOf(card)).toContain(zh.jobStatusRunning)
-    expect(markdownOf(card)).toContain('`bash`')
-    expect(markdownOf(card)).toContain('`bash-1`')
-    expect(markdownOf(card)).toContain('4.3s')
   })
 
-  it('falls back to the untitled label for a nameless job', () => {
-    expect((renderJobCard(job({ label: '   ' }), en, 2_000) as any).header.title.content).toContain(en.jobUntitled)
+  it('lists status, command, id, duration and progress in one table row', () => {
+    const text = markdownOf(renderJobPanelCard([row({ progress: '3/10' })], zh, 5_300) as any)
+    expect(text).toContain(`| ${zh.jobPanelColStatus} |`)
+    expect(text).toContain(zh.jobStatusRunning)
+    expect(text).toContain('`npm run build`')
+    expect(text).toContain('`bash-1`')
+    expect(text).toContain('4.3s')
+    expect(text).toContain('3/10')
+    expect(text).toContain(zh.jobPanelSummary(1, 1))
   })
 
-  it('renders the whole card in the active locale', () => {
-    const card = renderJobCard(job({ status: 'failed', detail: 'exit code: 3', finishedAt: 3_000 }), en, 9_000) as any
-    expect(card.header.template).toBe('red')
-    expect(markdownOf(card)).toContain(en.jobStatusFailed)
-    expect(markdownOf(card)).toContain(en.jobDetailLabel)
-    expect(markdownOf(card)).not.toContain(zh.jobStatusFailed)
+  it('shows the exit reason instead of the progress line once the job settled', () => {
+    const settled = row({ status: 'failed', detail: 'exit code: 3', progress: '3/10', finishedAt: 3_000 }, 3_000)
+    const text = markdownOf(renderJobPanelCard([settled], en, 9_000) as any)
+    expect(text).toContain(en.jobStatusFailed)
+    expect(text).toContain('exit code: 3')
+    expect(text).not.toContain('3/10')
+    expect(text).not.toContain(zh.jobStatusFailed)
   })
 
-  it('hides the progress line once the job settled', () => {
-    const running = markdownOf(renderJobCard(job({ progress: '3/10' }), zh, 2_000) as any)
-    expect(running).toContain('3/10')
-    const settled = markdownOf(renderJobCard(job({ status: 'completed', progress: '3/10', finishedAt: 2_000 }), zh, 9_000) as any)
-    expect(settled).not.toContain('3/10')
+  it('renders one row per job, oldest first, and counts what is running', () => {
+    const rows = [
+      row({ id: 'bash-2', label: 'second', startedAt: 2_000 }),
+      row({ id: 'bash-1', label: 'first', startedAt: 1_000, status: 'completed', finishedAt: 1_500 }, 1_500),
+    ]
+    const text = markdownOf(renderJobPanelCard(rows, zh, 5_000) as any)
+    expect(text).toContain(zh.jobPanelSummary(1, 2))
+    expect(text.indexOf('`first`')).toBeLessThan(text.indexOf('`second`'))
+    const dataRows = text.split('\n').filter(line => line.startsWith('| ') && !line.includes('---') && !line.includes(zh.jobPanelColStatus))
+    expect(dataRows).toHaveLength(2)
   })
 
-  it('formats durations across the unit boundaries', () => {
-    expect(formatDuration(820)).toBe('820ms')
-    expect(formatDuration(4_300)).toBe('4.3s')
-    expect(formatDuration(125_000)).toBe('2m 05s')
-    expect(formatDuration(-1)).toBe('—')
+  it('caps the table and says how many older rows it left out', () => {
+    const rows = Array.from({ length: PANEL_MAX_ROWS + 3 }, (_, index) =>
+      row({ id: `bash-${index + 1}`, label: `task ${index + 1}`, startedAt: 1_000 + index }))
+    const text = markdownOf(renderJobPanelCard(rows, zh, 99_000) as any)
+    expect(text).toContain(zh.panelMoreRows(3))
+    const dataRows = text.split('\n').filter(line => line.startsWith('| ') && !line.includes('---') && !line.includes(zh.jobPanelColStatus))
+    expect(dataRows).toHaveLength(PANEL_MAX_ROWS)
+  })
+
+  it('falls back to the untitled label and an em dash for a nameless job', () => {
+    const text = markdownOf(renderJobPanelCard([row({ label: '   ' })], en, 2_000) as any)
+    expect(text).toContain(en.jobUntitled)
+    expect(text).toContain('| — |')
+  })
+
+  it('escapes a pipe in the command so the table keeps its columns', () => {
+    const text = markdownOf(renderJobPanelCard([row({ label: 'grep a | wc -l' })], zh, 2_000) as any)
+    // The fullwidth bar keeps the cell intact without a stray backslash.
+    expect(text).toContain('`grep a ｜ wc -l`')
+    expect(text.split('\n').find(line => line.includes('grep'))?.split('|')).toHaveLength(7)
+  })
+})
+
+describe('jobRosterSignature', () => {
+  it('ignores the clock but follows every visible fact', () => {
+    const base = [row({ progress: '1/2' })]
+    expect(jobRosterSignature(base)).toBe(jobRosterSignature([row({ progress: '1/2', startedAt: 9_000 })]))
+    expect(jobRosterSignature(base)).not.toBe(jobRosterSignature([row({ progress: '2/2' })]))
+    expect(jobRosterSignature(base)).not.toBe(jobRosterSignature([row({ status: 'completed', progress: '1/2' })]))
   })
 })
 
 describe('startFeishuJobs', () => {
   it('posts nothing for a foreground call, which DSH also registers as a job', async () => {
     // The regression that motivated the gate (关键坑 37): every foreground
-    // `bash` call is a job, and mirroring those put one extra card beside every
-    // tool call. No tool result announced a handle here, so nothing may appear.
+    // `bash` call is a job, and listing those put every tool call in the panel.
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.emit({ type: 'progress', job: job({ progress: '1/2' }) })
@@ -191,18 +229,18 @@ describe('startFeishuJobs', () => {
     h.emit({ type: 'removed', job: job({ status: 'completed', finishedAt: 4_000 }) })
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.sent).toHaveLength(0)
-    expect(h.updates).toHaveLength(0)
     expect(h.warns).toHaveLength(0)
     h.mirror.dispose()
   })
 
-  it('posts one card into the announced chat once the result confirms a detached job', async () => {
+  it('posts one panel card into the announced chat once the result confirms a job', async () => {
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.confirm('bash-1')
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
     expect(h.sent[0]!.to).toBe('oc_1')
-    expect(h.sent[0]!.card.header.title.content).toContain('npm run build')
+    expect(h.sent[0]!.card.header.title.content).toBe(zh.jobPanelTitle)
+    expect(markdownOf(h.sent[0]!.card)).toContain('`npm run build`')
     // Topic coordinates come from the session that saw the tool result (关键坑 25/31).
     expect(h.sent[0]!.opts).toEqual({ replyInThread: true, replyTo: 'om_root' })
     h.mirror.dispose()
@@ -210,7 +248,7 @@ describe('startFeishuJobs', () => {
 
   it('builds the first card from the projection cached before the confirmation', async () => {
     // The result lands after `registered` and possibly after `progress`, so the
-    // card must render the LATEST known projection, not the registration one.
+    // card must render the LATEST known projection.
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.emit({ type: 'progress', job: job({ progress: '3/10' }) })
@@ -220,55 +258,56 @@ describe('startFeishuJobs', () => {
     h.mirror.dispose()
   })
 
-  it('updates the same card on progress instead of posting another', async () => {
+  it('lists every background task of the chat in ONE table and posts it again as the roster grows', async () => {
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.confirm('bash-1')
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
-    h.emit({ type: 'progress', job: job({ progress: '3/10' }) })
-    await vi.waitFor(() => { expect(h.updates).toHaveLength(1) })
-    expect(h.sent).toHaveLength(1)
-    expect(h.updates[0]!.messageId).toBe('m-1')
-    expect(markdownOf(h.updates[0]!.card)).toContain('3/10')
+    h.emit({ type: 'registered', job: job({ id: 'bash-2', label: 'sleep 30', startedAt: 2_000 }) })
+    h.confirm('bash-2')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    // A NEW card carries both rows; nothing was patched in place.
+    const text = markdownOf(h.sent[1]!.card)
+    expect(text).toContain('`npm run build`')
+    expect(text).toContain('`sleep 30`')
+    expect(text).toContain(zh.jobPanelSummary(2, 2))
     h.mirror.dispose()
   })
 
   it.each([
-    ['completed', 'green', zh.jobStatusCompleted],
-    ['failed', 'red', zh.jobStatusFailed],
-    ['killed', 'grey', zh.jobStatusKilled],
-  ] as const)('renders the %s terminal state on the existing card', async (status, template, statusText) => {
+    ['completed', zh.jobStatusCompleted],
+    ['failed', zh.jobStatusFailed],
+    ['killed', zh.jobStatusKilled],
+  ] as const)('posts a fresh card when the job reaches %s', async (status, statusText) => {
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.confirm('bash-1')
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
-    const settled = status === 'failed'
-      ? job({ status, detail: 'exit code: 3', finishedAt: 4_000 })
-      : job({ status, finishedAt: 4_000 })
-    h.emit({ type: 'settled', job: settled })
-    await vi.waitFor(() => { expect(h.updates).toHaveLength(1) })
-    expect(h.sent).toHaveLength(1)
-    expect(h.updates[0]!.card.header.template).toBe(template)
-    expect(markdownOf(h.updates[0]!.card)).toContain(statusText)
-    if (status === 'failed') expect(markdownOf(h.updates[0]!.card)).toContain('exit code: 3')
+    h.emit({ type: 'settled', job: job({ status, finishedAt: 4_000 }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    const text = markdownOf(h.sent[1]!.card)
+    expect(text).toContain(statusText)
+    expect(text).toContain(zh.jobPanelSummary(0, 1))
     h.mirror.dispose()
   })
 
-  it('keeps the terminal card when the job leaves the visible set', async () => {
-    // `removed` follows `settled`, so the card already carries the outcome.
-    // Rewriting it into a grey "stale" shell destroyed that record and pointed
-    // at a newer card that never existed (2026-09-23).
+  it('keeps a settled row after the job leaves the visible set', async () => {
+    // `removed` follows `settled`: the row must survive so a later card still
+    // records the outcome (the per-job version destroyed it, 2026-09-23).
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.confirm('bash-1')
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
     h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 4_000 }) })
-    await vi.waitFor(() => { expect(h.updates).toHaveLength(1) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
     h.emit({ type: 'removed', job: job({ status: 'completed', finishedAt: 4_000 }) })
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(h.updates).toHaveLength(1)
-    expect(h.updates[0]!.card.header.template).toBe('green')
-    expect(markdownOf(h.updates[0]!.card)).toContain(zh.jobStatusCompleted)
+    h.emit({ type: 'registered', job: job({ id: 'bash-2', label: 'sleep 30', startedAt: 5_000 }) })
+    h.confirm('bash-2')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(3) })
+    const text = markdownOf(h.sent[2]!.card)
+    expect(text).toContain('`npm run build`')
+    expect(text).toContain(zh.jobStatusCompleted)
+    expect(text).toContain('`sleep 30`')
     h.mirror.dispose()
   })
 
@@ -291,15 +330,56 @@ describe('startFeishuJobs', () => {
     h.mirror.dispose()
   })
 
-  it('does not post a second card when the same result is seen twice or registered repeats', async () => {
+  it('does not post again when the same result is seen twice', async () => {
     const h = buildHarness()
     h.emit({ type: 'registered', job: job() })
     h.confirm('bash-1')
     h.confirm('bash-1')
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
-    h.emit({ type: 'registered', job: job() })
-    await vi.waitFor(() => { expect(h.updates).toHaveLength(1) })
+    await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.sent).toHaveLength(1)
+    h.mirror.dispose()
+  })
+
+  it('does not post again when nothing visible changed', async () => {
+    const h = buildHarness()
+    h.emit({ type: 'registered', job: job() })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    // Same status, same progress: a repeat event must not spawn a card whose
+    // only difference is the elapsed time.
+    h.emit({ type: 'registered', job: job() })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(h.sent).toHaveLength(1)
+    h.mirror.dispose()
+  })
+
+  it('routes each chat to its own panel', async () => {
+    const h = buildHarness()
+    h.emit({ type: 'registered', job: job() })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    const other = { chatId: 'oc_2', chatType: 'p2p' as const }
+    h.emit({ type: 'registered', job: job({ id: 'bash-2', owner: 'session-9', label: 'other task' }) })
+    h.mirror.noteDetached({ toolName: 'bash', resultText: 'started background job bash-2', chat: other, sessionId: 'session-9' })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    expect(h.sent[1]!.to).toBe('oc_2')
+    expect(markdownOf(h.sent[1]!.card)).not.toContain('npm run build')
+    expect(markdownOf(h.sent[0]!.card)).not.toContain('other task')
+    h.mirror.dispose()
+  })
+
+  it('throttles a progress-only change but not a status change', async () => {
+    const h = buildHarness({ refreshMs: 60_000 })
+    h.emit({ type: 'registered', job: job() })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    h.emit({ type: 'progress', job: job({ progress: '1/9' }) })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(h.sent).toHaveLength(1)
+    h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 4_000 }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    expect(markdownOf(h.sent[1]!.card)).toContain(zh.jobStatusCompleted)
     h.mirror.dispose()
   })
 
@@ -313,7 +393,7 @@ describe('startFeishuJobs', () => {
     h.emit({ type: 'progress', job: job({ progress: '9/9' }) })
     h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 5_000 }) })
     await new Promise(resolve => setTimeout(resolve, 20))
-    expect(h.updates).toHaveLength(0)
+    expect(h.sent).toHaveLength(1)
   })
 
   it('survives a failed send and still posts on the next event', async () => {
@@ -321,38 +401,10 @@ describe('startFeishuJobs', () => {
     h.emit({ type: 'registered', job: job() })
     h.confirm('bash-1')
     await vi.waitFor(() => { expect(h.warns).toHaveLength(1) })
-    expect(h.warns[0]).toContain('job card send failed')
-    h.emit({ type: 'progress', job: job({ progress: '1/2' }) })
+    expect(h.warns[0]).toContain('panel card send failed')
+    h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 4_000 }) })
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
-    expect(h.sent[0]!.card.header.title.content).toContain('npm run build')
-    h.mirror.dispose()
-  })
-
-  it('posts the confirming card without waiting for the coalescing window', async () => {
-    // A job whose progress changes faster than the window resets the timer on
-    // every event. If the first card were debounced too, such a job would stay
-    // invisible until it went quiet — so the first send must bypass the window
-    // while the update behind it still waits.
-    const h = buildHarness({ debounceMs: 5_000 })
-    h.emit({ type: 'registered', job: job() })
-    h.confirm('bash-1')
-    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
-    h.emit({ type: 'progress', job: job({ progress: '1/9' }) })
-    await new Promise(resolve => setTimeout(resolve, 40))
-    expect(h.updates).toHaveLength(0)
-    h.mirror.dispose()
-  })
-
-  it('coalesces a burst of progress into a single update', async () => {
-    const h = buildHarness({ debounceMs: 30 })
-    h.emit({ type: 'registered', job: job() })
-    h.confirm('bash-1')
-    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
-    for (let i = 1; i <= 20; i++) h.emit({ type: 'progress', job: job({ progress: `${i}/20` }) })
-    await vi.waitFor(() => { expect(h.updates).toHaveLength(1) })
-    await new Promise(resolve => setTimeout(resolve, 60))
-    expect(h.updates).toHaveLength(1)
-    expect(h.sent).toHaveLength(1)
+    expect(markdownOf(h.sent[0]!.card)).toContain(zh.jobStatusCompleted)
     h.mirror.dispose()
   })
 })
