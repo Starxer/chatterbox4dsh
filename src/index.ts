@@ -36,6 +36,8 @@ import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
 import { dispatchCardAction } from './card-dispatch.ts'
 import { createCardSendBarrier } from './card-send-barrier.ts'
+import { isCardContentRejection } from './card-markdown.ts'
+import { createCardWriter, withCardSafety } from './card-write.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 
 export const name = 'lark-channel'
@@ -295,6 +297,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
    * slash-command path (`/model`) can record its card too.
    */
   const cardTopics = createCardTopicRegistry()
+  // ── Card payload safety (key pitfall 39) ─────────────────────────────────
+  // Feishu parses a card's markdown `![alt](src)` as an IMAGE element whose src
+  // must be an uploaded `img_v3_…` key, and rejects the WHOLE card otherwise
+  // (`200570` / `230099`, verified 2026-09-23). The model writes
+  // `![](runs/x.png)` because the Web UI resolves workspace paths, so the fix
+  // belongs at this chokepoint — every card passes through it — rather than at
+  // the ~90 places that build markdown, or in the model's instructions.
+  const cardWriter = createCardWriter({ logger: ctx.logger('dsh-feishu') })
   const cardChannel = {
     // Every method below is bounded. The SDK's HTTP client has no request
     // timeout, so without this a single unanswered request leaves the promise
@@ -305,6 +315,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       return withTimeout(cardBarrier.run(to, pendingCardFlush, async () => {
         const ch = channelHolder.current
         if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+        // `ch` is already card-safe (see `withCardSafety` at the factory).
         return ch.send(to, input, opts) as Promise<{ messageId?: string }>
       }), 'send card or text', CARD_SEND_TIMEOUT_MS)
     },
@@ -331,13 +342,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     createCardInstance: (card: object): Promise<string> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return withTimeout(ch.rawClient.cardkit.v1.card.create({
-        data: { type: 'card_json', data: JSON.stringify(card) },
+      return cardWriter.write(card, payload => withTimeout(ch.rawClient.cardkit.v1.card.create({
+        data: { type: 'card_json', data: JSON.stringify(payload) },
       }).then((r: any) => {
         const cardId = r.data?.card_id as string | undefined
         if (cardId === undefined) throw new Error('dsh-feishu: cardkit.card.create returned no card_id')
         return cardId
-      }), 'create card instance')
+      }), 'create card instance'))
     },
     /**
      * Send a message that references a card instance by `card_id` instead of
@@ -371,6 +382,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           },
         }).then((r: any) => {
           const id = r.data?.message_id as string | undefined
+          cardWriter.noteCardMessage(cardId, id)
           return id === undefined ? {} : { messageId: id }
         }), 'send card by reference')
       }
@@ -392,6 +404,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         },
       }).then((r: any) => {
         const id = r.data?.message_id as string | undefined
+        cardWriter.noteCardMessage(cardId, id)
         return id === undefined ? {} : { messageId: id }
       }), 'send card by reference')
     },
@@ -409,22 +422,33 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     updateCardInstance: (cardId: string, card: object, sequence: number): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return withTimeout(ch.rawClient.cardkit.v1.card.update({
+      const write = (payload: object): Promise<void> => withTimeout(ch.rawClient.cardkit.v1.card.update({
         path: { card_id: cardId },
         data: {
-          card: { type: 'card_json', data: JSON.stringify(card) },
-          sequence,
+          card: { type: 'card_json', data: JSON.stringify(payload) },
+          // The floor, not the caller's number: the retry inside the writer
+          // repeats the write and must still move the sequence forward.
+          sequence: cardWriter.nextSequence(cardId, sequence),
         },
       }).then((r: any) => {
         if (r.code !== undefined && r.code !== 0) {
           throw new Error(`dsh-feishu: cardkit.card.update failed: code=${r.code} msg=${r.msg ?? 'unknown'}`)
         }
       }), 'update card instance')
+      return cardWriter.write(card, write).catch(async (error: unknown) => {
+        // Still refused: patch the message instead, so the card cannot keep
+        // rendering stale content (the "stuck on 深度思考中" incident).
+        const messageId = cardWriter.messageIdFor(cardId)
+        if (!isCardContentRejection(error) || messageId === undefined) throw error
+        console.log(`dsh-feishu: [update] card instance ${cardId} refused; patching message ${messageId} instead`
+          + ' so the card does not keep stale content')
+        return cardWriter.write(card, payload => withTimeout(ch.updateCard(messageId, payload), 'patch card'))
+      })
     },
     updateCard: (messageId: string, card: object): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return withTimeout(ch.updateCard(messageId, card), 'patch card')
+      return cardWriter.write(card, payload => withTimeout(ch.updateCard(messageId, payload), 'patch card'))
     },
     recallMessage: (messageId: string): Promise<void> => {
       const ch = channelHolder.current
@@ -506,7 +530,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       return startChannel(
         config,
         bridge,
-        createLarkChannel,
+        // Every card `channel.ts` posts (the reply, the overflow continuations,
+        // the Turn Complete footer) goes straight to the SDK channel, so the
+        // card adapter never sees it. Wrapping the factory puts the payload
+        // safety in front of those too — see `card-write.ts`.
+        options => withCardSafety(createLarkChannel(options), cardWriter),
         ctx.logger,
         console,
         message => executeSlashCommand(message, bridge, commands, bridgeHolder, sessionController, agents, sandboxPolicy, permissionHandle, llm, defaultModel, cardChannel,
