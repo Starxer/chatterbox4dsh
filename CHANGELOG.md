@@ -55,6 +55,8 @@
 
 **验证**：新增回归用例 `tests/feishu-streaming.spec.ts`「waits for a text-carrying write that is still in flight instead of withdrawing the note」——门控 `updateCard` 只在带正文的那次写入上挂起，断言 `flushed()` 在写入落地前**不会** resolve、且 `clearIntermediateSent` 不被调用。**反向验证过**：把 `flushed()` 里新加的 `Promise.all(inFlightUpdates…)` 那一行去掉，该用例立刻转红（`expected true to be false`），恢复后转绿。全量 **683 tests / 42 files** 全绿，typecheck 0 error，产物已重建。
 
+**真机复核（2026-09-24 02:23）**：修好后那次重启的同一轮回答里，journal 只出现 `[reply] a step card carried the text → footer only`，第二张 reply 卡没再出现；使用者确认「没有异常，都正常渲染」。
+
 **English**：The duplicate reply was a pre-existing race that media hydration widened. `channel.ts` trusts two marks to decide whether the turn's text is already on screen: an optimistic one set when a text-carrying card is handed to Feishu, and a confirmed one set when that write lands; `flushed()` withdraws the optimistic mark when nothing was confirmed, so the fallback reply card is posted. It only awaited the turn/end flush (which covers a write still inside the 150 ms debounce) and the last `send` — never a write that had left the debounce and was in flight. Uploading a video/audio file for card media turns that write into a multi-second operation, so `flushed()` read `turnTextDelivered === false` while the card that would receive the very same text was still on its way, posted the full reply card, and the in-flight update landed right after it. `flushed()` now awaits every in-flight step-card write (bounded by the existing 120 s flush timeout; per-card media budgets are 15 s at most) before reading the delivery record, and two journal lines now say which branch was taken. A regression test gates the text-carrying write and asserts the flush waits; removing the new await makes it fail.
 
 ### 新增：卡片内联媒体——视频与音频也能进消息（`src/media-upload.ts`（新）/ `src/card-images.ts` / `src/card-markdown.ts` / `src/media-sniff.ts` / `src/config.ts` / `src/client/`，2026-09-24）
@@ -77,6 +79,13 @@
 - **设置项**：沿用 `cardImages` 这个键（改名会丢已保存的值），含义扩为**正文里的媒体**：`text` 永不上传 / `workspace` 仅工作区内（默认）/ `any` 任意可读路径。设置页文案与 `Config.description` 已同步。
 
 **实测**：`npm run typecheck` 0 error；**682 tests / 42 files 全绿**（新增 32 例：媒体分类 6、卡片改写与限额 10、音频中和 4、上传器 12）；`npm run build` 产出 `lib/index.js` + `client/client.js`。**ffmpeg/ffprobe 真机联调**（一次性脚本，不留在测试里）：真实 H.264 MP4 → 分类 `video/mp4/avc1`、时长 1000ms、封面抽取并上传成功；真实 WAV → 转 Opus 上传、时长 1007ms。
+
+**真机端到端（2026-09-24 02:23，修复重复 reply 卡后的那次重启）**：在工作区 `notes/` 下造了三个探针文件（1.5KB PNG / 11.5KB 2s H.264 MP4 / 14.8KB 2s Opus），**只在回答正文里**写 `![探针图片](notes/media-probe.png)`、`[探针视频](notes/media-probe.mp4)`、`[探针音频](notes/media-probe.opus)`：
+
+- journal：`[media] uploaded …png → image img_v3_…` / `…mp4 → video file_v3_…` / `…opus → audio file_v3_…`，三条各一次，随后 `[reply] a step card carried the text → footer only`（**没有** `posting N reply card(s)`，即没有第二张回复卡）；
+- **使用者目视确认**：图片、卡片内可播放的视频（带封面、2s）、卡片内音频播放器三样都正常渲染，整轮没有异常、没有重复卡片。
+
+⇒ 「Markdown 里的工作区媒体引用 → 解析 → 上传 → 卡片内联渲染」整条链路成立，且与「一张回复卡」的交付语义并存。
 
 **这一批明确没做**（记录在案）：① 正文里的**行内代码路径**（`` `runs/a.mp4` ``，DSH 的 `fileMentions` 会把它变成可点 chip）未扫描——只处理带 `()` 目标的 Markdown 引用，避免正文里任何一段代码都被当成待上传文件；② 非媒体文件仍然无法内联（上游没有组件），也不新开公网文件服务（本插件唯一的 HTTP 路由是 loopback-only）；③ 只有 `workspace`/`any` 两档路径范围，没有「只内联视频不内联音频」这类细分开关。
 
