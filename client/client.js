@@ -260,6 +260,35 @@ function LarkSettingsCard(props) {
 								disabled: blocked || toolsOff,
 								nested: true
 							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("cardImages") }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+									"aria-label": "cardImages",
+									disabled: blocked,
+									value: form.cardImages,
+									onChange: (event) => {
+										props.edit("cardImages", event.target.value);
+									},
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "workspace",
+											children: t("cardImagesWorkspace")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "text",
+											children: t("cardImagesText")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "any",
+											children: t("cardImagesAny")
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dsh-feishu-toggle-hint",
+									children: t("cardImagesHint")
+								})
+							] }),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 								"aria-label": "locale",
 								disabled: blocked,
@@ -365,7 +394,8 @@ const EDITABLE_FIELDS = [
 	"showToolCalls",
 	"showToolArgs",
 	"showToolResults",
-	"locale"
+	"locale",
+	"cardImages"
 ];
 /** Bridges the `lark-channel` form and the credentials domain onto the page. */
 var LarkSettingsCardController = class {
@@ -597,6 +627,7 @@ var LarkSettingsCardController = class {
 			showToolArgs: value?.showToolArgs ?? true,
 			showToolResults: value?.showToolResults ?? true,
 			locale: value?.locale ?? "auto",
+			cardImages: value?.cardImages ?? "workspace",
 			...this.edits
 		};
 	}
@@ -2316,6 +2347,11 @@ const dictionaries = {
 		showToolResults: "显示结果",
 		showToolResultsHint: "展示每个工具调用的结果预览",
 		requiresToolCalls: "需先开启「显示工具调用」",
+		cardImages: "正文里的图片",
+		cardImagesHint: "飞书卡片只能显示上传过的图片：这里决定正文里 ![图](路径) 这类引用怎么处理。无论选哪档，卡片都不会因为图片语法被拒收。",
+		cardImagesWorkspace: "仅工作区内（默认）：自动上传并内联显示",
+		cardImagesText: "不上传：只显示路径文字",
+		cardImagesAny: "任意可读路径：工作区外的图片也上传",
 		locale: "插件语言",
 		localeAuto: "跟随 Harness",
 		localeZh: "中文",
@@ -2380,6 +2416,11 @@ const dictionaries = {
 		showToolResults: "Show results",
 		showToolResultsHint: "Show each tool call's result preview",
 		requiresToolCalls: "Enable \"Show tool calls\" first",
+		cardImages: "Images in card text",
+		cardImagesHint: "A Feishu card can only render an uploaded image: this decides what happens to `![alt](path)` references in the model's text. Whichever mode you pick, a card is never rejected over image syntax.",
+		cardImagesWorkspace: "Workspace only (default): upload and show inline",
+		cardImagesText: "Never upload: show the path as text",
+		cardImagesAny: "Any readable path: upload images outside the workspace too",
 		locale: "Plugin language",
 		localeAuto: "Follow Harness",
 		localeZh: "中文",

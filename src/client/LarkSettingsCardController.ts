@@ -36,6 +36,12 @@ export type DomainName = 'feishu' | 'lark'
 export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
 /** Plugin language; `auto` follows the DSH browser-language preference. */
 export type PluginLocale = 'auto' | 'zh' | 'en'
+/**
+ * How an image the model references in card text is handled: never upload it,
+ * upload only workspace files, or upload any readable image path. Mirrored here
+ * because the client half must not import a Host module.
+ */
+export type CardImageMode = 'text' | 'workspace' | 'any'
 
 /**
  * The `lark-channel` fields this page reads. `provider`, `model`, `workspace`
@@ -55,6 +61,7 @@ export interface LarkSettingsValues {
   showToolArgs?: boolean
   showToolResults?: boolean
   locale?: PluginLocale
+  cardImages?: CardImageMode
 }
 
 /** The page's staged controls, after defaults and edits are folded together. */
@@ -73,12 +80,14 @@ export interface LarkFormValues {
   showToolArgs: boolean
   showToolResults: boolean
   locale: PluginLocale
+  /** How images the model references in card text are handled. */
+  cardImages: CardImageMode
 }
 
 /** The field order every save walks; also the only keys a save may write. */
 const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'appId', 'domain', 'requireMention', 'dmMode', 'groupAllowlist', 'dmAllowlist', 'reactEmoji',
-  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'locale',
+  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'locale', 'cardImages',
 ]
 
 /** What the credentials domain last reported, and for which reference. */
@@ -383,6 +392,7 @@ export class LarkSettingsCardController {
       showToolArgs: value?.showToolArgs ?? true,
       showToolResults: value?.showToolResults ?? true,
       locale: value?.locale ?? 'auto',
+      cardImages: value?.cardImages ?? 'workspace',
     }
     return { ...base, ...this.edits }
   }

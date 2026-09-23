@@ -28,6 +28,17 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 新增：卡片图片模式设置（`src/config.ts` / `src/client/` / `src/card-images.ts`，2026-09-23）
+
+- **新增配置项 `cardImages: 'text' | 'workspace' | 'any'`（默认 `workspace`）**，在 **Settings → 飞书与 Lark → 卡片显示** 里以「正文里的图片」下拉呈现（沿用该页既有的原生 `<select>` 行，不需要新组件）。三档的含义：
+  - `workspace`（默认）：自动上传**会话工作区内**的图片并**内联显示**在卡片里（即上面 L3 的行为）；
+  - `text`：**永不上传**，正文里的图片引用只保留成路径文字（最保守；需要图时让模型调 `feishu_send_file`）；
+  - `any`：正文里出现的**任意可读图片路径**（含工作区外）都上传并内联。
+- **为什么没有「关闭」档**：L1 的中和不是可选项——不做卡片就会被飞书**整张拒收**（`200570`）。所以这一项管的是「允许多走多远」，不是「要不要防炸卡」；设置项提示里写明了这一点。
+- **热生效、不重启**：字段与其余可编辑字段一样是 `.volatile()`，读取点是 `startCardImages({ mode: () => currentSettings().cardImages })` 里的**活取值**，保存即生效（与 P6-3 同一套语义；`connectionFingerprint` 不含它，所以改它不会推倒 runtime）。
+- **`any` 不是新增能力而是放宽**：模型本来就能用 `feishu_send_file` 发工作区外的任意文件，所以这一档只是省掉一次显式工具调用；`workspace` 之所以作为默认，是把"隐式上传"的范围收在工作区内（隐私边界，见关键坑 39）。
+- **测试**：`tests/card-images.spec.ts` 新增 5 例（`text` 零上传、`any` 允许越界、越界告警里提示 `any`、`any` 下跟随符号链接到真实文件、**活取值**——运行时切换档位立即生效）；`tests/config.spec.ts` 1 例（三档取值与默认）；`tests/client.spec.ts` 2 例（下拉渲染三个选项与当前值、改档后保存实写 `cardImages`）。全量 **637 passed / 41 files**，typecheck 0 error，`npm run build` 通过并重建 `client/client.js`（客户端 UI 有改动，必须一起提交）。
+
 ### 修复：飞书因 markdown 图片拒收整张卡片（`src/card-markdown.ts` / `src/card-write.ts` / `src/card-images.ts`，2026-09-23）
 
 **现象**：一张步骤卡**永久停在「🧠 深度思考中…」**，而 WebUI 里那一轮的工具调用和答案都已经出来了；同一轮里另一处「处理这条消息时出错：Failed to create card content, ext=ErrCode: 200570; ErrMsg: card contains invalid image keys; ErrorValue: image key runs/…png」。

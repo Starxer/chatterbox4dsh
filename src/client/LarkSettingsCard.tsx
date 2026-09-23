@@ -133,6 +133,11 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
           disabled: blocked || toolsOff,
           nested: true,
         })}
+        <label><span>{t('cardImages')}</span><select aria-label="cardImages" disabled={blocked} value={form.cardImages} onChange={event => { props.edit('cardImages', event.target.value as LarkFormValues['cardImages']) }}>
+          <option value="workspace">{t('cardImagesWorkspace')}</option>
+          <option value="text">{t('cardImagesText')}</option>
+          <option value="any">{t('cardImagesAny')}</option>
+        </select><span className="dsh-feishu-toggle-hint">{t('cardImagesHint')}</span></label>
         <label><span>{t('locale')}</span><select aria-label="locale" disabled={blocked} value={form.locale} onChange={event => { props.edit('locale', event.target.value as LarkFormValues['locale']) }}>
           <option value="auto">{t('localeAuto')}</option>
           <option value="zh">{t('localeZh')}</option>

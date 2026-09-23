@@ -4,6 +4,19 @@ import type { PluginLocale } from './i18n.ts'
 
 export type DomainName = 'feishu' | 'lark'
 export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
+/**
+ * How far the plugin may go to make an image the model referenced in card text
+ * render inline (关键坑 39's L3):
+ *
+ * - `text`      — never upload: the reference stays readable text (`🖼 alt · path`).
+ * - `workspace` — upload only files inside the session's own workspace (default).
+ * - `any`       — upload any readable image path, including outside the workspace.
+ *
+ * `text` is the most conservative and `any` the most permissive; the
+ * neutralization that keeps Feishu from rejecting the card is NOT optional, so
+ * there is no "off".
+ */
+export type CardImageMode = 'text' | 'workspace' | 'any'
 
 export const LARK_APP_SECRET_REF = 'DSH_LARK_APP_SECRET'
 export const LARK_SETTINGS_NAMESPACE = 'lark-channel'
@@ -38,6 +51,8 @@ export interface Config {
   showToolResults?: boolean
   /** Plugin language; `auto` (default) follows the DSH browser-language preference. */
   locale?: PluginLocale
+  /** How images referenced in card text are handled; see {@link CardImageMode}. */
+  cardImages?: CardImageMode
 }
 
 /**
@@ -80,6 +95,12 @@ export interface SettingsConfig extends Required<Pick<Config,
   agentPreset?: string
   /** Plugin language; `auto` follows the DSH browser-language preference. */
   locale?: PluginLocale
+  /**
+   * Image handling for card text. Optional in the type (like `locale`) because
+   * callers may pass a partial config; {@link resolveSettingsConfig} always
+   * fills it in, so a live read never sees `undefined`.
+   */
+  cardImages?: CardImageMode
 }
 
 export interface RuntimeConfig extends Omit<SettingsConfig, 'appSecretRef'> {
@@ -114,6 +135,7 @@ export const ConfigSchema = z.object({
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
+  cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Images the model references in card text: text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable image path'),
 })
 
 export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
@@ -141,6 +163,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolCalls: readField(config.showToolCalls) ?? true,
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
+    cardImages: readField(config.cardImages) ?? 'workspace',
     ...(appSecret === undefined ? {} : { appSecret }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),

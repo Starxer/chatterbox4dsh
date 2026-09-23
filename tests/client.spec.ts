@@ -48,6 +48,7 @@ function createForm(overrides: Partial<LarkSettingsValues> = {}): FormHarness {
       showToolArgs: true,
       showToolResults: true,
       locale: 'auto',
+      cardImages: 'workspace',
       ...overrides,
     },
     base: undefined,
@@ -299,7 +300,7 @@ describe('Lark settings client plugin', () => {
     expect(screen.queryByText('statusConnected')).toBeNull()
   })
 
-  it('renders every display toggle and the plugin language selector', async () => {
+  it('renders every display toggle, the image mode and the plugin language selector', async () => {
     stubStatus()
     const harness = mount(createForm())
     renderSettings(harness)
@@ -309,6 +310,26 @@ describe('Lark settings client plugin', () => {
       expect(screen.getByRole('switch', { name })).toBeTruthy()
     }
     expect((screen.getByLabelText('locale') as HTMLSelectElement).value).toBe('auto')
+    const imageMode = screen.getByLabelText('cardImages') as HTMLSelectElement
+    expect(imageMode.value).toBe('workspace')
+    expect([...imageMode.options].map(option => option.value)).toEqual(['workspace', 'text', 'any'])
+  })
+
+  it('stages the image mode so a save writes it', async () => {
+    stubStatus()
+    const form = createForm({ cardImages: 'text' })
+    const harness = mount(form)
+    renderSettings(harness)
+
+    await screen.findByDisplayValue('cli_existing')
+    const select = screen.getByLabelText('cardImages') as HTMLSelectElement
+    expect(select.value).toBe('text')
+    fireEvent.change(select, { target: { value: 'any' } })
+    fireEvent.click(screen.getByRole('button', { name: 'save' }))
+
+    await waitFor(() => { expect(form.mutate).toHaveBeenCalledTimes(1) })
+    const [ops] = form.mutate.mock.calls[0] as [SettingsPathOpView[], number]
+    expect(ops).toEqual([{ op: 'set', path: ['cardImages'], value: 'any' }])
   })
 
   it('disables the tool args and result toggles while tool calls are hidden', async () => {

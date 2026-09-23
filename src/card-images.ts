@@ -24,6 +24,7 @@
 
 import { open, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve, sep } from 'node:path'
+import type { CardImageMode } from './config.ts'
 import { isFeishuImageKey, mapCardMarkdownReferences } from './card-markdown.ts'
 import { sniffImageMime } from './media-sniff.ts'
 import { withTimeout } from './outbound-timeout.ts'
@@ -54,6 +55,11 @@ export interface CardImageDeps {
   maxBytes?: number
   maxPerCard?: number
   maxCached?: number
+  /**
+   * Read the CURRENT image mode (live, so a settings write applies without a
+   * restart). Defaults to `workspace`.
+   */
+  mode?: () => CardImageMode | undefined
   /** Wall-clock budget for one `hydrate` call. */
   budgetMs?: number
   /** How long a failed path is remembered before it is retried. */
@@ -137,6 +143,7 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
   const maxPerCard = deps.maxPerCard ?? DEFAULT_MAX_PER_CARD
   const maxCached = deps.maxCached ?? DEFAULT_MAX_CACHED
   const budgetMs = deps.budgetMs ?? DEFAULT_BUDGET_MS
+  const mode = (): CardImageMode => deps.mode?.() ?? 'workspace'
   const negativeTtlMs = deps.negativeTtlMs ?? NEGATIVE_TTL_MS
   /** abs path → key, invalidated when the file's stamp changes. */
   const keys = new Map<string, CachedKey>()
@@ -160,14 +167,16 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
   const locate = async (
     workspace: string,
     target: string,
+    allowOutside: boolean,
   ): Promise<{ path: string; stamp: string } | undefined> => {
     const root = await realpath(workspace).catch(() => undefined)
     if (root === undefined) return undefined
     const candidate = isAbsolute(target) ? resolve(target) : resolve(root, target)
     const real = await realpath(candidate).catch(() => undefined)
     if (real === undefined) return undefined
-    if (real !== root && !real.startsWith(root + sep)) {
-      deps.logger.warn(`dsh-feishu: card image ${target} is outside the workspace; left as text`)
+    if (!allowOutside && real !== root && !real.startsWith(root + sep)) {
+      deps.logger.warn(`dsh-feishu: card image ${target} is outside the workspace; left as text`
+        + ' (set the image mode to "any" to allow it)')
       return undefined
     }
     const info = await stat(real).catch(() => undefined)
@@ -206,8 +215,13 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
   }
 
   /** Key for one target, from the cache or freshly uploaded. */
-  const keyFor = async (workspace: string, target: string, budgetLeft: number): Promise<string | undefined> => {
-    const located = await locate(workspace, target)
+  const keyFor = async (
+    workspace: string,
+    target: string,
+    budgetLeft: number,
+    allowOutside: boolean,
+  ): Promise<string | undefined> => {
+    const located = await locate(workspace, target, allowOutside)
     if (located === undefined) return undefined
     const cached = keys.get(located.path)
     if (cached !== undefined && cached.stamp === located.stamp) return cached.key
@@ -226,6 +240,9 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
   return {
     async hydrate(card: object, scope: CardImageScope): Promise<object> {
       try {
+        // `text` means "never upload": nothing to resolve, and the reference is
+        // left for the writer to turn into readable text.
+        if (mode() === 'text') return card
         const targets = collectImageTargets(card, maxPerCard)
         if (targets.length === 0) return card
         const workspace = scope.workspace !== undefined && scope.workspace !== ''
@@ -241,7 +258,7 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
           const requestKey = `${workspace}\u0000${target}`
           const failedAt = failed.get(requestKey)
           if (failedAt !== undefined && now - failedAt < negativeTtlMs) continue
-          const key = await keyFor(workspace, target, budgetLeft)
+          const key = await keyFor(workspace, target, budgetLeft, mode() === 'any')
           if (key === undefined) {
             failed.set(requestKey, now)
             bound(failed)

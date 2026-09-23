@@ -184,6 +184,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
     showToolArgs: true           # 卡片显示：工具参数 · card display: tool args
     showToolResults: true        # 卡片显示：工具结果 · card display: tool results
     locale: auto                 # auto / zh / en
+    cardImages: workspace        # text / workspace / any —— 正文图片怎么处理 · how card-text images are handled
 ```
 
 **中文**
@@ -206,6 +207,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `showToolArgs` | `true` | 是否展示工具调用的参数块（需 `showToolCalls`） |
 | `showToolResults` | `true` | 是否展示工具结果预览（需 `showToolCalls`） |
 | `locale` | `auto` | 插件语言：`auto`（跟随 Harness）/ `zh` / `en` |
+| `cardImages` | `workspace` | 正文里 `![图](路径)` 怎么处理：`text` 永不上传（只留路径文字）/ `workspace` 只上传会话工作区内的图并内联显示 / `any` 工作区外的可读图片路径也上传。无论哪档，卡片都不会因图片语法被飞书拒收 |
 
 **English**
 
@@ -227,6 +229,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `showToolArgs` | `true` | Show each tool call's argument block (requires `showToolCalls`) |
 | `showToolResults` | `true` | Show each tool call's result preview (requires `showToolCalls`) |
 | `locale` | `auto` | Plugin language: `auto` (follow Harness) / `zh` / `en` |
+| `cardImages` | `workspace` | How `![alt](path)` in card text is handled: `text` never uploads (the path stays text) / `workspace` uploads and inlines images inside the session workspace only / `any` also uploads readable image paths outside it. Whichever mode is set, a card is never rejected over image syntax |
 
 ---
 

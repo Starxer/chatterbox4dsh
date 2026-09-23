@@ -18,6 +18,12 @@ describe('resolveSettingsConfig', () => {
     expect(resolveSettingsConfig({ appId: 'id' })).not.toHaveProperty('workspace')
   })
 
+  it('defaults the card image mode to workspace-only uploads', () => {
+    expect(resolveSettingsConfig({ appId: 'id' }).cardImages).toBe('workspace')
+    expect(resolveSettingsConfig({ appId: 'id', cardImages: 'text' }).cardImages).toBe('text')
+    expect(resolveSettingsConfig({ appId: 'id', cardImages: 'any' }).cardImages).toBe('any')
+  })
+
   it('preserves an empty reaction override that disables the acknowledgement', () => {
     expect(resolveSettingsConfig({ appId: 'id', reactEmoji: '' }).reactEmoji).toBe('')
   })

@@ -319,6 +319,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
    */
   const cardImages = startCardImages({
     resolveWorkspace: sessionId => bridgeHolder.current?.workspaceOf(sessionId) ?? Promise.resolve(undefined),
+    // Live read: a settings write changes this without a restart (every field
+    // is `.volatile()`), including the "never upload" mode.
+    mode: () => currentSettings().cardImages,
     upload: async (absolutePath: string) => {
       const ch = channelHolder.current
       if (ch === undefined) throw new Error('dsh-feishu: channel not connected')

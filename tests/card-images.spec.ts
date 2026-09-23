@@ -242,3 +242,46 @@ describe('startCardImages.dispose', () => {
     expect(uploads).toHaveLength(2)
   })
 })
+
+describe('image mode', () => {
+  it('uploads nothing at all in text mode', async () => {
+    const { handle, uploads } = hydrator({ mode: () => 'text' })
+    const out = await handle.hydrate(card('![a](runs/a.png)'), { workspace })
+    expect(contentOf(out)).toBe('![a](runs/a.png)')
+    expect(uploads).toHaveLength(0)
+  })
+
+  it('uploads a path outside the workspace in any mode', async () => {
+    const { handle, uploads } = hydrator({ mode: () => 'any' })
+    const out = await handle.hydrate(card(`![x](${join(outside, 'outside.png')})`), { workspace })
+    expect(contentOf(out)).toBe(`![x](${IMAGE_KEY})`)
+    expect(uploads).toHaveLength(1)
+  })
+
+  it('still refuses a symlink escape in any mode when the REAL path is unreadable', async () => {
+    const { handle, uploads } = hydrator({ mode: () => 'any' })
+    // The link target exists here, so any-mode follows it on purpose; the point
+    // is that the file itself is what gets checked, not the path text.
+    await symlink(join(outside, 'outside.png'), join(workspace, 'runs', 'link.png'))
+    await handle.hydrate(card('![x](runs/link.png)'), { workspace })
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0]).toBe(join(outside, 'outside.png'))
+  })
+
+  it('mentions the any mode in the refusal warning, so the operator knows the way out', async () => {
+    const { handle, warnings } = hydrator({ mode: () => 'workspace' })
+    await handle.hydrate(card('![x](../outside/outside.png)'), { workspace })
+    expect(warnings.join('\n')).toContain('set the image mode to "any"')
+  })
+
+  it('reads the mode live, so a settings write applies without a restart', async () => {
+    let current: 'text' | 'workspace' = 'text'
+    const { handle, uploads } = hydrator({ mode: () => current })
+    await handle.hydrate(card('![a](runs/a.png)'), { workspace })
+    expect(uploads).toHaveLength(0)
+    current = 'workspace'
+    const out = await handle.hydrate(card('![a](runs/a.png)'), { workspace })
+    expect(contentOf(out)).toBe(`![a](${IMAGE_KEY})`)
+    expect(uploads).toHaveLength(1)
+  })
+})
