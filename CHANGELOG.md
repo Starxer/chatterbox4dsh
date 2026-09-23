@@ -28,6 +28,15 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+**上线与实测（2026-09-23，两次重启）**：
+
+- **上线**：`49df1ba`（L1+L2）+ `0b82880`（L3）于 18:36:14 重启生效（`MainPID` 4193368 → 384812）；`e914bc9`（`cardImages` 设置）于 20:10:45 重启生效（→ 529495）。两次都 `systemctl` active、journal 里**卡片相关的 error / `invalid image keys` / `message handling failed` 均为 0**；产物核对 `lib/index.js` 与 `client/client.js` 都含 `cardImages`。
+- **L3 真机端到端（使用者要求"不走 `feishu_send_file`、直接内联"）**：在工作区内造了一张 120×120 蓝白棋盘格 PNG（`notes/inline-probe.png`，297 字节，放在 gitignore 的 `notes/` 下，工作区保持干净），然后**只在回答正文里**写 `![内联探针 · 蓝白棋盘格](notes/inline-probe.png)`：
+  - journal：`21:26:01 dsh-feishu: [img] uploaded notes/inline-probe.png → img_v3_0215q_b271840d-…` —— **整个回合只上传一次**（步骤卡期间被 update 多次，命中的是 `path+mtime+size` 缓存），且**没有**任何 `card image … left as text`；
+  - **服务端回读**（`im.v1.messages` + `card_msg_content_type=user_card_content`）：最近 20 条卡片里有 **2 张**的正文已经是 `![内联探针 · 蓝白棋盘格](img_v3_0215q_b271840d-…)`，即卡片确实被改写成了真 key，而不是只上传成功；
+  - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
+- **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
+
 ### 新增：卡片图片模式设置（`src/config.ts` / `src/client/` / `src/card-images.ts`，2026-09-23）
 
 - **新增配置项 `cardImages: 'text' | 'workspace' | 'any'`（默认 `workspace`）**，在 **Settings → 飞书与 Lark → 卡片显示** 里以「正文里的图片」下拉呈现（沿用该页既有的原生 `<select>` 行，不需要新组件）。三档的含义：
