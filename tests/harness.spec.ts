@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { HarnessConversationService } from '../src/harness.ts'
@@ -701,6 +702,41 @@ describe('HarnessConversationService', () => {
     expect(service.resolveChat(sessionId)).toEqual({ chatId: 'a', chatType: 'p2p', threadId: 't1' })
     service.noteTopic({ ...topicA, rootId: 'om_root' })
     expect(service.resolveChat(sessionId)).toEqual({ chatId: 'a', chatType: 'p2p', threadId: 't1', rootId: 'om_root' })
+  })
+
+  // 2026-09-23: a restart landing mid-turn wiped the state file — every binding
+  // except `busyMode` (which `dispose` forgot to clear), so the DM and ten topics
+  // silently fell back to their default-derived session.
+  it('never overwrites the persisted map from a disposed instance', async () => {
+    const statePath = join(tmpdir(), `lark-map-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    const chat = { chatId: 'a', chatType: 'p2p' as const }
+    const topic = { chatId: 'a', chatType: 'group' as const, threadId: 't1' }
+    const bound = service.startNewSession(chat, 's1')
+    service.startNewSession(topic, 's2')
+    service.noteTopic({ ...topic, rootId: 'om_root' })
+    const before = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(Object.keys(before.chatToSession)).toHaveLength(2)
+
+    await service.dispose()
+    // An async task still holding the disposed instance (a late card callback, an
+    // in-flight inbound message) must not be able to persist the emptied tables.
+    service.startNewSession(chat, 's3')
+    service.setBusyMode(chat, 'queue')
+    const after = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(after.chatToSession).toEqual(before.chatToSession)
+    expect(Object.values(after.chatToSession)).toContain(bound)
+    expect(after.chatToRootId).toEqual(before.chatToRootId)
+  })
+
+  it('writes the map atomically, leaving no temp file behind', async () => {
+    const statePath = join(tmpdir(), `lark-map-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    service.startNewSession({ chatId: 'a', chatType: 'p2p' as const }, 's1')
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).chatToSession).toBeDefined()
+    expect(() => readFileSync(`${statePath}.tmp`, 'utf-8')).toThrow()
   })
 
   it('persists topic roots across restarts', async () => {

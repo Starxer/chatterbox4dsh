@@ -37,6 +37,33 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 修复：重启落在活跃回合上，会把「聊天 → 会话」绑定整份清空（`src/harness.ts` / `src/index.ts` / `src/feishu-streaming.ts`，2026-09-23）
+
+**现象**：使用者报告「服务重启了以后，切换到了一个以前的 session，而不是自动回到当前的 session」。查下来不是"选错了会话"，而是**磁盘上的绑定表被清空**，聊天于是退回**按 chatId 算出来的默认会话**——那个默认会话恰好是一个旧会话。
+
+**取证（三条独立证据）**：
+
+1. **有升级前的备份可对照**。09-23 01:47 的 alpha.2 升级脚本留了一份 `lark-session-map.json` 副本：`chatToSession` **11 条**（1 个 DM + 10 个群话题）、`chatToRootId` **10 条**；而事故后磁盘上只剩 `chatToSession` 1 条、`chatToRootId` **0 条**——**唯独 `busyMode` 6 条完好无损**。
+2. **默认会话是确定性哈希，可验算**。`toSessionId` = `sha256('feishu\0' + chatKey)` 前 40 位（`conversation.ts`）。算 `chat:<DM>` 得到一个确定的 `lark-v2-…` id，正是重启后聊天落到的那个"旧 session"。
+3. **会话日志时间线对得上**。事故前的那个会话在 **21:51:19 → 22:01:29 没有任何事件**；而算出来的默认会话（此前最后活动是凌晨 03:20）在 **21:56:37** 突然被唤醒，使用者 21:56 那条消息就是进了它。
+
+**根因**：`HarnessConversationService.dispose()` 会清空 `chatToSession` / `chatToRootId` / `seenChatKeys` / `chatToCreation`，而 `saveSessionMap()` 把内存里的这几张表整体写成文件。**dispose 之后仍有 in-flight 异步任务持有这个已 dispose 的实例**（`bridgeHolder.current` 不被清），任何一次 `recordChatKey` / `noteTopic` / `setBusyMode` 都会触发保存 → **把清空后的状态写回磁盘**。触发条件是「重启正好打在正在跑的回合上」（本次 21:51:06 的停止，21:51:04 还在发步骤卡；20:10 那次重启时聊天空闲，所以没丢）。`chatToBusyMode` 是唯一幸存字段，因为 dispose 漏清了它——这条特征也正是把嫌疑锁定到 dispose 的依据（文件被截断或解析失败会让四个字段一起空，并且会打 `loadSessionMap failed`，journal 里 0 条）。
+
+**改动**：
+
+- `dispose()` 先置 `disposed`；`saveSessionMap()` 见到它直接**拒写**并留一行日志。
+- 再加一条**空表拒写**：本次启动从磁盘读回过绑定（`loadedBindings > 0`）而现在两张表都空了，说明有*第二条*清空路径，同样拒写并打日志——这行日志若真出现，就是那条未知路径的线索。
+- 落盘改为**临时文件 + rename**（原子写）：重启/SIGKILL 打在写盘中间不再留下半截 JSON（那会让下一次启动把**全部**绑定一起丢掉，而不只是上次保存之后的改动）。
+- 启动读取失败时把坏文件**隔离**成 `lark-session-map.json.corrupt-<ts>`，而不是让下一次保存直接覆盖掉唯一的副本。
+- `loadSessionMap()` 每次启动打一行「读回了几条绑定 / 几个话题根」——本次事故只能靠不相关的升级备份反推，就是因为少了这一行。
+- `dispose()` 顺带清 `chatToBusyMode`，不再制造「只剩一个字段」这种看着像正常的半损坏文件。
+
+**顺带修掉的第二个洞（真机实测发现）**：飞书对**非法卡内容不抛错**，而是返回 **`code=200570` + `card_id: ""`**（实测：普通卡 `code=0` + 19 位 id；带非法图片 key 的卡 `code=200570` + 空 id）。而 `createCardInstance` 原先只判 `cardId === undefined`，**空字符串会通过**，被当成正常 card_id 交给 `sendCardByReference('')` → 飞书报 `cardid is invalid`，且该分支**不再回退普通发送** → **那张步骤卡永远不出现**。这正是 journal 里 `[send] send by reference failed: … cardid is invalid` 的成因。现在：`createCardInstance` 遇非零 code 抛出**带 code/msg 文本**的错误（于是能被 `card-write.ts` 的拒收重试与回退 patch 认出来），空 id 一律拒绝；`feishu-streaming.ts` 侧也把空 id 当"没有可用引用"，直接走普通发送。
+
+**测试**：`tests/harness.spec.ts` +2（disposed 实例不得覆写已持久化的 map——含话题根；原子写不留 `.tmp`），`tests/feishu-streaming.spec.ts` +1（空 card id 回退普通发送、不调 `sendCardByReference`）。全量 **650 passed / 41 files**，typecheck 0 error，build 通过且 `client/client.js` **逐字节未变**。
+
+**数据恢复**：事故丢掉的是 10 个群话题的绑定与 10 个话题根坐标（它们**全部**不等于各自的默认值，也就是说这 10 个话题当时也一起退回了默认会话）。已从 01:47 备份合并回填（`chatToSession` + `seenChatKeys` + `chatToRootId` 取备份、`busyMode` 取当前），在**服务停止的窗口内**写入后再启动，因此不存在被运行实例覆盖的窗口。
+
 ### 修复：卡片写不进去时用户不再一无所知；错误原因不再被外层包装吃掉（`src/error-text.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-09-23）
 
 **先纠正旧结论**：TODO 里 O6 记的是「飞书侧报错被截断、不如 WebUI 详细」。使用者先说「现在很多错误在飞书已经能看得到了」，实测证实了这个观察——**那四条截断上限在真实负载下一次都没咬到**。口径：本机全部 **23 个会话日志**（`session.v3.jsonl.zstd`）解出每个 `tool-result` 块，取 `isError === true` 的正文长度：

@@ -385,6 +385,27 @@ describe('step card delivery', () => {
     streaming.stop()
   })
 
+  it('falls back to a plain send when the card instance has no usable id', async () => {
+    // Feishu answers `card.create` for unacceptable content with code=200570 and
+    // an EMPTY card_id instead of throwing. Referencing that id fails with
+    // `cardid is invalid` and used to leave the step card unposted.
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => ''),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(channel)
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'hello' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(200)
+    expect(channel.sendCardByReference).not.toHaveBeenCalled()
+    expect(channel.send).toHaveBeenCalledOnce()
+    streaming.stop()
+  })
+
   it('falls back to send + im.v1.message.patch when the channel has no CardKit methods', async () => {
     const channel: StepChannel = {
       send: vi.fn(async () => ({ messageId: 'm-plain' })),

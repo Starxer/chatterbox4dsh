@@ -376,7 +376,20 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         data: { type: 'card_json', data: JSON.stringify(payload) },
       }).then((r: any) => {
         const cardId = r.data?.card_id as string | undefined
-        if (cardId === undefined) throw new Error('dsh-feishu: cardkit.card.create returned no card_id')
+        // A non-zero business code with an EMPTY card_id is how Feishu reports
+        // content it will not accept (verified 2026-09-23: `card.create` for a
+        // card whose markdown carries a bad image key answers `code=200570`,
+        // `card_id: ''` — it does not throw). Throwing with the code and message
+        // in the text lets `cardWriter`'s rejection retry and the patch fallback
+        // recognize it, and keeps an empty id from ever reaching
+        // `sendCardByReference`, which would fail with `cardid is invalid` and
+        // leave the step card unposted (that was the 11:27 journal line).
+        if (r.code !== undefined && r.code !== 0) {
+          throw new Error(`dsh-feishu: cardkit.card.create rejected the content: code=${r.code} msg=${r.msg ?? 'unknown'}`)
+        }
+        if (cardId === undefined || cardId === '') {
+          throw new Error('dsh-feishu: cardkit.card.create returned no card_id')
+        }
         return cardId
       }), 'create card instance'))
     },

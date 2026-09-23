@@ -577,7 +577,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       })
       : Promise.resolve(undefined)
     const sendMessage = (id: string | undefined): Promise<string | undefined> => {
-      if (id !== undefined) {
+      // An empty id means "no usable reference", not a reference:
+      // `sendCardByReference('')` fails with `cardid is invalid`, and because
+      // that failure is caught below without retrying another shape, the step
+      // card used to go unposted entirely (the 2026-09-23 11:27 journal line).
+      // `createCardInstance` now rejects an empty id as well; this is the
+      // belt-and-braces half, so the plain send still happens either way.
+      if (id !== undefined && id !== '') {
         return channel.sendCardByReference!(chat.chatId, id, opts).then((r) => {
           console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via card=${id}`)
           return r.messageId

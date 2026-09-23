@@ -1,7 +1,7 @@
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, expandAssistantStream, isTokenDelta, type ReasoningEffortId, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './conversation.ts'
@@ -192,6 +192,22 @@ export class HarnessConversationService {
    * `chatToSession` so the choice survives restarts.
    */
   private readonly chatToBusyMode = new Map<string, BusyMode>()
+  /**
+   * Set by {@link dispose}. Persisting after that is never right: `dispose`
+   * empties the maps above on purpose, so a save from an async task still
+   * running on the disposed instance would write an EMPTY binding table over a
+   * good one — every chat would silently fall back to its default session
+   * (observed 2026-09-23: a restart landing mid-turn wiped the DM binding plus
+   * ten topic bindings and their roots, and the only surviving field was
+   * `busyMode`, which `dispose` forgot to clear).
+   */
+  private disposed = false
+  /**
+   * How many chat→session bindings the state file held at boot. Guards
+   * {@link saveSessionMap} against overwriting a populated file with an empty
+   * table — see the guard there.
+   */
+  private loadedBindings = 0
   /** Per-chat stop generation. `/stop` bumps it; a queued `reply` that was
    *  waiting for idle detects the bump and drops instead of submitting. This
    *  is what makes `/stop` actually discard a message queued while running. */
@@ -244,6 +260,7 @@ export class HarnessConversationService {
       if (legacy !== undefined) {
         for (const [k, v] of Object.entries(legacy)) this.chatToSession.set(k, v)
         for (const k of Object.keys(legacy)) this.seenChatKeys.add(k)
+        this.loadedBindings = this.chatToSession.size
         return
       }
       const parsed = data as {
@@ -260,26 +277,74 @@ export class HarnessConversationService {
       // Insertion order is preserved by JSON, so the topic recency order
       // written by `noteTopic` survives the restart.
       for (const [k, v] of Object.entries(parsed.chatToRootId ?? {})) this.chatToRootId.set(k, v)
+      this.loadedBindings = this.chatToSession.size
+      // Logged because a binding that silently fails to load is indistinguishable
+      // from one that was never made — the 2026-09-23 wipe had to be
+      // reconstructed from an unrelated upgrade backup before this line existed.
+      console.log('dsh-feishu: session map loaded:'
+        + ` ${this.chatToSession.size} bound, ${this.seenChatKeys.size} seen,`
+        + ` ${this.chatToRootId.size} topic roots, ${this.chatToBusyMode.size} busy modes`)
     } catch (error: unknown) {
       // ENOENT is expected on first run; log other errors
       if ((error as { code?: string }).code !== 'ENOENT') {
-        console.error('dsh-feishu: loadSessionMap failed:', error instanceof Error ? error.message : String(error))
+        const detail = error instanceof Error ? error.message : String(error)
+        console.error('dsh-feishu: loadSessionMap failed:', detail)
+        // Quarantine the unreadable file instead of letting the next save
+        // overwrite it: the bindings in it are the only copy, and a torn write
+        // (SIGKILL mid-save) must be recoverable by hand.
+        try {
+          const quarantine = `${path}.corrupt-${Date.now()}`
+          renameSync(path, quarantine)
+          console.error(`dsh-feishu: unreadable session map moved to ${quarantine}`)
+        } catch { /* keep going: the map will simply be rebuilt */ }
       }
     }
   }
 
-  /** Persist the current chat→session map to disk (best-effort). */
+  /**
+   * Persist the current chat→session map to disk (best-effort).
+   *
+   * Two refusals, both of which only ever SKIP a write (so a legitimate first
+   * save, when no file exists yet, is unaffected):
+   *
+   * 1. after {@link dispose} emptied the tables — see the `disposed` field;
+   * 2. an empty table over a file that held bindings at boot — an unknown path
+   *    that empties the maps must not destroy the only copy of the bindings.
+   *
+   * The write itself is atomic (temp + rename): a restart landing mid-write
+   * must not leave a truncated file, which the next boot would have to discard
+   * wholesale.
+   */
   private saveSessionMap(): void {
     const path = this.config.statePath
     if (path === undefined || path === '') return
+    if (this.disposed) {
+      console.log('dsh-feishu: refusing to persist the session map: the bridge was disposed')
+      return
+    }
+    // A map that lost every binding while disk still held one means some caller
+    // emptied the tables without disposing — writing here would destroy the only
+    // copy of the bindings. Loud on purpose: this line firing is the signal that
+    // a second wipe path exists.
+    if (this.loadedBindings > 0 && this.chatToSession.size === 0 && this.seenChatKeys.size === 0) {
+      console.log('dsh-feishu: refusing to persist the session map:'
+        + ` an empty table would replace the ${this.loadedBindings} bindings loaded from disk`)
+      return
+    }
     try {
       mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(path, JSON.stringify({
+      const body = JSON.stringify({
         chatToSession: Object.fromEntries(this.chatToSession),
         seenChatKeys: [...this.seenChatKeys],
         busyMode: Object.fromEntries(this.chatToBusyMode),
         chatToRootId: Object.fromEntries(this.chatToRootId),
-      }), 'utf-8')
+      })
+      // Atomic: a restart (or SIGKILL) landing mid-write must never leave a
+      // truncated JSON behind, because the next boot would then lose EVERY
+      // binding rather than the ones changed since the last good save.
+      const tmp = `${path}.tmp`
+      writeFileSync(tmp, body, 'utf-8')
+      renameSync(tmp, path)
     } catch (error: unknown) {
       console.error('dsh-feishu: saveSessionMap failed:', error instanceof Error ? error.message : String(error))
     }
@@ -671,6 +736,10 @@ export class HarnessConversationService {
   }
 
   async dispose(): Promise<void> {
+    // First, so every later save from an in-flight task is refused: the maps
+    // below are about to be emptied, and persisting that state would wipe the
+    // chat→session bindings on disk (2026-09-23).
+    this.disposed = true
     const handles = await Promise.allSettled(this.handles.values())
     await Promise.all(handles.flatMap(result => result.status === 'fulfilled' ? [result.value.dispose()] : []))
     this.handles.clear()
@@ -678,6 +747,9 @@ export class HarnessConversationService {
     this.chatToRootId.clear()
     this.seenChatKeys.clear()
     this.chatToCreation.clear()
+    // Cleared for consistency with the rest: leaving it out is what made the
+    // wiped file look like a partial, almost-plausible state file.
+    this.chatToBusyMode.clear()
   }
 
   /**
