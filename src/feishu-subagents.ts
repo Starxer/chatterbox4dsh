@@ -65,6 +65,12 @@ export interface SubagentPanelRow {
   model: string
   /** Edge distance from the chat-bound session: a direct child is `1`. */
   depth: number
+  /**
+   * The parent's child-session id, or `undefined` for a direct child of the
+   * chat-bound session. Kept so the card can draw a real tree (`└─ ` / `├─ `)
+   * rather than invisible indentation, which Feishu renders as a flat list.
+   */
+  parentId: string | undefined
   state: SubagentState
   /** Start of the current epoch; the elapsed time of a running row. */
   epochStart: number
@@ -176,6 +182,69 @@ function modePresentation(mode: SubagentMode, t: Translations): string {
 }
 
 /**
+ * Group rows by their parent, oldest child first. A row whose parent is not in
+ * `rows` (pruned, or never known) is treated as a root, so pruning can never
+ * push a row out of the table.
+ */
+function childrenByParent(rows: readonly SubagentPanelRow[]): Map<string | undefined, SubagentPanelRow[]> {
+  const ids = new Set(rows.map(row => row.id))
+  const byParent = new Map<string | undefined, SubagentPanelRow[]>()
+  for (const row of rows) {
+    const parent = row.parentId !== undefined && ids.has(row.parentId) ? row.parentId : undefined
+    const siblings = byParent.get(parent)
+    if (siblings === undefined) byParent.set(parent, [row])
+    else siblings.push(row)
+  }
+  for (const siblings of byParent.values()) siblings.sort((a, b) => a.createdAt - b.createdAt)
+  return byParent
+}
+
+/**
+ * Depth-first order: a parent immediately precedes its own children, which is
+ * what makes {@link treePrefixes} readable.
+ *
+ * @param rows - the roster.
+ * @returns the rows in tree order.
+ */
+export function treeOrder(rows: readonly SubagentPanelRow[]): SubagentPanelRow[] {
+  const byParent = childrenByParent(rows)
+  const ordered: SubagentPanelRow[] = []
+  const visit = (parent: string | undefined): void => {
+    for (const row of byParent.get(parent) ?? []) {
+      ordered.push(row)
+      visit(row.id)
+    }
+  }
+  visit(undefined)
+  return ordered
+}
+
+/**
+ * Tree connector for each row's label cell: `└─ ` for a last child, `├─ ` for
+ * one with a following sibling, prefixed by `│  ` / `   ` per ancestor that
+ * still has siblings below it. Roots get no connector.
+ *
+ * @param rows - the roster.
+ * @returns row id → connector prefix.
+ */
+export function treePrefixes(rows: readonly SubagentPanelRow[]): Map<string, string> {
+  const byParent = childrenByParent(rows)
+  const prefixes = new Map<string, string>()
+  const visit = (parent: string | undefined, bars: readonly boolean[]): void => {
+    const siblings = byParent.get(parent) ?? []
+    siblings.forEach((row, index) => {
+      const last = index === siblings.length - 1
+      prefixes.set(row.id, parent === undefined
+        ? ''
+        : `${bars.map(more => (more ? '│  ' : '   ')).join('')}${last ? '└─ ' : '├─ '}`)
+      visit(row.id, parent === undefined ? [] : [...bars, !last])
+    })
+  }
+  visit(undefined, [])
+  return prefixes
+}
+
+/**
  * Structural fingerprint of a roster: everything the table shows EXCEPT the
  * clock-derived durations, so a mere clock tick can never justify a new card.
  *
@@ -199,30 +268,38 @@ export function subagentRosterSignature(rows: readonly SubagentPanelRow[]): stri
  * @returns the Card JSON 2.0 object.
  */
 export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Translations, now: number): object {
-  const sorted = [...rows].sort((a, b) => a.createdAt - b.createdAt)
-  const shown = sorted.slice(-PANEL_MAX_ROWS)
+  // Depth-first order puts every child directly under its parent, which is what
+  // makes the connectors below mean something.
+  const ordered = treeOrder(rows)
+  const prefixes = treePrefixes(rows)
+  const shown = ordered.slice(-PANEL_MAX_ROWS)
   const headers = [t.subagentPanelColStatus, t.subagentPanelColAgent, t.subagentPanelColModel, t.subagentPanelColSession, t.subagentPanelColMode, t.subagentPanelColDuration]
   const body = shown.map(row => {
     const status = subagentPresentation(row, t)
-    // Nesting reads as indentation instead of a sixth column: the card has no
-    // room for a one-digit depth, and the tree is what the reader needs.
-    const indent = '　'.repeat(Math.max(0, row.depth - 1))
+    // A drawn connector instead of leading spaces: Feishu collapses or hides
+    // whitespace inside a table cell, so an indent-only tree read as a flat
+    // list (operator feedback 2026-09-23). Box-drawing glyphs survive, and
+    // inside the code span they also align in a monospace face.
+    const prefix = prefixes.get(row.id) ?? ''
     const elapsed = row.state === 'running'
       ? now - row.epochStart
       : row.epochMs ?? (row.settledAt ?? now) - row.epochStart
     const label = row.label.trim()
     return [
       `${status.icon} ${status.text}`,
-      `${indent}${tableCell(label === '' ? t.subagentUntitled : label, { code: true, max: 40 })}`,
+      // The connector stays OUTSIDE the code span: `tableCell` collapses all
+      // whitespace, which would flatten `│  ` (two spaces) to `│ ` and break
+      // the tree's alignment.
+      `${prefix}${tableCell(label === '' ? t.subagentUntitled : label, { code: true, max: 40 })}`,
       row.model === '' ? '—' : tableCell(row.model, { code: true, max: 24 }),
       tableCell(row.id, { code: true, max: 14 }),
       modePresentation(row.mode, t),
       formatDuration(elapsed),
     ]
   })
-  const running = sorted.filter(row => row.state === 'running').length
-  const lines = [`**${t.subagentPanelSummary(running, sorted.length)}**`, '', renderTable(headers, body)]
-  if (sorted.length > shown.length) lines.push('', `_${t.panelMoreRows(sorted.length - shown.length)}_`)
+  const running = ordered.filter(row => row.state === 'running').length
+  const lines = [`**${t.subagentPanelSummary(running, ordered.length)}**`, '', renderTable(headers, body)]
+  if (ordered.length > shown.length) lines.push('', `_${t.panelMoreRows(ordered.length - shown.length)}_`)
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -323,6 +400,7 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
       label: data.label,
       model: '',
       depth,
+      parentId: parent === undefined ? undefined : parentSessionId,
       state: 'running',
       epochStart: data.childCreatedAt,
       epochMs: undefined,

@@ -4,6 +4,8 @@ import {
   renderSubagentPanelCard,
   startFeishuSubagents,
   subagentRosterSignature,
+  treeOrder,
+  treePrefixes,
   type SubagentPanelRow,
 } from '../src/feishu-subagents.ts'
 import { PANEL_MAX_ROWS } from '../src/feishu-panel.ts'
@@ -19,6 +21,7 @@ function row(overrides: Partial<SubagentPanelRow> = {}): SubagentPanelRow {
     label: 'audit the parser',
     model: '',
     depth: 1,
+    parentId: undefined,
     state: 'running',
     epochStart: 1_000,
     epochMs: undefined,
@@ -140,10 +143,48 @@ describe('renderSubagentPanelCard', () => {
     }
   })
 
-  it('indents a grandchild instead of adding a depth column', () => {
-    const text = markdownOf(renderSubagentPanelCard([row(), row({ id: 'child-2', depth: 2, createdAt: 2_000 })], zh, 5_000) as any)
-    expect(text).toContain('| 　`')
-    expect(text.split('\n').filter(line => line.startsWith('| ') && !line.includes('---') && !line.includes(zh.subagentPanelColStatus))).toHaveLength(2)
+  it('draws a grandchild as a tree child of the row above it', () => {
+    const text = markdownOf(renderSubagentPanelCard([
+      row(),
+      row({ id: 'child-2', createdAt: 2_000, depth: 2, parentId: 'child-1' }),
+    ], zh, 5_000) as any)
+    // A drawn connector, not leading spaces: Feishu collapsed the indent.
+    expect(text).toContain('└─ `audit the parser`')
+    expect(text).not.toContain('　')
+    const dataRows = text.split('\n').filter(line => line.startsWith('| ') && !line.includes('---') && !line.includes(zh.subagentPanelColStatus))
+    expect(dataRows).toHaveLength(2)
+    // The parent comes first, the child directly under it.
+    expect(dataRows[0]!.indexOf('audit the parser')).toBeGreaterThan(-1)
+    expect(dataRows[1]!.indexOf('└─ ')).toBeGreaterThan(-1)
+  })
+
+  it('nests siblings and deeper levels with the right connectors', () => {
+    const rows = [
+      row({ id: 'root-1', label: 'root one', createdAt: 1_000 }),
+      row({ id: 'root-2', label: 'root two', createdAt: 1_100 }),
+      row({ id: 'kid-a', label: 'kid a', createdAt: 2_000, depth: 2, parentId: 'root-1' }),
+      row({ id: 'kid-b', label: 'kid b', createdAt: 2_100, depth: 2, parentId: 'root-1' }),
+      row({ id: 'grand-1', label: 'grand one', createdAt: 3_000, depth: 3, parentId: 'kid-a' }),
+    ]
+    const text = markdownOf(renderSubagentPanelCard(rows, en, 9_000) as any)
+    const cell = (label: string): string => text.split('\n').find(line => line.includes(label)) ?? ''
+    expect(cell('root one')).toContain('| `root one` |')
+    expect(cell('kid a')).toContain('├─ `kid a`')
+    expect(cell('grand one')).toContain('│  └─ `grand one`')
+    expect(cell('kid b')).toContain('└─ `kid b`')
+    expect(cell('root two')).toContain('| `root two` |')
+    // Tree order: parent, its subtree, then the next root.
+    const order = ['root one', 'kid a', 'grand one', 'kid b', 'root two']
+      .map(label => text.split('\n').findIndex(line => line.includes(label)))
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+  })
+
+  it('treats a row whose parent left the roster as a root', () => {
+    const text = markdownOf(renderSubagentPanelCard([
+      row({ id: 'kid-a', label: 'orphan', depth: 2, parentId: 'gone' }),
+    ], en, 9_000) as any)
+    expect(text).toContain('| `orphan` |')
+    expect(text).not.toContain('└─')
   })
 
   it('falls back to the untitled label and the unknown mode', () => {
@@ -208,8 +249,8 @@ describe('startFeishuSubagents', () => {
     expect(h.sent).toHaveLength(2)
     expect(h.sent[1]!.to).toBe('oc_1')
     const text = markdownOf(h.sent[1]!.card)
-    expect(text).toContain('`verify the fix`')
-    expect(text).toContain('| 　`')
+    expect(text).toContain('└─ `verify the fix`')
+    expect(text).toContain('└─ ')
     expect(text).toContain(zh.subagentPanelSummary(2, 2))
     h.stop()
   })
