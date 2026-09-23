@@ -149,6 +149,8 @@ export interface Translations {
   stepCardTitleReply: string
   /** Title of the placeholder card posted the moment a step starts, before any output exists. */
   stepPlaceholderTitle: string
+  /** Marks a step card belonging to a turn a background-job notice opened. */
+  stepJobTriggerNote: string
   /** One-line body of that placeholder, telling the reader it updates in place. */
   stepPlaceholderBody: string
   /** Title of a step that ended without anything to show (the placeholder's terminal form). */
@@ -363,6 +365,8 @@ export interface Translations {
   jobPanelColId: string
   jobPanelColDuration: string
   jobPanelColProgress: string
+  jobPanelClearButton: string
+  jobPanelCleared: (count: number) => string
   jobUntitled: string
   jobStatusRunning: string
   jobStatusStopping: string
@@ -499,6 +503,7 @@ export const zh = {
   stepCardTitleCall: '工具调用',
   stepCardTitleReply: '回复',
   stepPlaceholderTitle: '🧠 深度思考中…',
+  stepJobTriggerNote: '⚡ 本回合由**后台任务完成通知**触发',
   stepPlaceholderBody: '⏳ 模型正在思考，输出会就地更新在这张卡上',
   stepEmptyTitle: '本步无输出',
   stepEmptyBody: '（本步没有可显示的内容）',
@@ -691,6 +696,8 @@ export const zh = {
   jobPanelColId: '编号',
   jobPanelColDuration: '耗时',
   jobPanelColProgress: '进度 / 结果',
+  jobPanelClearButton: '🧹 清理已完成',
+  jobPanelCleared: count => `🧹 已清理 ${count} 个已完成的后台任务`,
   jobUntitled: '未命名任务',
   jobStatusRunning: '运行中',
   jobStatusStopping: '正在停止',
@@ -826,6 +833,7 @@ export const en: Translations = {
   stepCardTitleCall: 'Tool Call',
   stepCardTitleReply: 'Reply',
   stepPlaceholderTitle: '🧠 Thinking…',
+  stepJobTriggerNote: '⚡ This turn was triggered by a **background-job notice**',
   stepPlaceholderBody: '⏳ The model is thinking — output updates this card in place',
   stepEmptyTitle: 'Empty step',
   stepEmptyBody: '(nothing to show for this step)',
@@ -1019,6 +1027,8 @@ export const en: Translations = {
   jobPanelColId: 'ID',
   jobPanelColDuration: 'Duration',
   jobPanelColProgress: 'Progress / result',
+  jobPanelClearButton: '🧹 Clear finished',
+  jobPanelCleared: count => `🧹 Cleared ${count} finished background job${count === 1 ? '' : 's'}`,
   jobUntitled: 'Untitled job',
   jobStatusRunning: 'Running',
   jobStatusStopping: 'Stopping',

@@ -26,7 +26,8 @@
  */
 
 import { conversationKey, type ConversationMessage } from './conversation.ts'
-import { createPanelSender, formatDuration, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
+import { decodeCardValue } from './card-action.ts'
+import { createPanelSender, formatDuration, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, replyOptsForChat, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
 import type { Translations } from './i18n.ts'
 
 /** Current lifecycle state of one job. */
@@ -108,10 +109,26 @@ export interface FeishuJobsHandle {
   noteDetached: (notice: DetachedJobNotice) => void
 }
 
+/** One card action delivered by a click on a panel button. */
+export interface JobPanelCardEvent {
+  chatId?: string
+  messageId?: string
+  action?: { value?: unknown }
+}
+
+/**
+ * Channel surface for the panel: card/text sends, plus the shared card-action
+ * fan-out when the deployment can deliver clicks (tests omit it).
+ */
+export interface FeishuJobsChannel extends PanelChannel {
+  send(to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
+  onCardAction?(handler: (event: JobPanelCardEvent) => void | Promise<void>): () => void
+}
+
 /** Public deps for the jobs module. */
 export interface FeishuJobsDeps {
   jobs: JobsServiceLike
-  channel: PanelChannel
+  channel: FeishuJobsChannel
   logger: PanelLogger
   /** Return the strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
@@ -120,6 +137,9 @@ export interface FeishuJobsDeps {
   /** Test seam: non-urgent refresh floor. Production omits it. */
   refreshMs?: number
 }
+
+/** The button payload this module owns. */
+const CLEAR_PANEL_ACTION = 'jobs-clear'
 
 /** One roster row: the latest projection plus when it settled. */
 export interface JobPanelRow {
@@ -277,11 +297,24 @@ export function renderJobPanelCard(rows: readonly JobPanelRow[], t: Translations
   const running = sorted.filter(row => !isTerminal(row.view.status)).length
   const lines = [`**${t.jobPanelSummary(running, sorted.length)}**`, '', renderTable(headers, body)]
   if (sorted.length > shown.length) lines.push('', `_${t.panelMoreRows(sorted.length - shown.length)}_`)
+  const elements: object[] = [{ tag: 'markdown', content: lines.join('\n') }]
+  // The "clear finished" action mirrors the WebUI's job list, which hides its
+  // settled tail on demand. It is only offered when there IS a settled row to
+  // clear — a button that cannot do anything is worse than no button. Card 2.0
+  // buttons only honour `behaviors` (关键坑 4).
+  if (shown.some(row => isTerminal(row.view.status))) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.jobPanelClearButton },
+      type: 'default',
+      behaviors: [{ type: 'callback', value: { p: CLEAR_PANEL_ACTION } }],
+    })
+  }
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: t.jobPanelTitle }, template: 'wathet' },
-    body: { elements: [{ tag: 'markdown', content: lines.join('\n') }] },
+    body: { elements },
   }
 }
 
@@ -350,6 +383,53 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
     if (!rosters.has(key)) return
     panel.refresh(key, urgent)
   }
+
+  /**
+   * The "clear finished" button was pressed on one of this panel's cards.
+   *
+   * Semantics deliberately match the WebUI's job list, whose Clear hides the
+   * settled tail of the view only: the host registry keeps its records, so a
+   * cleared job is gone from the ROSTER (and therefore from later cards) but
+   * nothing about the job itself changes. The roster is looked up by the
+   * CLICKED card's message id, never by the chat (关键坑 31).
+   *
+   * @param event - the card-action payload.
+   */
+  const onCardAction = async (event: JobPanelCardEvent): Promise<void> => {
+    try {
+      const parsed = decodeCardValue(event.action?.value)
+      if (parsed?.p !== CLEAR_PANEL_ACTION) return
+      const messageId = event.messageId
+      if (messageId === undefined) return
+      const key = panel.keyOf(messageId)
+      if (key === undefined) {
+        // The card predates the tracked window (or is not ours): say so rather
+        // than silently doing nothing.
+        logger.info(`dsh-feishu: background-task clear clicked on an untracked card in ${event.chatId ?? '-'}; ignored`)
+        return
+      }
+      const roster = rosters.get(key)
+      if (roster === undefined) return
+      let cleared = 0
+      for (const [id, row] of roster.rows) {
+        if (!isTerminal(row.view.status)) continue
+        roster.rows.delete(id)
+        cleared += 1
+      }
+      if (cleared === 0) return
+      if (roster.rows.size > 0) {
+        // A live row remains, so the cleaned snapshot is its own acknowledgement.
+        refresh(key, true)
+        return
+      }
+      rosters.delete(key)
+      const t = getTranslations()
+      await channel.send(roster.chat.chatId, { text: t.jobPanelCleared(cleared) }, replyOptsForChat(roster.chat))
+    } catch (error: unknown) {
+      warn('background-task clear failed', error)
+    }
+  }
+  const unsubscribeCardAction = channel.onCardAction?.((event: JobPanelCardEvent) => onCardAction(event))
 
   /** Registry listeners are synchronous and contained — this must not throw. */
   const handle = (event: JobEventLike): void => {
@@ -435,6 +515,7 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
   return {
     dispose: () => {
       unsubscribe()
+      unsubscribeCardAction?.()
       panel.dispose()
       rosters.clear()
       pendingViews.clear()

@@ -252,6 +252,20 @@ interface SessionStepState {
   usage: StepUsage | undefined
   /** Context window info for the current session (fetched once per turn). */
   contextMeta: { contextWindow: number; lastInputTokens: number } | undefined
+  /**
+   * Whether the FIRST `user/message` of the current turn has been seen. The
+   * message that opens a turn is appended right after that turn's first
+   * `step/start`, so "first message of the turn" is what separates a turn the
+   * notice OPENED from a notice injected into a running turn.
+   */
+  sawTurnUserMessage: boolean
+  /**
+   * Whether a background-job completion notice opened the current turn. DSH
+   * wakes an idle owner with `owner.followup(notice)` (the notice is the
+   * turn's trigger) and injects into a busy one instead, so this is the
+   * Feishu-side equivalent of the Web UI's "turn triggered by" attribution.
+   */
+  turnTriggeredByJob: boolean
   // --- Turn-level aggregation ---
   turnStats: TurnStats | undefined
 }
@@ -291,6 +305,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         completedTime: 0,
         usage: undefined,
         contextMeta: undefined,
+        sawTurnUserMessage: false,
+        turnTriggeredByJob: false,
         turnStats: undefined,
       }
       sessionStates.set(sessionId, state)
@@ -423,6 +439,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         showToolArgs: showToolArgs?.() !== false,
         showToolResults: showToolResults?.() !== false,
         ...(emptyPhase !== undefined ? { empty: emptyPhase } : {}),
+        ...(state.turnTriggeredByJob ? { triggeredByJob: true } : {}),
       },
     )
   }
@@ -1054,6 +1071,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         lastStepSendPromises.delete(sessionId)
         // New turn, new delivery question.
         turnTextDelivered.delete(sessionId)
+        // The trigger attribution belongs to one turn: re-decide it from this
+        // turn's own first user message.
+        state.sawTurnUserMessage = false
+        state.turnTriggeredByJob = false
         state.turnStats = {
           turnStartTime: event.time ?? Date.now(),
           stepCount: 0,
@@ -1081,6 +1102,23 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
           if (state.stepCardSent) updateStepCard(state)
         }).catch(() => undefined)
+      } else if (event.type === 'user/message') {
+        // Attribute the turn to its trigger. DSH appends the message that
+        // OPENED a turn right after that turn's first `step/start`, while a
+        // notice injected into a busy owner is claimed at a later step — so
+        // the turn's FIRST user message is what identifies a waking notice.
+        // Only the background-job notice is marked here (`tool-jobs`, the same
+        // source the Web UI attributes a "job" turn trigger from).
+        if (!state.sawTurnUserMessage) {
+          state.sawTurnUserMessage = true
+          const source = (event.data as { source?: { kind?: unknown } } | undefined)?.source
+          if (source?.kind === 'tool-jobs') {
+            state.turnTriggeredByJob = true
+            // The placeholder card is already on screen (posted at step/start,
+            // which precedes this message), so repaint it with the marker.
+            if (state.stepCardSent) updateStepCard(state)
+          }
+        }
       } else if (event.type === 'deliverables/presented') {
         // DSH's `present` tool declares the turn's final deliverables (Web UI
         // renders them as a card row). Collect them for the Turn Complete
@@ -1531,9 +1569,17 @@ export function renderStepCard(
   reasoningMs?: number,
   turn?: number,
   step?: number,
-  options?: { showToolArgs?: boolean; showToolResults?: boolean; empty?: 'thinking' | 'done' },
+  options?: { showToolArgs?: boolean; showToolResults?: boolean; empty?: 'thinking' | 'done'; triggeredByJob?: boolean },
 ): object {
   const elements: object[] = []
+
+  // Attribution line, first so it reads as the reason this card exists at all.
+  // A background-job completion notice opens its own turn (DSH wakes an idle
+  // owner), which is otherwise invisible in the chat: the notice is a context
+  // message, not something the human wrote.
+  if (options?.triggeredByJob === true) {
+    elements.push({ tag: 'markdown', content: t.stepJobTriggerNote, text_size: 'notation' })
+  }
 
   // A step with nothing to render still needs a body: name what the step is
   // doing (thinking) or that it produced nothing, rather than leaving the card

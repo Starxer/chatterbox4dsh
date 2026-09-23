@@ -38,9 +38,10 @@ function markdownOf(card: any): string {
     .join('\n')
 }
 
-function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number; refreshMs?: number } = {}) {
+function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number; refreshMs?: number; withCardActions?: boolean } = {}) {
   const listeners = new Set<(event: JobEventLike) => void>()
-  const sent: Array<{ to: string; card: any; opts: any }> = []
+  const cardActionHandlers = new Set<(event: any) => void | Promise<void>>()
+  const sent: Array<{ to: string; card: any; text: string | undefined; opts: any }> = []
   const warns: string[] = []
   const infos: string[] = []
   let sendAttempts = 0
@@ -59,9 +60,17 @@ function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number; r
       send: async (to, input, opts) => {
         sendAttempts += 1
         if (options.failFirstSend === true && sendAttempts === 1) throw new Error('feishu unreachable')
-        sent.push({ to, card: input.card, opts })
+        sent.push({ to, card: 'card' in input ? input.card : undefined, text: 'text' in input ? input.text : undefined, opts })
         return { messageId: `m-${sent.length}` }
       },
+      ...(options.withCardActions === true
+        ? {
+          onCardAction: (handler: (event: any) => void | Promise<void>) => {
+            cardActionHandlers.add(handler)
+            return () => { cardActionHandlers.delete(handler) }
+          },
+        }
+        : {}),
     },
     logger: {
       info: (message: string) => { infos.push(message); return undefined },
@@ -90,6 +99,10 @@ function buildHarness(options: { failFirstSend?: boolean; debounceMs?: number; r
     chat,
     emit: (event: JobEventLike) => { for (const listener of [...listeners]) listener(event) },
     confirm: (jobId: string, overrides: Partial<DetachedJobNotice> = {}) => mirror.noteDetached(notice(jobId, overrides)),
+    click: async (evt: { messageId?: string; chatId?: string; action?: { value?: unknown } }) => {
+      for (const handler of [...cardActionHandlers]) await handler(evt)
+    },
+    cardActionCount: () => cardActionHandlers.size,
     listenerCount: () => listeners.size,
   }
 }
@@ -406,5 +419,89 @@ describe('startFeishuJobs', () => {
     await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
     expect(markdownOf(h.sent[0]!.card)).toContain(zh.jobStatusCompleted)
     h.mirror.dispose()
+  })
+})
+
+describe('clear-finished button', () => {
+  /** The button element of a card, when it carries one. */
+  const clearButton = (card: any): any => card.body.elements.find((el: any) => el.tag === 'button')
+
+  it('offers no button while every listed job is still running', () => {
+    const card = renderJobPanelCard([row()], zh, 2_000) as any
+    expect(clearButton(card)).toBeUndefined()
+  })
+
+  it('offers a clear button once a listed job has settled', () => {
+    const settled = row({ status: 'completed', finishedAt: 2_000 }, 2_000)
+    const button = clearButton(renderJobPanelCard([row(), settled], en, 9_000))
+    expect(button.text.content).toBe(en.jobPanelClearButton)
+    // Card 2.0 buttons only honour `behaviors` (关键坑 4).
+    expect(button.behaviors).toEqual([{ type: 'callback', value: { p: 'jobs-clear' } }])
+  })
+
+  it('drops the finished rows and reposts the panel with the live ones', async () => {
+    const h = buildHarness({ withCardActions: true })
+    h.emit({ type: 'registered', job: job() })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    h.emit({ type: 'registered', job: job({ id: 'bash-2', label: 'sleep 30', startedAt: 2_000 }) })
+    h.confirm('bash-2')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 4_000 }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(3) })
+    const buttons = h.sent[2]!.card.body.elements.filter((el: any) => el.tag === 'button')
+    expect(buttons).toHaveLength(1)
+
+    await h.click({ chatId: 'oc_1', messageId: 'm-3', action: { value: { p: 'jobs-clear' } } })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(4) })
+    const text = markdownOf(h.sent[3]!.card)
+    expect(text).toContain('`sleep 30`')
+    expect(text).not.toContain('npm run build')
+    expect(text).toContain(zh.jobPanelSummary(1, 1))
+    h.mirror.dispose()
+  })
+
+  it('acknowledges with a text message when nothing is left to list', async () => {
+    const h = buildHarness({ withCardActions: true })
+    h.emit({ type: 'registered', job: job() })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 4_000 }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    await h.click({ chatId: 'oc_1', messageId: 'm-2', action: { value: { p: 'jobs-clear' } } })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(3) })
+    expect(h.sent[2]!.card).toBeUndefined()
+    expect(h.sent[2]!.text).toBe(zh.jobPanelCleared(1))
+    expect(h.sent[2]!.opts).toEqual({ replyInThread: true, replyTo: 'om_root' })
+    // A later task starts from an empty panel: only the new row is listed.
+    h.emit({ type: 'registered', job: job({ id: 'bash-2', label: 'sleep 30', startedAt: 5_000 }) })
+    h.confirm('bash-2')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(4) })
+    const text = markdownOf(h.sent[3]!.card)
+    expect(text).toContain('`sleep 30`')
+    expect(text).not.toContain('npm run build')
+    h.mirror.dispose()
+  })
+
+  it('ignores a click on a card it does not track, and any foreign payload', async () => {
+    const h = buildHarness({ withCardActions: true })
+    h.emit({ type: 'registered', job: job() })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    h.emit({ type: 'settled', job: job({ status: 'completed', finishedAt: 4_000 }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    await h.click({ chatId: 'oc_1', messageId: 'm-unknown', action: { value: { p: 'jobs-clear' } } })
+    await h.click({ chatId: 'oc_1', messageId: 'm-2', action: { value: { p: 'display', key: 'tools', value: true } } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(h.sent).toHaveLength(2)
+    expect(h.infos.some(line => line.includes('untracked card'))).toBe(true)
+    h.mirror.dispose()
+  })
+
+  it('unsubscribes the card action on dispose', async () => {
+    const h = buildHarness({ withCardActions: true })
+    expect(h.cardActionCount()).toBe(1)
+    h.mirror.dispose()
+    expect(h.cardActionCount()).toBe(0)
   })
 })

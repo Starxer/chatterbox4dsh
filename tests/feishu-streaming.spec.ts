@@ -985,6 +985,129 @@ describe('a stuck card send must not wedge the chat', () => {
 // model has produced anything, and every later stage updates that same card.
 // ---------------------------------------------------------------------------
 
+describe('background-job turn trigger', () => {
+  const plainChannel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-1' })),
+    updateCard: vi.fn(async () => undefined),
+  })
+
+  /** The notice DSH injects when a background job settles (source.kind tool-jobs). */
+  const jobNotice = (): { content: Array<{ type: string; text: string }>; source: { kind: string; form: string } } => ({
+    content: [{ type: 'text', text: 'background job bash-1 completed' }],
+    source: { kind: 'tool-jobs', form: 'notice' },
+  })
+
+  const humanMessage = (): { content: Array<{ type: string; text: string }>; source: { kind: string } } => ({
+    content: [{ type: 'text', text: '你好' }],
+    source: { kind: 'user' },
+  })
+
+  /** The newest card rendered for this step: the last update, else the last send. */
+  const lastCard = (channel: StepChannel): any => {
+    const updates = (channel.updateCard as any).mock.calls
+    if (updates.length > 0) return updates.at(-1)![1]
+    return (channel.send as any).mock.calls.at(-1)![1].card
+  }
+
+  it('repaints the placeholder with the mark when a notice opened the turn', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 5 })
+    h.emit('step/start', { turn: 5, step: 1 })
+    // `step/start` precedes the message that opened the turn, so wait for the
+    // placeholder to be on screen first (the real ordering is milliseconds
+    // later; a notice landing inside the send window is absorbed by the send).
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+
+    h.emit('user/message', jobNotice())
+    await vi.waitFor(() => { expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote) })
+    // One card per step: the placeholder was updated, never re-posted.
+    expect(channel.send).toHaveBeenCalledTimes(1)
+    h.streaming.stop()
+  })
+
+  it('marks a step whose card opens after the notice landed', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 6 })
+    // Notice arrives inside the 150ms send window: the first card is built at
+    // flush time and must already carry the mark.
+    h.emit('step/start', { turn: 6, step: 1 })
+    h.emit('user/message', jobNotice())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '干活' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).toContain('干活')
+    h.streaming.stop()
+  })
+
+  it('leaves a human-opened turn unmarked', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('user/message', humanMessage())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '你好' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    h.streaming.stop()
+  })
+
+  it('does not attribute a notice injected into an already-running turn', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('user/message', humanMessage())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '第一步' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+
+    // Step 2 of the same turn claims the notice: the human still owns the turn.
+    h.emit('step/start', { turn: 1, step: 2 })
+    h.emit('user/message', jobNotice())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '继续' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(2) })
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    h.streaming.stop()
+  })
+
+  it('keeps the mark on every step of that turn and drops it on the next turn', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 7 })
+    h.emit('step/start', { turn: 7, step: 1 })
+    h.emit('user/message', jobNotice())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'a' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote)
+
+    // Step 2 of the same turn: the attribution is turn-level, so it repeats.
+    h.emit('step/start', { turn: 7, step: 2 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'b' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(2) })
+    expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote)
+
+    // The next turn belongs to its own trigger.
+    h.emit('turn/end', { turn: 7, reason: { kind: 'completed' } })
+    h.emit('turn/start', { turn: 8 })
+    h.emit('step/start', { turn: 8, step: 1 })
+    h.emit('user/message', humanMessage())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'c' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(3) })
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    h.streaming.stop()
+  })
+})
+
 describe('thinking placeholder', () => {
   const plainChannel = (): StepChannel => ({
     send: vi.fn(async () => ({ messageId: 'm-1' })),

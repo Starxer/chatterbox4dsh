@@ -7,8 +7,12 @@
  * never edited again (2026-09-23, the operator's call — both panels describe
  * detached background work, so a card is a notification, not a control
  * surface). That removes the whole class of in-place-update problems the
- * per-job cards carried: no message id bookkeeping, no update cap, and no
- * "stale card" rewrite that destroyed the terminal record (关键坑 11).
+ * per-job cards carried: no update cap, and no "stale card" rewrite that
+ * destroyed the terminal record (关键坑 11). A button is still allowed — the
+ * background-task panel carries a "clear finished" action — because a card that
+ * is never re-edited never hits the callback limit; the only bookkeeping that
+ * needs is a bounded `messageId → roster key` map ({@link PanelSender.keyOf}),
+ * since a callback reports the clicked card and nothing else (关键坑 31).
  *
  * What IS shared therefore shrinks to four rules, all implemented here:
  *
@@ -101,6 +105,15 @@ export interface PanelSender {
    *   line), which is throttled by the refresh floor.
    */
   refresh(key: string, urgent: boolean): void
+  /**
+   * The roster key of the panel card carrying `messageId`, or `undefined` when
+   * that message is not one of this sender's cards.
+   *
+   * A button callback only carries `chatId` + `messageId`, and one chat can hold
+   * several rosters (one per Feishu topic), so the clicked card must be looked
+   * up by its own message id rather than guessed from the chat (关键坑 31).
+   */
+  keyOf(messageId: string): string | undefined
   /** Drop every pending timer. In-flight sends are left to settle. */
   dispose(): void
 }
@@ -124,6 +137,13 @@ export const PANEL_MAX_ROWS = 8
  * makes later cards longer.
  */
 export const PANEL_ROW_TTL_MS = 30 * 60_000
+
+/**
+ * How many sent cards stay addressable by message id. Only a click needs the
+ * mapping, and only recent cards are clickable in practice, so the oldest
+ * entries are evicted instead of growing with the chat's history.
+ */
+const PANEL_TRACKED_CARDS = 64
 
 /** One chat's send bookkeeping. */
 interface ChatSendState {
@@ -224,7 +244,20 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
   const debounceMs = deps.debounceMs ?? PANEL_DEBOUNCE_MS
   const refreshMs = deps.refreshMs ?? PANEL_REFRESH_MS
   const states = new Map<string, ChatSendState>()
+  /** Sent card message id → roster key, for the panels that carry buttons. */
+  const cardKeys = new Map<string, string>()
   let disposed = false
+
+  /** Remember one delivered card, evicting the oldest id past the cap. */
+  const trackCard = (messageId: string, key: string): void => {
+    cardKeys.delete(messageId)
+    cardKeys.set(messageId, key)
+    while (cardKeys.size > PANEL_TRACKED_CARDS) {
+      const oldest = cardKeys.keys().next()
+      if (oldest.done === true) break
+      cardKeys.delete(oldest.value)
+    }
+  }
 
   const stateOf = (key: string): ChatSendState => {
     let state = states.get(key)
@@ -255,10 +288,13 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
     if (snapshot === undefined) return
     if (snapshot.signature === state.sentSignature) return
     try {
-      await channel.send(snapshot.chat.chatId, { card: snapshot.card }, replyOptsForChat(snapshot.chat))
+      const sent = await channel.send(snapshot.chat.chatId, { card: snapshot.card }, replyOptsForChat(snapshot.chat))
       state.sentSignature = snapshot.signature
       state.sentCount += 1
       state.lastSentAt = Date.now()
+      // A card carrying a button must stay addressable by the id its callback
+      // reports, so the click can find the roster it belongs to.
+      if (sent.messageId !== undefined) trackCard(sent.messageId, key)
     } catch (error: unknown) {
       // Leave `sentSignature` untouched so the next trigger retries the send.
       // The card is best-effort: a failing chat must never take the panel down.
@@ -290,6 +326,7 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
 
   return {
     refresh,
+    keyOf: (messageId: string) => cardKeys.get(messageId),
     dispose: () => {
       disposed = true
       for (const state of states.values()) {
@@ -297,6 +334,7 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
         state.timer = undefined
       }
       states.clear()
+      cardKeys.clear()
     },
   }
 }

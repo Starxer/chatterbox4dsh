@@ -183,6 +183,16 @@ describe('createPanelSender', () => {
     h.sender.dispose()
   })
 
+  it('tracks the cards it delivered so a button click can find its roster', async () => {
+    const h = harness()
+    h.sender.refresh('chat:oc_1', true)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(h.sender.keyOf('m-1')).toBe('chat:oc_1')
+    expect(h.sender.keyOf('m-nope')).toBeUndefined()
+    h.sender.dispose()
+    expect(h.sender.keyOf('m-1')).toBeUndefined()
+  })
+
   it('sends nothing when the roster has nothing to show', async () => {
     const h = harness({ build: () => undefined })
     h.sender.refresh('chat:oc_1', true)
