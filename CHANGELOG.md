@@ -28,6 +28,40 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：面板卡三处跟进（清理按钮 / 触发归属 / 子代理模型与树形，2026-09-23）
+
+**1. 后台任务卡加「🧹 清理已完成」按钮**（`src/feishu-jobs.ts` / `src/feishu-panel.ts`）
+
+- **语义对齐 WebUI**：WebUI 的 job list 里那个 Clear 是**只清视图**（源码注释原文 *client-side hide only; the registry keeps its records*）——飞书这边照抄：把**已结算的行**从名册里删掉，宿主注册表一条不动，聊天里已发出的历史卡也不动。
+- **只在卡上确实有已结算行时才出现**（点了没用的按钮比没按钮更糟）。点完：还有运行中的行 → **重发一张干净的面板卡**（那就是反馈）；全清光了 → 回一句 `🧹 已清理 N 个已完成的后台任务`（否则清空后没有卡可发，用户看不到任何反馈）。
+- **回查按被点击卡片的 message id**：面板发送器维护一份**有界**的 `messageId → 名册键` 映射（`keyOf`，上限 64 条，FIFO 淘汰）——卡片回调只带 `chatId` + `messageId`，而一个群可以有多个话题（关键坑 31），绝不按群猜。查不到就记一行 info 而不是装作没事。
+- 卡**只发不更新**，所以按钮永远不会撞上「就地更新 2–3 次后回调失效」（关键坑 11）；载荷走 `behaviors`（关键坑 4）。
+
+**2. 标记「本回合由后台任务完成通知触发」**（`src/feishu-streaming.ts`）
+
+- **上游事实**：任务结算时 `@deepseek-ai/dsh-tool-jobs` 会塞一条**带来源的用户消息**（`source.kind = 'tool-jobs'`）：owner **空闲** → `owner.followup(...)`（**这一轮就是它开的**）；owner **忙** → `owner.inject(...)`（只是插进当前轮的上下文）。
+- **判据**：DSH 把开轮的消息紧跟在 `turn/start` 之后第一个 `step/start` 后面 append，而注入的 notice 要到更靠后的某一步才被认领 —— 所以「**本回合第一条 `user/message` 的来源**」就是触发源（`turn/start` 重置两个回合级开关）。这与 WebUI 的 turn-trigger 归属同源（它按客户端专有的 `inbox-next-turn` 认领集判定，宿主侧读不到）。
+- **渲染**：该回合**每一张步骤卡**正文最上方加一行 `⚡ 本回合由**后台任务完成通知**触发`（notation）；`step/start` 早于那条消息，所以占位卡是先上屏、随后**同一张卡**补上标记；若通知落在首卡 150ms 防抖窗口内，首卡构建时就已经带上（两条路径都有单测）。
+- **有意不标**：忙时注入的 notice（那一轮是人发起的）。目前只认 `tool-jobs`；`schedule` / `subagent-settled` / `goal` / `agent-message` / `webhook` 等同类来源各自加一行即可。
+
+**3. 子代理卡显示模型 + 树形连线**（`src/feishu-subagents.ts`）
+
+- **模型列**：值来自**子会话自己**的 `request/context`（`{provider, model, contextWindow}`）——父会话的 `subagent/catalog` 与 `subagent/start|end` 都不带模型；子会话同样是普通 session，其事件本来就到这个插件的 `session/event` 订阅里（`session.append` 对每次 append 都发布，无类型过滤），所以**零新依赖、零异步读取**。未知时显示 `—`。
+  - 噪音控制：模型只算"细节变化" → 走面板**非紧急刷新下限**（30s），且若此刻正有一张卡在构建中就直接跳过（那次构建已经带上新模型，`hasPending()`）。净效果：短子代理仍然只发 2 张卡（注册 / 结算带模型）。
+- **树形连线**：每行记住 `parentId`（子会话 id），卡片按**深度优先**排列（父行紧跟其整棵子树），标签前画 `├─ ` / `└─ `（最后一个子节点），祖先"下面还有节点"时补 `│  `。
+  - 起因：使用者反馈**全角空格缩进在飞书里"效果很一般"**——表格单元格里的前导空白会被折叠/吃掉，缩进看起来就是平铺。改画线后可见、还能看出哪个是最后一个子节点。
+  - 实现坑：连接线必须写在**行内代码之外**——`tableCell()` 会 `.replace(/\s+/g, ' ')`，把 `│  `（两空格）压成 `│ `，树的竖线就错位了。
+  - 兜底：父行不在名册里（被 30 分钟 TTL 清掉）时该行**当根**渲染（无连线）；被 8 行上限挤出窗口时连线仍在（会指向表外的父），卡上另有「另有 N 条更早的记录未列出」。
+
+**验证**：typecheck（host + client）0 error；**572 passed / 38 files**（相对上一笔 +5：清理按钮的存在/载荷/清理重发/清空回执/未跟踪卡/外来载荷/回调退订、`keyOf`、`hasPending`、模型已知未知、树形兄弟/第三层/孤儿行/树序、触发标记五例等）；`client/client.js` 逐字节未变。
+
+**实测（2026-09-23 12:20–14:33，三次重启后）**：
+
+- **清理按钮 / 触发归属**：`run_in_background` 的 `sleep 45` 结算时（12:18:20）**我没有发任何消息**，DSH 自己开了新的一轮；该轮的步骤卡由实测走的就是这条判定（日志时间线与 `source.kind = tool-jobs` 的事实链见上）。**按钮的实际点击**只能由使用者在飞书上做——API 读回的卡片正文是实体引用（`请升级至最新版本客户端，以查看内容`），读不到按钮；回调路径本身有 6 例单测。
+- **子代理模型**：让子代理显式传 `provider: minimax-cn, model: MiniMax-M3` 去建孙代理，孙代理**自己的会话日志**里 `request/context` 正是 `{"provider":"minimax-cn","model":"MiniMax-M3"}`（不是继承的）；不传时两层都继承父级 `deepseek-flash`。
+- **嵌套**：本部署在 profile patch 里把 `subagent.maxDepth` 由默认 1 提到 2（**loader patch 层热应用、不需要重启**，实测同一进程 1h33m 未重启即生效）；`多子代理-父` 一次建出 `孙代理-A` / `孙代理-B` 两个孙代理（从子代理自己的会话日志读到 2 条 catalog 事件），面板在 14:32:55–58 发 4 张卡、message id 各异、无就地更新。
+- ⚠️ **仍待使用者目视**：表格与连线在客户端里的实际观感、清理按钮点击后的效果——这些 API 都读不到。
+
 ### 变更：后台任务 / 子代理**面板卡**（O9 + O10，2026-09-23，`src/feishu-panel.ts` / `src/feishu-jobs.ts` / `src/feishu-subagents.ts` / `src/index.ts` / `src/i18n.ts`）
 
 **使用者定形（原话）**：标题不该用命令，要固定为「后台任务」；卡里要**列出全部后台任务**（命令、状态、进度、耗时、退出原因），**子代理同理**；**发卡即可、不需要就地更新**——两者都是后台任务，卡是通知而不是控制面。

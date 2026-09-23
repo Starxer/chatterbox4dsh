@@ -26,15 +26,15 @@ Harness Agent (模型、工具、会话日志)
 | `src/index.ts` | 插件入口，注册服务和命令 |
 | `src/channel.ts` | 飞书 Channel 封装，入站图片/文件接收（`admitImagesForMessage`/`admitFilesForMessage`），回复卡片渲染，Turn Complete 卡片 |
 | `src/harness.ts` | Harness 会话服务，session 映射持久化；用户文本原样进入模型（不加 `[Feishu] ` 之类的通道前缀，纯图片/文件消息只带 image/file 块），通道归属由 session↔chat 绑定记录 |
-| `src/feishu-streaming.ts` | 统一 per-step 卡片：订阅 mux 事件流，渲染 reasoning（200 字预览 + 思考耗时/思考 token）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览；标题带「第 N 轮 · 第 M 步」，footer 两行（时长/token · tok/s/上下文）。**四阶段一张卡**：`step/start` 立即发「🧠 深度思考中…」占位卡（5s 刷新已用时）→ `assistant/message` 写入 reasoning/文本 → `tool/call` → `tool/result`，全部就地更新；某步最终无可见内容时在 `step/end` 折叠为「本步无输出」 |
+| `src/feishu-streaming.ts` | **后台任务唤醒归属**：`turn/start` 重置两个回合级开关，本回合**第一条** `user/message` 的 `source.kind === 'tool-jobs'` 即认定"这一轮由任务完成通知开启"（宿主对空闲 owner 走 `followup`、忙时走 `inject`，两者靠 append 顺序区分），该回合每张步骤卡正文顶部加 `⚡ 本回合由后台任务完成通知触发`。**统一 per-step 卡片**：订阅 mux 事件流，渲染 reasoning（200 字预览 + 思考耗时/思考 token）+ text（3000 字上屏 + 溢出自动拆 continued 卡）+ 工具调用（pretty-print args，2000 字上限）+ 结果预览；标题带「第 N 轮 · 第 M 步」，footer 两行（时长/token · tok/s/上下文）。**四阶段一张卡**：`step/start` 立即发「🧠 深度思考中…」占位卡（5s 刷新已用时）→ `assistant/message` 写入 reasoning/文本 → `tool/call` → `tool/result`，全部就地更新；某步最终无可见内容时在 `step/end` 折叠为「本步无输出」 |
 | `src/card-supersede.ts` | 交互流程「每步发新卡」的配套：把被替换的旧卡片改写成无按钮的失效提示（zh/en 双语，优先 CardKit 实例、best-effort） |
 | `src/feishu-todos.ts` | Todo 进度卡片 |
 | `src/feishu-approvals.ts` | 工具审批处理 |
 | `src/feishu-questions.ts` | ask_user_question 卡片 |
 | `src/commands.ts` | 斜杠命令注册和处理 |
-| `src/feishu-panel.ts` | 两张名册面板卡共用的**只发不更新**快照发送器：同一刻合并（flush 时重新渲染）· 非紧急刷新下限（默认 30s，仅进度文案变化时生效）· **指纹去重**（耗时等时钟文本不进指纹，故"时间流逝"不能成为发卡理由）· 按 chat 串行；另提供表格渲染与单元格转义/截断、`formatDuration`、话题回复坐标 |
-| `src/feishu-jobs.ts` | 后台任务**面板卡**：标题固定 `🧩 后台任务`，**一张卡列出该聊天全部后台任务**（状态 · 任务 · 编号 · 耗时 · 进度/结果），名册一变就**发新卡**（不就地更新）。判据 = 工具结果句式（关键坑 37；前台 bash/pwsh 调用不列）。订阅 `ctx.jobs` 事件扇出跟随状态，`removed` 只清账、**行留在名册**；上限 8 行 + 已结算 30 分钟 TTL；`dispose()` 退订并清定时器 |
-| `src/feishu-subagents.ts` | 子代理**面板卡**：标题固定 `🤖 子代理`，同样只发不更新。数据源 = 父会话的 `subagent/catalog`（会话事件，给 id/模式/描述/创建时间）+ 宿主 `subagent/start` / `subagent/end`（scoped dispatch，本模块用 `{ global: true }` 注册），**按子会话 id 关联**，不读 `listChildren` / `listDescendants`。归属：已知子会话的父 → 孙代理（同聊天、深度 +1，表里缩进表示）；否则父会话能解析出聊天 → 直接子代理；否则不渲染。进程外子代理（`local: false`，无本地子会话）不列 |
+| `src/feishu-panel.ts` | 两张名册面板卡共用的**只发不更新**快照发送器：同一刻合并（flush 时重新渲染）· 非紧急刷新下限（默认 30s，仅细节变化时生效）· **指纹去重**（耗时等时钟文本不进指纹，故"时间流逝"不能成为发卡理由）· 按 chat 串行；`hasPending()` 让"正在构建中的卡"吞掉紧随其后的细节刷新；`keyOf()` 维护**有界**的 `messageId → 名册键` 映射给卡片按钮回查用（关键坑 31）；另提供表格渲染与单元格转义/截断、`formatDuration`、话题回复坐标 |
+| `src/feishu-jobs.ts` | 后台任务**面板卡**：标题固定 `🧩 后台任务`，**一张卡列出该聊天全部后台任务**（状态 · 任务 · 编号 · 耗时 · 进度/结果），名册一变就**发新卡**（不就地更新）。判据 = 工具结果句式（关键坑 37；前台 bash/pwsh 调用不列）。订阅 `ctx.jobs` 事件扇出跟随状态，`removed` 只清账、**行留在名册**；上限 8 行 + 已结算 30 分钟 TTL。带 **`🧹 清理已完成`** 按钮：只从名册删已结算行（宿主注册表不动，对齐 WebUI 的 Clear），有运行中行就重发干净卡、清空则回文字；回调按被点击卡片的 message id 回查名册键。`dispose()` 退订、退订卡片回调并清定时器 |
+| `src/feishu-subagents.ts` | 子代理**面板卡**：标题固定 `🤖 子代理`，同样只发不更新。数据源 = 父会话的 `subagent/catalog`（会话事件，给 id/模式/描述/创建时间）+ 宿主 `subagent/start` / `subagent/end`（scoped dispatch，本模块用 `{ global: true }` 注册），**按子会话 id 关联**；**模型**另取自**子会话自己**的 `request/context`（父级事实里没有）。不读 `listChildren` / `listDescendants`。归属：已知子会话的父 → 孙代理（同聊天）；否则父会话能解析出聊天 → 直接子代理；否则不渲染。渲染按**深度优先**排（父行紧跟其子树），嵌套用 `├─ ` / `└─ ` + `│  ` **画线**（连接线在行内代码之外，否则会被 `tableCell` 的空白折叠压平）；父行不在名册时该行当根。进程外子代理（`local: false`，无本地子会话）不列 |
 | `src/client/` | Web 客户端半边：设置页（`LarkSettingsCard` + `LarkSettingsCardController`，**只管配置与凭据**）与**插件详情页**的三处贡献（`LarkPluginDetail` 的 badge / actions / section，配合 `LarkChannelStatusController` 的连接状态与扫码轮询）。经 `ctx.slots` 注册、`ctx.configForms` 读写配置、`ctx.remote.credentials` 读写密钥 |
 
 ## 事件流
