@@ -37,6 +37,37 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 修复：卡片写不进去时用户不再一无所知；错误原因不再被外层包装吃掉（`src/error-text.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-09-23）
+
+**先纠正旧结论**：TODO 里 O6 记的是「飞书侧报错被截断、不如 WebUI 详细」。使用者先说「现在很多错误在飞书已经能看得到了」，实测证实了这个观察——**那四条截断上限在真实负载下一次都没咬到**。口径：本机全部 **23 个会话日志**（`session.v3.jsonl.zstd`）解出每个 `tool-result` 块，取 `isError === true` 的正文长度：
+
+| 指标 | 实测值 |
+|---|---|
+| 工具结果总数 / `isError=true` | 21645 / **734** |
+| 错误文本长度 | min 22 · p50 **149** · p90 **313** · p99 **313** · **max 344** |
+| 超过 600 / 1500 / 3000 / 10000 字 | **0 / 0 / 0 / 0 条** |
+| `turn/end` 且 `reason.kind === 'error'` | 全历史 **3 次**，最长 **140** 字 |
+
+p90 才 313 字，离 1500 的预览上限差 5 倍。真正没解决的因此不是"被截断"，而是**有一类错误用户完全看不到**：7 天 journal 里 `[update] failed`（`cardkit.card.update` / patch）出现 **15 次**，而那两个分支只 `console.log` + `logger.warn` —— 卡片**静默停在旧内容**，这正是「WebUI 已经在跑工具调用、飞书仍显示🧠深度思考中」那两张卡的成因（另一类 `message handling failed` 6 次是有用户可见文本的）。
+
+**改动 1：`errorText()` 补上根因（`src/error-text.ts`）**
+
+- 补 **`cause` 链**：最多 4 跳、去重、防自引用（`cause === 自身` 直接停），用 ` ← ` 拼在原文后面，例如 `Request failed with status code 400 ← socket hang up`。此前只取 `error.message`，而本仓最常见的两个错误形态恰恰是外层没有信息量的包装：`withTimeout` 的 `xxx failed: ...` 与飞书 SDK 的 `Request failed with status code 400`。
+- 补**飞书 SDK 响应信封**的 `response.data.msg`（真正的原因在那里，如 `Failed to create card content, ext=ErrCode: 200570; ErrMsg: card contains invalid image keys`），`code` 也认信封里的业务码。
+- **只读 `message` / `code` / `response.data`，绝不读 `config` / `request`**——那是请求体，token 路径上带 app secret（关键坑 29）。
+- 上限 600 → **1000** 字符。这里不涉及卡片体积：9 个调用点全是**文本消息**，而文本消息请求体上限 150 KB，是卡片的 5 倍；`errorText` 的输出也不再进 markdown，所以不会被图片/链接语法连带拒收（关键坑 39）。
+
+**改动 2：陈旧卡改为用户可见（`src/feishu-streaming.ts` + `src/i18n.ts`）**
+
+- `StepCardRef` 记下**最近一次写入是否失败**：失败的 `catch` 里记原因，成功时清除。只报"**最终**没被写回去"的卡，一次网络抖动被下一次防抖写入救回时**不报**（`STALE_CARD_CONFIRM_MS = 2s` 确认窗，比 150ms 防抖 + 一次出站往返宽松）。
+- 超过确认窗仍在失败 → 发一条**纯文本**消息，`⚠️ 第 N 轮第 M 步的卡片没能更新，已停在旧内容。\n原因：…`（轮/步号在发卡时捕获，`resetStep` 清空状态后仍能准确指认）。**每张卡只报一次**；`stop()` 清掉待发定时器，dispose 之后绝不再发。
+- **为什么用普通文本消息而不是卡片**：要上报的正是"这张卡写不进去"，再用卡片上报是自相矛盾（同一类拒收会把它一起吞掉）；文本不经 markdown 解析，错误原文里的任何图片/链接语法都只是文字（关键坑 39）；150 KB 的预算也让原因不必再截断。
+- 与既有的"答案兜底"分工不重叠：channel.ts 的 `Reply` 兜底卡负责**别丢答案**，这条通知负责**告诉用户那张卡为什么停在旧内容**。
+
+**仍保留的上限（有数据支撑，本次不动）**：`RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500`、结构化预览取样（paths 20 / files 5 / matches 3 / diffs 3×8 行）、`REASONING_CAP = 200`、`TEXT_STEP_CAP = 3000`（正文溢出拆续卡，**不丢**）。仍可选的逃生口记录在 TODO O6：工具结果 >4k 时另发文本全文（0/734 触发）、超大错误落文件交 `feishu_send_file`；`/error` 回看**倾向不做**（与前者信息重复）。
+
+**测试**：`tests/error-text.spec.ts` 7 → **14 例**（cause 链、嵌套与深度上限、cause 与正文重复时不复述、`response.data.msg`、信封业务码、自引用 cause、**`config` 里的内容绝不外泄**、新上限）；`tests/feishu-streaming.spec.ts` 新增 **3 例**（持续失败 → 恰好一条文本通知且带轮/步号与因果链、被后续成功写入救回则**静默**、`stop()` 后待发通知不再发出）。全量 **647 passed / 41 files**，typecheck 0 error，`npm run build` 通过且 `client/client.js` **逐字节未变**（本次未动客户端）。
+
 ### 新增：卡片图片模式设置（`src/config.ts` / `src/client/` / `src/card-images.ts`，2026-09-23）
 
 - **新增配置项 `cardImages: 'text' | 'workspace' | 'any'`（默认 `workspace`）**，在 **Settings → 飞书与 Lark → 卡片显示** 里以「正文里的图片」下拉呈现（沿用该页既有的原生 `<select>` 行，不需要新组件）。三档的含义：

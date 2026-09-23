@@ -1193,3 +1193,101 @@ describe('thinking placeholder', () => {
     h.streaming.stop()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stale step card: a card whose updates all failed keeps rendering old content
+// and used to be visible only as a journal line ([update] failed).
+// ---------------------------------------------------------------------------
+
+describe('stale step card notice', () => {
+  const instanceChannel = (updateCardInstance: ReturnType<typeof vi.fn>): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+    createCardInstance: vi.fn(async () => 'card-1'),
+    sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+    updateCardInstance,
+  })
+
+  /** Position of the step card every test in this block opens. */
+  const TURN = 3
+  const STEP = 2
+
+  it('reports a card whose writes keep failing, once, as plain text', async () => {
+    vi.useFakeTimers()
+    try {
+      // A wrapper error: the useful sentence is in the cause chain, and the
+      // notice must carry it to the chat (see error-text.ts).
+      const failure = new Error('Request failed with status code 400', {
+        cause: new Error('card contains invalid image keys'),
+      })
+      const channel = instanceChannel(vi.fn(async () => { throw failure }))
+      const h = stepHarness(channel)
+      h.emit('step/start', { turn: TURN, step: STEP })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(channel.sendCardByReference).toHaveBeenCalledOnce()
+
+      // Two separate failed updates: the notice is still posted only once.
+      h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+      await vi.advanceTimersByTimeAsync(200)
+      h.emit('tool/call', { callId: 'c2', name: 'bash', arguments: '{"command":"pwd"}' })
+      await vi.advanceTimersByTimeAsync(200)
+      // Nothing yet: a failure the next write repairs must stay silent.
+      expect(channel.send).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(2_200)
+      expect(channel.send).toHaveBeenCalledTimes(1)
+      const notice = channel.send.mock.calls[0]![1] as any
+      // Text, not a card: the report is "this card could not be written".
+      expect(notice.card).toBeUndefined()
+      expect(notice.text).toBe(t.stepCardStaleNotice(
+        TURN, STEP, 'Request failed with status code 400 ← card contains invalid image keys',
+      ))
+      expect(notice.text).toContain('card contains invalid image keys')
+      h.streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays silent when a later write repairs the card', async () => {
+    vi.useFakeTimers()
+    try {
+      const channel = instanceChannel(
+        vi.fn().mockRejectedValueOnce(new Error('read ECONNRESET')).mockResolvedValue(undefined),
+      )
+      const h = stepHarness(channel)
+      h.emit('step/start', { turn: TURN, step: STEP })
+      await vi.advanceTimersByTimeAsync(200)
+
+      h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+      // Second update lands → the card is up to date again.
+      h.emit('tool/call', { callId: 'c2', name: 'bash', arguments: '{"command":"pwd"}' })
+      await vi.advanceTimersByTimeAsync(2_500)
+      expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
+      expect(channel.send).not.toHaveBeenCalled()
+      h.streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never posts the notice after the plugin was disposed', async () => {
+    vi.useFakeTimers()
+    try {
+      const channel = instanceChannel(vi.fn(async () => { throw new Error('boom') }))
+      const h = stepHarness(channel)
+      h.emit('step/start', { turn: TURN, step: STEP })
+      await vi.advanceTimersByTimeAsync(200)
+      h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+      await vi.advanceTimersByTimeAsync(200)
+      // Failure recorded, confirmation timer armed → dispose cancels it.
+      h.streaming.stop()
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(channel.send).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

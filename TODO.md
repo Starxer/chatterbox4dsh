@@ -20,7 +20,7 @@
 | O3 | **补 `produced` 交付物**（write/edit 成功改过的文件） | 中 | 🔲 **未实现**。插件只订阅 `deliverables/presented`（[`feishu-streaming.ts:1122`](./src/feishu-streaming.ts)，行号按 2026-09-23 的 `src/` 重核），WebUI 的 produced 那一半没有对应物 → 实测 **32%（18/56 轮）** WebUI 有产物行而飞书完全没有。同节另两个缺口：complete 卡只对**飞书触发的**轮次发（唯一发送点 [`channel.ts:525`](./src/channel.ts)）；`renderReplyCards` 的 else 分支不带 `turnStats`（交付清单与指标整块不渲染） |
 | O4 | **残留的就地更新上限（带按钮的卡）** | **高**（交互可靠性） | 🔲 **仍在**（2026-09-23 二轮复核：全仓 `updateCard` / `updateCardInstance` **22 处实际调用**（另 3 处是能力探测）逐个过了一遍，行号按当前 `src/` 重核）。**会被反复点到失效的 3 张卡**：① `/session` 管理面板卡——[`feishu-session.ts:397`](./src/feishu-session.ts)（`action==='refresh'`）与 [`:439`](./src/feishu-session.ts)（`op==='pin'/'unpin'`）就地重绘**同一张卡**，即「🔄 刷新」「📌 置顶」「📍 取消置顶」三个按钮**共用同一份额度**，点到 2–3 次后整张面板的按钮（含切换/归档/分叉）一起不再回调；② `/model`（无参）选择向导卡——[`feishu-model-select.ts:590`](./src/feishu-model-select.ts) 的 `cardByMessage` 逐次 `updateCardInstance`（定义在 `:573`，调用点 `:646` `:660` `:742` `:748` `:802`，含 provider→model→确认→成功各步），**整条向导是一张卡**；③ `/new` 的模型步骤复用同一个向导（provider 卡在 `index.ts:830` 新建 → 点 provider = 更新 1 → 确认后 `retireModelCard`（`index.ts:754`）再改写 1 次 = 更新 2，已到 2–3 次边缘）。**同类但更轻的 2 张**（每次点击就地重绘、重绘后按钮仍在）：[`feishu-busy.ts:105`](./src/feishu-busy.ts) 的 `/busy` 卡（2 个按钮、当前项 disabled，有效点击上限本就 1–2 次）、[`feishu-permission.ts:216`](./src/feishu-permission.ts) 的 `/permission` 卡（3 个模式同理）。**其余 12 处是一次性终态改写**（审批卡、问答卡 settle、`card-supersede`、step 卡、tool 卡、改名空标题、归档取消、`retireModelCard`），改完按钮即消失或卡本身已退休；**另有 5 处目标卡没有按钮**（step 卡 [`feishu-streaming.ts:728`](./src/feishu-streaming.ts)/[`:750`](./src/feishu-streaming.ts)、tool 卡 `:164`、`/new` 结果卡 `index.ts:236`/`:1231`），可以安全连续就地更新（关键坑 11 只管带按钮的卡）。飞书对**带按钮**的卡片就地更新 2–3 次后停止投递回调（关键坑 11）→ 改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
 | O5 | **`#18` reasoning 代码块可折叠** | 中 | 🔲 **未实现**（`src/` 内无 `collapsible`） |
-| O6 | **错误详情三选一** | 低 | 🔲 **未定/未动工**。现状上限：工具结果 1500 字符、reasoning 200、正文 3000（溢出会拆卡，**不丢**）、插件侧非 turn 错误 600 字符且丢 `cause` / 堆栈。三个可选方向（详细错误卡 / `/error` 回看全文 / 落文件后交 `feishu_send_file` 推送）都没做 |
+| O6 | **错误详情**（用户可见的报错） | 中 | ✅ **主体已实现（2026-09-23，本批）**；原假设被实测**推翻**，缺口换成另一件事。① **四条"截断上限"从未咬到**：全部 23 个会话日志 / 21645 条工具结果 / **734 次 `isError`**，错误文本 p50 **149** · p90 **313** · **max 344** 字，超 600 字 **0 条**、超 1500 字 **0 条**；`turn/end` 失败全历史 3 次、最长 140 字。② **真正没解决的是"有一类错误用户完全看不到"**：`[update] failed` 7 天内 **15 次**只有 journal 一行，卡片**静默停在旧内容**（停在「深度思考中」的那两张卡即此）。本批两项：**[`error-text.ts`](./src/error-text.ts)** 补 `cause` 链（≤4 跳、去重、防自引用）+ SDK `response.data.msg` + 信封业务码，上限 600 → 1000，**只读 message/code/response、绝不读 `config`/`request`**（关键坑 29）；**[`feishu-streaming.ts`](./src/feishu-streaming.ts)** 陈旧卡**纯文本**上报（2s 确认窗内被下一次写入救回则**不报**、每卡一次、`stop()` 清定时器），选文本是因为要报的正是"卡片写不进去"（关键坑 39）。**仍可选**：工具结果 >4k 另发文本全文（0/734 触发）、超大错误落文件交 `feishu_send_file`；`/error` 回看**倾向不做** |
 | O7 | **`renderMode: auto\|card\|text`** | 低 | 🔲 **未实现**（2026-09-23 复核：`src/` 内仍无）。超长回复回退纯文本的能力，来自「飞书消息长度限制调研」的「待定」 |
 | O8 | reasoning 预览字数是否可配置 | 低 | 🔍 **待定**。`REASONING_CAP = 200` 硬编码在两处（[`channel.ts:33`](./src/channel.ts)、[`feishu-streaming.ts:1336`](./src/feishu-streaming.ts)，行号按 2026-09-23 的 `src/` 重核） |
 | O9 | **后台任务面板卡**（一张卡列出本群**全部**后台任务） | 中 | ✅ **已实现（2026-09-23，已重启生效）**。标题固定 `🧩 后台任务`；**一张卡列出该聊天全部后台任务**，列 = 状态 · 任务 · 编号 · 耗时 · 进度/结果；**只发不更新**（名册一变发一张新卡，取代 `663a96a` 的一任务一卡与就地更新）；判据不变（只列模型真拿到 jobId 的后台任务，前台 bash 调用不进表、不发卡，关键坑 37）。上限 8 行 + 已结算 30 分钟 TTL + 非紧急刷新下限 30s。**同日追加 `🧹 清理已完成` 按钮**（对齐 WebUI 的 Clear：只从名册里删已结算的行、宿主注册表不动；还有运行中的行就重发干净卡，清空则回一句文字；回调按被点击卡片的 message id 回查名册键）。实现见 [`src/feishu-jobs.ts`](./src/feishu-jobs.ts) / [`src/feishu-panel.ts`](./src/feishu-panel.ts)，实测见 CHANGELOG「后台任务 / 子代理面板卡」与「面板卡三处跟进」 |
@@ -390,29 +390,50 @@
 
 > 相关：本文档「飞书消息长度限制调研记录」已给出卡片 30KB 请求体 / 单 markdown 元素约 10k 字符的隐式上限与推荐拆卡阈值（~6k–8k 字符）；本次修法与该阈值选择无耦合。
 
-### 飞书侧报错内容比 WebUI 简略（**turn 级已修 2026-09-17；工具/思考的部分仍是上限 → O6**）
+### 飞书侧报错内容比 WebUI 简略（**turn 级 2026-09-17 修复；剩余部分 2026-09-23 复核并收口 → O6**）
 
 **现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」——同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
 
 **✅ 已修（2026-09-17，turn 级错误）**：飞书原先只回一句通用句子，现在**直接渲染 WebUI 那一份失败事实**。根因是 `summarizeTurn()` 丢掉 `turn/end` 的 `reason.error`，`harness.reply()` 随即抛硬编码的 `Harness turn did not produce a successful assistant response`（journald 里 09-08 起出现 20+ 次）。改法见 CHANGELOG「飞书把 turn 失败压成一句通用错误」：新增 `src/turn-failure.ts` **逐行移植** WebUI 的 `displayFailure` + `TurnErrorItem`（红头 + `本轮运行失败`/`This turn failed` + 原文正文 + `code`；`AUTH` 换 `API 密钥无效`/`API key is invalid`），红卡被拒时回退同样内容的纯文本。顺带修掉 `/stop` 中止当前轮后**必然错报一次"运行失败"**的问题（`aborted`/`interrupted` 等非失败结束不再报错）。
 
-**仍存在的上限**：
+**✅ 复核（2026-09-23）——原记录的「仍存在的上限」一条都没被触发过。** 使用者先说「现在很多错误在飞书已经能看得到了」，逐条实测证实了这个观察。测量口径：`~/.dsh/sessions/*/*/session.v3.jsonl.zstd` 全部 **23 个会话日志**，解出 `tool/result` 的每个 `tool-result` 块，取 `isError === true` 的 `content[].text` 长度：
 
-- **工具失败**：步骤卡里 `❌` 后跟结果预览，`RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500` 字符；结构化预览还要再取样（`paths` 前 20、`files` 前 5、`matches` 前 3、`diffs` 前 3、每个 diff 各 8 行）。
-- **思考 / 正文**：`REASONING_CAP = 200`、`TEXT_STEP_CAP = 3000`（正文溢出会拆「Reply (continued N/M)」卡，**不丢**，但错误文本没有等价机制）。
-- **插件侧非 turn 错误**（飞书 API、斜杠命令、图片/文件准入）：走 `errorText()`，只取 `error.message` + `code`，**丢掉 `cause` 链与堆栈**并在 600 字符处截断加 `…`。
+| 指标 | 值 |
+|---|---|
+| 工具结果总数 / `isError=true` | **21645 / 734** |
+| 错误文本长度 | min **22** · p50 **149** · p90 **313** · p99 **313** · **max 344** |
+| 超过 600 字 | **0 条（0.00%）** |
+| 超过 1500 / 3000 / 4000 / 10000 字 | **0 条（0.00%）** |
+| `turn/end` 且 `reason.kind === 'error'` | 全历史 **3 次**，最长 **140** 字（`UNSUPPORTED_REASONING_EFFORT` ×2、`PI_AI_ERROR` ×1） |
 
-**WebUI 侧对照**：`packages/client/ui-trajectory/src/client/TrajectoryTable.tsx` 的输出格把 `record.cell.outputDetail` **整段**塞进 `<pre>`（并附「复制输出」按钮），**不做字符截断**；聊天区也保留完整错误文本。
+即「工具 1500 / reasoning 200 / 正文 3000 / 插件侧 600」这四条上限**在真实负载下一次都没咬到**（p90 才 313，离 1500 差 5 倍）。**作为"报错不详细"的问题，O6 已经被 09-17 的 turn 级修复 + 错误本来就短这两件事实解掉了。**
 
-**为什么现在这样**：飞书单条消息/卡片有体积与渲染上限，卡片是即时可读界面，整段堆栈会淹掉卡片。
+**真正的缺口换成了另一件事：有一类错误用户永远看不到。** 7 天 journal 分类：
 
-**可选方向（未定、未动工，仅针对上面仍存在的上限）**：
+| 错误 | 次数 | 用户看得见？ |
+|---|---|---|
+| `[update] failed`（`cardkit.card.update` / patch） | **15** | ❌ **只有 journal**，卡片**静默停在旧内容** |
+| `message handling failed` | 6 | ✅ 有（文本，`errorText()`） |
+| `[send] card instance create failed` | 2 | ❌ journal（有回退，回退失败就没了） |
+| `[send] send by reference failed` | 1 | ❌ journal（同上） |
+| `[sdk error]` / `[sdk warn]` / `reconcile failed` | 7 / 3 / 1 | ❌ journal |
 
-1. 工具失败时额外发一张「详细错误卡」或溢出卡，装完整结果文本；
-2. `/error` 命令回看最近一次错误的全文（插件把最近错误留在会话状态里）；
-3. 把完整错误写成 `.log`/`.txt` 落工作区，交给已有的 `feishu_send_file` 推给用户（零新面）。
+停在「🧠 深度思考中」的那两张卡（第 28 轮第 9 步、第 30 轮第 4 步）就是 17:43:49 / 17:50:26 的两条 `[update] failed`：`feishu-streaming.ts` 的更新失败分支只 `console.log` + `logger.warn`。L2（[`card-write.ts`](./src/card-write.ts)）已把"内容级拒收 → 剥净重试 → 回退 patch"补进写路径，**18:36 重启后至今 0 条 `[update] failed`**；但"回退也失败"时用户仍然什么都收不到。
 
-**处理**：turn 级已于 **2026-09-17 修复**；其余三项 2026-09-16 决定先记录、不改。
+**✅ 2026-09-23 收口（本批两件事）**：
+
+1. **`errorText()` 不再丢根因**（[`error-text.ts`](./src/error-text.ts)）：补 `cause` 链（最多 4 跳、去重、防自引用，用 ` ← ` 拼）与飞书 SDK 响应信封里的 `response.data.msg`，`code` 也认信封里的业务码。动机是本仓真实错误形态：`Request failed with status code 400` 这句话里没有任何信息量，真正的原因是 `card contains invalid image keys`。**只读 `message`/`code`/`response.data`，绝不读 `config`/`request`**（请求体，token 路径上有 app secret → 关键坑 29）。上限 600 → **1000** 字符（文本消息上限 150KB，这个数字只是防病态负载）。
+2. **陈旧卡改为用户可见**（[`feishu-streaming.ts`](./src/feishu-streaming.ts)）：步骤卡写入失败且此后无成功写入时，发一条**纯文本**通知「⚠️ 第 N 轮第 M 步的卡片没能更新，已停在旧内容。原因：…」。`STALE_CARD_CONFIRM_MS = 2s` 确认窗——被下一次写入救回的错误**不报**（15 次里有相当一部分是瞬时失败，报出来就是把恢复过程变成噪音）；每张卡只报一次；`stop()` 清掉待发定时器。**选文本而非卡片**：要上报的正是「卡片写不进去」，再用卡片去报是自相矛盾；且文本不经 markdown 解析，不会因为错误原文里的图片/链接语法被整卡拒收（关键坑 39）。
+
+**WebUI 侧对照**：`packages/client/ui-trajectory/src/client/TrajectoryTable.tsx` 的输出格把 `record.cell.outputDetail` **整段**塞进 `<pre>`（并附「复制输出」按钮），**不做字符截断**；聊天区也保留完整错误文本。现在的差距只剩"超长原文"这一档，而它在 734 次失败里 0 次出现。
+
+**仍保留的上限（有数据支撑，本批不动）**：工具失败预览 `RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500`；结构化预览取样（`paths` 前 20、`files` 前 5、`matches` 前 3、`diffs` 前 3、每个 diff 各 8 行）；`REASONING_CAP = 200`；`TEXT_STEP_CAP = 3000`（正文溢出拆「Reply (continued N/M)」卡，**不丢**）。
+
+**仍可选（记录备查，未动工）**：
+
+1. 工具结果 **> 4k** 时，卡片里保留预览、另发一条**文本**全文（当前 0/734 触发，尚无需求）；
+2. 超大错误（> ~100KB）落 `.log`/`.txt` 到工作区，交已有的 `feishu_send_file` 推送（零新面，第三级逃生口）；
+3. ~~`/error` 命令回看最近一次错误的全文~~ **倾向不做**：与 1 信息重复，且插件不保留会话级错误状态，成本高于收益。
 
 ### 交付物面比 WebUI 窄：produced 整半未实现 + complete 卡只对飞书触发的轮次发送（**2026-09-17 记录，2026-09-23 复核仍未做 → O3**）
 

@@ -24,6 +24,7 @@ import type { DetachedJobNotice } from './feishu-jobs.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { chunkText } from './text-chunk.ts'
 import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
+import { errorText } from './error-text.ts'
 import type { CardImageHydrator } from './card-images.ts'
 
 /** Minimal logger surface. */
@@ -40,7 +41,7 @@ interface BridgeHolder {
 
 /** Channel adapter for sending and updating cards. */
 export interface FeishuStreamingChannel {
-  send(to: string, input: { card: object }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
+  send(to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
   updateCard(messageId: string, card: object): Promise<void>
   /**
    * CardKit instance path, preferred for step cards. `im.v1.message.patch`
@@ -73,6 +74,21 @@ interface StepCardRef {
   messageId: Promise<string | undefined>
   cardId: Promise<string | undefined>
   sequence: number
+  /**
+   * Turn / step this card renders, captured at send time so a stale-card notice
+   * can name the card without reading state that `resetStep` already cleared.
+   */
+  turn: number
+  step: number
+  /**
+   * Reason the most recent write attempt failed. Cleared by the next successful
+   * write — an error that a later update fixes is NOT a stale card.
+   */
+  staleReason: string | undefined
+  /** Whether this card's staleness was already reported (one notice per card). */
+  staleNotified: boolean
+  /** Confirmation timer armed by a failed write; cancelled by a later success. */
+  staleTimer: ReturnType<typeof setTimeout> | undefined
 }
 
 /**
@@ -605,7 +621,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       if (id !== undefined && cardHasText) noteTextDelivered(sessionId)
     }).catch(() => undefined)
     lastCardSendByChat.set(chat.chatId, messageId.catch(() => undefined))
-    state.stepCardRef = { sessionId, messageId, cardId, sequence: 0 }
+    state.stepCardRef = {
+      sessionId, messageId, cardId, sequence: 0,
+      turn: state.turnNumber, step: state.stepNumber,
+      staleReason: undefined, staleNotified: false, staleTimer: undefined,
+    }
     // Track the send promise so flushed() can wait for the final step card's
     // message to be created before the Turn Complete footer is sent.
     lastStepSendPromises.set(sessionId, messageId)
@@ -725,6 +745,75 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const turnStatsMap = new Map<string, TurnStats>()
 
   /**
+   * Confirmation timers armed by a failed card write. Tracked so `stop()` can
+   * cancel them: a notice must never be posted after the plugin is disposed.
+   */
+  const staleTimers = new Set<ReturnType<typeof setTimeout>>()
+
+  /**
+   * Report that a step card could not be updated any more: every write after the
+   * failure was skipped or failed too, so the card keeps rendering content older
+   * than this step's state — the "card stuck on 🧠 深度思考中 while the step is
+   * long done" symptom reported 2026-09-23, whose only trace used to be a
+   * journal line (`[update] failed`, 15 of them in the 7 days to 2026-09-23).
+   *
+   * Deliberately a PLAIN TEXT message, not a card:
+   * - what is being reported is that a card could not be written, so answering
+   *   with another card is the one shape that can fail the same way;
+   * - a text message is not parsed as markdown, so no reason string can be
+   *   rejected for carrying image/link syntax (key pitfall 39);
+   * - text allows a 150 KB body, five times a card's 30 KB, so the reason can be
+   *   kept raw instead of truncated to fit a card element.
+   *
+   * At most one notice per card: {@link noteWriteLanded} clears the pending
+   * reason, and `staleNotified` makes this idempotent.
+   */
+  const noteStaleCard = (ref: StepCardRef, reason: string): void => {
+    if (ref.staleNotified) return
+    ref.staleNotified = true
+    const chat = sessionStates.get(ref.sessionId)?.chat
+    if (chat === undefined) return
+    const t = getTranslations?.() ?? translationsFor('zh')
+    const opts = chat.threadId !== undefined
+      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
+      : {}
+    void channel.send(chat.chatId, { text: t.stepCardStaleNotice(ref.turn, ref.step, reason) }, opts)
+      .catch((error: unknown) => {
+        // Nothing left to fall back to: log and let the journal carry it.
+        console.log(`dsh-feishu: stale card notice failed: ${describeError(error)}`)
+        logger.warn(`dsh-feishu: stale card notice failed: ${describeError(error)}`)
+      })
+  }
+
+  /**
+   * Note that one write for this card failed. The notice is DEFERRED: a
+   * transient failure (a dropped socket, a lost race) is usually followed by a
+   * successful write within the next debounce window, and reporting those would
+   * turn recovery into chat noise. Only a card whose failures outlive the
+   * confirmation window is reported.
+   */
+  const noteWriteFailed = (ref: StepCardRef, error: unknown): void => {
+    ref.staleReason = errorText(error, 'unknown error')
+    if (ref.staleTimer !== undefined) return
+    const timer = setTimeout(() => {
+      staleTimers.delete(timer)
+      ref.staleTimer = undefined
+      if (ref.staleReason !== undefined) noteStaleCard(ref, ref.staleReason)
+    }, STALE_CARD_CONFIRM_MS)
+    ref.staleTimer = timer
+    staleTimers.add(timer)
+  }
+
+  /** Note that a write landed: this card caught up, so drop any pending notice. */
+  const noteWriteLanded = (ref: StepCardRef): void => {
+    ref.staleReason = undefined
+    if (ref.staleTimer === undefined) return
+    clearTimeout(ref.staleTimer)
+    staleTimers.delete(ref.staleTimer)
+    ref.staleTimer = undefined
+  }
+
+  /**
    * Execute a card update (shared by debounce timer and flush).
    *
    * Resolves `true` only when Feishu CONFIRMED the write, so callers can tell
@@ -767,6 +856,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       }).catch((error: unknown) => {
         console.log(`dsh-feishu: [update] failed: ${describeError(error)}`)
         logger.warn(`dsh-feishu: step card update failed: ${describeError(error)}`)
+        noteWriteFailed(ref, error)
         return false
       })
     }
@@ -788,6 +878,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     }).catch((error: unknown) => {
       console.log(`dsh-feishu: [update] failed: ${describeError(error)}`)
       logger.warn(`dsh-feishu: step card update failed: ${describeError(error)}`)
+      noteWriteFailed(ref, error)
       return false
     })
   }
@@ -798,6 +889,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   const applyPendingUpdate = (ref: StepCardRef, card: object, hasText: boolean): Promise<void> =>
     executeCardUpdate(ref, card).then((landed) => {
+      if (landed) noteWriteLanded(ref)
       if (landed && hasText) noteTextDelivered(ref.sessionId)
     }).catch((error: unknown) => {
       console.log(`dsh-feishu: [update] timer callback error: ${describeError(error)}`)
@@ -1316,6 +1408,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       disposeListener()
       for (const entry of pendingUpdates.values()) clearTimeout(entry.timer)
       pendingUpdates.clear()
+      for (const timer of staleTimers) clearTimeout(timer)
+      staleTimers.clear()
       for (const state of sessionStates.values()) {
         if (state.pendingSend !== undefined) clearTimeout(state.pendingSend.timer)
         stopPlaceholderTick(state)
@@ -1354,6 +1448,16 @@ const DELIVERABLE_CAP = 16
  * the step starts, and updated when the tool finishes.
  */
 const STEP_CARD_DEBOUNCE_MS = 150
+
+/**
+ * How long a failed card write must stay unfixed before it is reported as a
+ * stale card.
+ *
+ * Comfortably longer than one debounce window plus one outbound round trip, so
+ * a failure the next update repairs is never reported. The report is a chat
+ * message, and a card that recovered is not worth interrupting the user for.
+ */
+const STALE_CARD_CONFIRM_MS = 2_000
 
 /**
  * How often a content-free step card refreshes its elapsed time while the model

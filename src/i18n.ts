@@ -159,6 +159,11 @@ export interface Translations {
   stepEmptyBody: string
   /** Step position suffix on the card title, e.g. `第 2 轮 · 第 3 步`. */
   stepPosition: (turn: number, step: number) => string
+  /**
+   * Plain-text notice that one step card could not be updated any more and
+   * therefore keeps rendering older content than the chat state.
+   */
+  stepCardStaleNotice: (turn: number, step: number, reason: string) => string
   turnCompleteTitle: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
@@ -509,6 +514,8 @@ export const zh = {
   stepEmptyTitle: '本步无输出',
   stepEmptyBody: '（本步没有可显示的内容）',
   stepPosition: (turn, step) => `第 ${turn} 轮 · 第 ${step} 步`,
+  stepCardStaleNotice: (turn, step, reason) =>
+    `⚠️ ${turn > 0 && step > 0 ? `第 ${turn} 轮第 ${step} 步的卡片` : '这张卡片'}没能更新，已停在旧内容。\n原因：${reason}`,
   turnCompleteTitle: '✅ Turn 已完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
@@ -840,6 +847,8 @@ export const en: Translations = {
   stepEmptyTitle: 'Empty step',
   stepEmptyBody: '(nothing to show for this step)',
   stepPosition: (turn, step) => `Turn ${turn} · Step ${step}`,
+  stepCardStaleNotice: (turn, step, reason) =>
+    `⚠️ ${turn > 0 && step > 0 ? `The card for turn ${turn}, step ${step}` : 'A card'} could not be updated and is stuck on its old content.\nReason: ${reason}`,
   turnCompleteTitle: '✅ Turn complete',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
