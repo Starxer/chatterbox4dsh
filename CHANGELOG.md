@@ -62,7 +62,11 @@
 
 **测试**：`tests/harness.spec.ts` +2（disposed 实例不得覆写已持久化的 map——含话题根；原子写不留 `.tmp`），`tests/feishu-streaming.spec.ts` +1（空 card id 回退普通发送、不调 `sendCardByReference`）。全量 **650 passed / 41 files**，typecheck 0 error，build 通过且 `client/client.js` **逐字节未变**。
 
-**数据恢复**：事故丢掉的是 10 个群话题的绑定与 10 个话题根坐标（它们**全部**不等于各自的默认值，也就是说这 10 个话题当时也一起退回了默认会话）。已从 01:47 备份合并回填（`chatToSession` + `seenChatKeys` + `chatToRootId` 取备份、`busyMode` 取当前），在**服务停止的窗口内**写入后再启动，因此不存在被运行实例覆盖的窗口。
+**数据恢复（已执行 2026-09-23 22:10–22:11）**：事故丢掉的是 10 个群话题的绑定与 10 个话题根坐标（它们**全部**不等于各自的默认值，也就是说这 10 个话题当时也一起退回了默认会话）。恢复脚本：先把合并结果写成暂存文件（**失败就不动服务**）→ `systemctl --user stop dsh` → 在**服务已停的窗口内**安装（运行实例不可能覆盖它）→ `start`。合并口径＝`chatToSession` + `seenChatKeys` + `chatToRootId` 取 01:47 备份、`busyMode` 取当前（当天 `/busy` 的最新值）、DM 那条以使用者 22:01 手切的结果为准。
+
+- **一处硬限制**：11 条绑定里 **2 条恢复不了**——`omt_19f4c75f…` / `omt_19f108b6…` 指向的会话在 `~/.dsh/sessions/**` 里**已无任何日志文件**（其余 9 条都在）。脚本按"会话日志是否存在"过滤，跳过这两条并写进日志；它们此后按默认会话走。
+- **实测**：`staged 9 bindings, 10 roots, 6 busy modes` → `installed 9 / 10 / 6` → 启动后 journal 出现新加的那行 `dsh-feishu: session map loaded: 9 bound, 11 seen, 10 topic roots, 6 busy modes`（此前是 `1 / 1 / 0 / 6`），复检文件仍为 9/11/10/6、**未被再次清空**，重启后 **0 条 error**。
+- **证据状态（如实记录）**：`disposed` 门与空表拒写在真机上**还没有被触发过一次**（重启后尚无保存发生），二者的证据目前是单测两例；真再发生会在 journal 留下 `refusing to persist the session map` 一行。
 
 ### 修复：卡片写不进去时用户不再一无所知；错误原因不再被外层包装吃掉（`src/error-text.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-09-23）
 
