@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   parseSubagentLifecycle,
   renderSubagentPanelCard,
@@ -17,6 +17,7 @@ function row(overrides: Partial<SubagentPanelRow> = {}): SubagentPanelRow {
     createdAt: 1_000,
     mode: 'one-shot',
     label: 'audit the parser',
+    model: '',
     depth: 1,
     state: 'running',
     epochStart: 1_000,
@@ -310,6 +311,35 @@ describe('startFeishuSubagents', () => {
     h.lifecycle('subagent/end', 'nonsense')
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.sent).toHaveLength(0)
+    expect(h.warns).toHaveLength(0)
+    h.stop()
+  })
+
+  it('shows the model the child session reported, and leaves it blank until then', async () => {
+    const h = buildHarness()
+    h.sessionEvent('session-1', catalog('child-1'))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(markdownOf(h.sent[0]!.card)).toContain('| — |')
+    // The child's own route metadata states the model.
+    h.sessionEvent('child-1', { type: 'request/context', data: { provider: 'deepseek', model: 'deepseek-chat' } })
+    h.lifecycle('subagent/end', { id: 'child-1', runId: 'r1', stopReason: 'completed' })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    const text = markdownOf(h.sent[1]!.card)
+    expect(text).toContain('`deepseek-chat`')
+    expect(text).toContain(zh.subagentPanelColModel)
+    h.stop()
+  })
+
+  it('ignores route metadata for a session it does not track, and malformed payloads', async () => {
+    const h = buildHarness()
+    h.sessionEvent('session-1', catalog('child-1'))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    h.sessionEvent('stranger', { type: 'request/context', data: { provider: 'x', model: 'other-model' } })
+    h.sessionEvent('child-1', { type: 'request/context', data: null })
+    h.sessionEvent('child-1', { type: 'request/context', data: { model: 42 } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(h.sent).toHaveLength(1)
+    expect(markdownOf(h.sent[0]!.card)).not.toContain('other-model')
     expect(h.warns).toHaveLength(0)
     h.stop()
   })

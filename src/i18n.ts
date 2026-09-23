@@ -379,6 +379,7 @@ export interface Translations {
   subagentPanelSummary: (running: number, total: number) => string
   subagentPanelColStatus: string
   subagentPanelColAgent: string
+  subagentPanelColModel: string
   subagentPanelColSession: string
   subagentPanelColMode: string
   subagentPanelColDuration: string
@@ -710,6 +711,7 @@ export const zh = {
   subagentPanelSummary: (running, total) => `运行中 ${running} · 共 ${total} 个`,
   subagentPanelColStatus: '状态',
   subagentPanelColAgent: '子代理',
+  subagentPanelColModel: '模型',
   subagentPanelColSession: '子会话',
   subagentPanelColMode: '模式',
   subagentPanelColDuration: '耗时',
@@ -1041,6 +1043,7 @@ export const en: Translations = {
   subagentPanelSummary: (running, total) => `${running} running · ${total} total`,
   subagentPanelColStatus: 'State',
   subagentPanelColAgent: 'Subagent',
+  subagentPanelColModel: 'Model',
   subagentPanelColSession: 'Session',
   subagentPanelColMode: 'Mode',
   subagentPanelColDuration: 'Duration',

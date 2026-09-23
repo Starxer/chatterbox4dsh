@@ -57,6 +57,12 @@ export interface SubagentPanelRow {
   mode: SubagentMode
   /** Creation label (the delegation description); `''` when the tool passed none. */
   label: string
+  /**
+   * Model route the child's own session reported (`request/context`), or `''`
+   * while unknown. The child's log is the only place this fact lives: neither
+   * the parent's catalog entry nor the lifecycle edges carry it.
+   */
+  model: string
   /** Edge distance from the chat-bound session: a direct child is `1`. */
   depth: number
   state: SubagentState
@@ -178,7 +184,7 @@ function modePresentation(mode: SubagentMode, t: Translations): string {
  */
 export function subagentRosterSignature(rows: readonly SubagentPanelRow[]): string {
   return [...rows]
-    .map(row => [row.id, row.state, row.mode, row.label, String(row.depth), row.stopReason ?? ''].join('\u0001'))
+    .map(row => [row.id, row.state, row.mode, row.label, row.model, String(row.depth), row.stopReason ?? ''].join('\u0001'))
     .sort()
     .join('\u0002')
 }
@@ -195,7 +201,7 @@ export function subagentRosterSignature(rows: readonly SubagentPanelRow[]): stri
 export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Translations, now: number): object {
   const sorted = [...rows].sort((a, b) => a.createdAt - b.createdAt)
   const shown = sorted.slice(-PANEL_MAX_ROWS)
-  const headers = [t.subagentPanelColStatus, t.subagentPanelColAgent, t.subagentPanelColSession, t.subagentPanelColMode, t.subagentPanelColDuration]
+  const headers = [t.subagentPanelColStatus, t.subagentPanelColAgent, t.subagentPanelColModel, t.subagentPanelColSession, t.subagentPanelColMode, t.subagentPanelColDuration]
   const body = shown.map(row => {
     const status = subagentPresentation(row, t)
     // Nesting reads as indentation instead of a sixth column: the card has no
@@ -208,6 +214,7 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
     return [
       `${status.icon} ${status.text}`,
       `${indent}${tableCell(label === '' ? t.subagentUntitled : label, { code: true, max: 40 })}`,
+      row.model === '' ? '—' : tableCell(row.model, { code: true, max: 24 }),
       tableCell(row.id, { code: true, max: 14 }),
       modePresentation(row.mode, t),
       formatDuration(elapsed),
@@ -314,6 +321,7 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
       createdAt: data.childCreatedAt,
       mode: data.mode,
       label: data.label,
+      model: '',
       depth,
       state: 'running',
       epochStart: data.childCreatedAt,
@@ -328,7 +336,27 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
   /** The Host recorded a child in its parent's catalog. */
   const disposeCatalog = ctx.on('session/event', (session, rawEvent) => {
     try {
-      const event = rawEvent as { type?: string; data?: { childId?: unknown; childCreatedAt?: unknown; mode?: unknown; label?: unknown } | null }
+      const event = rawEvent as {
+        type?: string
+        data?: { childId?: unknown; childCreatedAt?: unknown; mode?: unknown; label?: unknown; model?: unknown } | null
+      }
+      // The child's own route metadata (`request/context`) is the only place its
+      // model is stated: the parent's catalog entry and the lifecycle edges both
+      // omit it. Children are just sessions, so these events arrive here too.
+      if (event.type === 'request/context') {
+        const ref = children.get(session.id)
+        if (ref === undefined) return
+        const model = event.data?.model
+        if (typeof model !== 'string' || model === '') return
+        const row = rosters.get(ref.key)?.rows.get(session.id)
+        if (row === undefined || row.model === model) return
+        row.model = model
+        // A detail-only change, so it rides the panel's refresh floor — and it
+        // is skipped entirely while a snapshot is being built, because that
+        // build already renders the model.
+        if (!panel.hasPending(ref.key)) panel.refresh(ref.key, false)
+        return
+      }
       if (event.type !== 'subagent/catalog') return
       const data = event.data
       if (data === undefined || data === null || typeof data.childId !== 'string' || data.childId === '') return
@@ -339,7 +367,7 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
         label: typeof data.label === 'string' ? data.label : '',
       })
     } catch (error: unknown) {
-      warn('subagent catalog handling failed', error)
+      warn('subagent session event handling failed', error)
     }
   })
 

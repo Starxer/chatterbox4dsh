@@ -183,6 +183,16 @@ describe('createPanelSender', () => {
     h.sender.dispose()
   })
 
+  it('reports a pending snapshot while one is queued or in flight', async () => {
+    const h = harness({ debounceMs: 40, refreshMs: 0 })
+    expect(h.sender.hasPending('chat:oc_1')).toBe(false)
+    h.sender.refresh('chat:oc_1', false)
+    expect(h.sender.hasPending('chat:oc_1')).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect(h.sender.hasPending('chat:oc_1')).toBe(false)
+    h.sender.dispose()
+  })
+
   it('tracks the cards it delivered so a button click can find its roster', async () => {
     const h = harness()
     h.sender.refresh('chat:oc_1', true)

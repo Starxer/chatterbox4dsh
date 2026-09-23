@@ -106,6 +106,13 @@ export interface PanelSender {
    */
   refresh(key: string, urgent: boolean): void
   /**
+   * Whether this chat has a snapshot pending or in flight. A caller that learns
+   * a detail while a card is being built can skip its own refresh: the pending
+   * build already renders the latest state, and a second refresh would post a
+   * near-duplicate card.
+   */
+  hasPending(key: string): boolean
+  /**
    * The roster key of the panel card carrying `messageId`, or `undefined` when
    * that message is not one of this sender's cards.
    *
@@ -159,6 +166,8 @@ interface ChatSendState {
   sentCount: number
   /** Epoch ms of the last successful send, for the non-urgent refresh floor. */
   lastSentAt: number
+  /** Sends started but not yet settled; a trigger during one of them must wait. */
+  inFlight: number
 }
 
 /**
@@ -269,6 +278,7 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
         sentSignature: undefined,
         sentCount: 0,
         lastSentAt: 0,
+        inFlight: 0,
       }
       states.set(key, state)
     }
@@ -287,6 +297,7 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
     }
     if (snapshot === undefined) return
     if (snapshot.signature === state.sentSignature) return
+    state.inFlight += 1
     try {
       const sent = await channel.send(snapshot.chat.chatId, { card: snapshot.card }, replyOptsForChat(snapshot.chat))
       state.sentSignature = snapshot.signature
@@ -299,6 +310,8 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
       // Leave `sentSignature` untouched so the next trigger retries the send.
       // The card is best-effort: a failing chat must never take the panel down.
       logger.warn(`dsh-feishu: panel card send failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      state.inFlight -= 1
     }
   }
 
@@ -326,6 +339,10 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
 
   return {
     refresh,
+    hasPending: (key: string) => {
+      const state = states.get(key)
+      return state !== undefined && (state.timer !== undefined || state.inFlight > 0)
+    },
     keyOf: (messageId: string) => cardKeys.get(messageId),
     dispose: () => {
       disposed = true
