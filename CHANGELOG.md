@@ -28,6 +28,48 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 变更：后台任务 / 子代理**面板卡**（O9 + O10，2026-09-23，`src/feishu-panel.ts` / `src/feishu-jobs.ts` / `src/feishu-subagents.ts` / `src/index.ts` / `src/i18n.ts`）
+
+**使用者定形（原话）**：标题不该用命令，要固定为「后台任务」；卡里要**列出全部后台任务**（命令、状态、进度、耗时、退出原因），**子代理同理**；**发卡即可、不需要就地更新**——两者都是后台任务，卡是通知而不是控制面。
+
+**新增 `src/feishu-panel.ts`（两张卡共用的只发不更新快照发送器）**，四条规则：
+
+1. **同一刻合并**：同步突发（一步里起 3 个后台任务）只发**一张**卡，卡在 flush 时**重新渲染**，所以永远是最新名册；
+2. **非紧急刷新有下限**（默认 30s）：名册变化（新增行 / 状态翻转 / 结算）是紧急的、立即发；**只有进度文案变了**的刷新排队等下限——否则一个每秒改进度的任务会每秒一张卡。这是**可调**的（`refreshMs`）；
+3. **指纹去重**：卡的结构指纹与"上一条**已送达**的"相同就不发；**耗时这类由时钟产生的文本不进指纹**，所以"时间流逝"本身永远不能成为发卡理由；
+4. **按 chat 串行**：同一聊天的发送排队，后发的快照不会排到先发的上面。
+
+新名册的**首卡既不延迟也不去重**（关键坑 12：只会看到新触发的防抖会让名册一直不可见）。话题纪律沿用调用方给的坐标（`replyTo` + `reply_in_thread`，关键坑 25/31）；与步骤卡的先后顺序仍由既有的卡片屏障负责，本模块不需要自己的屏障。
+
+**`src/feishu-jobs.ts` 重写：一任务一卡 → 一聊天一张面板卡**
+
+- **标题固定** `🧩 后台任务`（不再拿命令当标题），表列 = 状态 · 任务 · 编号 · 耗时 · 进度/结果；每次触发**发新卡**，**不再就地更新**、也不再发灰色「已失效」卡。
+- **判据不变**（关键坑 37）：只列**模型真的拿到 jobId** 的后台任务，前台 `bash`/`pwsh` 调用既不进表也不发卡。
+- 终态那一行**留在表里**（`removed` 只清账不动名册），后续卡片仍能看到它刚结束的样子——这正是旧实现丢掉的信息。
+- 名册**有界**：一张卡最多 **8 行**（`PANEL_MAX_ROWS`，多余的按"另有 N 条更早的记录未列出"提示），已结算的行 **30 分钟**后（`PANEL_ROW_TTL_MS`）从名册里清掉；聊天里的历史卡不受影响，它们就是记录本身。
+
+**新增 `src/feishu-subagents.ts`：一聊天一张 `🤖 子代理` 面板卡**
+
+侦察结论（原「实施前要侦察」的第 1 条）：**子代理的终态没有会话事件**。`subagent/catalog` 只在**创建**时 append 到父会话，running → inactive 没有任何 `session/event`。可用的是宿主自己的 lifecycle 扇出 `subagent/start` / `subagent/end`（`packages/subagent/subagent/src/lifecycle.ts`），**按委派父级做 scoped dispatch**——本模块用 `{ global: true }` 注册（与 DSH 自己的 invariant 同一写法），因此不受作用域过滤影响。据此：
+
+- **两张事实按子会话 id 关联**：`subagent/catalog`（会话事件）给"谁被创建了 + 模式 + 委派描述 + 创建时间"，`subagent/start` / `subagent/end` 给"这一轮开始 / 结束 + 停止原因"。宿主先 `establishCatalogChild` 再 `observeRun`，所以行一定先存在。**不需要** `listChildren` / `listDescendants`（因此**没有**每事件一次的异步全量读取，也不需要节流），也**不需要**新依赖（`dsh-subagent` / `dsh-scope` 都不是本插件 peer）。
+- **归属**：父会话是本插件已知的**子**会话 → 孙代理，同一个聊天、深度 +1；否则父会话能解析出飞书聊天 → 直接子代理；否则（没人绑定的会话）**不渲染**。表里用**缩进**表示嵌套，不占第六列。
+- **状态**：`🔄 运行中` / `✅ 已完成` / `❌ 失败` / `⛔ 已中止` / `🚫 已拒绝` / `⚠️ 超出 token 上限` / `⏹️ 已结束`（未知停止原因）。续谈型子代理再次被唤醒时该行**回到运行中**并重新计时。
+- **已知不覆盖**：**进程外**子代理（`local: false`，如 claude-code / codex provider）没有本地子会话、不 append catalog，lifecycle 事件又不带聊天归属 → **不列**。当前部署只用 in-process provider，如将来启用进程外 provider 需要再补归属（可读 `subagent/start` 的 scope carrier）。
+
+**验证**：typecheck（host + client）0 error；**555 passed / 38 files**（新增 `tests/feishu-panel.spec.ts` 18 例、`tests/feishu-subagents.spec.ts` 21 例，重写 `tests/feishu-jobs.spec.ts` 30 例：门控、面板合并、指纹去重、刷新下限、上限与提示、跨聊天隔离、失败重试、`removed` 保留行、嵌套归属、终态映射等）；`npm run build` 通过，`client/client.js` **逐字节未变**（只改 host 侧）。
+
+**上线核对（2026-09-23 12:00:57 重启后）**：
+
+- **重启**：`MainPID` 3926849 → **3964870**，启动时刻 11:38:18 → **12:00:57**；`systemd-run` 独立 cgroup（关键坑 14，脚本 `sleep 40` 后重启、不在同一脚本里自检）。启动序列 `apply()` → `startFeishuStreaming` → `[ws] ws client ready` → `dsh web:` banner，`error|failed|already registered` **0 命中**；`lib/index.js` 含 `startFeishuSubagents` / `jobPanelTitle`。
+- **实测（探针，12:02:41→12:03:09；采样器跑在独立 systemd 单元里，只读聊天记录）**：先用 `run_in_background` 起 `sleep 25; echo panel-probe-done`（job `bash-N`），并前台调一次 `subagent`（描述 "Panel card probe"）。窗口内与两张面板卡相关的消息**恰好 4 条**：
+  - `12:02:45` **`🧩 后台任务`**（任务开始，1 行，状态运行中）；
+  - `12:02:45` **`🤖 子代理`**（子代理注册，1 行，运行中）；
+  - `12:02:48` **`🤖 子代理`**（同一次运行的终态：**新消息**，不是就地更新）；
+  - `12:03:09` **`🧩 后台任务`**（任务 `exit code: 0` 后的**新消息**）。
+- **「只发不更新」被证实**：两张 `🧩 后台任务` 的 **message id 不同**（采样器全程没有对它们报过 `CHANGED`），即终态是**新卡**；同一窗口里**没有**任何多余的 job 卡（该轮的前台 `bash` 调用、读日志等都没进表）。
+- ⚠️ **仍待使用者目视一项**：卡片**正文**在 API 侧读到的是卡片实体引用（`请升级至最新版本客户端，以查看内容`），所以**用 API 看不到表格**——表的实际观感（列宽、长命令截断、zh/en 排版）只能在飞书客户端里看。若 markdown 表格在该客户端渲染不佳，改法是把 `renderTable` 一处换成"一行一个任务"的列表（`src/feishu-panel.ts` 单点）。
+
 ### 修复：任务卡只镜像真后台任务（关键坑 37）+ 步骤卡思考期占位（O1，2026-09-23）
 
 **问题（使用者报）**：每个工具调用旁边多出一张卡，标题就是那条命令 —— 看起来像某一步的卡片被拆了出来。

@@ -32,7 +32,9 @@ Harness Agent (模型、工具、会话日志)
 | `src/feishu-approvals.ts` | 工具审批处理 |
 | `src/feishu-questions.ts` | ask_user_question 卡片 |
 | `src/commands.ts` | 斜杠命令注册和处理 |
-| `src/feishu-jobs.ts` | 后台任务卡：**只镜像模型真的拿到 jobId 的后台任务**（判据 = 工具结果句式，见关键坑 37；前台 bash/pwsh 调用也是宿主 job，但不出卡）。订阅宿主 `ctx.jobs` 的事件扇出（`registered` / `progress` / `stopping` / `settled` / `removed`），为已确认的任务发**一张**卡并就地跟随其状态，结算即刷新为终态；`removed` 只清账、**终态卡保留**；`dispose()` 退订并清掉全部待触发定时器 |
+| `src/feishu-panel.ts` | 两张名册面板卡共用的**只发不更新**快照发送器：同一刻合并（flush 时重新渲染）· 非紧急刷新下限（默认 30s，仅进度文案变化时生效）· **指纹去重**（耗时等时钟文本不进指纹，故"时间流逝"不能成为发卡理由）· 按 chat 串行；另提供表格渲染与单元格转义/截断、`formatDuration`、话题回复坐标 |
+| `src/feishu-jobs.ts` | 后台任务**面板卡**：标题固定 `🧩 后台任务`，**一张卡列出该聊天全部后台任务**（状态 · 任务 · 编号 · 耗时 · 进度/结果），名册一变就**发新卡**（不就地更新）。判据 = 工具结果句式（关键坑 37；前台 bash/pwsh 调用不列）。订阅 `ctx.jobs` 事件扇出跟随状态，`removed` 只清账、**行留在名册**；上限 8 行 + 已结算 30 分钟 TTL；`dispose()` 退订并清定时器 |
+| `src/feishu-subagents.ts` | 子代理**面板卡**：标题固定 `🤖 子代理`，同样只发不更新。数据源 = 父会话的 `subagent/catalog`（会话事件，给 id/模式/描述/创建时间）+ 宿主 `subagent/start` / `subagent/end`（scoped dispatch，本模块用 `{ global: true }` 注册），**按子会话 id 关联**，不读 `listChildren` / `listDescendants`。归属：已知子会话的父 → 孙代理（同聊天、深度 +1，表里缩进表示）；否则父会话能解析出聊天 → 直接子代理；否则不渲染。进程外子代理（`local: false`，无本地子会话）不列 |
 | `src/client/` | Web 客户端半边：设置页（`LarkSettingsCard` + `LarkSettingsCardController`，**只管配置与凭据**）与**插件详情页**的三处贡献（`LarkPluginDetail` 的 badge / actions / section，配合 `LarkChannelStatusController` 的连接状态与扫码轮询）。经 `ctx.slots` 注册、`ctx.configForms` 读写配置、`ctx.remote.credentials` 读写密钥 |
 
 ## 事件流
