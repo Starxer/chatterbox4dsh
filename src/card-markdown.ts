@@ -39,6 +39,9 @@
 /** An uploaded-image key, e.g. `img_v3_0215q_0a59b5e6-4758-41de-95a5-…`. */
 const IMAGE_KEY_PATTERN = /^img_[A-Za-z0-9]+_[A-Za-z0-9_-]+$/
 
+/** An uploaded-file key, e.g. `file_v3_00or_f2c1276b-9f24-463d-8911-…`. */
+const FILE_KEY_PATTERN = /^file_[A-Za-z0-9]+_[A-Za-z0-9_-]+$/
+
 /** A real URI scheme (`https:`, `mailto:`, `tel:`, `data:`, …). */
 const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/
 
@@ -73,6 +76,11 @@ export interface NeutralizeOptions {
 /** Whether a string is a key Feishu itself handed out (`img_v3_…`). */
 export function isFeishuImageKey(source: string): boolean {
   return IMAGE_KEY_PATTERN.test(source.trim())
+}
+
+/** Whether a string is a file key Feishu itself handed out (`file_v3_…`). */
+export function isFeishuFileKey(source: string): boolean {
+  return FILE_KEY_PATTERN.test(source.trim())
 }
 
 /**
@@ -204,6 +212,36 @@ function rewriteLine(
 }
 
 /**
+ * Apply `mapLine` to every line that is NOT inside a fenced code block. Shared
+ * by the reference and the audio markup passes: both must leave code samples
+ * literal, and both need the same fence bookkeeping.
+ */
+function mapOutsideFences(text: string, mapLine: (line: string) => string): string {
+  const lines = text.split('\n')
+  let fenceChar: string | undefined
+  let fenceLength = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
+    const fence = FENCE_PATTERN.exec(line)
+    if (fenceChar === undefined) {
+      if (fence !== null) {
+        fenceChar = fence[1]![0]!
+        fenceLength = fence[1]!.length
+        continue
+      }
+      lines[index] = mapLine(line)
+      continue
+    }
+    // Inside a fence only the closing marker matters; content stays literal.
+    if (fence !== null && fence[1]![0] === fenceChar && fence[1]!.length >= fenceLength) {
+      fenceChar = undefined
+      fenceLength = 0
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * Apply `map` to every markdown reference in `text` that Feishu would parse as
  * an element — i.e. everything outside a fenced code block and outside a CLOSED
  * inline code span. Fences and code spans are copied through untouched, so code
@@ -219,42 +257,71 @@ export function mapCardMarkdownReferences(
 ): string {
   if (text === '' || !text.includes('](')) return text
   const pattern = new RegExp(REFERENCE_SOURCE, 'g')
-  const lines = text.split('\n')
-  let fenceChar: string | undefined
-  let fenceLength = 0
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!
-    const fence = FENCE_PATTERN.exec(line)
-    if (fenceChar === undefined) {
-      if (fence !== null) {
-        fenceChar = fence[1]![0]!
-        fenceLength = fence[1]!.length
-        continue
+  return mapOutsideFences(text, line => rewriteLine(line, pattern, map))
+}
+
+/** One `<audio …></audio>` / `<audio … />` tag: the markup and its `file_key`. */
+const AUDIO_SOURCE = /<audio\b[^>]*>(?:<\/audio>)?/gi
+/** The `file_key` attribute of an audio tag, in either quote style. */
+const AUDIO_FILE_KEY = /\bfile_key\s*=\s*(['"])([^'"]*)\1/i
+
+/** What an audio player that cannot render becomes. */
+export function audioFallback(fileKey: string, raw: string): string {
+  const label = fileKey.trim() === '' ? raw : fileKey.trim()
+  return `🔊 ${codeSpan(label)}`
+}
+
+/**
+ * Rewrite every `<audio …>` player markup outside code. The rich-text component
+ * plays OPUS only when `file_key` is a key Feishu handed out (`file_v3_…`);
+ * anything else is either rejected or silently dead, so it becomes readable
+ * text. Closed code spans and fences keep their literal markup.
+ *
+ * @param text - card markdown source.
+ * @param map - returns the replacement for one tag (return `raw` to keep).
+ * @returns the rewritten markdown.
+ */
+export function mapCardMarkdownAudio(
+  text: string,
+  map: (fileKey: string, raw: string) => string,
+): string {
+  if (text === '' || !text.includes('<audio')) return text
+  const pattern = new RegExp(AUDIO_SOURCE)
+  return mapOutsideFences(text, (line) => {
+    if (!line.includes('<audio')) return line
+    const spans = closedCodeSpans(line)
+    pattern.lastIndex = 0
+    let result = ''
+    let last = 0
+    let match = pattern.exec(line)
+    while (match !== null) {
+      const start = match.index
+      const end = start + match[0].length
+      const protectedByCode = spans.some(([spanStart, spanEnd]) => start >= spanStart && start < spanEnd)
+      if (!protectedByCode) {
+        const fileKey = AUDIO_FILE_KEY.exec(match[0])?.[2] ?? ''
+        result += line.slice(last, start) + map(fileKey, match[0])
+        last = end
       }
-      lines[index] = rewriteLine(line, pattern, map)
-      continue
+      match = pattern.exec(line)
     }
-    // Inside a fence only the closing marker matters; content stays literal.
-    if (fence !== null && fence[1]![0] === fenceChar && fence[1]!.length >= fenceLength) {
-      fenceChar = undefined
-      fenceLength = 0
-    }
-  }
-  return lines.join('\n')
+    return last === 0 ? line : result + line.slice(last)
+  })
 }
 
 /**
  * Make card markdown safe for Feishu: every image reference that is not an
- * uploaded image key becomes text, and every link Feishu cannot open keeps its
- * label but shows the path in a code span. Idempotent — the fallbacks contain no
- * `](`, so a second pass is a no-op.
+ * uploaded image key becomes text, every link Feishu cannot open keeps its
+ * label but shows the path in a code span, and every `<audio>` player whose
+ * `file_key` is not an uploaded file key degrades to text. Idempotent — the
+ * fallbacks contain no `](` and no `<audio`, so a second pass is a no-op.
  *
  * @param text - card markdown source.
  * @param options - see {@link NeutralizeOptions}.
  * @returns markdown Feishu will accept.
  */
 export function neutralizeCardMarkdown(text: string, options: NeutralizeOptions = {}): string {
-  return mapCardMarkdownReferences(text, (reference) => {
+  const withReferences = mapCardMarkdownReferences(text, (reference) => {
     if (reference.image) {
       if (options.aggressive !== true && isFeishuImageKey(reference.target)) return reference.raw
       return imageFallback(reference.alt, reference.target)
@@ -264,6 +331,8 @@ export function neutralizeCardMarkdown(text: string, options: NeutralizeOptions 
     if (options.aggressive === true || isOpenableTarget(reference.target)) return reference.raw
     return linkFallback(reference.alt, reference.target)
   })
+  return mapCardMarkdownAudio(withReferences, (fileKey, raw) =>
+    options.aggressive !== true && isFeishuFileKey(fileKey) ? raw : audioFallback(fileKey, raw))
 }
 
 /** Rewrite every `markdown` element of a card tree; everything else is copied. */
@@ -271,10 +340,22 @@ export function neutralizeCard(card: object, options: NeutralizeOptions = {}): o
   return rewriteNode(card, options) as object
 }
 
+/** What a card media element that has to be dropped becomes. */
+function mediaElementFallback(record: Record<string, unknown>): Record<string, unknown> {
+  const key = typeof record.file_key === 'string' ? record.file_key : ''
+  const icon = record.tag === 'audio' ? '🔊' : '📹'
+  return { tag: 'markdown', content: `${icon} ${codeSpan(key)}` }
+}
+
 function rewriteNode(node: unknown, options: NeutralizeOptions): unknown {
   if (Array.isArray(node)) return node.map((entry) => rewriteNode(entry, options))
   if (node === null || typeof node !== 'object') return node
   const record = node as Record<string, unknown>
+  // The last-resort retry drops the media elements our hydrator inserted: if the
+  // card was refused with them, a delivered card beats an inline clip.
+  if (options.aggressive === true && (record.tag === 'video' || record.tag === 'audio')) {
+    return mediaElementFallback(record)
+  }
   const isMarkdown = record.tag === 'markdown'
   const result: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(record)) {

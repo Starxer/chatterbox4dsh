@@ -5,13 +5,16 @@ import type { PluginLocale } from './i18n.ts'
 export type DomainName = 'feishu' | 'lark'
 export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
 /**
- * How far the plugin may go to make an image the model referenced in card text
- * render inline (关键坑 39's L3):
+ * How far the plugin may go to make media the model referenced in card text
+ * render inline (关键坑 39's L3, extended to video/audio):
  *
  * - `text`      — never upload: the reference stays readable text (`🖼 alt · path`).
  * - `workspace` — upload only files inside the session's own workspace (default).
- * - `any`       — upload any readable image path, including outside the workspace.
+ * - `any`       — upload any readable media path, including outside the workspace.
  *
+ * Images become card pictures, MP4/H.264 video becomes a card `video` element
+ * (QuickTime is remuxed first), and audio becomes an inline `<audio>` player
+ * (Opus only, so other containers are transcoded when ffmpeg is available).
  * `text` is the most conservative and `any` the most permissive; the
  * neutralization that keeps Feishu from rejecting the card is NOT optional, so
  * there is no "off".
@@ -51,7 +54,7 @@ export interface Config {
   showToolResults?: boolean
   /** Plugin language; `auto` (default) follows the DSH browser-language preference. */
   locale?: PluginLocale
-  /** How images referenced in card text are handled; see {@link CardImageMode}. */
+  /** How media (image / video / audio) referenced in card text is handled; see {@link CardImageMode}. */
   cardImages?: CardImageMode
 }
 
@@ -135,7 +138,7 @@ export const ConfigSchema = z.object({
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
-  cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Images the model references in card text: text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable image path'),
+  cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Media the model references in card text (image / video / audio): text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable media path'),
 })
 
 export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {

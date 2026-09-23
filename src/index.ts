@@ -1,5 +1,4 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -40,6 +39,7 @@ import { createCardSendBarrier } from './card-send-barrier.ts'
 import { isCardContentRejection } from './card-markdown.ts'
 import { createCardWriter, withCardSafety } from './card-write.ts'
 import { startCardImages } from './card-images.ts'
+import { createMediaUploader } from './media-upload.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 
 export const name = 'lark-channel'
@@ -308,31 +308,31 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // the ~90 places that build markdown, or in the model's instructions.
   const cardWriter = createCardWriter({ logger: ctx.logger('dsh-feishu') })
   /**
-   * Inline the images a card's markdown points at (see `card-images.ts`).
+   * Inline the media a card's markdown points at (see `card-images.ts`).
    *
-   * A model writes `![图](runs/a.png)` because the Web UI resolves workspace
-   * paths; in Feishu that syntax needs an UPLOADED image key. Rather than asking
-   * the model to stop (one output, two renderers), the path is resolved inside
-   * the session's own workspace, uploaded, and the card is rewritten to
-   * reference the returned key. Anything that does not resolve stays text, which
-   * the writer guarantees Feishu will accept.
+   * A model writes `![图](runs/a.png)` / `[clip](runs/a.mp4)` because the Web UI
+   * resolves workspace paths; in Feishu those references need an UPLOADED key
+   * (image) or an actual card element (video/audio). Rather than asking the
+   * model to stop (one output, two renderers), the path is resolved inside the
+   * session's own workspace, uploaded, and the card is rewritten. Anything that
+   * does not resolve stays text, which the writer guarantees Feishu will accept.
    */
+  const mediaUploader = createMediaUploader({
+    channel: () => channelHolder.current,
+    logger: ctx.logger('dsh-feishu'),
+  })
   const cardImages = startCardImages({
     resolveWorkspace: sessionId => bridgeHolder.current?.workspaceOf(sessionId) ?? Promise.resolve(undefined),
     // Live read: a settings write changes this without a restart (every field
     // is `.volatile()`), including the "never upload" mode.
     mode: () => currentSettings().cardImages,
     upload: async (absolutePath: string) => {
-      const ch = channelHolder.current
-      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
-      const image = await readFile(absolutePath)
-      const uploaded = await ch.rawClient.im.v1.image.create({
-        data: { image_type: 'message', image },
-      }) as { image_key?: string } | undefined
-      const key = uploaded?.image_key
-      if (key === undefined || key === '') throw new Error('dsh-feishu: image upload returned no image_key')
+      const key = await mediaUploader.image(absolutePath)
+      if (key === undefined) throw new Error('dsh-feishu: image upload returned no image_key')
       return key
     },
+    uploadVideo: (absolutePath, container) => mediaUploader.video(absolutePath, container),
+    uploadAudio: (absolutePath, format) => mediaUploader.audio(absolutePath, format),
     logger: ctx.logger('dsh-feishu'),
   })
   const cardChannel = {

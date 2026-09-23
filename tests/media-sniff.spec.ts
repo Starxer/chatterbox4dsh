@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  classifyMedia,
   sniffAudioContainer,
+  sniffAudioFormat,
   sniffImageMime,
   sniffVideoContainer,
 } from '../src/media-sniff.ts'
@@ -72,5 +74,47 @@ describe('sniffImageMime', () => {
     expect(sniffImageMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe('image/jpeg')
     expect(sniffImageMime(mp4())).toBeUndefined()
     expect(sniffAudioContainer(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBeUndefined()
+  })
+})
+
+describe('sniffAudioFormat', () => {
+  const wav = (): Buffer => {
+    const bytes = Buffer.alloc(44)
+    bytes.write('RIFF', 0, 'latin1')
+    bytes.write('WAVE', 8, 'latin1')
+    return bytes
+  }
+
+  it('recognises the containers a card audio player would need transcoded', () => {
+    expect(sniffAudioFormat(ogg('OpusHead'))).toBe('opus')
+    expect(sniffAudioFormat(wav())).toBe('wav')
+    expect(sniffAudioFormat(Buffer.from('fLaC\u0000\u0000\u0000"'))).toBe('flac')
+    expect(sniffAudioFormat(Buffer.from('ID3\u0003\u0000\u0000\u0000\u0000\u0000\u0000'))).toBe('mp3')
+    // Raw MPEG audio frame sync, no ID3 tag.
+    expect(sniffAudioFormat(Buffer.from([0xff, 0xfb, 0x90, 0x00]))).toBe('mp3')
+  })
+
+  it('reads an audio-only ISO-BMFF file as m4a', () => {
+    expect(sniffAudioFormat(mp4({ codec: 'mp4a' }))).toBe('m4a')
+  })
+
+  it('does not mistake video for audio', () => {
+    expect(sniffAudioFormat(mp4())).toBeUndefined()
+    // an MP4 whose video codec Feishu cannot play is still video, not audio
+    expect(sniffAudioFormat(mp4({ codec: 'vp09' }))).toBeUndefined()
+    expect(sniffAudioFormat(Buffer.from('plain text'))).toBeUndefined()
+  })
+})
+
+describe('classifyMedia', () => {
+  it('classifies images, playable video and audio apart', () => {
+    expect(classifyMedia(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toEqual({ kind: 'image' })
+    expect(classifyMedia(mp4())).toEqual({ kind: 'video', video: { container: 'mp4', codec: 'avc1' } })
+    expect(classifyMedia(mp4({ codec: 'mp4a' }))).toEqual({ kind: 'audio', audio: 'm4a' })
+  })
+
+  it('leaves anything else (and unplayable video codecs) uncategorised', () => {
+    expect(classifyMedia(mp4({ codec: 'vp09' }))).toBeUndefined()
+    expect(classifyMedia(Buffer.from('# just markdown'))).toBeUndefined()
   })
 })

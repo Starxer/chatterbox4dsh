@@ -159,6 +159,51 @@ describe('neutralizeCard', () => {
     neutralizeCard(card)
     expect(card.body.elements[0]!.content).toBe('![a](runs/a.png)')
   })
+
+  it('drops our media elements on the last-resort retry', () => {
+    const card = {
+      body: {
+        elements: [
+          { tag: 'markdown', content: '前' },
+          { tag: 'video', file_key: 'file_v3_x_y', cover: { img_key: KEY } },
+          { tag: 'markdown', content: '后' },
+        ],
+      },
+    }
+    const gentle = neutralizeCard(card) as typeof card
+    // Nothing is dropped unless Feishu actually refused the card.
+    expect(gentle.body.elements[1]).toMatchObject({ tag: 'video' })
+    const out = neutralizeCard(card, { aggressive: true }) as typeof card
+    expect(out.body.elements[1]).toEqual({ tag: 'markdown', content: '📹 `file_v3_x_y`' })
+  })
+})
+
+describe('audio markup neutralization', () => {
+  const FILE_KEY = 'file_v3_00or_f2c1276b-9f24-463d-8911'
+
+  it('keeps a player whose file_key Feishu handed out', () => {
+    const text = `[听]<audio file_key='${FILE_KEY}' audio_id='a1' show_time=true></audio>`
+    expect(neutralizeCardMarkdown(text)).toBe(text)
+  })
+
+  it('degrades a player with a path or a bogus key to readable text', () => {
+    expect(neutralizeCardMarkdown("<audio file_key='runs/a.opus'></audio>"))
+      .toBe('🔊 `runs/a.opus`')
+    expect(neutralizeCardMarkdown('<audio file_key=""></audio>'))
+      .toBe('🔊 `<audio file_key=""></audio>`')
+  })
+
+  it('leaves the markup literal inside a fence or a closed code span', () => {
+    const fenced = "```\n<audio file_key='x'></audio>\n```"
+    expect(neutralizeCardMarkdown(fenced)).toBe(fenced)
+    const spanned = "`<audio file_key='x'></audio>`"
+    expect(neutralizeCardMarkdown(spanned)).toBe(spanned)
+  })
+
+  it('is idempotent, so a retry does not mangle the fallback', () => {
+    const once = neutralizeCardMarkdown("<audio file_key='runs/a.opus'></audio>")
+    expect(neutralizeCardMarkdown(once)).toBe(once)
+  })
 })
 
 describe('isCardContentRejection', () => {

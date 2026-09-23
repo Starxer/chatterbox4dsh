@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { collectImageTargets, startCardImages, type CardImageDeps } from '../src/card-images.ts'
+import { mp4Bytes, oggBytes } from './stubs/media-bytes.ts'
 
 const IMAGE_KEY = 'img_v3_0215q_0a59b5e6-4758-41de-95a5-a1b2c3d4'
 // Smallest real PNG signature — enough for the format sniff.
@@ -271,7 +272,7 @@ describe('image mode', () => {
   it('mentions the any mode in the refusal warning, so the operator knows the way out', async () => {
     const { handle, warnings } = hydrator({ mode: () => 'workspace' })
     await handle.hydrate(card('![x](../outside/outside.png)'), { workspace })
-    expect(warnings.join('\n')).toContain('set the image mode to "any"')
+    expect(warnings.join('\n')).toContain('set the card-media mode to "any"')
   })
 
   it('reads the mode live, so a settings write applies without a restart', async () => {
@@ -283,5 +284,116 @@ describe('image mode', () => {
     const out = await handle.hydrate(card('![a](runs/a.png)'), { workspace })
     expect(contentOf(out)).toBe(`![a](${IMAGE_KEY})`)
     expect(uploads).toHaveLength(1)
+  })
+})
+
+const VIDEO_KEY = 'file_v3_00or_f2c1276b-9f24-463d-8911'
+const AUDIO_KEY = 'file_v3_00or_9c8d7e6f-1234-5678-90ab'
+const OPUS = Buffer.from(oggBytes('OpusHead'))
+
+describe('card media beyond images', () => {
+  beforeEach(async () => {
+    await writeFile(join(workspace, 'runs', 'clip.mp4'), mp4Bytes())
+    await writeFile(join(workspace, 'runs', 'voice.opus'), OPUS)
+    await writeFile(join(workspace, 'notes.md'), '# a document, not media')
+  })
+
+  it('splices a video element where the link was and blocks forwarding', async () => {
+    const { handle } = hydrator({
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY, coverKey: IMAGE_KEY }),
+    })
+    const out = await handle.hydrate(card('前 [片段](runs/clip.mp4) 后'), { workspace }) as any
+    expect(out.body.elements.map((element: any) => element.tag)).toEqual(['markdown', 'video', 'markdown'])
+    expect(out.body.elements[0].content).toBe('前 ')
+    expect(out.body.elements[2].content).toBe(' 后')
+    const video = out.body.elements[1]
+    expect(video.file_key).toBe(VIDEO_KEY)
+    expect(video.cover.img_key).toBe(IMAGE_KEY)
+    expect(video.enable_download).toBe(true)
+    expect(video.fallback.text.content).toBe('📹 片段')
+    // Feishu refuses a card with a video component unless forwarding is off.
+    expect(out.config.enable_forward).toBe(false)
+  })
+
+  it('inlines audio as an <audio> player in the same markdown element', async () => {
+    const { handle } = hydrator({ uploadAudio: async (_path: string, format: string) => {
+      expect(format).toBe('opus')
+      return { fileKey: AUDIO_KEY }
+    } })
+    const out = await handle.hydrate(card('[语音](runs/voice.opus)'), { workspace }) as any
+    expect(contentOf(out)).toMatch(/^语音 <audio file_key='file_v3_[^']+' audio_id='a[^']+' show_time=true><\/audio>$/)
+    expect(out.config.enable_forward).toBe(false)
+  })
+
+  it('keeps the audio_id stable across card updates so playback is not restarted', async () => {
+    const { handle } = hydrator({ uploadAudio: async () => ({ fileKey: AUDIO_KEY }) })
+    const first = contentOf(await handle.hydrate(card('[语音](runs/voice.opus)'), { workspace }))
+    const second = contentOf(await handle.hydrate(card('[语音](runs/voice.opus)'), { workspace }))
+    expect(second).toBe(first)
+  })
+
+  it('inlines an image the model referenced as a plain link', async () => {
+    const { handle } = hydrator()
+    const out = await handle.hydrate(card('[图](runs/a.png)'), { workspace })
+    expect(contentOf(out)).toBe(`![图](${IMAGE_KEY})`)
+  })
+
+  it('leaves a non-media link alone (quietly) and does not re-inspect it', async () => {
+    const { handle, uploads, warnings } = hydrator({
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY }),
+      uploadAudio: async () => ({ fileKey: AUDIO_KEY }),
+    })
+    const first = await handle.hydrate(card('[notes](notes.md)'), { workspace })
+    expect(contentOf(first)).toBe('[notes](notes.md)')
+    expect(uploads).toHaveLength(0)
+    expect(warnings.join('\n')).not.toContain('notes.md')
+    const second = await handle.hydrate(card('[notes](notes.md)'), { workspace })
+    expect(contentOf(second)).toBe('[notes](notes.md)')
+  })
+
+  it('caps how much video/audio one card may inline', async () => {
+    for (const name of ['b.mp4', 'c.mp4']) await writeFile(join(workspace, 'runs', name), mp4Bytes())
+    const { handle } = hydrator({ uploadVideo: async () => ({ fileKey: VIDEO_KEY }) })
+    const out = await handle.hydrate(card([
+      '[一](runs/clip.mp4)', '[二](runs/b.mp4)', '[三](runs/c.mp4)',
+    ].join('\n\n')), { workspace }) as any
+    const videos = out.body.elements.filter((element: any) => element.tag === 'video')
+    expect(videos).toHaveLength(2)
+  })
+
+  it('leaves media as text when the media budget is already spent', async () => {
+    const { handle } = hydrator({ mediaBudgetMs: 0, uploadVideo: async () => ({ fileKey: VIDEO_KEY }) })
+    const out = await handle.hydrate(card('[片段](runs/clip.mp4)'), { workspace })
+    expect(contentOf(out)).toBe('[片段](runs/clip.mp4)')
+  })
+
+  it('leaves media as text when no video/audio uploader is wired', async () => {
+    const { handle } = hydrator()
+    const out = await handle.hydrate(card('[片段](runs/clip.mp4)'), { workspace })
+    expect(contentOf(out)).toBe('[片段](runs/clip.mp4)')
+  })
+
+  it('uploads nothing at all in text mode', async () => {
+    const uploaded: string[] = []
+    const { handle } = hydrator({
+      mode: () => 'text',
+      uploadVideo: async (path: string) => { uploaded.push(path); return { fileKey: VIDEO_KEY } },
+      uploadAudio: async (path: string) => { uploaded.push(path); return { fileKey: AUDIO_KEY } },
+    })
+    await handle.hydrate(card('[片段](runs/clip.mp4)\n\n[语音](runs/voice.opus)'), { workspace })
+    expect(uploaded).toHaveLength(0)
+  })
+
+  it('shares one upload between concurrent cards for the same clip', async () => {
+    const uploaded: string[] = []
+    const { handle } = hydrator({
+      uploadVideo: async (path: string) => { uploaded.push(path); return { fileKey: VIDEO_KEY } },
+    })
+    const value = card('[片段](runs/clip.mp4)')
+    await Promise.all([
+      handle.hydrate(value, { workspace }),
+      handle.hydrate(value, { workspace }),
+    ])
+    expect(uploaded).toHaveLength(1)
   })
 })

@@ -41,6 +41,31 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 新增：卡片内联媒体——视频与音频也能进消息（`src/media-upload.ts`（新）/ `src/card-images.ts` / `src/card-markdown.ts` / `src/media-sniff.ts` / `src/config.ts` / `src/client/`，2026-09-24）
+
+**动机（对齐 DSH，而非自造功能）**：DSH 的 Web UI 把模型正文里的工作区路径解析成可打开的文件（`[图](runs/a.png)` 内联成图、`[clip](runs/a.mp4)` 是可点击的文件链接、正文里的 `` `report.pdf` `` 会变成可点开的文件 chip），模型因此习惯用 Markdown 引用自己产出的文件。飞书卡片**没有**指向本地文件的链接能力，但**有真正的媒体组件**——所以对齐方式就是把媒体直接渲染在消息里。
+
+**官方事实（2026-09-24 逐条读文档确认，`open.feishu.cn` 的 `.md` 端点）**：
+
+- **视频**：卡片 JSON 2.0 的 `{tag:'video'}` 元素，**只认 MP4 容器**、单文件 ≤30MB、客户端 ≥V7.56（低版本显示 `fallback`），且**含视频的卡片必须在 `config` 里写 `enable_forward: false`，否则卡片发送直接失败**；`file_key` 必须由 `im.v1.file.create({file_type:'mp4', duration})` 上传，且上传应用与发卡应用一致。
+- **音频**：`{tag:'audio'}` 元素，**或**富文本里的 `<audio file_key='file_v3_…' audio_id='…' show_time=true></audio>`（本插件用后者：不必把 markdown 元素拆开）；**只认 Opus**、≥V7.49、同样要求 `enable_forward:false`，且含音频的卡片不能用「仅特定人可见」接口发送。`audio_id` 相同 + `file_key` 相同时，卡片更新不打断播放。
+- **其余文件类型（PDF / doc / xls / ppt / zip / stream…）：没有任何内联组件**——`file` / `attachment` / `media` / `cloud-doc` / `file-preview` 文档路径全部 404，v2 组件总览里也没有文件类；富文本的 HTML 白名单里同样没有 `<file>`（`<video>` 也不能写进富文本，视频只能是独立元素）。这类文件只能继续走原生文件气泡（`msg_type:'file'`，即现状）。
+
+**实现**（沿用 L3 的水位线：路径限定、上传有界、失败退回文字）：
+
+- `src/media-sniff.ts`：新增 `sniffAudioFormat()`（opus/wav/mp3/flac/m4a，按魔数）与 `classifyMedia()`（图片 → 可播 MP4/QuickTime → 音频）；ISO-BMFF 只有**没有视频轨**时才判为音频，避免把「编解码器飞书播不了的 MP4」误传到 `file_type:'opus'`。`sampleEntryCodecs()` 从 `findVideoCodec()` 里提出，两处共用。
+- `src/media-upload.ts`（新）：`im.v1.image.create` / `im.v1.file.create` 的上传 + `ffprobe` 时长 + `ffmpeg` 抽封面（视频）与**转封装/转码**：QuickTime → MP4（`-c copy`）、wav/mp3/m4a/flac → Opus。每个网络调用与每个 ffmpeg 调用都有超时，临时文件必删，任何失败只 warn 并返回 `undefined`（引用退回文字，绝不让媒体拖垮消息）。
+- `src/card-images.ts`：从「只认 `![](path)` 图片」扩到**所有卡片媒体**——`[label](path)` 这类**链接**也会被识别（DSH 的 Web UI 正是这样渲染文件链接的，而飞书点不开本地路径）。改写规则：图片 → `img_v3_…`；音频 → 原地插入 `<audio>` 播放器（`audio_id` 由 key 派生，所以卡片反复更新也不会打断播放）；视频 → **把 markdown 元素拆成「文字 + `{tag:'video'}` 元素 + 文字」**（媒体元素装不进富文本组件），并给卡片补 `config.enable_forward = false`。缓存按 `path+mtime+size`，并新增**「已检查过但不是媒体」的负缓存**（普通文件链接不会被反复读盘）；并发去重覆盖三种媒体。
+- **边界**：图片 ≤10MB、视频/音频 ≤30MB；单卡最多 8 张图 + 2 个音/视频；图片预算 6s、媒体预算 15s（超时就留在文字里，**在途上传继续跑并把 key 写进缓存**，下一张卡就能用上）；`any` 模式仍然只放宽路径范围，不放松大小/数量/时间。
+- `src/card-markdown.ts`：新增 `<audio>` 中和——`file_key` 不是飞书发的 `file_v3_…` 就降级成 `🔊 \`…\``（代码块/闭合行内代码里原样保留）；末次兜底（`aggressive`）会把 `{tag:'video'}`/`{tag:'audio'}` 元素一并降级成文字——被拒收时「卡片发出去」优先于「内联播放」。
+- **设置项**：沿用 `cardImages` 这个键（改名会丢已保存的值），含义扩为**正文里的媒体**：`text` 永不上传 / `workspace` 仅工作区内（默认）/ `any` 任意可读路径。设置页文案与 `Config.description` 已同步。
+
+**实测**：`npm run typecheck` 0 error；**682 tests / 42 files 全绿**（新增 32 例：媒体分类 6、卡片改写与限额 10、音频中和 4、上传器 12）；`npm run build` 产出 `lib/index.js` + `client/client.js`。**ffmpeg/ffprobe 真机联调**（一次性脚本，不留在测试里）：真实 H.264 MP4 → 分类 `video/mp4/avc1`、时长 1000ms、封面抽取并上传成功；真实 WAV → 转 Opus 上传、时长 1007ms。
+
+**这一批明确没做**（记录在案）：① 正文里的**行内代码路径**（`` `runs/a.mp4` ``，DSH 的 `fileMentions` 会把它变成可点 chip）未扫描——只处理带 `()` 目标的 Markdown 引用，避免正文里任何一段代码都被当成待上传文件；② 非媒体文件仍然无法内联（上游没有组件），也不新开公网文件服务（本插件唯一的 HTTP 路由是 loopback-only）；③ 只有 `workspace`/`any` 两档路径范围，没有「只内联视频不内联音频」这类细分开关。
+
+**English**：Feishu cards gained real media components (video/audio element, Opus-only audio, `enable_forward:false` mandatory, MP4-only video) while offering no way to open a local path — so the DSH-WebUI habit of writing `[clip](runs/a.mp4)` in a reply produced nothing clickable here. The plugin now resolves Markdown **image and link** destinations against the session workspace and renders them natively: images become `img_v3_…` (L3, unchanged), audio becomes an inline `<audio>` player (Opus; other containers are transcoded with ffmpeg), and video becomes a real `{tag:'video'}` element spliced next to the surrounding text (QuickTime is remuxed to MP4), with `config.enable_forward = false` added because Feishu refuses such a card otherwise. Uploads keep the L3 discipline — workspace-scoped paths (plus an opt-in `any`), byte/quantity/time caps, `path+mtime+size` caching with a negative cache for inspected non-media, bounded uploads and ffmpeg runs, and a text fallback that is always cheaper than losing the card. Every other file type (PDF/office/zip/stream) has no card component at all and still travels as a native file message. The `cardImages` setting now governs all media (key kept so saved values survive). typecheck clean, **682 tests green**, artifacts rebuilt; verified against real ffmpeg/ffprobe output (MP4 duration + cover, WAV → Opus).
+
 ### 修复：重启落在活跃回合上，会把「聊天 → 会话」绑定整份清空（`src/harness.ts` / `src/index.ts` / `src/feishu-streaming.ts`，2026-09-23）
 
 **现象**：使用者报告「服务重启了以后，切换到了一个以前的 session，而不是自动回到当前的 session」。查下来不是"选错了会话"，而是**磁盘上的绑定表被清空**，聊天于是退回**按 chatId 算出来的默认会话**——那个默认会话恰好是一个旧会话。

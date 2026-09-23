@@ -17,8 +17,8 @@
 | 富文本 | `post` | 加粗/链接/@/图片混排 | SDK 支持，未使用 | 格式化回复（替代纯 markdown） |
 | 图片 | `image` | 上传图片消息 | ✅ 接收用户图片（按字节判型）+ `feishu_send_file` 主动发图（≤10MB 内联预览） | 输出图片/截图/图表 |
 | 文件 | `file` | 文件附件 | ✅ 接收用户文件 + `feishu_send_file` 主动发（≤30MB） | 导出代码/文档/PDF |
-| 音频 | `audio` | 语音消息 | 未使用 | — |
-| 视频 | `video` | 视频消息 | 未使用 | — |
+| 音频 | `audio` | 语音消息 | ✅ `feishu_send_file` 把 Ogg/Opus 发成语音气泡（≤30MB） | — |
+| 视频 | `video`（`msg_type: 'media'`） | 视频消息（可播放气泡） | ✅ `feishu_send_file` 把 MP4/MOV（可播 codec）发成视频气泡 + ffmpeg 抽帧封面 | — |
 | 表情贴纸 | `sticker` | 贴纸表情 | 未使用 | 趣味回复 |
 | **卡片** | `interactive` | 交互式卡片（按钮/选择器/表单） | ✅ 主要使用 | 核心 UI |
 | 分享群聊 | `share_chat` | 分享群聊卡片 | 未使用 | 快速分享群给用户 |
@@ -41,6 +41,8 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 飞书卡片 JSON 2.0（`schema: '2.0'`）支持的组件分为三类：
 
+> **媒体类只有三种：图片 / 视频 / 音频**。**没有任何"文件/附件"组件**（`file` / `attachment` / `media` / `cloud-doc` / `file-preview` 文档路径全 404；富文本的 HTML 白名单里也没有 `<file>`，且 `<video>` 只能作独立元素、写不进富文本）——PDF / Office / 压缩包等只能走原生文件消息。详情与实测见 CHANGELOG「卡片内联媒体」。
+
 ### 2.1 内容组件（Content）
 
 | 组件 | tag | 说明 | dsh-feishu 现状 |
@@ -48,8 +50,10 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 | 普通文本 | `plain_text` | 无格式文本 | ✅ 卡片 header |
 | Markdown | `markdown` | 表格/标题/内联代码/链接/粗体/斜体 | ✅ 主要使用 |
 | Lark Markdown | `lark_md` | 旧版 markdown（仅粗体/斜体/链接） | ⚠️ note 区域使用 |
-| 图片 | `img` | 图片组件 | 未使用 |
-| 表格 | `table` | 结构化表格 | 未使用 |
+| 图片 | `img` | 图片组件（`img_key` 必须是上传得到的 `img_v3_…`） | ✅ 正文图片内联（`src/card-images.ts`）+ 面板卡 |
+| **视频** | `video` | 内嵌 MP4 播放（**仅 MP4**、≤30MB、客户端 ≥V7.56；含视频的卡片**必须** `config.enable_forward: false`，否则发送失败） | ✅ 2026-09-24 起：正文里 `[片段](runs/a.mp4)` 自动内联（QuickTime 先转封装、ffmpeg 抽封面） |
+| **音频** | `audio`（或富文本里 `<audio file_key='…'>`） | 内嵌音频播放（**仅 Opus**、≥V7.49；同样要求 `enable_forward: false`，且不能配合"仅特定人可见"发送） | ✅ 2026-09-24 起：正文里 `[语音](runs/a.opus)` 自动内联（其他音频格式有 ffmpeg 时转 Opus） |
+| 表格 | `table` | 结构化表格 | ✅ 后台任务 / 子代理面板卡 |
 | 图表 | `chart` | 柱状图/折线图/饼图等 | 未使用 |
 | 多列布局 | `column_set` + `column` | 多列并排 | ✅ 按钮行 / 目录浏览器布局（`flex_mode: 'stretch'`） |
 

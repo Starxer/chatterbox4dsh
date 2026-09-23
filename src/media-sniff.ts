@@ -122,8 +122,9 @@ function findBoxes(bytes: Uint8Array, start: number, end: number, type: string):
   return found
 }
 
-/** First video sample-entry fourcc from `stsd` (`moov → trak → mdia → minf → stbl`). */
-function findVideoCodec(bytes: Uint8Array, moov: Box): string | undefined {
+/** Every track's first sample-entry fourcc (`stsd` under `moov → trak → mdia → minf → stbl`). */
+function sampleEntryCodecs(bytes: Uint8Array, moov: Box): string[] {
+  const codecs: string[] = []
   for (const trak of findBoxes(bytes, moov.start, moov.end, 'trak')) {
     const mdia = findBox(bytes, trak.start, trak.end, 'mdia')
     if (mdia === undefined) continue
@@ -136,9 +137,17 @@ function findVideoCodec(bytes: Uint8Array, moov: Box): string | undefined {
     // stsd payload: version+flags (4) then entry_count (4), then the entries.
     const entry = readBox(bytes, stsd.start + 8, stsd.end)
     if (entry === undefined) continue
+    codecs.push(entry.type)
+  }
+  return codecs
+}
+
+/** First VIDEO sample-entry fourcc, skipping audio tracks (`mp4a`). */
+function findVideoCodec(bytes: Uint8Array, moov: Box): string | undefined {
+  for (const codec of sampleEntryCodecs(bytes, moov)) {
     // An audio track (`mp4a`) is not a video track — keep looking.
-    if (entry.type === 'mp4a') continue
-    return entry.type
+    if (codec === 'mp4a') continue
+    return codec
   }
   return undefined
 }
@@ -200,5 +209,77 @@ export function sniffAudioContainer(bytes: Uint8Array): 'opus' | undefined {
     }
     return 'opus'
   }
+  return undefined
+}
+
+/** Audio containers recognised from magic bytes alone. */
+export type AudioFormatId = 'opus' | 'wav' | 'mp3' | 'm4a' | 'flac'
+
+/** ASCII match at `offset`, bounded by the buffer. */
+function matchesAscii(bytes: Uint8Array, offset: number, text: string): boolean {
+  if (offset + text.length > bytes.length) return false
+  for (let i = 0; i < text.length; i++) {
+    if (bytes[offset + i] !== text.charCodeAt(i)) return false
+  }
+  return true
+}
+
+/**
+ * Recognise the common audio containers, so a card can inline audio the model
+ * points at. Only {@link sniffAudioContainer}'s Ogg/Opus plays in Feishu as-is;
+ * the rest (`wav` / `mp3` / `m4a` / `flac`) are recognised here so the caller can
+ * decide whether to transcode them, rather than silently treating them as
+ * opaque files.
+ *
+ * An ISO-BMFF file counts as audio only when it has a `moov`/`mvhd` and NO
+ * video track — a real MP4 with an unplayable video codec must not be mistaken
+ * for audio and uploaded as `file_type: 'opus'`.
+ */
+export function sniffAudioFormat(bytes: Uint8Array): AudioFormatId | undefined {
+  if (sniffAudioContainer(bytes) !== undefined) return 'opus'
+  // WAVE: "RIFF" .... "WAVE"
+  if (matchesAscii(bytes, 0, 'RIFF') && matchesAscii(bytes, 8, 'WAVE')) return 'wav'
+  // FLAC: "fLaC"
+  if (matchesAscii(bytes, 0, 'fLaC')) return 'flac'
+  // MP3: an ID3v2 tag, or a raw MPEG audio frame sync (11 bits set).
+  if (matchesAscii(bytes, 0, 'ID3')) return 'mp3'
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0) return 'mp3'
+  // M4A: ISO-BMFF with an audio-only track list.
+  if (bytes.length >= 12) {
+    const ftyp = readBox(bytes, 0, bytes.length)
+    if (ftyp !== undefined && ftyp.type === 'ftyp') {
+      const moov = findBox(bytes, 0, bytes.length, 'moov')
+      if (moov !== undefined && findBox(bytes, moov.start, moov.end, 'mvhd') !== undefined) {
+        const codecs = sampleEntryCodecs(bytes, moov)
+        if (codecs.length > 0 && codecs.every(codec => codec === 'mp4a' || codec === 'alac')) return 'm4a'
+      }
+    }
+  }
+  return undefined
+}
+
+/** What a file turned out to be, from its bytes. */
+export interface MediaClassification {
+  kind: 'image' | 'video' | 'audio'
+  /** Present for video: the container/codec Feishu can play. */
+  video?: VideoContainer
+  /** Present for audio: the container found on disk (not necessarily playable). */
+  audio?: AudioFormatId
+}
+
+/**
+ * Classify a file's bytes as inline-able card media. Images and playable MP4 /
+ * QuickTime video come first; audio is only reported when no video track
+ * exists, so an unplayable video is never uploaded as Opus.
+ *
+ * @param bytes - the file's first bytes (video needs the whole file: `moov` may sit at the end).
+ * @returns the classification, or `undefined` for anything that stays text.
+ */
+export function classifyMedia(bytes: Uint8Array): MediaClassification | undefined {
+  if (sniffImageMime(bytes) !== undefined) return { kind: 'image' }
+  const video = sniffVideoContainer(bytes)
+  if (video !== undefined) return { kind: 'video', video }
+  const audio = sniffAudioFormat(bytes)
+  if (audio !== undefined) return { kind: 'audio', audio }
   return undefined
 }

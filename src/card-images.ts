@@ -1,67 +1,120 @@
 /**
- * Inline local images in Feishu cards (L3 of the 2026-09-23 card-image work).
+ * Inline local media in Feishu cards: images, video and audio.
  *
- * Feishu renders `![alt](image_key)` as a real inline picture, but ONLY for a key
- * it handed out through the image-upload API. The DSH Web UI, by contrast,
- * resolves workspace paths — so a model that writes `![图](runs/a.png)` is
- * being useful there and impossible here. `card-markdown.ts` degrades those
- * references to text; this module goes one step further and makes them render:
- * a path that resolves to a real image INSIDE the session's workspace is
- * uploaded first, and the card is rewritten to reference the returned key.
+ * The model writes workspace paths in its Markdown because the DSH Web UI
+ * resolves them (`[图](runs/a.png)`, `[clip](runs/a.mp4)`, `` `voice.opus` ``),
+ * but a Feishu card can only render media Feishu itself handed out a key for:
+ * an `img_v3_…` image key, a `file_v3_…` video key, or a `file_v3_…` Opus key.
+ * This module closes that gap — the reference is resolved against the session's
+ * own workspace, uploaded, and the card is rewritten:
  *
- * Everything here is best-effort and bounded, because the fallback already
- * exists: whatever cannot be uploaded simply stays text and the card still
- * renders (never the other way round — a picture must not cost a message).
+ * | model writes                       | Feishu gets                                  |
+ * |------------------------------------|----------------------------------------------|
+ * | `![alt](runs/a.png)` / `[alt](a.png)` | `![alt](img_v3_…)` (inline picture)        |
+ * | `[clip](runs/a.mp4)`               | a sibling `{tag:'video'}` element + cover    |
+ * | `[voice](runs/a.opus)`             | inline `<audio file_key='file_v3_…'>` player |
+ * | anything else                      | untouched — the writer degrades it to text   |
+ *
+ * Cards that end up carrying video or audio also get `config.enable_forward =
+ * false`, which Feishu REQUIRES for those components (the card otherwise fails
+ * to send at all).
+ *
+ * Everything is best-effort and bounded, because the fallback already exists:
+ * whatever cannot be uploaded stays text and the card still renders (never the
+ * other way round — a picture must not cost a message). "Video/audio is a card
+ * element, not markdown" is why the rewrite can split one markdown element into
+ * several: `{tag:'video'}` cannot live inside a rich-text component.
  *
  * Privacy: uploading publishes the file to Feishu. The scope is deliberately
- * narrow — only paths written in `![alt](path)` syntax, only files that live
- * inside the session's own workspace (checked on the REAL path, so a symlink
- * pointing out is refused), only real image formats, and only up to
- * {@link DEFAULT_MAX_BYTES}.
+ * narrow — only paths written as a Markdown image/link destination, only files
+ * that live inside the session's own workspace (checked on the REAL path, so a
+ * symlink pointing out is refused), only recognised media formats, and only up
+ * to the per-kind byte caps.
+ *
+ * The file keeps its historical name; it started as the L3 image work
+ * (2026-09-23) and covers every card media kind as of 2026-09-24.
  *
  * @module @starxer/chatterbox4dsh/card-images
  */
 
-import { open, realpath, stat } from 'node:fs/promises'
+import { open, readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve, sep } from 'node:path'
 import type { CardImageMode } from './config.ts'
+import { classifyMedia, sniffAudioFormat, sniffImageMime, sniffVideoContainer, type AudioFormatId } from './media-sniff.ts'
 import { isFeishuImageKey, mapCardMarkdownReferences } from './card-markdown.ts'
-import { sniffImageMime } from './media-sniff.ts'
 import { withTimeout } from './outbound-timeout.ts'
 
 /** Feishu's image-message limit; a card reference larger than this is pointless. */
 export const DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+/** Feishu's file limit (`im.v1.file.create`); card video/audio share it. */
+export const DEFAULT_MAX_FILE_BYTES = 30 * 1024 * 1024
 /** Most images one card may pull in — a runaway answer must not upload forever. */
 export const DEFAULT_MAX_PER_CARD = 8
+/**
+ * Most video/audio items one card may pull in. Deliberately much smaller than
+ * the image cap: each one is a whole file upload (and possibly an ffmpeg pass),
+ * so a reply that lists ten clips must not stall the card for a minute.
+ */
+export const DEFAULT_MAX_MEDIA_PER_CARD = 2
 /** How many resolved paths keep their key / failure. */
 export const DEFAULT_MAX_CACHED = 256
 /** A path that failed is retried after this long (the file may appear later). */
 export const NEGATIVE_TTL_MS = 60_000
 /**
- * Total time one card may spend uploading. A step card carries the answer, so a
- * slow upload must never hold the message back — whatever is left over simply
- * stays text (and the next card update picks it up from the cache).
+ * Total time one card may spend uploading IMAGES. A step card carries the
+ * answer, so a slow upload must never hold the message back — whatever is left
+ * over simply stays text (and the next card update picks it up from the cache).
  */
 export const DEFAULT_BUDGET_MS = 6_000
-/** Bytes read for the format sniff. */
+/**
+ * Total time one card may spend on video/audio. Larger than the image budget
+ * because a media reference is usually the point of the message and the file
+ * may need remuxing/transcoding first; still bounded, and the in-flight upload
+ * keeps running to fill the cache for the next card update either way.
+ */
+export const DEFAULT_MEDIA_BUDGET_MS = 15_000
+/** Bytes read for the head sniff (enough for every magic number we look for). */
 const SNIFF_BYTES = 64
+
+/** A video/audio item resolved into Feishu keys. */
+export type ResolvedMedia =
+  | { kind: 'image'; key: string }
+  | { kind: 'audio'; key: string }
+  | { kind: 'video'; key: string; coverKey?: string }
+
+/** What a file's bytes turned out to be, from {@link inspect}. */
+type Inspected =
+  | { kind: 'image' }
+  | { kind: 'video'; container: 'mp4' | 'mov' }
+  | { kind: 'audio'; format: AudioFormatId }
 
 export interface CardImageDeps {
   /** The workspace a session runs in; relative paths resolve against it. */
   resolveWorkspace: (sessionId: string) => Promise<string | undefined>
   /** Upload one local image and return its Feishu image key. */
   upload: (absolutePath: string) => Promise<string | undefined>
+  /**
+   * Upload one video for a card `video` element. `container` is what the bytes
+   * sniffed as, so the uploader knows whether an MP4 remux is needed.
+   */
+  uploadVideo?: (absolutePath: string, container: 'mp4' | 'mov') => Promise<{ fileKey: string; coverKey?: string } | undefined>
+  /** Upload one audio file (transcoding to Opus when needed) for `<audio>`. */
+  uploadAudio?: (absolutePath: string, format: AudioFormatId) => Promise<{ fileKey: string } | undefined>
   logger: { warn(message: string): unknown }
   maxBytes?: number
+  maxFileBytes?: number
   maxPerCard?: number
+  maxMediaPerCard?: number
   maxCached?: number
   /**
    * Read the CURRENT image mode (live, so a settings write applies without a
    * restart). Defaults to `workspace`.
    */
   mode?: () => CardImageMode | undefined
-  /** Wall-clock budget for one `hydrate` call. */
+  /** Wall-clock budget for one `hydrate` call's images. */
   budgetMs?: number
+  /** Wall-clock budget for one `hydrate` call's video/audio. */
+  mediaBudgetMs?: number
   /** How long a failed path is remembered before it is retried. */
   negativeTtlMs?: number
 }
@@ -73,7 +126,7 @@ export interface CardImageScope {
 }
 
 /**
- * What callers receive: rewrite a card so its local image references render.
+ * What callers receive: rewrite a card so its local media references render.
  * Never rejects — a reference that cannot be resolved is left for the writer to
  * degrade to text.
  */
@@ -81,7 +134,7 @@ export type CardImageHydrator = (card: object, scope: CardImageScope) => Promise
 
 export interface CardImagesHandle {
   /**
-   * Rewrite every inlinable image reference of a card to a Feishu image key.
+   * Rewrite every inlinable media reference of a card to a Feishu key / element.
    * Never rejects; on any failure the card is returned with the reference
    * unchanged, which the writer turns into readable text.
    */
@@ -89,24 +142,54 @@ export interface CardImagesHandle {
   dispose(): void
 }
 
-interface CachedKey {
-  /** `mtimeMs:size` of the file the key was uploaded for. */
+interface CachedMedia {
+  /** `mtimeMs:size` of the file the entry was inspected for. */
   stamp: string
-  key: string
+  /** `undefined` means "inspected, not inline-able" — the negative fast path. */
+  media?: ResolvedMedia
+}
+
+/** One reference found in the card's markdown. */
+export interface CardMediaTarget {
+  /** The destination exactly as written. */
+  target: string
+  /** `true` for `![alt](target)`, `false` for `[label](target)`. */
+  image: boolean
 }
 
 /** A local path to inline: not an image key and not a URL. */
 function isLocalCandidate(target: string): boolean {
   const value = target.trim()
   if (value === '' || isFeishuImageKey(value)) return false
+  if (value.startsWith('#')) return false
   if (value.startsWith('//')) return false
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false
   return true
 }
 
-/** Collect the distinct local image targets of a card's markdown, in order. */
-export function collectImageTargets(card: object, limit: number): string[] {
-  const targets: string[] = []
+/** Decode one URL escape sequence, leaving a malformed target as written. */
+function decodeTarget(target: string): string {
+  try {
+    return decodeURIComponent(target)
+  } catch {
+    return target
+  }
+}
+
+/** The spellings of one destination worth trying as a path, most specific first. */
+function pathCandidates(target: string): string[] {
+  const decoded = decodeTarget(target.trim())
+  const withoutFragment = decoded.split('#')[0] ?? decoded
+  return [...new Set([decoded, withoutFragment].filter(value => value !== ''))]
+}
+
+/**
+ * Collect the distinct local media targets of a card's markdown, in order.
+ * Images first is not guaranteed — the writer's order is kept so the rendered
+ * card reads like the model wrote it.
+ */
+export function collectMediaTargets(card: object, limit: number): CardMediaTarget[] {
+  const targets: CardMediaTarget[] = []
   const seen = new Set<string>()
   const walk = (node: unknown): void => {
     if (targets.length >= limit) return
@@ -118,9 +201,9 @@ export function collectImageTargets(card: object, limit: number): string[] {
     const record = node as Record<string, unknown>
     if (record.tag === 'markdown' && typeof record.content === 'string') {
       mapCardMarkdownReferences(record.content, (reference) => {
-        if (reference.image && isLocalCandidate(reference.target) && !seen.has(reference.target)) {
+        if (isLocalCandidate(reference.target) && !seen.has(reference.target)) {
           seen.add(reference.target)
-          targets.push(reference.target)
+          targets.push({ target: reference.target, image: reference.image })
         }
         return reference.raw
       })
@@ -132,25 +215,42 @@ export function collectImageTargets(card: object, limit: number): string[] {
 }
 
 /**
- * Create the image hydrator. One instance per plugin: the key cache must be
- * shared, because the same picture is referenced by several cards of a turn
- * (and re-rendered on every card update).
+ * The image-only subset, kept for callers that reason about pictures alone
+ * (and for the original L3 test surface).
+ */
+export function collectImageTargets(card: object, limit: number): string[] {
+  return collectMediaTargets(card, limit).filter(entry => entry.image).map(entry => entry.target)
+}
+
+/** Whether the first bytes start an ISO-BMFF box (`ftyp`), i.e. MP4/MOV/M4A. */
+function isIsoBmffHead(bytes: Uint8Array): boolean {
+  if (bytes.length < 8) return false
+  return bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70
+}
+
+/**
+ * Create the media hydrator. One instance per plugin: the key cache must be
+ * shared, because the same file is referenced by several cards of a turn (and
+ * re-rendered on every card update).
  *
- * @param deps - workspace resolver, uploader, logger and the bounds.
+ * @param deps - workspace resolver, uploaders, logger and the bounds.
  */
 export function startCardImages(deps: CardImageDeps): CardImagesHandle {
   const maxBytes = deps.maxBytes ?? DEFAULT_MAX_BYTES
+  const maxFileBytes = deps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
   const maxPerCard = deps.maxPerCard ?? DEFAULT_MAX_PER_CARD
+  const maxMediaPerCard = deps.maxMediaPerCard ?? DEFAULT_MAX_MEDIA_PER_CARD
   const maxCached = deps.maxCached ?? DEFAULT_MAX_CACHED
   const budgetMs = deps.budgetMs ?? DEFAULT_BUDGET_MS
+  const mediaBudgetMs = deps.mediaBudgetMs ?? DEFAULT_MEDIA_BUDGET_MS
   const mode = (): CardImageMode => deps.mode?.() ?? 'workspace'
   const negativeTtlMs = deps.negativeTtlMs ?? NEGATIVE_TTL_MS
-  /** abs path → key, invalidated when the file's stamp changes. */
-  const keys = new Map<string, CachedKey>()
+  /** abs path → what it resolved to, invalidated when the file's stamp changes. */
+  const entries = new Map<string, CachedMedia>()
   /** request → when it failed, so a missing file is not re-stat-ed every update. */
   const failed = new Map<string, number>()
-  /** abs path → in-flight upload, so two cards do not upload the same file twice. */
-  const pending = new Map<string, Promise<string | undefined>>()
+  /** `kind\0path` → in-flight upload, so two cards do not upload the same file twice. */
+  const pending = new Map<string, Promise<ResolvedMedia | undefined>>()
 
   const bound = (map: Map<string, unknown>): void => {
     while (map.size > maxCached) {
@@ -168,73 +268,129 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
     workspace: string,
     target: string,
     allowOutside: boolean,
-  ): Promise<{ path: string; stamp: string } | undefined> => {
+  ): Promise<{ path: string; stamp: string; size: number } | undefined> => {
     const root = await realpath(workspace).catch(() => undefined)
     if (root === undefined) return undefined
-    const candidate = isAbsolute(target) ? resolve(target) : resolve(root, target)
-    const real = await realpath(candidate).catch(() => undefined)
-    if (real === undefined) return undefined
-    if (!allowOutside && real !== root && !real.startsWith(root + sep)) {
-      deps.logger.warn(`dsh-feishu: card image ${target} is outside the workspace; left as text`
-        + ' (set the image mode to "any" to allow it)')
-      return undefined
+    for (const candidateTarget of pathCandidates(target)) {
+      const candidate: string = isAbsolute(candidateTarget) ? resolve(candidateTarget) : resolve(root, candidateTarget)
+      const real: string | undefined = await realpath(candidate).catch(() => undefined)
+      if (real === undefined) continue
+      if (!allowOutside && real !== root && !real.startsWith(root + sep)) {
+        deps.logger.warn(`dsh-feishu: card media ${target} is outside the workspace; left as text`
+          + ' (set the card-media mode to "any" to allow it)')
+        return undefined
+      }
+      const info = await stat(real).catch(() => undefined)
+      if (info === undefined || !info.isFile() || info.size === 0) continue
+      return { path: real, stamp: `${info.mtimeMs}:${info.size}`, size: info.size }
     }
-    const info = await stat(real).catch(() => undefined)
-    if (info === undefined || !info.isFile() || info.size === 0) return undefined
-    if (info.size > maxBytes) {
-      deps.logger.warn(`dsh-feishu: card image ${target} is ${info.size} bytes (limit ${maxBytes}); left as text`)
-      return undefined
-    }
-    const handle = await open(real, 'r').catch(() => undefined)
+    return undefined
+  }
+
+  /** The first {@link SNIFF_BYTES} bytes of a file, or `undefined` when unreadable. */
+  const readHead = async (absolutePath: string): Promise<Uint8Array | undefined> => {
+    const handle = await open(absolutePath, 'r').catch(() => undefined)
     if (handle === undefined) return undefined
     try {
       const buffer = Buffer.alloc(SNIFF_BYTES)
       const { bytesRead } = await handle.read(buffer, 0, SNIFF_BYTES, 0)
-      if (sniffImageMime(buffer.subarray(0, bytesRead)) === undefined) {
-        deps.logger.warn(`dsh-feishu: card image ${target} is not a recognised image format; left as text`)
-        return undefined
-      }
+      return buffer.subarray(0, bytesRead)
     } finally {
       await handle.close().catch(() => undefined)
     }
-    return { path: real, stamp: `${info.mtimeMs}:${info.size}` }
   }
 
-  const uploadOnce = async (absolutePath: string): Promise<string | undefined> => {
-    const inFlight = pending.get(absolutePath)
+  /**
+   * Work out what a file is. The head is enough for images and the non-ISO-BMFF
+   * audio formats; an ISO-BMFF file needs the whole buffer because `moov` may
+   * sit at the end, which is also why a large non-media file is refused before
+   * it is read.
+   */
+  const inspect = async (
+    absolutePath: string,
+    size: number,
+  ): Promise<Inspected | undefined> => {
+    const head = await readHead(absolutePath)
+    if (head === undefined) return undefined
+    if (sniffImageMime(head) !== undefined) {
+      if (size > maxBytes) {
+        deps.logger.warn(`dsh-feishu: card image ${absolutePath} is ${size} bytes (limit ${maxBytes}); left as text`)
+        return undefined
+      }
+      return { kind: 'image' }
+    }
+    const audioHead = sniffAudioFormat(head)
+    if (audioHead !== undefined && audioHead !== 'm4a') return { kind: 'audio', format: audioHead }
+    if (!isIsoBmffHead(head)) return undefined
+    if (size > maxFileBytes) {
+      deps.logger.warn(`dsh-feishu: card media ${absolutePath} is ${size} bytes (limit ${maxFileBytes}); left as text`)
+      return undefined
+    }
+    const bytes = await readFile(absolutePath).catch(() => undefined)
+    if (bytes === undefined) return undefined
+    const video = sniffVideoContainer(bytes)
+    if (video !== undefined) return { kind: 'video', container: video.container }
+    const classification = classifyMedia(bytes)
+    if (classification?.kind === 'audio') return { kind: 'audio', format: classification.audio ?? 'opus' }
+    return undefined
+  }
+
+  /**
+   * Upload one already-classified file once, sharing the promise between
+   * concurrent cards: the same clip is often referenced by a step card and the
+   * final reply card at the same moment.
+   */
+  const uploadOnce = async (
+    kind: Inspected,
+    located: { path: string; stamp: string },
+    budget: () => number,
+  ): Promise<ResolvedMedia | undefined> => {
+    const absolutePath = located.path
+    // Re-check the cache here, synchronously: a caller that missed it before an
+    // `await` must not upload a file another card finished uploading meanwhile.
+    const cached = entries.get(absolutePath)
+    if (cached !== undefined && cached.stamp === located.stamp) return cached.media
+    const key = `${kind.kind}\u0000${absolutePath}`
+    const inFlight = pending.get(key)
     if (inFlight !== undefined) return inFlight
-    const task = withTimeout(deps.upload(absolutePath), 'upload card image')
+    const label = kind.kind === 'image' ? 'card image' : 'card media'
+    const task = (async (): Promise<ResolvedMedia | undefined> => {
+      if (kind.kind === 'image') {
+        const uploaded = await withTimeout(deps.upload(absolutePath), 'upload card image', budget())
+        return uploaded === undefined ? undefined : { kind: 'image', key: uploaded }
+      }
+      if (kind.kind === 'video') {
+        if (deps.uploadVideo === undefined) return undefined
+        const uploaded = await withTimeout(deps.uploadVideo(absolutePath, kind.container), 'upload card video', budget())
+        return uploaded === undefined
+          ? undefined
+          : { kind: 'video', key: uploaded.fileKey, ...(uploaded.coverKey === undefined ? {} : { coverKey: uploaded.coverKey }) }
+      }
+      if (deps.uploadAudio === undefined) return undefined
+      const uploaded = await withTimeout(deps.uploadAudio(absolutePath, kind.format), 'upload card audio', budget())
+      return uploaded === undefined ? undefined : { kind: 'audio', key: uploaded.fileKey }
+    })()
       .catch((error: unknown) => {
         const reason = error instanceof Error ? error.message : String(error)
-        deps.logger.warn(`dsh-feishu: card image upload failed for ${absolutePath}: ${reason}`)
+        deps.logger.warn(`dsh-feishu: ${label} upload failed for ${absolutePath}: ${reason}`)
         return undefined
       })
-      .finally(() => { pending.delete(absolutePath) })
-    pending.set(absolutePath, task)
-    return task
-  }
-
-  /** Key for one target, from the cache or freshly uploaded. */
-  const keyFor = async (
-    workspace: string,
-    target: string,
-    budgetLeft: number,
-    allowOutside: boolean,
-  ): Promise<string | undefined> => {
-    const located = await locate(workspace, target, allowOutside)
-    if (located === undefined) return undefined
-    const cached = keys.get(located.path)
-    if (cached !== undefined && cached.stamp === located.stamp) return cached.key
-    // The outer bound keeps ONE card inside its budget even when the upload
-    // itself is still allowed its own (larger) hard limit: the shared in-flight
-    // promise keeps running and caches the key for the next card update.
-    const key = await withTimeout(uploadOnce(located.path), 'upload card image', budgetLeft)
-      .catch(() => undefined)
-    if (key === undefined) return undefined
-    keys.set(located.path, { stamp: located.stamp, key })
-    bound(keys)
-    console.log(`dsh-feishu: [img] uploaded ${target} → ${key}`)
-    return key
+      // Cache inside the shared task, BEFORE the in-flight entry is dropped: a
+      // card that missed both would otherwise upload the same file twice.
+      .then((inlined) => {
+        if (inlined !== undefined) {
+          entries.set(located.path, { stamp: located.stamp, media: inlined })
+          bound(entries)
+        }
+        return inlined
+      })
+      .finally(() => { pending.delete(key) })
+    pending.set(key, task)
+    const inlined = await task
+    if (inlined !== undefined) {
+      console.log(`dsh-feishu: [media] uploaded ${absolutePath} → ${inlined.kind} ${inlined.key}`)
+    }
+    return inlined
   }
 
   return {
@@ -243,67 +399,216 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
         // `text` means "never upload": nothing to resolve, and the reference is
         // left for the writer to turn into readable text.
         if (mode() === 'text') return card
-        const targets = collectImageTargets(card, maxPerCard)
+        // Over-collect on purpose: the per-kind caps are enforced below, and a
+        // reply that lists ten pictures must still have its clip considered.
+        const targets = collectMediaTargets(card, (maxPerCard + maxMediaPerCard) * 2)
         if (targets.length === 0) return card
         const workspace = scope.workspace !== undefined && scope.workspace !== ''
           ? scope.workspace
           : scope.sessionId === undefined ? undefined : await deps.resolveWorkspace(scope.sessionId)
         if (workspace === undefined || workspace === '') return card
         const now = Date.now()
-        const deadline = now + budgetMs
-        const resolved = new Map<string, string>()
-        for (const target of targets) {
-          const budgetLeft = deadline - Date.now()
-          if (budgetLeft <= 0) break
-          const requestKey = `${workspace}\u0000${target}`
+        const imageDeadline = now + budgetMs
+        const mediaDeadline = now + mediaBudgetMs
+        const allowOutside = mode() === 'any'
+        const resolved = new Map<string, ResolvedMedia>()
+        let images = 0
+        let media = 0
+        for (const entry of targets) {
+          const requestKey = `${workspace}\u0000${entry.target}`
           const failedAt = failed.get(requestKey)
           if (failedAt !== undefined && now - failedAt < negativeTtlMs) continue
-          const key = await keyFor(workspace, target, budgetLeft, mode() === 'any')
-          if (key === undefined) {
+          const located = await locate(workspace, entry.target, allowOutside)
+          if (located === undefined) {
+            failed.set(requestKey, now)
+            bound(failed)
+            continue
+          }
+          const cached = entries.get(located.path)
+          if (cached !== undefined && cached.stamp === located.stamp) {
+            if (cached.media !== undefined) resolved.set(entry.target, cached.media)
+            continue
+          }
+          // Per-kind caps are checked against the CLASSIFIED kind, so a reply
+          // with eleven pictures still gets its one clip inlined.
+          if (maxPerCard - images <= 0 && maxMediaPerCard - media <= 0) break
+          const kind = await inspect(located.path, located.size)
+          if (kind === undefined) {
+            // Quiet for a plain link (most links point at source files, and
+            // warning about each one would drown the journal); an explicit
+            // image reference that is not an image is worth a line.
+            if (entry.image) {
+              deps.logger.warn(`dsh-feishu: card image ${entry.target} is not a recognised image format; left as text`)
+            }
+            entries.set(located.path, { stamp: located.stamp })
+            bound(entries)
+            continue
+          }
+          const isImage = kind.kind === 'image'
+          if (isImage ? maxPerCard - images <= 0 : maxMediaPerCard - media <= 0) continue
+          const remaining = (): number => Math.max(0, (isImage ? imageDeadline : mediaDeadline) - Date.now())
+          if (remaining() <= 0) continue
+          const inlined = await uploadOnce(kind, located, remaining)
+          if (inlined === undefined) {
+            // Classification succeeded but the upload did not: do NOT cache a
+            // negative (the file is fine, the transport was not), retry later.
             failed.set(requestKey, now)
             bound(failed)
             continue
           }
           failed.delete(requestKey)
-          resolved.set(target, key)
+          if (inlined.kind === 'image') images += 1
+          else media += 1
+          resolved.set(entry.target, inlined)
         }
         if (resolved.size === 0) return card
-        return rewriteWithKeys(card, resolved)
+        return rewriteCardMedia(card, resolved)
       } catch (error: unknown) {
         // Hydration is an enhancement: never let it cost the card.
         const reason = error instanceof Error ? error.message : String(error)
-        deps.logger.warn(`dsh-feishu: card image hydration failed: ${reason}`)
+        deps.logger.warn(`dsh-feishu: card media hydration failed: ${reason}`)
         return card
       }
     },
     dispose(): void {
-      keys.clear()
+      entries.clear()
       failed.clear()
       pending.clear()
     },
   }
 }
 
-/** Copy of the card with the resolved targets replaced by their image keys. */
-function rewriteWithKeys(card: object, resolved: ReadonlyMap<string, string>): object {
+/** Placeholder that marks where one video element must be spliced in. */
+const VIDEO_MARKER = '\u0000dsh-video-'
+const VIDEO_MARKER_PATTERN = /\u0000dsh-video-(\d+)\u0000/g
+
+/** Stable `audio_id`, so a card update does not restart the player. */
+function audioId(key: string): string {
+  return `a${key.replace(/[^A-Za-z0-9_]/gu, '').slice(0, 18)}`
+}
+
+/** The inline `<audio>` player markup for one uploaded Opus file. */
+export function audioMarkup(key: string, label?: string): string {
+  const player = `<audio file_key='${key}' audio_id='${audioId(key)}' show_time=true></audio>`
+  return label === undefined || label.trim() === '' ? player : `${label} ${player}`
+}
+
+/** One card `video` element for an uploaded MP4. */
+function videoElement(media: { key: string; coverKey?: string }, label: string): object {
+  return {
+    tag: 'video',
+    file_key: media.key,
+    enable_download: true,
+    show_time: true,
+    ...(media.coverKey === undefined ? {} : { cover: { img_key: media.coverKey } }),
+    // Shown on clients older than V7.56 instead of the generic upgrade notice:
+    // naming the file keeps the message useful there too.
+    fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: `📹 ${label}` } },
+  }
+}
+
+/** What one markdown element's references turned into. */
+interface RewrittenMarkdown {
+  /** Rewritten content, with video markers still in place. */
+  content: string
+  /** Marker id → the video that goes there (in first-seen order). */
+  videos: Map<string, { media: { key: string; coverKey?: string }; label: string }>
+}
+
+/** Rewrite every inlinable reference of one markdown string. */
+function rewriteMarkdown(
+  content: string,
+  resolved: ReadonlyMap<string, ResolvedMedia>,
+): RewrittenMarkdown {
+  const videos = new Map<string, { media: { key: string; coverKey?: string }; label: string }>()
+  const rewritten = mapCardMarkdownReferences(content, (reference) => {
+    const media = resolved.get(reference.target)
+    if (media === undefined) return reference.raw
+    const label = reference.alt.trim() === '' ? reference.target : reference.alt.trim()
+    if (media.kind === 'image') return `![${label}](${media.key})`
+    if (media.kind === 'audio') return audioMarkup(media.key, reference.alt.trim() === '' ? undefined : label)
+    const marker = `${VIDEO_MARKER}${videos.size}\u0000`
+    videos.set(marker, { media, label })
+    return marker
+  })
+  return { content: rewritten, videos }
+}
+
+/** Split one markdown element into markdown segments and video elements. */
+function splitMarkdownElement(
+  element: Record<string, unknown>,
+  rewritten: RewrittenMarkdown,
+): unknown[] | undefined {
+  if (rewritten.videos.size === 0 || !rewritten.content.includes(VIDEO_MARKER)) return undefined
+  const parts: unknown[] = []
+  const pushText = (text: string): void => {
+    if (text.trim() === '') return
+    parts.push({ ...element, content: text })
+  }
+  VIDEO_MARKER_PATTERN.lastIndex = 0
+  let last = 0
+  let match = VIDEO_MARKER_PATTERN.exec(rewritten.content)
+  while (match !== null) {
+    pushText(rewritten.content.slice(last, match.index))
+    const video = rewritten.videos.get(match[0])
+    if (video !== undefined) parts.push(videoElement(video.media, video.label))
+    last = match.index + match[0].length
+    match = VIDEO_MARKER_PATTERN.exec(rewritten.content)
+  }
+  pushText(rewritten.content.slice(last))
+  return parts
+}
+
+/**
+ * Copy of the card with each resolved reference replaced: images become
+ * `img_v3_…` references, audio becomes an inline `<audio>` player, and video
+ * becomes a sibling element (splitting its markdown element when needed).
+ * A card that carries video or audio also gets `enable_forward: false`.
+ */
+export function rewriteCardMedia(
+  card: object,
+  resolved: ReadonlyMap<string, ResolvedMedia>,
+): object {
+  let forwardBlocked = false
+  for (const media of resolved.values()) {
+    if (media.kind !== 'image') forwardBlocked = true
+  }
+
   const walk = (node: unknown): unknown => {
-    if (Array.isArray(node)) return node.map(walk)
+    if (Array.isArray(node)) {
+      const out: unknown[] = []
+      for (const entry of node) {
+        const parts = markdownParts(entry)
+        if (parts === undefined) out.push(walk(entry))
+        else out.push(...parts)
+      }
+      return out
+    }
     if (node === null || typeof node !== 'object') return node
     const record = node as Record<string, unknown>
-    const isMarkdown = record.tag === 'markdown'
     const result: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(record)) {
-      if (isMarkdown && key === 'content' && typeof value === 'string') {
-        result[key] = mapCardMarkdownReferences(value, (reference) => {
-          if (!reference.image) return reference.raw
-          const imageKey = resolved.get(reference.target)
-          return imageKey === undefined ? reference.raw : `![${reference.alt}](${imageKey})`
-        })
-      } else {
-        result[key] = walk(value)
-      }
+      result[key] = key === 'content' && record.tag === 'markdown' && typeof value === 'string'
+        ? rewriteMarkdown(value, resolved).content
+        : walk(value)
     }
     return result
   }
-  return walk(card) as object
+
+  /** The split parts of a markdown element, or `undefined` when it stays whole. */
+  const markdownParts = (entry: unknown): unknown[] | undefined => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined
+    const record = entry as Record<string, unknown>
+    if (record.tag !== 'markdown' || typeof record.content !== 'string') return undefined
+    return splitMarkdownElement(record, rewriteMarkdown(record.content, resolved))
+  }
+
+  const rewritten = walk(card) as Record<string, unknown>
+  if (!forwardBlocked) return rewritten
+  const config = rewritten.config
+  const merged = config !== null && typeof config === 'object' && !Array.isArray(config)
+    ? { ...(config as Record<string, unknown>) }
+    : {}
+  merged.enable_forward = false
+  return { ...rewritten, config: merged }
 }
