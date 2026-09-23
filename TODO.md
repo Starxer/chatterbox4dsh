@@ -16,13 +16,15 @@
 | # | 项 | 优先级 | 状态与出处 |
 |---|---|---|---|
 | O1 | **思考期占位卡（方案 A）** | 中 | ✅ **已实现（2026-09-23，待重启生效）**。`step/start`（模型请求发出前）立即发「🧠 深度思考中…」占位卡，并按 5s 刷新已用时；`assistant/message` / `tool/call` / `tool/result` 全部在**同一张卡**上就地更新；某步最终没有可显示内容时在 `step/end` 折叠为「本步无输出」。四个边角（占位态渲染、`stepHasVisibleContent` 放行、无内容步的去留、i18n）按原方案处理；方案 B（逐字流式）仍不做，见下文「已知问题 → 思考期无反馈」 |
-| O2 | **`/subagents` 子代理卡片命令** | 中 | 🔲 **未实现**（`src/` 内无该命令，只在历史 `.bak` 文件里留有注释）。数据源 `ctx.subagents.listChildren` / `listDescendants`；与 rc.1 评估的 **C2** 是同一件事 |
+| O2 | **`/subagents` 子代理卡片命令** | 中 | 🔲 **未实现**（`src/` 内无该命令，只在历史 `.bak` 文件里留有注释）。数据源 `ctx.subagents.listChildren` / `listDescendants`；与 rc.1 评估的 **C2** 是同一件事。**与 O10 共用数据源与渲染，建议一并实现** |
 | O3 | **补 `produced` 交付物**（write/edit 成功改过的文件） | 中 | 🔲 **未实现**。插件只订阅 `deliverables/presented`（[`feishu-streaming.ts:992`](./src/feishu-streaming.ts)），WebUI 的 produced 那一半没有对应物 → 实测 **32%（18/56 轮）** WebUI 有产物行而飞书完全没有。同节另两个缺口：complete 卡只对**飞书触发的**轮次发；`renderReplyCards` 的 else 分支不带 `turnStats`（交付清单与指标整块不渲染） |
 | O4 | **两处残留的就地更新上限** | **高**（交互可靠性） | 🔲 **仍在**（2026-09-23 复核）：① [`feishu-session.ts:380`](./src/feishu-session.ts) 的「🔄 刷新」按钮；② [`feishu-model-select.ts`](./src/feishu-model-select.ts) 整个选择向导（`updateCardInstanceOnMessage` 四处调用：563/577/668/674）。飞书对**带按钮**的卡片就地更新 2–3 次后停止投递回调 → 改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
 | O5 | **`#18` reasoning 代码块可折叠** | 中 | 🔲 **未实现**（`src/` 内无 `collapsible`） |
 | O6 | **错误详情三选一** | 低 | 🔲 **未定/未动工**。现状上限：工具结果 1500 字符、reasoning 200、正文 3000（溢出会拆卡，**不丢**）、插件侧非 turn 错误 600 字符且丢 `cause` / 堆栈。三个可选方向（详细错误卡 / `/error` 回看全文 / 落文件后交 `feishu_send_file` 推送）都没做 |
 | O7 | **`renderMode: auto\|card\|text`** | 低 | 🔲 **未实现**（2026-09-23 复核：`src/` 内仍无）。超长回复回退纯文本的能力，来自「飞书消息长度限制调研」的「待定」 |
 | O8 | reasoning 预览字数是否可配置 | 低 | 🔍 **待定**。`REASONING_CAP = 200` 硬编码在两处（[`channel.ts:33`](./src/channel.ts)、[`feishu-streaming.ts:1197`](./src/feishu-streaming.ts)） |
+| O9 | **后台任务面板卡**（一张卡列出本群**全部**后台任务） | 中 | 📋 **规划中（2026-09-23 使用者定形）**。现状是**一任务一卡**、且标题直接用 job label（= 命令 / 委派描述）——使用者认为**标题不合适**：应固定为「后台任务」，把**命令、状态、进度、耗时、退出码**放进卡里，**一张卡列出所有后台任务**，任务产生或更新时自动发/刷新。展示形式**暂定表格**。判据不变（只列真后台任务，前台 bash 调用不进表、不发卡，关键坑 37）。取代 `663a96a` 的一任务一卡。设计见「规划：后台任务 / 子代理面板卡」 |
+| O10 | **子代理面板卡**（一张卡列出**全部**子代理） | 中 | 📋 **规划中（2026-09-23 使用者定形）**。与 O9 同形：固定标题（暂定「子代理」）+ 表格列出每个子代理的**描述 / 模式 / 状态 / 耗时**，生成或更新时自动发/刷新。数据源 `ctx.subagents.listChildren` / `listDescendants` + 会话事件 `subagent/catalog`；与 **O2** 共用数据源，建议一并实现。设计见「规划：后台任务 / 子代理面板卡」 |
 
 ### 上游阻塞（我们能做的都做完了，只能等 DSH）
 
@@ -51,6 +53,63 @@
 | H1 | `src/harness.ts.bak.20260902_172344` / `_215829` | 坑 3 要求「验证启动正常后**手动删** `.bak.*`」；这两份 2026-09-02 的临时备份**至今未删** |
 | H2 | 本机旧产物 | `~/.dsh/plugin-node-modules.pre-017`（168M）、`plugin-package-lock.json.pre-017`、8 个 `settings.yaml.bak.*`；确认没有回退需求后可删 |
 | H3 | 检出根 `lib/types/{index,invariant,startup}.js`（各 11 字节存根） | ⚠️ **别删**：`pnpm run clean` 不会碰它，但它已穿过两次完整构建；删了可能立刻回到 `Cannot find entry` 一类失败。见坑 32 与 `notes/upgrade-0.1.7-alpha.2.md` §6 |
+
+---
+
+## 规划：后台任务 / 子代理面板卡（2026-09-23 使用者定形，**未动工**）
+
+**使用者原话**：
+
+> 这个后台任务现在这个标题是不合适的，应该改成「后台任务」。然后这个卡片要列出所有的后台任务，还有这个任务的命令、状态这些。sub agent 也是一样的。就是在生成后台任务或者后台任务更新的时候，会自动发卡片展示一下，sub agent 也是。展示的形式暂定就是用表格形式。
+
+### 目标形态（暂定）
+
+1. **标题固定**：后台任务卡 = `🧩 后台任务` / `Background jobs`；子代理卡 = 暂定 `🤖 子代理` / `Subagents`。**不再用 job label 当标题**（现在标题是命令本身，长命令直接把卡头撑满）。
+2. **一张卡列全部**：每个聊天**一张**面板卡，表里**一行一个任务**。任务的注册 / 进度 / 终态 / 被移除都**刷新同一张卡**（就地更新）；不再"一任务一卡"，也不再发灰色「已失效」卡。
+3. **后台任务表列（暂定）**：状态（🔄 / ⏹️ / ✅ / ❌ / ⛔）· 任务（`JobView.label` = 命令或委派描述，需截断）· ID（`bash-N`）· 进度（`progress`）· 耗时（`finishedAt ?? now` − `startedAt`）· 结束原因（`detail`，如 `exit code: 3`）。
+4. **子代理表列（暂定）**：状态（`activity: running` / `inactive`）· 描述（`label`）· 子会话 id · 模式（`one-shot` / `continuable`）· 深度（来自 `listDescendants` 的 `depth`）· 耗时（`SubagentTimingProjection.settledMs` / `active.since`）。
+5. **自动发卡时机**：后台任务在**注册或更新**时刷新；子代理在**生成或状态变化**时刷新。
+6. **展示形式**：**暂定 markdown 表格**（Card 2.0 支持表格；长命令在单元格里要截断 + 行内代码，必要时把完整命令放到表格下方的「明细」区——备选）。
+
+### 数据源（2026-09-23 已核实）
+
+| 用途 | 接口 | 形状 |
+|---|---|---|
+| 后台任务列表 | `ctx.jobs.list(caller?: SessionId): JobView[]` | `JobView = { id, kind, label, owner?, status: running\|stopping\|completed\|killed\|failed, progress?, detail?, startedAt, finishedAt?, output }`（`packages/jobs/jobs/src/index.ts`、`view.ts`） |
+| 后台任务事件（触发） | `ctx.jobs.events.subscribe({ owners: 'all' }, …)` | `registered` / `progress` / `stopping` / `settled` / `removed`（**已在用**，见 `src/feishu-jobs.ts`） |
+| 子代理列表 | `ctx.subagents.listChildren(parentSessionId, signal?)` | `SubagentCatalogEntry = { id, createdAt, mode: 'one-shot'\|'continuable'\|'unknown', label? }` |
+| 子代理后代列表 | `ctx.subagents.listDescendants(rootSessionId, signal?)` | `SubagentDescendantListEntry = SubagentCatalogRow & { parentId, depth }`，其中 `SubagentCatalogRow = { id, activity: 'running'\|'inactive', mode, label? } & { kind: 'child'; hasChildren }`（`packages/subagent/subagent/src/control-types.ts`、`list-children.ts`） |
+| 子代理耗时 | `SubagentTimingProjection` | `{ settledMs, active?: { since } }`（同包 `projection-types.ts`） |
+| 子代理事件（触发） | 会话事件 `subagent/catalog` | 父会话在**注册**子代理时 `parent.append('subagent/catalog', …)`（`packages/subagent/subagent/src/catalog.ts`）→ 我们的 `session/event` 订阅已经能看到 |
+
+### 实施前要侦察的（别凭记忆写）
+
+1. **子代理的"终态"触发是什么**：`subagent/catalog` 只在注册时 append。running → inactive / 结束 有没有事件？若没有，备选：① 在父会话的 `turn/end`（甚至 `step/end`）边界用 `listDescendants` 刷新一次；② 轻量轮询（只在有 active 子代理时，且有上界）；③ 看子会话自身的 `session` 事件（但它不绑定飞书聊天，需要在父流里识别）——**先验证再选**。
+2. **`jobs.list(owner)` 的内容口径**：是否包含已被模型 `job_output` 读过、但仍留在 registry 里的任务（预期包含）；前台调用被 `registry.remove()` 后是否确实不在列表里（预期不在，关键坑 37 的判据不能松）。
+3. **表格真机表现**：长命令的换行/截断、列宽、`(zh/en)` 两种语言的排版 —— 需要发一张样例卡目视一次。
+4. **退场语义**：全部任务结束后，面板卡是①保留最后状态（历史）②折叠成一行汇总③TTL 后停止刷新 —— **待使用者确认**。
+5. **一张卡还是两张**：暂定**两张独立卡**（触发源与数据源不同）。若想合成一张（两个表），改动不大 —— **待使用者确认**。
+
+### 约束（不能违反）
+
+- 面板卡**不带按钮**：飞书对带按钮的卡就地更新 2–3 次后停止投递回调（关键坑 11）；kill / 干预仍由模型侧的 `job_kill` / `send_message` / `interrupt_agent` 负责。
+- 判据不放宽：**只列真后台任务**（模型真的拿到 jobId），前台 bash/pwsh 调用既不发卡也不进表（关键坑 37）。
+- 沿用既有发送纪律：更新 300ms 合并、首卡不防抖、每 chat 一条串行链、`card-send-barrier.ts` 保证先后顺序、出站有界（关键坑 29）。
+- 列表读取必须有界：`listChildren` / `listDescendants` 是 async，带 `AbortSignal`；**不要**在每个事件里无脑全量拉取（先设一个刷新节流）。
+
+### 建议实施顺序
+
+1. **先做后台任务面板**（数据源 `jobs.list` + 事件触发都已就绪，可复用 `src/feishu-jobs.ts` 的门控与记账），**替换**现有的一任务一卡；
+2. 再侦察并实现**子代理面板**（先解决"终态触发"）；
+3. 两张卡共用一套「面板卡」抽象（per-chat 记账 + 表格渲染 + 防抖/串行/屏障），避免实现两遍；
+4. 可选顺带把 **O2** 的 `/subagents` 命令做成「渲染这张面板卡的快照」。
+
+### 验收口径（草案）
+
+- 起一个 `run_in_background` 的任务 → 聊天里只出现**一张**「后台任务」卡，表里 1 行，状态 `🔄 → ✅` **就地更新**；**再起第二个任务 → 同一张卡变 2 行**（不新发卡）。
+- 前台 bash 调用 → **0 张卡、不进表**。
+- 子代理（`subagent_fork` / 后台 `subagent`）→ 出现「子代理」卡，一行一个；结束时该行状态与耗时更新，卡不重发。
+- zh / en 两种语言下表格都渲染正常，长命令不撑破卡片。
 
 ---
 
