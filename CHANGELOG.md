@@ -28,6 +28,37 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-alpha.2`** (162 commits): **no plugin changes**. Symbol-by-symbol diffs of `settings.section`, `sessionProjections`, `configForms`, `remote.credentials`, `sessionController.prompt`/`selectModel`, `archiveSession`, and `whileServed` are empty; 16 of the 18 peer packages have no source change, and the other two only add optional fields (`ToolDefinition.projectContent?`, `SessionPageRequest.turnWindow?`); the persistence schema is unchanged. `lib/index.js` and `client/client.js` are **byte-identical** before and after, with typecheck clean and 458 tests green. Two upstream fixes matter here: background-job completion wakes are now unbounded by default (a cap of three used to park notices invisibly while the user was away), and a Web client recovers its connection after a server restart. The one breaking config change (`spill-policy`'s `maxInlineBytes` → `maxInlineTokens`) affects only deployments that customised that policy; this one does not.
 
+### 修复：飞书因 markdown 图片拒收整张卡片（`src/card-markdown.ts` / `src/card-write.ts` / `src/card-images.ts`，2026-09-23）
+
+**现象**：一张步骤卡**永久停在「🧠 深度思考中…」**，而 WebUI 里那一轮的工具调用和答案都已经出来了；同一轮里另一处「处理这条消息时出错：Failed to create card content, ext=ErrCode: 200570; ErrMsg: card contains invalid image keys; ErrorValue: image key runs/…png」。
+
+**根因（已取证到 API 层）**：飞书卡片 markdown 里的 `![alt](src)` **不是文本，是图片元素**，而那个槽位只认**上传图片接口返回的 `img_key`**（官方[富文本文档](https://open.feishu.cn/document/feishu-cards/card-components/content-components/rich-text?lang=zh-CN)：图片语法即 `![hover_text](image_key)`）。括号里放本地路径、甚至放公网 URL，都会让**整张卡 400**（`200570`，外层再包一层 `230099`）——不是丢那张图，是整条消息作废。模型之所以会写这种 markdown：**WebUI 会解析工作区路径**，那句在那里是有用的。于是「一个模型输出、两个渲染器」的问题被飞书用最激烈的方式暴露出来。
+
+对同一个卡片实体逐个试过（`card.create` + `card.update`，未发任何消息）：
+
+| 载荷 | 结果 |
+|---|---|
+| `![](runs/a.png)` | ❌ `200570`，ErrorValue 就是那个路径 |
+| `![](https://example.com/a.png)` | ❌ `200570`，**公网 URL 同样不行**（飞书卡片不做外链抓取） |
+| `![](img_v3_…)`（真上传过的 key） | ✅ 通过 |
+| `[a](runs/a.png)`（没有 `!`） | ✅ 通过（渲染成链接，但点不动） |
+| 围栏 / **闭合**行内代码里的 `![]()` | ✅ 通过（当字面量） |
+| `` `![x](runs/a.png) ``（**未闭合**的反引号） | ❌ `200570`（反引号并不保护） |
+| `> ![x](…)`（引用块）、`\| ![x](…) \|`（表格单元）、`![a](p "t")`（带标题） | ❌ 全部 `200570` |
+| `![a](runs/a\`b.png)`（目标里有反引号） | ❌ `200570`——**反引号在目标里也不算代码跨度** |
+| `![a](runs/a b.png)`（目标里有空格） | ✅ 通过 |
+
+**修法（三层，按 2026-09-23 的决定做 L1–L3；L4 明确不做）**：
+
+1. **L1 中和**（`src/card-markdown.ts`）：卡片 markdown 里凡是**代码跨度和围栏之外**、又不是真 `img_v3_…` key 的图片引用，降级为 `🖼 alt · \`path\``；飞书点不动的相对/绝对路径链接降级为 `label · \`path\``；外链、`mailto:`、真 key、**闭合**代码跨度一律原样保留。信息不丢——路径还在，可以复制，也可以让模型用 `feishu_send_file` 补发。扫描器按上面那张表的实测结论写：**只有闭合**的反引号才保护，未闭合的、以及目标里的反引号都不保护。
+2. **L2 拒收兜底**（`src/card-write.ts` + `src/index.ts`）：L1 之后仍被拒（说明有没想到的非法元素）→ **无差别剥掉所有图片引用再写一次**；CardKit 的 `sequence` 用内部**单调下限**推进（重试重复了调用方已经计过的一次写，不能复用它的号）；`card_id → message_id` 记账，实例更新仍被拒就**回退 `im.v1.message.patch`**——于是"卡片静默停在旧内容"这条路被堵死；连剥净版都被拒才告警。
+3. **L3 内联真图**（`src/card-images.ts`）：正文里指向**本会话工作区内真实图片**的路径，先上传拿到 `img_key`，再把卡片改写成 `![alt](img_v3_…)` → **图片直接在卡片里渲染**（不必另发一条图片消息）。范围严格收窄：只认 `![alt](path)` 语法里的路径、只认工作区**真实路径**之内（`realpath` 后再判包含，符号链接指向外面一律拒绝）、只认真实图片格式（魔数嗅探）、单个 ≤10MB、每卡最多 8 张、单卡总预算 6s；按 `path+mtime+size` 缓存 key 并在同文件并发时**共享同一次上传**（步骤卡一次要 update 十几回）；任何失败都只是退回 L1 的文字形态，**绝不因为图而丢内容**。
+4. **L4「让模型别再写」明确不做**（使用者 2026-09-23 决定）：那会破坏 WebUI 体验——**模型输出只有一份，WebUI 是它的正确渲染器**，该适配的是渲染侧的飞书，而不是让模型迁就某个渠道。
+
+**接入点（单点兜底，不改那 ~90 处 markdown 构建）**：适配器覆盖所有自己发卡的模块；**并把 channel 工厂包一层**，因为 `channel.ts` 的回复卡/续卡/footer 是直接走 SDK 的，否则会绕过全部保护。
+
+**验证**：`tests/card-markdown.spec.ts` 22 例 + `tests/card-write.spec.ts` 12 例 + `tests/card-images.spec.ts` 24 例（越界与符号链接逃逸、缓存与并发去重、mtime 变化重传、非图片/缺失/超限、上传抛错、预算耗尽、每卡上限、围栏内不处理）；全量 **630 passed / 41 files**，typecheck 0 error，`npm run build` 通过且 **`client/client.js` 逐字节未变**（本批只动 host 侧）。见关键坑 39。
+
 ### 变更：面板卡三处跟进（清理按钮 / 触发归属 / 子代理模型与树形，2026-09-23）
 
 **1. 后台任务卡加「🧹 清理已完成」按钮**（`src/feishu-jobs.ts` / `src/feishu-panel.ts`）

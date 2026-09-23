@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -38,6 +39,7 @@ import { dispatchCardAction } from './card-dispatch.ts'
 import { createCardSendBarrier } from './card-send-barrier.ts'
 import { isCardContentRejection } from './card-markdown.ts'
 import { createCardWriter, withCardSafety } from './card-write.ts'
+import { startCardImages } from './card-images.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 
 export const name = 'lark-channel'
@@ -305,6 +307,31 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // belongs at this chokepoint — every card passes through it — rather than at
   // the ~90 places that build markdown, or in the model's instructions.
   const cardWriter = createCardWriter({ logger: ctx.logger('dsh-feishu') })
+  /**
+   * Inline the images a card's markdown points at (see `card-images.ts`).
+   *
+   * A model writes `![图](runs/a.png)` because the Web UI resolves workspace
+   * paths; in Feishu that syntax needs an UPLOADED image key. Rather than asking
+   * the model to stop (one output, two renderers), the path is resolved inside
+   * the session's own workspace, uploaded, and the card is rewritten to
+   * reference the returned key. Anything that does not resolve stays text, which
+   * the writer guarantees Feishu will accept.
+   */
+  const cardImages = startCardImages({
+    resolveWorkspace: sessionId => bridgeHolder.current?.workspaceOf(sessionId) ?? Promise.resolve(undefined),
+    upload: async (absolutePath: string) => {
+      const ch = channelHolder.current
+      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+      const image = await readFile(absolutePath)
+      const uploaded = await ch.rawClient.im.v1.image.create({
+        data: { image_type: 'message', image },
+      }) as { image_key?: string } | undefined
+      const key = uploaded?.image_key
+      if (key === undefined || key === '') throw new Error('dsh-feishu: image upload returned no image_key')
+      return key
+    },
+    logger: ctx.logger('dsh-feishu'),
+  })
   const cardChannel = {
     // Every method below is bounded. The SDK's HTTP client has no request
     // timeout, so without this a single unanswered request leaves the promise
@@ -587,6 +614,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           },
         },
       () => translationsFor(currentLocale().id),
+        cardImages.hydrate,
       )
     },
   })
@@ -763,6 +791,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolResults: () => currentSettings().showToolResults,
       getTranslations: () => translationsFor(currentLocale().id),
       ...(noteDetachedJob !== undefined ? { noteDetachedJob } : {}),
+      hydrateImages: cardImages.hydrate,
     })
     stopStreaming = streamingResult.stop
     consumeReasoning = streamingResult.consumeReasoning
@@ -992,6 +1021,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopJobs()
     stopSubagents()
     stopStreaming()
+    cardImages.dispose()
     stopSendFileTool()
     stopReceiveFileTool()
     modelSelectHandle?.dispose()

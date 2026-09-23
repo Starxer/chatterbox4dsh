@@ -24,6 +24,7 @@ import type { DetachedJobNotice } from './feishu-jobs.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { chunkText } from './text-chunk.ts'
 import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
+import type { CardImageHydrator } from './card-images.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -116,6 +117,14 @@ export interface FeishuStreamingDeps {
    * Optional: tests and deployments without the mirror simply never call it.
    */
   noteDetachedJob?: (notice: DetachedJobNotice) => void
+  /**
+   * Make the images a card's markdown points at render inline: resolve each
+   * path inside the session's workspace, upload it, and substitute the returned
+   * Feishu image key. Best-effort and bounded by the implementation — the card
+   * is written with whatever came back, and references it could not resolve stay
+   * text (see `card-images.ts`). Optional so tests need no filesystem.
+   */
+  hydrateImages?: CardImageHydrator
 }
 
 /** Per-step usage from assistant/message event. */
@@ -276,7 +285,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations, noteDetachedJob } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations, noteDetachedJob, hydrateImages } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -506,6 +515,21 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /**
+   * Resolve the card's local image references into Feishu image keys before the
+   * card is written, so a picture the model referenced actually shows up in the
+   * chat instead of degrading to text. Bounded and best-effort by the hydrator:
+   * it never rejects, and whatever it could not resolve stays text.
+   */
+  const prepareCard = async (card: object, sessionId: string): Promise<object> => {
+    if (hydrateImages === undefined) return card
+    return hydrateImages(card, { sessionId }).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.log(`dsh-feishu: [img] hydration failed for session ${sessionId}: ${reason}`)
+      return card
+    })
+  }
+
+  /**
    * Post the step card immediately, built from the CURRENT state, and track
    * its identity. Only `queueStepCardSend` / `flushPendingSend` call this —
    * never the event handlers directly.
@@ -524,8 +548,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Prefer a CardKit card instance: its update API has no edit cap, unlike
     // im.v1.message.patch, so a long step cannot silently kill the card.
     const useInstance = channel.createCardInstance !== undefined && channel.sendCardByReference !== undefined
+    // One hydration for both transports: the instance create and the plain
+    // send must carry the SAME card, images resolved.
+    const prepared = prepareCard(card, sessionId)
     const cardId: Promise<string | undefined> = useInstance
-      ? channel.createCardInstance!(card).then((id) => {
+      ? prepared.then(payload => channel.createCardInstance!(payload)).then((id) => {
         console.log(`dsh-feishu: [send] instance card=${id}`)
         return id
       }).catch((error: unknown) => {
@@ -543,7 +570,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           return undefined
         })
       }
-      return channel.send(chat.chatId, { card }, opts).then((r) => {
+      return prepared.then(payload => channel.send(chat.chatId, { card: payload }, opts)).then((r) => {
         console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via send`)
         return r.messageId
       }).catch((error: unknown) => {
@@ -704,6 +731,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * "the answer is on screen" from "we tried".
    */
   const executeCardUpdate = (
+    ref: StepCardRef,
+    card: object,
+  ): Promise<boolean> =>
+    prepareCard(card, ref.sessionId).then(prepared => executePreparedUpdate(ref, prepared))
+
+  /** {@link executeCardUpdate} after the card's images were resolved. */
+  const executePreparedUpdate = (
     ref: StepCardRef,
     card: object,
   ): Promise<boolean> => {

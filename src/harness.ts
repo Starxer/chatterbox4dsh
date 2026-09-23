@@ -206,6 +206,12 @@ export class HarnessConversationService {
    */
   private readonly chatToCreation = new Map<string, ChatCreationOptions>()
   /**
+   * Workspace (cwd) per session, read once from its creation header. An empty
+   * string means "asked and there is none", so a missing header is not re-read.
+   * See {@link workspaceOf}.
+   */
+  private readonly workspaceCache = new Map<string, string>()
+  /**
    * Sessions for which intermediate assistant message cards were sent during
    * the current turn. The channel skips the final reply card for these
    * sessions to avoid duplication.
@@ -1112,6 +1118,29 @@ export class HarnessConversationService {
     }
     entries.sort((left, right) => right.updatedAt - left.updatedAt)
     return entries
+  }
+
+  /**
+   * The workspace (cwd) a session runs in, read from its creation header.
+   *
+   * Cached per session — the header is written once and cannot change — and read
+   * with `maxEvents: 1`, so learning a session's cwd never replays its whole
+   * log. Used by the card-image hydrator to resolve the relative paths a model
+   * writes (`![图](runs/a.png)`) without trusting anything outside that root.
+   *
+   * @param sessionId - the DSH session id.
+   * @returns the workspace path, or the configured default when the header has none.
+   */
+  async workspaceOf(sessionId: string): Promise<string | undefined> {
+    const cached = this.workspaceCache.get(sessionId)
+    if (cached !== undefined) return cached === '' ? undefined : cached
+    let workspace: string | undefined
+    const cold = await this.readColdSession(sessionId, 1)
+    const header = cold?.meta as { cwd?: string } | undefined
+    if (typeof header?.cwd === 'string' && header.cwd !== '') workspace = header.cwd
+    else if (this.config.workspace !== undefined && this.config.workspace !== '') workspace = this.config.workspace
+    this.workspaceCache.set(sessionId, workspace ?? '')
+    return workspace
   }
 
   /**

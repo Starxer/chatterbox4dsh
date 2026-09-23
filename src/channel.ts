@@ -15,6 +15,7 @@ import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
+import type { CardImageHydrator } from './card-images.ts'
 
 // Re-exported for callers that historically reached the sniffer through this
 // module; the implementation now lives in `media-sniff.ts` next to the video
@@ -254,6 +255,12 @@ export async function startChannel(
     sendOnboardingCard(msg: NormalizedMessage): Promise<void>
   },
   getTranslations?: () => Translations,
+  /**
+   * Resolve the images a reply card references into Feishu image keys, so a
+   * picture the model pointed at renders instead of degrading to text. Optional
+   * and best-effort: `card-markdown.ts` already keeps the card valid without it.
+   */
+  hydrateImages?: CardImageHydrator,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -343,6 +350,24 @@ export async function startChannel(
     opts?: { replyInThread?: boolean; replyTo?: string },
   ): Promise<{ messageId?: string }> =>
     withTimeout(channel.send(to, input, opts), 'send message', OUTBOUND_TIMEOUT_MS)
+
+  /**
+   * Send a card, first letting the image hydrator inline whatever local paths it
+   * references. Hydration is bounded and never rejects; a card that cannot be
+   * hydrated is still sent (its references then render as text).
+   */
+  const sendCard = async (
+    to: string,
+    card: object,
+    opts: { replyInThread?: boolean; replyTo?: string },
+    workspace?: string,
+  ): Promise<void> => {
+    let prepared = card
+    if (hydrateImages !== undefined) {
+      prepared = await hydrateImages(card, workspace === undefined ? {} : { workspace }).catch(() => card)
+    }
+    await sendOutbound(to, { card: prepared }, opts)
+  }
 
   const unsubscribers = [
     channel.on('message', async (message: NormalizedMessage) => {
@@ -524,10 +549,10 @@ export async function startChannel(
             // send only the Turn Complete footer.
             const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats)
             if (footerCard !== undefined) {
-              await sendOutbound(chatId, { card: footerCard }, {
+              await sendCard(chatId, footerCard, {
                 replyTo: replyToId,
                 replyInThread,
-              })
+              }, meta?.workspace)
             }
           } else {
             // No intermediate card made it to the chat — send the full reply,
@@ -539,10 +564,10 @@ export async function startChannel(
             const tps = turnTokensPerSecond(turnStats)
             const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
             for (const card of cards) {
-              await sendOutbound(chatId, { card }, {
+              await sendCard(chatId, card, {
                 replyTo: replyToId,
                 replyInThread,
-              })
+              }, meta?.workspace)
             }
           }
         }).catch((error: unknown) => {
