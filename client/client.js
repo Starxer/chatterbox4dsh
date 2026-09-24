@@ -85,6 +85,46 @@ function clampCardMediaLimit(value) {
 	if (!Number.isFinite(value)) return CARD_MEDIA_LIMIT.default;
 	return Math.min(CARD_MEDIA_LIMIT.max, Math.max(CARD_MEDIA_LIMIT.min, Math.trunc(value)));
 }
+/**
+* Bounds and defaults of the three auto-inline SIZE limits (MB), mirroring
+* `CARD_MEDIA_MAX_MB` in `src/config.ts`.
+*
+* The maxima are Feishu's upload ceilings: an image over 10 MB cannot come from
+* `im.v1.image.create`, and video/audio over 30 MB cannot come from
+* `im.v1.file.create`, so a larger number could never take effect.
+*/
+const CARD_MEDIA_MAX_MB = {
+	cardImageMaxMb: {
+		min: 1,
+		max: 10,
+		default: 10
+	},
+	cardVideoMaxMb: {
+		min: 1,
+		max: 30,
+		default: 15
+	},
+	cardAudioMaxMb: {
+		min: 1,
+		max: 30,
+		default: 15
+	}
+};
+/**
+* Parse and clamp one staged size field.
+*
+* A blank field means "the user cleared it" and falls back to that field's own
+* default rather than to the minimum; anything unparsable does the same, so a
+* save can never write `NaN`, `0` or a value the Host would refuse.
+*/
+function clampCardMediaMaxMb(field, raw) {
+	const bounds = CARD_MEDIA_MAX_MB[field];
+	const text = raw.trim();
+	if (text === "") return bounds.default;
+	const value = Number(text);
+	if (!Number.isFinite(value)) return bounds.default;
+	return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)));
+}
 /** The field order every save walks; also the only keys a save may write. */
 const EDITABLE_FIELDS = [
 	"appId",
@@ -100,7 +140,10 @@ const EDITABLE_FIELDS = [
 	"showToolResults",
 	"locale",
 	"cardImages",
-	"cardMediaLimit"
+	"cardMediaLimit",
+	"cardImageMaxMb",
+	"cardVideoMaxMb",
+	"cardAudioMaxMb"
 ];
 /** Bridges the `lark-channel` form and the credentials domain onto the page. */
 var LarkSettingsCardController = class {
@@ -334,6 +377,9 @@ var LarkSettingsCardController = class {
 			locale: value?.locale ?? "auto",
 			cardImages: value?.cardImages ?? "workspace",
 			cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),
+			cardImageMaxMb: String(value?.cardImageMaxMb ?? CARD_MEDIA_MAX_MB.cardImageMaxMb.default),
+			cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
+			cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
 			...this.edits
 		};
 	}
@@ -379,6 +425,9 @@ function writeValue(field, form) {
 			const raw = form.cardMediaLimit.trim();
 			return raw === "" ? CARD_MEDIA_LIMIT.default : clampCardMediaLimit(Number(raw));
 		}
+		case "cardImageMaxMb":
+		case "cardVideoMaxMb":
+		case "cardAudioMaxMb": return clampCardMediaMaxMb(field, form[field]);
 		case "groupAllowlist": return lines(form.groupAllowlist);
 		case "dmAllowlist": return lines(form.dmAllowlist);
 		default: return form[field];
@@ -407,6 +456,30 @@ function LarkSettingsCard(props) {
 	const form = state.form;
 	const blocked = !state.writable;
 	const toolsOff = !form.showToolCalls;
+	/**
+	* One numeric row of the three inline size limits. Bounds come from the
+	* shared table so a field cannot drift from what the Host schema accepts.
+	*/
+	const mediaMaxRow = (field, label, hint) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+		/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: label }),
+		/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+			"aria-label": field,
+			type: "number",
+			min: CARD_MEDIA_MAX_MB[field].min,
+			max: CARD_MEDIA_MAX_MB[field].max,
+			step: 1,
+			inputMode: "numeric",
+			disabled: blocked,
+			value: form[field],
+			onChange: (event) => {
+				props.edit(field, event.target.value);
+			}
+		}),
+		/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+			className: "dsh-feishu-toggle-hint",
+			children: hint
+		})
+	] });
 	/** One labelled toggle row: title + one-line hint, control on the right. */
 	const toggleRow = (options) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 		className: options.nested === true ? "dsh-feishu-toggle dsh-feishu-toggle-nested" : "dsh-feishu-toggle",
@@ -673,6 +746,9 @@ function LarkSettingsCard(props) {
 									children: t("cardMediaLimitHint")
 								})
 							] }),
+							mediaMaxRow("cardImageMaxMb", t("cardImageMaxMb"), t("cardImageMaxMbHint")),
+							mediaMaxRow("cardVideoMaxMb", t("cardVideoMaxMb"), t("cardVideoMaxMbHint")),
+							mediaMaxRow("cardAudioMaxMb", t("cardAudioMaxMb"), t("cardAudioMaxMbHint")),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 								"aria-label": "locale",
 								disabled: blocked,
@@ -2399,6 +2475,12 @@ const dictionaries = {
 		cardImagesAny: "任意可读路径：工作区外的媒体也上传",
 		cardMediaLimit: "单卡媒体上限",
 		cardMediaLimitHint: "一张卡里最多内联几个：图片算一处、视频与音频合起来算一处（各按这个数），1–30，默认 12；超出的一律退回可读路径文字。飞书本身能放更多（一张卡 200 个元素/组件，带封面的视频一个占 3 个名额、约 66 个），这个数字只是为了让消息别太长。",
+		cardImageMaxMb: "图片内联上限（MB）",
+		cardImageMaxMbHint: "超过这个大小的图片不上传、只留路径文字。范围 1–10，默认 10 —— 飞书的图片上传接口硬上限就是 10MB，写更大也不会生效。",
+		cardVideoMaxMb: "视频内联上限（MB）",
+		cardVideoMaxMbHint: "超过这个大小的视频不上传、只留路径文字。范围 1–30，默认 15；飞书文件接口硬上限 30MB。数字越大，卡片等上传的时间越长（已有预热与并发，但大文件仍会慢）。",
+		cardAudioMaxMb: "音频内联上限（MB）",
+		cardAudioMaxMbHint: "超过这个大小的音频不上传、只留路径文字。范围 1–30，默认 15；飞书文件接口硬上限 30MB。非 Opus 的音频还要先转码，另受 ffmpeg 是否可用的影响。",
 		locale: "插件语言",
 		localeAuto: "跟随 Harness",
 		localeZh: "中文",
@@ -2470,6 +2552,12 @@ const dictionaries = {
 		cardImagesAny: "Any readable path: upload media outside the workspace too",
 		cardMediaLimit: "Media per card",
 		cardMediaLimitHint: "How many media one card may inline, counted per group: images on the one hand, video and audio together on the other, 1-30, default 12; anything past it stays a readable path. Feishu itself allows far more (200 elements/components per card, and a video with a cover spends three, so about 66 videos) — this number is here to keep a message readable.",
+		cardImageMaxMb: "Image inline limit (MB)",
+		cardImageMaxMbHint: "An image larger than this is not uploaded — its path stays as text. Range 1-10, default 10: Feishu's image upload API caps at 10 MB, so a larger value could never take effect.",
+		cardVideoMaxMb: "Video inline limit (MB)",
+		cardVideoMaxMbHint: "A video larger than this is not uploaded — its path stays as text. Range 1-30, default 15; Feishu's file API caps at 30 MB. Bigger files only cost wait: the upload happens on the card-write path (warming and concurrency help, but a large file is still slow).",
+		cardAudioMaxMb: "Audio inline limit (MB)",
+		cardAudioMaxMbHint: "Audio larger than this is not uploaded — its path stays as text. Range 1-30, default 15; Feishu's file API caps at 30 MB. Non-Opus audio is transcoded first, so ffmpeg has to be available.",
 		locale: "Plugin language",
 		localeAuto: "Follow Harness",
 		localeZh: "中文",

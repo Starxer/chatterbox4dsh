@@ -367,6 +367,49 @@ describe('Lark settings client plugin', () => {
     expect(hint.className).toContain('dsh-feishu-toggle-hint')
   })
 
+  it('renders the three inline size limits with their own bounds', async () => {
+    stubStatus()
+    renderSettings(mount(createForm()))
+
+    await screen.findByDisplayValue('cli_existing')
+    // Bounds come from the shared table, and they are Feishu's upload ceilings:
+    // an image over 10 MB can never be inlined, a file over 30 MB either.
+    for (const [field, min, max, value] of [
+      ['cardImageMaxMb', '1', '10', '10'],
+      ['cardVideoMaxMb', '1', '30', '15'],
+      ['cardAudioMaxMb', '1', '30', '15'],
+    ] as const) {
+      const input = screen.getByLabelText(field) as HTMLInputElement
+      expect(input.type).toBe('number')
+      expect(input.getAttribute('min')).toBe(min)
+      expect(input.getAttribute('max')).toBe(max)
+      expect(input.value).toBe(value)
+      expect(screen.getByText(`${field}Hint`)).toBeTruthy()
+    }
+  })
+
+  it('writes the three sizes as numbers, clamped to their own bounds', async () => {
+    stubStatus()
+    const form = createForm()
+    const harness = mount(form)
+    renderSettings(harness)
+    const props = settingsProps(harness)
+
+    await screen.findByDisplayValue('cli_existing')
+    fireEvent.change(screen.getByLabelText('cardVideoMaxMb'), { target: { value: '8' } })
+    props.edit('cardImageMaxMb', '999')
+    props.edit('cardAudioMaxMb', '')
+    await props.save()
+
+    expect(form.mutate).toHaveBeenCalledTimes(1)
+    // Ops follow EDITABLE_FIELDS order (image, video, audio).
+    expect(form.mutate.mock.calls[0]![0]).toEqual([
+      { op: 'set', path: ['cardImageMaxMb'], value: 10 },
+      { op: 'set', path: ['cardVideoMaxMb'], value: 8 },
+      { op: 'set', path: ['cardAudioMaxMb'], value: 15 },
+    ])
+  })
+
   it('clamps a media limit that reaches the controller out of range', async () => {
     stubStatus()
     const form = createForm()

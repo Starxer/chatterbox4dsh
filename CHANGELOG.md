@@ -41,6 +41,22 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 新增：三个媒体**大小**上限分开设置；修 `feishu_send_file` 的图片兜底（`src/config.ts` / `src/card-images.ts` / `src/feishu-send-file.ts` / `src/client/`，2026-09-24）
+
+**动机**（使用者的要求）：「增加设置自动内联的媒体大小，默认 15mb。三个媒体分开设置，注意输入范围检查」，以及「顺便把刚才那个发图片的修了」（TODO O15）。
+
+**做法**：
+
+- 新增三个配置字段，各自带范围（`.volatile()`，保存即生效）：`cardImageMaxMb` **1–10，默认 10**、`cardVideoMaxMb` **1–30，默认 15**、`cardAudioMaxMb` **1–30，默认 15**。**图片的默认值是 10 而不是 15**：飞书 `im.v1.image.create` 的硬上限就是 10MB，给 15 只会是个永远碰不到的数字（图片转成卡片图片元素必须走这个接口）；视频/音频走 `im.v1.file.create`，30MB。所以三个范围的上界都是**平台边界**，不是我们的口味；视频/音频默认 15 是刻意的——超过它的代价是**等**（上传发生在写卡路径上），不是被拒收。
+- 判定改成**按分类后的类型**逐类比上限：以前是"图片一个上限、其余一切共享一个上限"，而且 ISO-BMFF 的检查发生在分类之前。现在 ISO-BMFF 先分类（video/audio）再各比各的上限；`inspect()` 的返回值也分出第三种结果 `{ refused: 'size' }`，与"根本不是媒体"区分开。
+- **顺带堵住一个洞**：Opus/WAV/MP3/FLAC 这些非 ISO-BMFF 音频**从来没有字节检查**（旧的 `maxFileBytes` 只作用在 ISO-BMFF 分支），一个 100MB 的 WAV 会被转码并上传。现在同样受 `cardAudioMaxMb` 约束。
+- **超限文件不再写「检过但不是媒体」的负缓存**（加设置时发现的交互 bug）：那张负缓存按 `path+mtime+size` 命中就直接跳过，于是**把上限改大不会生效**，要等缓存淘汰或文件变动。现在只有"真的不是媒体"才记负缓存；超限的每次重新判（代价是一次 64 字节头读，不是上传）。用例直接锁死这条：先用 1KB 上限跑一遍、再抬到 10KB 跑第二张卡，必须内联出来。
+- **`feishu_send_file` 的图片补上 `{file}` 兜底**（O15）：工具里视频/音频本来就有 `sendWithFileFallback`，图片却是直接 `ch.send({ image })`——一张 ≤10MB 但超过分辨率上限的图（GIF > 2000×2000、其他 > 12000×12000，`234039`）会让整次调用抛错、文件一份都不落地，而官方文档对这类图的口径正是「请用上传文件接口以文件形式发送」。现在图片也走同一条兜底，`sent_as` 如实报 `file`；工具描述同步写明超分辨率也算。
+
+**验证**：typecheck 0 error、**713 tests / 42 files** 全绿。新增：`tests/config.spec.ts` 2 例（三个默认值 + 逐类钳制：999→上界、0→下界、小数取整、`NaN`/空→该类默认）、`tests/card-images.spec.ts` 3 例（各类各比各的上限、超限的**非 ISO 音频**也被拦、上限**实时重读**所以改大下一张卡就生效）、`tests/client.spec.ts` 2 例（三个输入框各自的 min/max 与默认值、保存写出**数字**且越界/清空分别落到上界/默认）、`tests/feishu-send-file.spec.ts` 1 例（图片被拒 → 仍以 `file` 送达、`sent_as: 'file'`）。**反向验证**：把图片分支还原成旧的直接 `ch.send({image})`，用例立刻转红（`Failed to send "tall.png" via Feishu: … 234039 …`），恢复后转绿。
+
+**English**：The auto-inline SIZE limit became three settings, one per media kind, each with its own range: `cardImageMaxMb` (1-10, default 10), `cardVideoMaxMb` and `cardAudioMaxMb` (1-30, default 15). The image default is 10 rather than 15 because that is Feishu's own ceiling — a card image must come from `im.v1.image.create`, which refuses more than 10 MB, so a larger field value could never be reached; video/audio go through `im.v1.file.create` (30 MB). The hydrator now measures each file against the ceiling of its CLASSIFIED kind (ISO-BMFF is classified before the check), which also closed a hole: Opus/WAV/MP3/FLAC had no byte check at all, so an oversized WAV was transcoded and uploaded regardless. Over-ceiling files are no longer written to the "inspected, not media" negative cache — that entry is keyed on path+mtime+size and short-circuited the next card, so raising a limit would not have taken effect until the entry was evicted. And `feishu_send_file` gained the file fallback its image branch was missing: a picture under 10 MB but over Feishu's resolution ceiling (GIF > 2000x2000, anything else > 12000x12000, `234039`) used to fail the whole call and deliver nothing, where the API's own advice is to send it as a file; it now arrives as an attachment with `sent_as: 'file'`, and reverting the branch turns the new test red.
+
 ### 新增：单卡媒体上限做成设置项（`src/config.ts` / `src/card-images.ts` / `src/index.ts` / `src/client/`，2026-09-24）
 
 **动机**（使用者的要求）：「这个媒体文件的数量限制也在设置页面做一个」——上一批把视频/音频上限从 2 提到 12，但那个数字是代码里的常量，改它要发版。

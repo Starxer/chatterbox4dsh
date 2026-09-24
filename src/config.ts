@@ -58,6 +58,12 @@ export interface Config {
   cardImages?: CardImageMode
   /** Most media (image / video / audio) one card may inline; see {@link CARD_MEDIA_LIMIT}. */
   cardMediaLimit?: number
+  /** Largest image (MB) the card hydrator will upload and inline. */
+  cardImageMaxMb?: number
+  /** Largest video (MB) the card hydrator will upload and inline. */
+  cardVideoMaxMb?: number
+  /** Largest audio (MB) the card hydrator will upload and inline. */
+  cardAudioMaxMb?: number
 }
 
 /**
@@ -77,6 +83,43 @@ export function clampCardMediaLimit(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return CARD_MEDIA_LIMIT.default
   return Math.min(CARD_MEDIA_LIMIT.max, Math.max(CARD_MEDIA_LIMIT.min, Math.trunc(value)))
 }
+
+/**
+ * Bounds and defaults of the three auto-inline SIZE limits, in megabytes, one
+ * per media kind.
+ *
+ * The maxima are Feishu's own upload ceilings rather than our taste: a card
+ * image must come from `im.v1.image.create` (≤10 MB) and video/audio from
+ * `im.v1.file.create` (≤30 MB), so anything larger could never take effect —
+ * the upload is refused and the reference stays text. That is also why the
+ * image default is 10 and not 15: a 15 MB image cannot be inlined at all, and a
+ * field whose value can never be reached is worse than a smaller honest one.
+ * The video/audio default is deliberately below their 30 MB ceiling, because
+ * the cost of a bigger file is the WAIT (the upload happens on the card-write
+ * path), not a rejection.
+ */
+export const CARD_MEDIA_MAX_MB = {
+  image: { min: 1, max: 10, default: 10 },
+  video: { min: 1, max: 30, default: 15 },
+  audio: { min: 1, max: 30, default: 15 },
+} as const
+
+/** One of the three size settings. */
+export type CardMediaMaxKind = keyof typeof CARD_MEDIA_MAX_MB
+
+/** Clamp a user-supplied inline size limit into its own kind's bounds. */
+export function clampCardMediaMaxMb(kind: CardMediaMaxKind, value: number | undefined): number {
+  const bounds = CARD_MEDIA_MAX_MB[kind]
+  if (value === undefined || !Number.isFinite(value)) return bounds.default
+  return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
+}
+
+/** The config field that carries one kind's inline size limit. */
+export const CARD_MEDIA_MAX_FIELD = {
+  image: 'cardImageMaxMb',
+  video: 'cardVideoMaxMb',
+  audio: 'cardAudioMaxMb',
+} as const satisfies Record<CardMediaMaxKind, keyof Config>
 
 /**
  * The live configuration the Cordis loader hands to `apply()` (DSH 0.1.7+).
@@ -126,6 +169,12 @@ export interface SettingsConfig extends Required<Pick<Config,
   cardImages?: CardImageMode
   /** Most media one card may inline (images, video and audio share the number). */
   cardMediaLimit?: number
+  /** Largest image (MB) the card hydrator will upload and inline. */
+  cardImageMaxMb?: number
+  /** Largest video (MB) the card hydrator will upload and inline. */
+  cardVideoMaxMb?: number
+  /** Largest audio (MB) the card hydrator will upload and inline. */
+  cardAudioMaxMb?: number
 }
 
 export interface RuntimeConfig extends Omit<SettingsConfig, 'appSecretRef'> {
@@ -162,6 +211,9 @@ export const ConfigSchema = z.object({
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
   cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Media the model references in card text (image / video / audio): text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable media path'),
   cardMediaLimit: z.number().min(CARD_MEDIA_LIMIT.min).max(CARD_MEDIA_LIMIT.max).default(CARD_MEDIA_LIMIT.default).volatile().description('Most media (image / video / audio) one card may inline; anything past the limit stays readable text. Feishu itself allows about 66 videos per card.'),
+  cardImageMaxMb: z.number().min(CARD_MEDIA_MAX_MB.image.min).max(CARD_MEDIA_MAX_MB.image.max).default(CARD_MEDIA_MAX_MB.image.default).volatile().description('Largest image (MB) to upload and inline in a card. Feishu refuses an image over 10 MB, so this cannot exceed 10.'),
+  cardVideoMaxMb: z.number().min(CARD_MEDIA_MAX_MB.video.min).max(CARD_MEDIA_MAX_MB.video.max).default(CARD_MEDIA_MAX_MB.video.default).volatile().description('Largest video (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
+  cardAudioMaxMb: z.number().min(CARD_MEDIA_MAX_MB.audio.min).max(CARD_MEDIA_MAX_MB.audio.max).default(CARD_MEDIA_MAX_MB.audio.default).volatile().description('Largest audio (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
 })
 
 export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
@@ -193,6 +245,9 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     // Clamped rather than trusted: `ConfigInput` also admits a plain object, so
     // a value that never went through the schema must not reach the hydrator.
     cardMediaLimit: clampCardMediaLimit(readField(config.cardMediaLimit)),
+    cardImageMaxMb: clampCardMediaMaxMb('image', readField(config.cardImageMaxMb)),
+    cardVideoMaxMb: clampCardMediaMaxMb('video', readField(config.cardVideoMaxMb)),
+    cardAudioMaxMb: clampCardMediaMaxMb('audio', readField(config.cardAudioMaxMb)),
     ...(appSecret === undefined ? {} : { appSecret }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),

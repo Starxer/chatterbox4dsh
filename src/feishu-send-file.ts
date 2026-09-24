@@ -165,8 +165,8 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
       + 'under 30 MB. Images are sent as inline-preview image messages; MP4/MOV video with an '
       + 'H.264/HEVC/MPEG-4 codec is sent as a playable video message (with a cover frame when '
       + 'ffmpeg is available); Ogg/Opus audio is sent as a voice message; anything else — or an '
-      + 'image over 10 MB, or a video in a container/codec Feishu cannot play — is sent as a file '
-      + 'the user opens. Only works when the current session is bound to a Feishu chat; otherwise '
+      + 'image over 10 MB or over Feishu\'s resolution limit, or a video in a container/codec Feishu '
+      + 'cannot play — is sent as a file the user opens. Only works when the current session is bound to a Feishu chat; otherwise '
       + 'it fails with a clear error and you should just tell the user the file path instead.',
     parameters: {
       path: {
@@ -274,8 +274,15 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
       // The SDK throws when it cannot derive a media duration from the bytes
       // (`duration could not be determined for video`), and Feishu can reject
       // an upload it cannot play. Neither may cost the user the file.
+      //
+      // Images belong here too, which is why the union is not just video/audio:
+      // `im.v1.image.create` refuses a picture over 10 MB or over its
+      // resolution ceiling (GIF > 2000x2000, anything else > 12000x12000,
+      // `234039` — the API docs' own advice for such a picture is to upload it
+      // as a file). Without this fallback a long screenshot under 10 MB but
+      // over 12000 px failed the whole call and delivered nothing.
       const sendWithFileFallback = async (
-        kind: 'video' | 'audio',
+        kind: 'image' | 'video' | 'audio',
         input: SendInput,
       ): Promise<{ id: string; sentAs: string }> => {
         try {
@@ -292,8 +299,9 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
       let messageId: string
       try {
         if (sendAsImage) {
-          sentAs = 'image'
-          messageId = (await ch.send(chat.chatId, { image: { source: bytes } }, opts)).messageId ?? ''
+          const outcome = await sendWithFileFallback('image', { image: { source: bytes } })
+          sentAs = outcome.sentAs
+          messageId = outcome.id
         } else if (video !== undefined) {
           const coverImageKey = await uploadCoverFrame(ch, args.path, logger, extractCoverFrame)
           const outcome = await sendWithFileFallback('video', {

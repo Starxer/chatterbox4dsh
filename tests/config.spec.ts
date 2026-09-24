@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CARD_MEDIA_LIMIT, LARK_APP_SECRET_REF, clampCardMediaLimit, connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig,
+  CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, LARK_APP_SECRET_REF, clampCardMediaLimit, clampCardMediaMaxMb,
+  connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig,
 } from '../src/config.ts'
 import type { ConfigInput } from '../src/config.ts'
 
@@ -41,6 +42,30 @@ describe('resolveSettingsConfig', () => {
     expect(clampCardMediaLimit(undefined)).toBe(CARD_MEDIA_LIMIT.default)
     expect(resolveSettingsConfig({ appId: 'id', cardMediaLimit: 0 }).cardMediaLimit).toBe(CARD_MEDIA_LIMIT.min)
     expect(resolveSettingsConfig({ appId: 'id', cardMediaLimit: 1e9 }).cardMediaLimit).toBe(CARD_MEDIA_LIMIT.max)
+  })
+
+  it('defaults the three inline size limits, one per media kind', () => {
+    const resolved = resolveSettingsConfig({ appId: 'id' })
+    expect(resolved.cardImageMaxMb).toBe(CARD_MEDIA_MAX_MB.image.default)
+    expect(resolved.cardVideoMaxMb).toBe(CARD_MEDIA_MAX_MB.video.default)
+    expect(resolved.cardAudioMaxMb).toBe(CARD_MEDIA_MAX_MB.audio.default)
+    // The image default is Feishu's own ceiling: a larger number could never be
+    // reached, because `im.v1.image.create` refuses anything above 10 MB.
+    expect(CARD_MEDIA_MAX_MB.image.default).toBe(CARD_MEDIA_MAX_MB.image.max)
+    expect(resolveSettingsConfig({ appId: 'id', cardVideoMaxMb: 25 }).cardVideoMaxMb).toBe(25)
+  })
+
+  it('clamps each size limit into its own kind bounds', () => {
+    // Feishu's upload ceilings, not taste: 10 MB for images, 30 MB for files.
+    expect(clampCardMediaMaxMb('image', 999)).toBe(CARD_MEDIA_MAX_MB.image.max)
+    expect(clampCardMediaMaxMb('video', 999)).toBe(CARD_MEDIA_MAX_MB.video.max)
+    expect(clampCardMediaMaxMb('audio', 999)).toBe(CARD_MEDIA_MAX_MB.audio.max)
+    expect(clampCardMediaMaxMb('image', 0)).toBe(CARD_MEDIA_MAX_MB.image.min)
+    expect(clampCardMediaMaxMb('video', 12.9)).toBe(12)
+    expect(clampCardMediaMaxMb('audio', Number.NaN)).toBe(CARD_MEDIA_MAX_MB.audio.default)
+    expect(clampCardMediaMaxMb('audio', undefined)).toBe(CARD_MEDIA_MAX_MB.audio.default)
+    expect(resolveSettingsConfig({ appId: 'id', cardImageMaxMb: 40 }).cardImageMaxMb).toBe(10)
+    expect(resolveSettingsConfig({ appId: 'id', cardAudioMaxMb: 0 }).cardAudioMaxMb).toBe(1)
   })
 
   it('preserves an empty reaction override that disables the acknowledgement', () => {

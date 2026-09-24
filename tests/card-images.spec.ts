@@ -607,3 +607,79 @@ describe('Feishu card budget', () => {
     expect(audio).toBe(6)
   })
 })
+
+describe('per-kind inline size ceilings', () => {
+  /** MB from KB, so the fixtures below stay tiny (the real values are whole MB). */
+  const kb = (n: number): number => n / 1024
+
+  beforeEach(async () => {
+    await writeFile(join(workspace, 'runs', 'big.png'), Buffer.concat([PNG, Buffer.alloc(3_000)]))
+    await writeFile(join(workspace, 'runs', 'big.mp4'), Buffer.concat([mp4Bytes(), Buffer.alloc(3_000)]))
+    await writeFile(join(workspace, 'runs', 'big.opus'), Buffer.concat([OPUS, Buffer.alloc(3_000)]))
+  })
+
+  /** All three kinds referenced in one card, 3 KB each. */
+  const threeKinds = (): object => card([
+    '![图](runs/big.png)', '[片段](runs/big.mp4)', '[语音](runs/big.opus)',
+  ].join('\n\n'))
+
+  it('measures each kind against its own ceiling, not one shared number', async () => {
+    const { handle, warnings } = hydrator({
+      mediaCaps: () => ({ imageMb: kb(1), videoMb: kb(2), audioMb: kb(4) }),
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY }),
+      uploadAudio: async () => ({ fileKey: AUDIO_KEY }),
+    })
+    const out = await handle.hydrate(threeKinds(), { workspace }) as any
+
+    // 3 KB image vs 1 KB, 3 KB video vs 2 KB → both stay text…
+    expect(JSON.stringify(out)).not.toContain('img_v3')
+    expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(0)
+    // …while the 3 KB audio fits under its own 4 KB.
+    expect(JSON.stringify(out)).toContain('<audio')
+    // One line per refused kind, naming the kind (the MB formatting is not what
+    // this test is about; the fixtures use sub-megabyte ceilings on purpose).
+    expect(warnings.some(line => line.includes('card image') && line.includes('left as text'))).toBe(true)
+    expect(warnings.some(line => line.includes('card video') && line.includes('left as text'))).toBe(true)
+    expect(warnings.some(line => line.includes('card audio'))).toBe(false)
+  })
+
+  it('refuses an oversized non-ISO-BMFF audio file too (that path had no byte check at all)', async () => {
+    // Opus/WAV/MP3/FLAC were only sniffed by their magic bytes, so a huge one was
+    // transcoded and uploaded no matter what the settings said.
+    const { handle, uploads } = hydrator({
+      mediaCaps: () => ({ imageMb: kb(64), videoMb: kb(64), audioMb: kb(1) }),
+      uploadAudio: async () => ({ fileKey: AUDIO_KEY }),
+    })
+    const out = await handle.hydrate(card('[语音](runs/big.opus)'), { workspace })
+    expect(contentOf(out)).toBe('[语音](runs/big.opus)')
+    expect(uploads).toHaveLength(0)
+  })
+
+  it('re-reads the ceilings on the next card, so a settings write applies at once', async () => {
+    // An over-ceiling file must NOT be remembered as "inspected, not media":
+    // that negative cache would keep a raised limit from taking effect until the
+    // entry was evicted (found while adding these settings).
+    let caps = { imageMb: kb(1), videoMb: kb(1), audioMb: kb(1) }
+    const { handle } = hydrator({
+      mediaCaps: () => caps,
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY }),
+      uploadAudio: async () => ({ fileKey: AUDIO_KEY }),
+    })
+    const first = await handle.hydrate(threeKinds(), { workspace }) as any
+    expect(first.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(0)
+    expect(JSON.stringify(first)).not.toContain('img_v3')
+
+    caps = { imageMb: kb(10), videoMb: kb(10), audioMb: kb(10) }
+    const second = await handle.hydrate(threeKinds(), { workspace }) as any
+    expect(JSON.stringify(second)).toContain(`![图](${IMAGE_KEY})`)
+    expect(second.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+    expect(JSON.stringify(second)).toContain('<audio')
+
+    // The reverse also holds: a lowered limit stops inlining what the higher one
+    // had already cached? No — an uploaded key stays cached (the file did not
+    // change), which is the intended behaviour: the cap gates the UPLOAD.
+    caps = { imageMb: kb(1), videoMb: kb(1), audioMb: kb(1) }
+    const third = await handle.hydrate(threeKinds(), { workspace }) as any
+    expect(third.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+  })
+})

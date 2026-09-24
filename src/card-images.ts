@@ -51,10 +51,22 @@ import { classifyMedia, sniffAudioFormat, sniffImageMime, sniffVideoContainer, t
 import { isFeishuImageKey, mapCardMarkdownReferences } from './card-markdown.ts'
 import { withTimeout } from './outbound-timeout.ts'
 
-/** Feishu's image-message limit; a card reference larger than this is pointless. */
-export const DEFAULT_MAX_BYTES = 10 * 1024 * 1024
-/** Feishu's file limit (`im.v1.file.create`); card video/audio share it. */
-export const DEFAULT_MAX_FILE_BYTES = 30 * 1024 * 1024
+/** Bytes in one megabyte — the size settings are all expressed in MB. */
+export const MB = 1024 * 1024
+/**
+ * Feishu's own ceilings, which no setting may exceed: a card image must come
+ * from `im.v1.image.create` (10 MB) and video/audio from `im.v1.file.create`
+ * (30 MB), so a larger limit could never take effect — the upload is refused
+ * and the reference stays text (`234006`). Verified against the API docs
+ * 2026-09-24; `CARD_MEDIA_MAX_MB` in `config.ts` is what the settings page
+ * exposes, this is the same fact one layer down.
+ */
+export const FEISHU_MAX_IMAGE_MB = 10
+export const FEISHU_MAX_FILE_MB = 30
+/** Default inline ceiling per kind, used when no live setting is wired. */
+export const DEFAULT_MAX_IMAGE_MB = FEISHU_MAX_IMAGE_MB
+export const DEFAULT_MAX_VIDEO_MB = 15
+export const DEFAULT_MAX_AUDIO_MB = 15
 /**
  * Most images one card may pull in — a runaway answer must not upload forever.
  *
@@ -117,6 +129,17 @@ type Inspected =
   | { kind: 'video'; container: 'mp4' | 'mov' }
   | { kind: 'audio'; format: AudioFormatId }
 
+/**
+ * The outcome of {@link inspect}: a classified file, `refused` when it IS media
+ * but over its size ceiling, or `undefined` when it is not media at all.
+ *
+ * The two negatives must stay apart: "not media" is worth caching (a reply full
+ * of source links must not re-read them on every card update), while "over the
+ * ceiling" is a SETTING and must be re-judged on the next card — otherwise
+ * raising the limit would not take effect until the entry was evicted.
+ */
+type Inspection = Inspected | { refused: 'size' } | undefined
+
 /** A target resolved onto a real file inside the workspace. */
 interface Located {
   /** The REAL path (symlinks already resolved). */
@@ -139,8 +162,12 @@ export interface CardImageDeps {
   /** Upload one audio file (transcoding to Opus when needed) for `<audio>`. */
   uploadAudio?: (absolutePath: string, format: AudioFormatId) => Promise<{ fileKey: string } | undefined>
   logger: { warn(message: string): unknown }
-  maxBytes?: number
-  maxFileBytes?: number
+  /**
+   * Read the CURRENT inline size ceilings in MB, live, so a settings write
+   * applies to the next card without a restart. One value per kind because the
+   * three are separate settings; anything the reference exceeds stays text.
+   */
+  mediaCaps?: () => { imageMb: number; videoMb: number; audioMb: number }
   maxPerCard?: number
   maxMediaPerCard?: number
   /**
@@ -312,8 +339,6 @@ function isIsoBmffHead(bytes: Uint8Array): boolean {
  * @param deps - workspace resolver, uploaders, logger and the bounds.
  */
 export function startCardImages(deps: CardImageDeps): CardImagesHandle {
-  const maxBytes = deps.maxBytes ?? DEFAULT_MAX_BYTES
-  const maxFileBytes = deps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
   const maxPerCard = deps.maxPerCard ?? DEFAULT_MAX_PER_CARD
   const maxMediaPerCard = deps.maxMediaPerCard ?? DEFAULT_MAX_MEDIA_PER_CARD
   const maxCached = deps.maxCached ?? DEFAULT_MAX_CACHED
@@ -377,37 +402,71 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
   }
 
   /**
-   * Work out what a file is. The head is enough for images and the non-ISO-BMFF
-   * audio formats; an ISO-BMFF file needs the whole buffer because `moov` may
-   * sit at the end, which is also why a large non-media file is refused before
-   * it is read.
+   * The live inline ceilings of this card, in bytes, one per kind.
+   *
+   * Read on every `inspect` call rather than captured at construction: the
+   * settings page owns these numbers and a write must apply to the next card.
+   */
+  const capsInBytes = (): { image: number; video: number; audio: number } => {
+    const caps = deps.mediaCaps?.()
+    return {
+      image: (caps?.imageMb ?? DEFAULT_MAX_IMAGE_MB) * MB,
+      video: (caps?.videoMb ?? DEFAULT_MAX_VIDEO_MB) * MB,
+      audio: (caps?.audioMb ?? DEFAULT_MAX_AUDIO_MB) * MB,
+    }
+  }
+
+  /** Warn and refuse: the reference then stays readable text. */
+  const overCap = (absolutePath: string, size: number, cap: number, kind: string): Inspection => {
+    deps.logger.warn(`dsh-feishu: card ${kind} ${absolutePath} is ${size} bytes `
+      + `(limit ${(cap / MB).toFixed(2)} MB); left as text`)
+    return { refused: 'size' }
+  }
+
+  /**
+   * Work out what a file is, and whether it is small enough to inline.
+   *
+   * The head is enough for images and the non-ISO-BMFF audio formats; an
+   * ISO-BMFF file needs the whole buffer because `moov` may sit at the end,
+   * which is also why a file larger than the biggest ceiling of its kind is
+   * refused before it is read. The ceiling is applied to the CLASSIFIED kind,
+   * because the three are separate settings (a big video must not be measured
+   * against the audio limit, and vice versa).
    */
   const inspect = async (
     absolutePath: string,
     size: number,
-  ): Promise<Inspected | undefined> => {
+  ): Promise<Inspection> => {
+    const caps = capsInBytes()
     const head = await readHead(absolutePath)
     if (head === undefined) return undefined
     if (sniffImageMime(head) !== undefined) {
-      if (size > maxBytes) {
-        deps.logger.warn(`dsh-feishu: card image ${absolutePath} is ${size} bytes (limit ${maxBytes}); left as text`)
-        return undefined
-      }
+      if (size > caps.image) return overCap(absolutePath, size, caps.image, 'image')
       return { kind: 'image' }
     }
     const audioHead = sniffAudioFormat(head)
-    if (audioHead !== undefined && audioHead !== 'm4a') return { kind: 'audio', format: audioHead }
+    if (audioHead !== undefined && audioHead !== 'm4a') {
+      // Non-ISO-BMFF audio used to skip the byte check entirely (only the
+      // ISO-BMFF branch had one), so a 100 MB WAV was transcoded and uploaded.
+      if (size > caps.audio) return overCap(absolutePath, size, caps.audio, 'audio')
+      return { kind: 'audio', format: audioHead }
+    }
     if (!isIsoBmffHead(head)) return undefined
-    if (size > maxFileBytes) {
-      deps.logger.warn(`dsh-feishu: card media ${absolutePath} is ${size} bytes (limit ${maxFileBytes}); left as text`)
-      return undefined
+    if (size > Math.max(caps.video, caps.audio)) {
+      return overCap(absolutePath, size, Math.max(caps.video, caps.audio), 'media')
     }
     const bytes = await readFile(absolutePath).catch(() => undefined)
     if (bytes === undefined) return undefined
     const video = sniffVideoContainer(bytes)
-    if (video !== undefined) return { kind: 'video', container: video.container }
+    if (video !== undefined) {
+      if (size > caps.video) return overCap(absolutePath, size, caps.video, 'video')
+      return { kind: 'video', container: video.container }
+    }
     const classification = classifyMedia(bytes)
-    if (classification?.kind === 'audio') return { kind: 'audio', format: classification.audio ?? 'opus' }
+    if (classification?.kind === 'audio') {
+      if (size > caps.audio) return overCap(absolutePath, size, caps.audio, 'audio')
+      return { kind: 'audio', format: classification.audio ?? 'opus' }
+    }
     return undefined
   }
 
@@ -536,15 +595,20 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
           continue
         }
         const kind = await inspect(located.path, located.size)
-        if (kind === undefined) {
-          // Quiet for a plain link (most links point at source files, and
-          // warning about each one would drown the journal); an explicit
-          // image reference that is not an image is worth a line.
-          if (entry.image) {
-            deps.logger.warn(`dsh-feishu: card image ${entry.target} is not a recognised image format; left as text`)
+        if (kind === undefined || 'refused' in kind) {
+          // Only "not media at all" is remembered. An over-ceiling file is not:
+          // the ceiling is a live setting, so it has to be judged again on the
+          // next card (and it costs one 64-byte head read, not an upload).
+          if (kind === undefined) {
+            // Quiet for a plain link (most links point at source files, and
+            // warning about each one would drown the journal); an explicit
+            // image reference that is not an image is worth a line.
+            if (entry.image) {
+              deps.logger.warn(`dsh-feishu: card image ${entry.target} is not a recognised image format; left as text`)
+            }
+            entries.set(located.path, { stamp: located.stamp })
+            bound(entries)
           }
-          entries.set(located.path, { stamp: located.stamp })
-          bound(entries)
           continue
         }
         if (claim(kind.kind)) claimed.push({ kind, located, target: entry.target, requestKey })

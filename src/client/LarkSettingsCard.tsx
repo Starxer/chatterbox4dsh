@@ -10,7 +10,7 @@
 
 import * as React from 'react'
 import { Button, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CARD_MEDIA_LIMIT } from './LarkSettingsCardController.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, type CardMediaMaxField } from './LarkSettingsCardController.ts'
 import type { LarkCardProps, LarkFormValues } from './LarkSettingsCardController.ts'
 
 /**
@@ -26,6 +26,16 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
   const form = state.form
   const blocked = !state.writable
   const toolsOff = !form.showToolCalls
+
+  /**
+   * One numeric row of the three inline size limits. Bounds come from the
+   * shared table so a field cannot drift from what the Host schema accepts.
+   */
+  const mediaMaxRow = (field: CardMediaMaxField, label: string, hint: string) => <label>
+    <span>{label}</span>
+    <Input aria-label={field} type="number" min={CARD_MEDIA_MAX_MB[field].min} max={CARD_MEDIA_MAX_MB[field].max} step={1} inputMode="numeric" disabled={blocked} value={form[field]} onChange={event => { props.edit(field, event.target.value) }} />
+    <span className="dsh-feishu-toggle-hint">{hint}</span>
+  </label>
 
   /** One labelled toggle row: title + one-line hint, control on the right. */
   const toggleRow = (options: {
@@ -140,6 +150,9 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
           <option value="any">{t('cardImagesAny')}</option>
         </select><span className="dsh-feishu-toggle-hint">{t('cardImagesHint')}</span></label>
         <label><span>{t('cardMediaLimit')}</span><Input aria-label="cardMediaLimit" type="number" min={CARD_MEDIA_LIMIT.min} max={CARD_MEDIA_LIMIT.max} step={1} inputMode="numeric" disabled={blocked} value={form.cardMediaLimit} onChange={event => { props.edit('cardMediaLimit', event.target.value) }} /><span className="dsh-feishu-toggle-hint">{t('cardMediaLimitHint')}</span></label>
+        {mediaMaxRow('cardImageMaxMb', t('cardImageMaxMb'), t('cardImageMaxMbHint'))}
+        {mediaMaxRow('cardVideoMaxMb', t('cardVideoMaxMb'), t('cardVideoMaxMbHint'))}
+        {mediaMaxRow('cardAudioMaxMb', t('cardAudioMaxMb'), t('cardAudioMaxMbHint'))}
         <label><span>{t('locale')}</span><select aria-label="locale" disabled={blocked} value={form.locale} onChange={event => { props.edit('locale', event.target.value as LarkFormValues['locale']) }}>
           <option value="auto">{t('localeAuto')}</option>
           <option value="zh">{t('localeZh')}</option>

@@ -15,7 +15,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
-import { CARD_MEDIA_LIMIT, ConfigSchema, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -327,6 +327,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // is `.volatile()`), including the "never upload" mode and the per-card cap.
     mode: () => currentSettings().cardImages,
     mediaLimit: () => currentSettings().cardMediaLimit ?? CARD_MEDIA_LIMIT.default,
+    // The three size ceilings are read live for the same reason: the settings
+    // page owns them, and the next card must use the value just saved.
+    mediaCaps: () => {
+      const settings = currentSettings()
+      return {
+        imageMb: settings.cardImageMaxMb ?? CARD_MEDIA_MAX_MB.image.default,
+        videoMb: settings.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.video.default,
+        audioMb: settings.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.audio.default,
+      }
+    },
     upload: async (absolutePath: string) => {
       const key = await mediaUploader.image(absolutePath)
       if (key === undefined) throw new Error('dsh-feishu: image upload returned no image_key')

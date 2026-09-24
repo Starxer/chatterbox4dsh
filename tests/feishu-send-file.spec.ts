@@ -180,6 +180,27 @@ describe('startFeishuSendFileTool', () => {
     expect(result.message_id).toBe('m')
   })
 
+  it('falls back to a file when the inline image send is refused', async () => {
+    // A long screenshot under 10 MB but over Feishu's resolution ceiling is
+    // refused with 234039. Before this fallback the whole call threw and the
+    // user got nothing; the API's own advice is to send such a picture as a file.
+    const p = await tempFile(PNG_BYTES, 'tall.png')
+    const ch = fakeChannel()
+    ;(ch.send as any).mockRejectedValueOnce(
+      new Error('Failed to create card content, ext=ErrCode: 234039; ErrMsg: Image resolution exceeds limit'),
+    )
+    const tool = toolOver(ch)
+    const result: any = await tool.execute({ path: p }, execCtx())
+
+    expect((ch.send as any).mock.calls).toHaveLength(2)
+    expect((ch.send as any).mock.calls[0][1]).toEqual(expect.objectContaining({ image: expect.anything() }))
+    expect((ch.send as any).mock.calls[1][1]).toEqual(
+      expect.objectContaining({ file: expect.objectContaining({ fileName: 'tall.png' }) }),
+    )
+    expect(result.sent_as).toBe('file')
+    expect(result.message_id).toBe('m')
+  })
+
   it('keeps an unplayable video codec (ProRes) on the file path', async () => {
     const p = await tempFile(PRORES_BYTES, 'graded.mov')
     const ch = fakeChannel()

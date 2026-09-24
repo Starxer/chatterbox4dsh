@@ -61,6 +61,39 @@ function clampCardMediaLimit(value: number): number {
 }
 
 /**
+ * Bounds and defaults of the three auto-inline SIZE limits (MB), mirroring
+ * `CARD_MEDIA_MAX_MB` in `src/config.ts`.
+ *
+ * The maxima are Feishu's upload ceilings: an image over 10 MB cannot come from
+ * `im.v1.image.create`, and video/audio over 30 MB cannot come from
+ * `im.v1.file.create`, so a larger number could never take effect.
+ */
+export const CARD_MEDIA_MAX_MB = {
+  cardImageMaxMb: { min: 1, max: 10, default: 10 },
+  cardVideoMaxMb: { min: 1, max: 30, default: 15 },
+  cardAudioMaxMb: { min: 1, max: 30, default: 15 },
+} as const
+
+/** The three size fields, in the order the form shows them. */
+export type CardMediaMaxField = keyof typeof CARD_MEDIA_MAX_MB
+
+/**
+ * Parse and clamp one staged size field.
+ *
+ * A blank field means "the user cleared it" and falls back to that field's own
+ * default rather than to the minimum; anything unparsable does the same, so a
+ * save can never write `NaN`, `0` or a value the Host would refuse.
+ */
+function clampCardMediaMaxMb(field: CardMediaMaxField, raw: string): number {
+  const bounds = CARD_MEDIA_MAX_MB[field]
+  const text = raw.trim()
+  if (text === '') return bounds.default
+  const value = Number(text)
+  if (!Number.isFinite(value)) return bounds.default
+  return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
+}
+
+/**
  * The `lark-channel` fields this page reads. `provider`, `model`, `workspace`
  * and `agentPreset` exist in the schema but are deliberately not edited here.
  */
@@ -80,6 +113,9 @@ export interface LarkSettingsValues {
   locale?: PluginLocale
   cardImages?: CardImageMode
   cardMediaLimit?: number
+  cardImageMaxMb?: number
+  cardVideoMaxMb?: number
+  cardAudioMaxMb?: number
 }
 
 /** The page's staged controls, after defaults and edits are folded together. */
@@ -106,6 +142,10 @@ export interface LarkFormValues {
    * parses and clamps it on save.
    */
   cardMediaLimit: string
+  /** Raw input text, for the same reason as {@link cardMediaLimit}. */
+  cardImageMaxMb: string
+  cardVideoMaxMb: string
+  cardAudioMaxMb: string
 }
 
 /** The field order every save walks; also the only keys a save may write. */
@@ -113,6 +153,7 @@ const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'appId', 'domain', 'requireMention', 'dmMode', 'groupAllowlist', 'dmAllowlist', 'reactEmoji',
   'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'locale', 'cardImages',
   'cardMediaLimit',
+  'cardImageMaxMb', 'cardVideoMaxMb', 'cardAudioMaxMb',
 ]
 
 /** What the credentials domain last reported, and for which reference. */
@@ -419,6 +460,9 @@ export class LarkSettingsCardController {
       locale: value?.locale ?? 'auto',
       cardImages: value?.cardImages ?? 'workspace',
       cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),
+      cardImageMaxMb: String(value?.cardImageMaxMb ?? CARD_MEDIA_MAX_MB.cardImageMaxMb.default),
+      cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
+      cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
     }
     return { ...base, ...this.edits }
   }
@@ -469,6 +513,10 @@ function writeValue(field: keyof LarkFormValues, form: LarkFormValues): unknown 
       const raw = form.cardMediaLimit.trim()
       return raw === '' ? CARD_MEDIA_LIMIT.default : clampCardMediaLimit(Number(raw))
     }
+    case 'cardImageMaxMb':
+    case 'cardVideoMaxMb':
+    case 'cardAudioMaxMb':
+      return clampCardMediaMaxMb(field, form[field])
     case 'groupAllowlist': return lines(form.groupAllowlist)
     case 'dmAllowlist': return lines(form.dmAllowlist)
     default: return form[field]
