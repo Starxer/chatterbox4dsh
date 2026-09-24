@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { collectImageTargets, startCardImages, type CardImageDeps } from '../src/card-images.ts'
 import { mp4Bytes, oggBytes } from './stubs/media-bytes.ts'
 
@@ -353,12 +353,91 @@ describe('card media beyond images', () => {
 
   it('caps how much video/audio one card may inline', async () => {
     for (const name of ['b.mp4', 'c.mp4']) await writeFile(join(workspace, 'runs', name), mp4Bytes())
-    const { handle } = hydrator({ uploadVideo: async () => ({ fileKey: VIDEO_KEY }) })
+    const { handle } = hydrator({
+      maxMediaPerCard: 2,
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY }),
+    })
     const out = await handle.hydrate(card([
       '[一](runs/clip.mp4)', '[二](runs/b.mp4)', '[三](runs/c.mp4)',
     ].join('\n\n')), { workspace }) as any
     const videos = out.body.elements.filter((element: any) => element.tag === 'video')
     expect(videos).toHaveLength(2)
+  })
+
+  it('defaults to the measured card budget: twelve clips, not two', async () => {
+    const names = Array.from({ length: 13 }, (_unused, i) => `clip-${i}.mp4`)
+    for (const name of names) await writeFile(join(workspace, 'runs', name), mp4Bytes())
+    const { handle } = hydrator({ uploadVideo: async () => ({ fileKey: VIDEO_KEY }) })
+    const out = await handle.hydrate(
+      card(names.map((name, i) => `[${i}](runs/${name})`).join('\n\n')),
+      { workspace },
+    ) as any
+    expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(12)
+    // The thirteenth stays a readable reference rather than a broken element.
+    expect(JSON.stringify(out)).toContain('runs/clip-12.mp4')
+  })
+
+  it('inlines every clip of a six-clip answer, not just two', async () => {
+    // The real 2026-09-24 workload: one answer referencing six clips. The old
+    // per-card media cap was 2, so four of them degraded to their path.
+    const names = ['clip.mp4', 'b.mp4', 'c.mp4', 'd.mp4', 'e.mp4', 'f.mp4']
+    for (const name of names.slice(1)) await writeFile(join(workspace, 'runs', name), mp4Bytes())
+    let n = 0
+    const { handle } = hydrator({ uploadVideo: async () => ({ fileKey: `${VIDEO_KEY}_${n += 1}` }) })
+    const out = await handle.hydrate(
+      card(names.map((name, i) => `[${i}](runs/${name})`).join('\n\n')),
+      { workspace },
+    ) as any
+    expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(6)
+  })
+
+  it('overlaps uploads instead of paying one round trip per clip', async () => {
+    const names = ['clip.mp4', 'b.mp4', 'c.mp4', 'd.mp4', 'e.mp4', 'f.mp4']
+    for (const name of names.slice(1)) await writeFile(join(workspace, 'runs', name), mp4Bytes())
+    let releaseFirst: (() => void) | undefined
+    let finished = 0
+    let armed: (() => void) | undefined
+    const twoOthersDone = new Promise<void>((resolve) => { armed = resolve })
+    const { handle } = hydrator({
+      uploadVideo: async () => {
+        if (releaseFirst === undefined) {
+          // Hold the first upload open: anything that finishes meanwhile proves
+          // the pool did not serialize behind it.
+          await new Promise<void>((resolve) => { releaseFirst = resolve })
+        }
+        finished += 1
+        if (finished === 2) armed?.()
+        return { fileKey: VIDEO_KEY }
+      },
+    })
+    const pending = handle.hydrate(
+      card(names.map((name, i) => `[${i}](runs/${name})`).join('\n\n')),
+      { workspace },
+    )
+    await twoOthersDone
+    expect(releaseFirst).toBeTypeOf('function')
+    releaseFirst!()
+    const out = await pending as any
+    expect(finished).toBe(6)
+    expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(6)
+  })
+
+  it('counts cached media against the cap, so a re-render resolves the same set', async () => {
+    for (const name of ['b.mp4', 'c.mp4']) await writeFile(join(workspace, 'runs', name), mp4Bytes())
+    const uploaded: string[] = []
+    const { handle } = hydrator({
+      maxMediaPerCard: 2,
+      uploadVideo: async (path: string) => { uploaded.push(path); return { fileKey: VIDEO_KEY } },
+    })
+    const value = card(['[一](runs/clip.mp4)', '[二](runs/b.mp4)', '[三](runs/c.mp4)'].join('\n\n'))
+    const first = await handle.hydrate(value, { workspace }) as any
+    const second = await handle.hydrate(value, { workspace }) as any
+    for (const out of [first, second]) {
+      expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(2)
+    }
+    // The cached pair keeps its slots: the third clip must not slip in on the
+    // next write just because two of the three came from the cache.
+    expect(uploaded).toHaveLength(2)
   })
 
   it('leaves media as text when the media budget is already spent', async () => {
@@ -395,5 +474,107 @@ describe('card media beyond images', () => {
       handle.hydrate(value, { workspace }),
     ])
     expect(uploaded).toHaveLength(1)
+  })
+})
+
+describe('card media warm-up', () => {
+  beforeEach(async () => {
+    await writeFile(join(workspace, 'runs', 'clip.mp4'), mp4Bytes())
+  })
+
+  it('resolves the keys ahead of the write, so the card does not pay for the upload', async () => {
+    const uploaded: string[] = []
+    const { handle } = hydrator({
+      uploadVideo: async (path: string) => { uploaded.push(path); return { fileKey: VIDEO_KEY } },
+    })
+    handle.warm(card('[片段](runs/clip.mp4)'), { workspace })
+    await vi.waitFor(() => { expect(uploaded).toHaveLength(1) })
+    const out = await handle.hydrate(card('[片段](runs/clip.mp4)'), { workspace }) as any
+    expect(uploaded).toHaveLength(1)
+    expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+  })
+
+  it('never rejects and stays silent about a workspace it cannot resolve', async () => {
+    const { handle, uploads } = hydrator()
+    handle.warm(card('![a](runs/a.png)'), {})
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(uploads).toHaveLength(0)
+  })
+
+  it('does not poison the failure cache with a file a running tool has not written yet', async () => {
+    // Key pitfall 44: the warmer sees streaming text long before the tool that
+    // writes the file has finished. Recording "missing" for 60 s there would
+    // cost the media on the very card the text is about to become.
+    const uploaded: string[] = []
+    const { handle } = hydrator({
+      uploadVideo: async (path: string) => { uploaded.push(path); return { fileKey: VIDEO_KEY } },
+    })
+    const value = card('[片段](runs/later.mp4)')
+    handle.warm(value, { workspace })
+    // Let the warm pass get as far as its (failing) lookup…
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(uploaded).toHaveLength(0)
+    // …then the tool finishes and the card is written.
+    await writeFile(join(workspace, 'runs', 'later.mp4'), mp4Bytes())
+    const out = await handle.hydrate(value, { workspace }) as any
+    expect(uploaded).toHaveLength(1)
+    expect(out.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+  })
+
+})
+
+describe('Feishu card budget', () => {
+  it('keeps the worst case one card can build inside 200 elements and 30 KB', async () => {
+    // Measured against the live API on 2026-09-24: a card may hold 200 elements
+    // or components, and a `video` with `cover` + `fallback` spends three of
+    // them (66 videos accepted, 67 refused with 300305). The caps must therefore
+    // never be able to build a card Feishu would reject.
+    for (let i = 0; i < 12; i += 1) {
+      await writeFile(join(workspace, 'runs', `v${i}.mp4`), mp4Bytes())
+      await writeFile(join(workspace, 'runs', `i${i}.png`), PNG)
+    }
+    const { handle } = hydrator({
+      uploadVideo: async (path: string) => ({ fileKey: VIDEO_KEY, coverKey: `${IMAGE_KEY}_${path}` }),
+    })
+    const lines: string[] = []
+    for (let i = 0; i < 12; i += 1) {
+      lines.push(`![still ${i}](runs/i${i}.png)`, `[clip ${i}](runs/v${i}.mp4)`)
+    }
+    const out = await handle.hydrate(card(lines.join('\n\n')), { workspace }) as any
+    const elements = out.body.elements as unknown[]
+    const videos = elements.filter((element: any) => element.tag === 'video')
+    expect(videos).toHaveLength(12)
+    // Every image stays inside a markdown element; every video is its own, so
+    // the card is one text segment per video plus the video elements.
+    expect(elements.filter((element: any) => element.tag === 'markdown')).toHaveLength(12)
+    expect(JSON.stringify(out)).not.toContain('runs/i0.png')
+    // Feishu counts the video, its cover and its fallback separately.
+    const counted = elements.length + videos.length * 2
+    expect(counted).toBeLessThanOrEqual(200)
+    expect(Buffer.byteLength(JSON.stringify(out), 'utf8')).toBeLessThan(30 * 1024)
+  })
+
+  it('shares the twelve media slots between video and audio', async () => {
+    for (let i = 0; i < 12; i += 1) {
+      await writeFile(join(workspace, 'runs', `v${i}.mp4`), mp4Bytes())
+      await writeFile(join(workspace, 'runs', `a${i}.opus`), OPUS)
+    }
+    const { handle } = hydrator({
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY }),
+      uploadAudio: async () => ({ fileKey: AUDIO_KEY }),
+    })
+    const lines: string[] = []
+    for (let i = 0; i < 12; i += 1) lines.push(`[clip ${i}](runs/v${i}.mp4)`, `[voice ${i}](runs/a${i}.opus)`)
+    const out = await handle.hydrate(card(lines.join('\n\n')), { workspace }) as any
+    const videos = out.body.elements.filter((element: any) => element.tag === 'video').length
+    const audio = ((out.body.elements as any[])
+      .filter((element: any) => element.tag === 'markdown')
+      .map((element: any) => element.content as string)
+      .join('\n')
+      .match(/<audio /gu) ?? []).length
+    // Interleaved in card order, so the shared budget is spent on the first six
+    // of each rather than on twelve clips and no voice.
+    expect(videos).toBe(6)
+    expect(audio).toBe(6)
   })
 })

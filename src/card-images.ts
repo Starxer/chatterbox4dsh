@@ -25,6 +25,13 @@
  * element, not markdown" is why the rewrite can split one markdown element into
  * several: `{tag:'video'}` cannot live inside a rich-text component.
  *
+ * The bounds are OUR UX choices, not Feishu's (see {@link DEFAULT_MAX_PER_CARD}
+ * for the measured card limits), and the cost they exist for is TIME. Three
+ * things keep that cost off the card: uploads run with a small concurrency, the
+ * per-call budget bounds the wait, and {@link CardImagesHandle.warm} fills the
+ * cache from the streaming text so the write that needs the keys usually finds
+ * them ready. A reference that still does not make it stays readable text.
+ *
  * Privacy: uploading publishes the file to Feishu. The scope is deliberately
  * narrow — only paths written as a Markdown image/link destination, only files
  * that live inside the session's own workspace (checked on the REAL path, so a
@@ -48,14 +55,36 @@ import { withTimeout } from './outbound-timeout.ts'
 export const DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 /** Feishu's file limit (`im.v1.file.create`); card video/audio share it. */
 export const DEFAULT_MAX_FILE_BYTES = 30 * 1024 * 1024
-/** Most images one card may pull in — a runaway answer must not upload forever. */
-export const DEFAULT_MAX_PER_CARD = 8
 /**
- * Most video/audio items one card may pull in. Deliberately much smaller than
- * the image cap: each one is a whole file upload (and possibly an ffmpeg pass),
- * so a reply that lists ten clips must not stall the card for a minute.
+ * Most images one card may pull in — a runaway answer must not upload forever.
+ *
+ * These caps are OUR UX bound, not Feishu's. Measured against the live API on
+ * 2026-09-24 (`cardkit.v1.card.create`, negative control included): a card may
+ * hold **200 elements or components**, and a `video` element carrying `cover` +
+ * `fallback` spends THREE of them, so Feishu itself accepted **66 videos** in
+ * one card and refused 67 with `300305 element exceeds the limit` (198 videos
+ * without a cover, 199 inline `<audio>` tags, 200 plain elements: all fine).
+ * The second Feishu bound is ~30 KB of card JSON (`200860`), which 66 videos
+ * (19.8 KB) do not reach. So a card could carry ~5x this cap; 12 is where a
+ * chat message stays readable, and the wall-clock budget still bounds the work.
  */
-export const DEFAULT_MAX_MEDIA_PER_CARD = 2
+export const DEFAULT_MAX_PER_CARD = 12
+/**
+ * Most video/audio items one card may pull in. Every one is a whole file upload
+ * (and possibly an ffmpeg remux/transcode), which is why this stayed at 2 until
+ * the caps were measured: the cost is TIME, and time is handled by uploading
+ * concurrently and by warming the cache while the model is still typing — not
+ * by refusing the file and printing its path instead.
+ */
+export const DEFAULT_MAX_MEDIA_PER_CARD = 12
+/**
+ * How many uploads one card may have in flight. Each one reads its whole file
+ * into memory (`im.v1.file.create` takes a buffer), so this also bounds the
+ * peak: 3 x 30 MB worst case. Feishu's own limit is 50 requests/second, so the
+ * concurrency is ours to choose and 3 keeps a six-clip answer to one round trip
+ * instead of six.
+ */
+export const UPLOAD_CONCURRENCY = 3
 /** How many resolved paths keep their key / failure. */
 export const DEFAULT_MAX_CACHED = 256
 /** A path that failed is retried after this long (the file may appear later). */
@@ -87,6 +116,15 @@ type Inspected =
   | { kind: 'image' }
   | { kind: 'video'; container: 'mp4' | 'mov' }
   | { kind: 'audio'; format: AudioFormatId }
+
+/** A target resolved onto a real file inside the workspace. */
+interface Located {
+  /** The REAL path (symlinks already resolved). */
+  path: string
+  /** `mtimeMs:size`, the cache key that invalidates an upload. */
+  stamp: string
+  size: number
+}
 
 export interface CardImageDeps {
   /** The workspace a session runs in; relative paths resolve against it. */
@@ -125,12 +163,32 @@ export interface CardImageScope {
   workspace?: string
 }
 
+/** Per-call overrides for one hydration run. */
+export interface CardImageHydrateOptions {
+  /**
+   * Whether a path that cannot be resolved is remembered as a failure for
+   * {@link NEGATIVE_TTL_MS}. Warm-up runs pass `false`: a path seen in streaming
+   * text may name a file the running tool has not written yet, and teaching the
+   * real card write that it is missing would cost the media for a whole minute
+   * (key pitfall 44).
+   */
+  recordFailure?: boolean
+  /** Wall-clock budget for this call's images (default: the instance's). */
+  budgetMs?: number
+  /** Wall-clock budget for this call's video/audio (default: the instance's). */
+  mediaBudgetMs?: number
+}
+
 /**
  * What callers receive: rewrite a card so its local media references render.
  * Never rejects — a reference that cannot be resolved is left for the writer to
  * degrade to text.
  */
-export type CardImageHydrator = (card: object, scope: CardImageScope) => Promise<object>
+export type CardImageHydrator = (
+  card: object,
+  scope: CardImageScope,
+  options?: CardImageHydrateOptions,
+) => Promise<object>
 
 export interface CardImagesHandle {
   /**
@@ -139,6 +197,16 @@ export interface CardImagesHandle {
    * unchanged, which the writer turns into readable text.
    */
   hydrate: CardImageHydrator
+  /**
+   * Resolve the card's media WITHOUT rewriting it, to have the uploads (and the
+   * Feishu keys they produce) ready before the card that needs them is written.
+   *
+   * Called while the model is still streaming, so the card write that follows
+   * finds a warm cache instead of paying the upload itself. Fire-and-forget by
+   * design: the result is discarded, failures are already handled inside, and
+   * nothing here may reject.
+   */
+  warm(card: object, scope: CardImageScope): void
   dispose(): void
 }
 
@@ -268,7 +336,7 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
     workspace: string,
     target: string,
     allowOutside: boolean,
-  ): Promise<{ path: string; stamp: string; size: number } | undefined> => {
+  ): Promise<Located | undefined> => {
     const root = await realpath(workspace).catch(() => undefined)
     if (root === undefined) return undefined
     for (const candidateTarget of pathCandidates(target)) {
@@ -342,7 +410,7 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
    */
   const uploadOnce = async (
     kind: Inspected,
-    located: { path: string; stamp: string },
+    located: Located,
     budget: () => number,
   ): Promise<ResolvedMedia | undefined> => {
     const absolutePath = located.path
@@ -393,82 +461,118 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
     return inlined
   }
 
-  return {
-    async hydrate(card: object, scope: CardImageScope): Promise<object> {
-      try {
-        // `text` means "never upload": nothing to resolve, and the reference is
-        // left for the writer to turn into readable text.
-        if (mode() === 'text') return card
-        // Over-collect on purpose: the per-kind caps are enforced below, and a
-        // reply that lists ten pictures must still have its clip considered.
-        const targets = collectMediaTargets(card, (maxPerCard + maxMediaPerCard) * 2)
-        if (targets.length === 0) return card
-        const workspace = scope.workspace !== undefined && scope.workspace !== ''
-          ? scope.workspace
-          : scope.sessionId === undefined ? undefined : await deps.resolveWorkspace(scope.sessionId)
-        if (workspace === undefined || workspace === '') return card
-        const now = Date.now()
-        const imageDeadline = now + budgetMs
-        const mediaDeadline = now + mediaBudgetMs
-        const allowOutside = mode() === 'any'
-        const resolved = new Map<string, ResolvedMedia>()
-        let images = 0
-        let media = 0
-        for (const entry of targets) {
-          const requestKey = `${workspace}\u0000${entry.target}`
-          const failedAt = failed.get(requestKey)
-          if (failedAt !== undefined && now - failedAt < negativeTtlMs) continue
-          const located = await locate(workspace, entry.target, allowOutside)
-          if (located === undefined) {
-            failed.set(requestKey, now)
-            bound(failed)
-            continue
-          }
-          const cached = entries.get(located.path)
-          if (cached !== undefined && cached.stamp === located.stamp) {
-            if (cached.media !== undefined) resolved.set(entry.target, cached.media)
-            continue
-          }
-          // Per-kind caps are checked against the CLASSIFIED kind, so a reply
-          // with eleven pictures still gets its one clip inlined.
-          if (maxPerCard - images <= 0 && maxMediaPerCard - media <= 0) break
-          const kind = await inspect(located.path, located.size)
-          if (kind === undefined) {
-            // Quiet for a plain link (most links point at source files, and
-            // warning about each one would drown the journal); an explicit
-            // image reference that is not an image is worth a line.
-            if (entry.image) {
-              deps.logger.warn(`dsh-feishu: card image ${entry.target} is not a recognised image format; left as text`)
-            }
-            entries.set(located.path, { stamp: located.stamp })
-            bound(entries)
-            continue
-          }
-          const isImage = kind.kind === 'image'
-          if (isImage ? maxPerCard - images <= 0 : maxMediaPerCard - media <= 0) continue
-          const remaining = (): number => Math.max(0, (isImage ? imageDeadline : mediaDeadline) - Date.now())
-          if (remaining() <= 0) continue
-          const inlined = await uploadOnce(kind, located, remaining)
-          if (inlined === undefined) {
-            // Classification succeeded but the upload did not: do NOT cache a
-            // negative (the file is fine, the transport was not), retry later.
-            failed.set(requestKey, now)
-            bound(failed)
-            continue
-          }
-          failed.delete(requestKey)
-          if (inlined.kind === 'image') images += 1
-          else media += 1
-          resolved.set(entry.target, inlined)
+  const hydrate: CardImageHydrator = async (card, scope, options = {}) => {
+    try {
+      // `text` means "never upload": nothing to resolve, and the reference is
+      // left for the writer to turn into readable text.
+      if (mode() === 'text') return card
+      // Over-collect on purpose: the per-kind caps are enforced below, and a
+      // reply that lists ten pictures must still have its clip considered.
+      const targets = collectMediaTargets(card, (maxPerCard + maxMediaPerCard) * 2)
+      if (targets.length === 0) return card
+      const workspace = scope.workspace !== undefined && scope.workspace !== ''
+        ? scope.workspace
+        : scope.sessionId === undefined ? undefined : await deps.resolveWorkspace(scope.sessionId)
+      if (workspace === undefined || workspace === '') return card
+      const recordFailure = options.recordFailure !== false
+      const now = Date.now()
+      const imageDeadline = now + (options.budgetMs ?? budgetMs)
+      const mediaDeadline = now + (options.mediaBudgetMs ?? mediaBudgetMs)
+      const allowOutside = mode() === 'any'
+      const resolved = new Map<string, ResolvedMedia>()
+      /**
+       * Classified files whose slot is already reserved, in card order. The slot
+       * is claimed before the upload starts so the cap is decided by the card's
+       * own order rather than by which upload happens to finish first.
+       */
+      const claimed: Array<{ kind: Inspected; located: Located; target: string; requestKey: string }> = []
+      let images = 0
+      let media = 0
+      /**
+       * Reserve one place on this card. The counters cover EVERY media the card
+       * will render, cached hits included: with the old "fresh uploads only"
+       * accounting a card could render three clips while the cap said two, and
+       * whether the third made it depended on cache timing.
+       */
+      const claim = (kind: Inspected['kind']): boolean => {
+        if (kind === 'image') {
+          if (maxPerCard - images <= 0) return false
+          images += 1
+          return true
         }
-        if (resolved.size === 0) return card
-        return rewriteCardMedia(card, resolved)
-      } catch (error: unknown) {
-        // Hydration is an enhancement: never let it cost the card.
-        const reason = error instanceof Error ? error.message : String(error)
-        deps.logger.warn(`dsh-feishu: card media hydration failed: ${reason}`)
-        return card
+        if (maxMediaPerCard - media <= 0) return false
+        media += 1
+        return true
       }
+      for (const entry of targets) {
+        const requestKey = `${workspace}\u0000${entry.target}`
+        const failedAt = failed.get(requestKey)
+        if (failedAt !== undefined && now - failedAt < negativeTtlMs) continue
+        const located = await locate(workspace, entry.target, allowOutside)
+        if (located === undefined) {
+          if (recordFailure) {
+            failed.set(requestKey, now)
+            bound(failed)
+          }
+          continue
+        }
+        const cached = entries.get(located.path)
+        if (cached !== undefined && cached.stamp === located.stamp) {
+          if (cached.media !== undefined && claim(cached.media.kind)) resolved.set(entry.target, cached.media)
+          continue
+        }
+        const kind = await inspect(located.path, located.size)
+        if (kind === undefined) {
+          // Quiet for a plain link (most links point at source files, and
+          // warning about each one would drown the journal); an explicit
+          // image reference that is not an image is worth a line.
+          if (entry.image) {
+            deps.logger.warn(`dsh-feishu: card image ${entry.target} is not a recognised image format; left as text`)
+          }
+          entries.set(located.path, { stamp: located.stamp })
+          bound(entries)
+          continue
+        }
+        if (claim(kind.kind)) claimed.push({ kind, located, target: entry.target, requestKey })
+      }
+      // Uploads overlap: six clips must cost one round trip, not six. Each one
+      // keeps the remaining budget as its own bound, so the card's total wait is
+      // still bounded by the budget rather than by the number of clips.
+      await mapLimit(claimed, UPLOAD_CONCURRENCY, async (job) => {
+        const isImage = job.kind.kind === 'image'
+        const remaining = (): number => Math.max(0, (isImage ? imageDeadline : mediaDeadline) - Date.now())
+        if (remaining() <= 0) return
+        const inlined = await uploadOnce(job.kind, job.located, remaining)
+        if (inlined === undefined) {
+          // Classification succeeded but the upload did not: do NOT cache a
+          // negative (the file is fine, the transport was not), retry later.
+          if (recordFailure) {
+            failed.set(job.requestKey, Date.now())
+            bound(failed)
+          }
+          return
+        }
+        failed.delete(job.requestKey)
+        resolved.set(job.target, inlined)
+      })
+      if (resolved.size === 0) return card
+      return rewriteCardMedia(card, resolved)
+    } catch (error: unknown) {
+      // Hydration is an enhancement: never let it cost the card.
+      const reason = error instanceof Error ? error.message : String(error)
+      deps.logger.warn(`dsh-feishu: card media hydration failed: ${reason}`)
+      return card
+    }
+  }
+
+  return {
+    hydrate,
+    warm(card: object, scope: CardImageScope): void {
+      // Same pipeline, result discarded: the point is a warm key cache (and an
+      // in-flight promise the real write can await) while the model is still
+      // typing. `recordFailure: false` is the one difference — a path may name a
+      // file the running tool has not written yet (key pitfall 44).
+      void hydrate(card, scope, { recordFailure: false }).catch(() => undefined)
     },
     dispose(): void {
       entries.clear()
@@ -476,6 +580,36 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
       pending.clear()
     },
   }
+}
+
+/**
+ * Run `task` for every item with at most `limit` in flight. Results keep the
+ * input order; a rejection becomes `undefined` so one broken job cannot strand
+ * its siblings (every caller here already handles `undefined`).
+ */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<Array<R | undefined>> {
+  const results = new Array<R | undefined>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next
+      next += 1
+      const item = items[index]
+      if (index >= items.length || item === undefined) return
+      try {
+        results[index] = await task(item)
+      } catch {
+        results[index] = undefined
+      }
+    }
+  }
+  const width = Math.max(1, Math.min(limit, items.length))
+  await Promise.all(Array.from({ length: width }, worker))
+  return results
 }
 
 /** Placeholder that marks where one video element must be spliced in. */

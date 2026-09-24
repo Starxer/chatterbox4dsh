@@ -808,6 +808,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       getTranslations: () => translationsFor(currentLocale().id),
       ...(noteDetachedJob !== undefined ? { noteDetachedJob } : {}),
       hydrateImages: cardImages.hydrate,
+      // Warming resolves the same media against the text still being streamed,
+      // so the card that finally carries it does not pay for the uploads.
+      warmImages: cardImages.warm,
     })
     stopStreaming = streamingResult.stop
     consumeReasoning = streamingResult.consumeReasoning

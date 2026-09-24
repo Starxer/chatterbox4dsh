@@ -332,7 +332,13 @@ function stepHarness(
     showToolArgs?: () => boolean
     showToolResults?: () => boolean
   } = {},
-  extra: { noteDetachedJob?: (notice: any) => void } = {},
+  extra: {
+    noteDetachedJob?: (notice: any) => void
+    /** Card media hydrator the streaming side prepares cards with. */
+    hydrateImages?: (card: any, scope: any, options?: any) => Promise<any>
+    /** Card media warmer the streaming side fires at the text being streamed. */
+    warmImages?: (card: any, scope: any) => void
+  } = {},
 ) {
   const listeners: Array<(session: any, event: any) => void> = []
   const bridge = {
@@ -1350,5 +1356,59 @@ describe('stale step card notice', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('card media hydration hooks', () => {
+  const plainChannel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+  })
+
+  it('warms the media cache from the streaming text, without touching the card', async () => {
+    const warmImages = vi.fn()
+    const channel = plainChannel()
+    const { streaming, emit } = stepHarness(channel, {}, { warmImages })
+    emit('turn/start')
+    // Plain prose never triggers a warm-up: only `[](...)` destinations can be
+    // resolved, and this runs on every token delta.
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: '正在生成，稍等' } })
+    await tick(600)
+    expect(warmImages).not.toHaveBeenCalled()
+
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: '看这里 [片段](runs/a.mp4)' } })
+    await tick(600)
+    expect(warmImages).toHaveBeenCalledTimes(1)
+    const [card, scope] = warmImages.mock.calls[0]! as unknown as [any, any]
+    expect(JSON.stringify(card)).toContain('runs/a.mp4')
+    expect(scope).toEqual({ sessionId: 's-1' })
+    // Warming is not a card write: no send may happen just because of it.
+    expect(channel.send).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('hydrates the overflow "continued" cards too, not just the step card', async () => {
+    // Media referenced past TEXT_STEP_CAP live on the overflow cards; those used
+    // to be handed to the raw channel, so their clips never rendered.
+    const hydrateImages = vi.fn(async (card: any) => ({
+      ...card,
+      body: { elements: [...card.body.elements, { tag: 'markdown', content: 'HYDRATED' }] },
+    }))
+    const channel = plainChannel()
+    const { streaming, emit } = stepHarness(channel, {}, { hydrateImages })
+    emit('turn/start')
+    emit('assistant/chunk', {
+      chunk: { type: 'text-delta', text: `${'x'.repeat(3_500)}\n\n[尾](runs/tail.mp4)` },
+    })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(300)
+    emit('turn/end', {})
+    await tick(500)
+
+    const cards = channel.send.mock.calls.map((call: any[]) => call[1].card)
+    const overflow = cards.filter((card: any) => String(card.header?.title?.content).startsWith('Reply (continued'))
+    expect(overflow.length).toBeGreaterThan(0)
+    expect(JSON.stringify(overflow)).toContain('HYDRATED')
+    streaming.stop()
   })
 })

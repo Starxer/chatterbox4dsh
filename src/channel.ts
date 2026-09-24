@@ -774,20 +774,35 @@ const DELIVERABLE_DISPLAY_CAP = 6
 /** Cap for one deliverable's description on the card (characters). */
 const DELIVERABLE_NOTE_CAP = 60
 
-/**
- * Wrap a value in a single markdown code span, flattening newlines and
- * dropping backticks (an embedded one would end the span early and mangle the
- * rest of the card).
- */
-function inlineCodeSpan(value: string): string {
-  const flat = value.replace(/[\r\n]+/gu, ' ').replace(/`/gu, "'").trim()
-  return `\`${flat}\``
-}
-
 /** Shorten a deliverable description so one long note cannot dominate the card. */
 function capDeliverableNote(value: string): string {
   const flat = value.replace(/[\r\n]+/gu, ' ').trim()
   return flat.length <= DELIVERABLE_NOTE_CAP ? flat : `${flat.slice(0, DELIVERABLE_NOTE_CAP - 1)}…`
+}
+
+/**
+ * One deliverable as a Markdown LINK rather than a code span.
+ *
+ * The list is the one place where the operator is being handed files, so it has
+ * to go through the same media hydrator as the reply text: `channel.ts`'s card
+ * writer resolves `[label](path)` destinations against the session workspace, so
+ * a delivered clip or still renders inline here exactly like one referenced in
+ * the answer. A file the hydrator cannot inline degrades to `label · \`path\`` —
+ * still naming the path, which is what the code span did before.
+ *
+ * Two escapes matter, both for the SCANNER (`card-markdown.ts`), which only
+ * recognises `[label](target)` with a bracket-free label and a whitespace-free
+ * target: a description may contain `[`/`]`/backticks, and a path may contain
+ * spaces or parentheses → those targets use the `[label](<target>)` form.
+ */
+function deliverableLink(path: string, description?: string): string {
+  const label = (description === undefined ? path : capDeliverableNote(description))
+    .replace(/`/gu, "'")
+    .replace(/[[\]]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  const target = /[\s()]/u.test(path) ? `<${path.replace(/[<>]/gu, '')}>` : path
+  return `[${label === '' ? path : label}](${target})`
 }
 
 /**
@@ -807,13 +822,13 @@ export function renderFooterCard(
   // the bytes are never pushed automatically, because a chat has no workspace
   // browser to open them from and most deliveries are files the user can
   // already reach. Asking for one sends it through `feishu_send_file`.
+  //
+  // Each entry is a link, not a code span, so media the turn delivered renders
+  // inline here too (see `deliverableLink`); the card writer hydrates it.
   const deliverables = turnStats?.deliverables ?? []
   if (deliverables.length > 0) {
     const shown = deliverables.slice(0, DELIVERABLE_DISPLAY_CAP)
-    const lines = shown.map((file) => {
-      const description = file.description === undefined ? '' : ` — ${capDeliverableNote(file.description)}`
-      return `• ${inlineCodeSpan(file.path)}${description}`
-    })
+    const lines = shown.map((file) => `• ${deliverableLink(file.path, file.description)}`)
     if (deliverables.length > shown.length) {
       lines.push(t.deliverablesMore(deliverables.length - shown.length))
     }

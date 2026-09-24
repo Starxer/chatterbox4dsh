@@ -41,6 +41,44 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 修复：卡片内联媒体的三个缺口——单卡只放 2 个、交付清单走不到内联、溢出续卡不过 hydrator（`src/card-images.ts` / `src/channel.ts` / `src/feishu-streaming.ts`，2026-09-24）
+
+**现象**（使用者报告）：① 一张卡里的视频超过两个就不再内联，只剩路径文字；② 末尾那张 Turn Complete（交付文件）卡完全不渲染媒体。
+
+**先查清"这是插件的限制还是飞书的限制"**（使用者的第一个要求）：真机打 `cardkit.v1.card.create`（只建卡片实体、不发消息），并带**负对照**证明探针能测出拒绝：
+
+| 卡片内容 | 元素数 | 卡片字节 | 结果 |
+|---|---|---|---|
+| 2 / 8 / 16 / 32 / 64 个视频（带封面+fallback） | 3–65 | 0.7–19.3 KB | ✅ 全部接受 |
+| **66 个视频** | 67 | 19.8 KB | ✅ 接受 |
+| **67 个视频** | 68 | 20.2 KB | ❌ `300305 element exceeds the limit` |
+| 198 个视频（不带封面/fallback） | 199 | 25.5 KB | ✅ 接受 |
+| 199 个内联 `<audio>` | 200 | 28.7 KB | ✅ 接受 |
+| 8 图 + 8 视频 + 8 音频 | 24 | 4.4 KB | ✅ 接受 |
+| **负对照：201 个纯文本元素** / 对照：200 个 | 201 / 200 | 8.8 / 8.7 KB | ❌ / ✅ |
+
+⇒ 飞书的真边界是**一张卡 200 个元素或组件**（嵌套的 `cover`、`fallback` 各占一个名额，所以带封面的视频一个吃 3 个，上限 66 个）与**卡片 JSON ~30KB**（`200860`，66 个视频才 19.8KB，先撞的是元素数）。**"2"完全是插件自己的上限，比飞书的边界小 33 倍**；真实成本只有上传时间（实测 ~1.2MB/s、串行、写卡前 `await`）。
+
+**根因（三处）**：
+
+1. `DEFAULT_MAX_MEDIA_PER_CARD = 2`，而且计数只算"新上传"——缓存命中的分支在计数前就 `continue`，于是同一张卡重复渲染时能内联几个取决于缓存时序而不是规则。
+2. Turn Complete 卡的交付清单用行内代码 `` • `path` `` 渲染，而扫描器按坑 42 只认带 `()` 的 Markdown 引用 ⇒ **这张卡永远不可能内联**。2026-09-24 14:07 那轮 `present` 交付了 3 个视频（正文里根本没引用它们），3 个全成了路径。
+3. 溢出 "continued" 续卡走的是裸 `channel.send`，**完全没过 hydrator** ⇒ 正文超过 `TEXT_STEP_CAP`（3000 字）之后，尾部的媒体永远不内联。
+
+**修法**：
+
+- 上限改为 **12/12**（视频/音频 12、图片 12），并改成数"**这张卡实际渲染几个**"（缓存命中与新上传一起计数）⇒ 同一张卡的重复渲染得到同一组媒体。附一条**最坏情况不变量测试**：12 视频 × 3 个计名额 + 12 张图 + 由它们拆出的文本段 ≤ 200 元素且 < 30KB。
+- 上传改**有界并发 3**（`UPLOAD_CONCURRENCY`）：六个片段从六次串行往返降到一轮；每次上传仍带自己的 `withTimeout`，卡片总等待仍由每类预算封顶。
+- 新增**预热**（`cardImages.warm`）：流式 `text-delta` 防抖 400ms 后，拿当前正文当一张一次性卡片跑**同一条判定链**（同 mode / 同工作区 realpath / 同字节与数量上限），只丢弃结果 ⇒ 真正写卡时基本是缓存命中，或直接 await 同一个在飞上传（`pending` 表本来就去重）。预热**不写负面缓存**（`recordFailure: false`）：流式文本可能在工具写完文件之前就出现该路径，记一条 60s 的"缺失"会让本该内联的媒体陪跑（关键坑 44）。
+- 交付清单改为 `• [desc](path)`（无描述时 label 用路径；描述里的 `[`/`]`/反引号会破坏链接，做清洗；路径含空格或括号时用 `[label](<target>)` 形式），非媒体仍由中和逻辑退回 `desc · \`path\`` —— 与改动前等价。溢出续卡改为**并发 `prepareCard` 后按序发送**（一张一发地内联会让 N 张卡各付一次预算）。
+- 去重有意不做：DSH Web UI 本身就是"正文一份 + 交付行一份"，且按 turn 去重会让步骤卡**自己的下一次更新**把媒体删掉（坑 43 同类）；缓存命中后重复几乎免费。
+
+**验证**：typecheck 0 error、**698 tests / 42 files** 全绿（`card-images` 48、`channel-footer` 15、`feishu-streaming` 74）。新增用例覆盖：六片段回答全部内联（旧上限下会掉 4 个）、13 个引用只内联 12 个且第 13 个仍是可读引用、缓存命中计入上限使重复渲染得到同一组、上传确实重叠、预热命中缓存且**不污染**失败缓存、交付卡端到端内联出 `video` 元素、非媒体交付物退回"label · code span"、溢出续卡经 hydrator、以及飞书元素/体积不变量。
+
+**English**：Card media inlining had three gaps. (1) The per-card cap was 2 videos/audio, and it counted only *fresh* uploads (a cache hit `continue`d before the counters), so how many media a card could render depended on cache timing. (2) The Turn Complete card rendered its `present` deliverables as inline code spans, which the reference scanner deliberately ignores — so that card could never inline anything. (3) The overflow "continued" cards were handed to the raw channel and never hydrated at all, so media past `TEXT_STEP_CAP` never rendered. A live probe against `cardkit.v1.card.create` (with a negative control) established that none of this comes from Feishu: a card may hold **200 elements or components**, where a `video` with `cover` + `fallback` spends three — 66 videos were accepted and 67 refused with `300305 element exceeds the limit` (198 cover-less videos, 199 inline `<audio>` tags and 200 plain elements all fine) — plus a ~30 KB card-JSON ceiling. The plugin's cap of 2 was 33x stricter than Feishu's own. The caps are now 12/12 and count what the card actually renders (cached hits included), uploads run with a bounded concurrency of three, a new `warm()` pass resolves the streaming text's media ahead of the write (identical pipeline, result discarded, and it deliberately does **not** record a missing file in the negative cache — key pitfall 44), deliverables became Markdown links so the existing hydrator inlines them, and the overflow cards now go through the same hydrator. Deduplication between the reply text and the deliverable list is intentionally absent: it mirrors the Web UI, and per-turn bookkeeping would strip media from a step card's own next update. A worst-case invariant test keeps the built card inside Feishu's 200-element and 30 KB budgets.
+
+
+
 ### 修复：媒体内联让卡片写入变慢，交付守卫读到过期状态 → 回复后多发一张 reply 卡（`src/feishu-streaming.ts` / `src/channel.ts`，2026-09-24）
 
 **现象**（使用者报告）：「在 reply 以后又生成了一张 reply 卡」——同一段回答先随步骤卡上屏，紧接着又出现一张正文相同的回复卡。

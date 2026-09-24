@@ -94,8 +94,11 @@ describe('renderFooterCard deliverables', () => {
     }) as any
     const md = markdownOf(card)
     expect(md).toContain(t.deliverablesTitle(2))
-    expect(md).toContain('• `reports/summary.md` — Monthly rollup')
-    expect(md).toContain('• `assets/chart.png`')
+    // Deliverables are LINKS, not code spans: the card writer resolves those
+    // against the session workspace, so a delivered clip or still renders
+    // inline here exactly like one referenced in the answer text.
+    expect(md).toContain('• [Monthly rollup](reports/summary.md)')
+    expect(md).toContain('• [assets/chart.png](assets/chart.png)')
   })
 
   it('omits the section when nothing was declared', () => {
@@ -124,7 +127,7 @@ describe('renderFooterCard deliverables', () => {
     const md = markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: many }) as any)
     // Headline keeps the real total; the body shows the cap.
     expect(md).toContain(t.deliverablesTitle(9))
-    expect(md).toContain('• `out/file-5.txt`')
+    expect(md).toContain('• [out/file-5.txt](out/file-5.txt)')
     expect(md).not.toContain('file-6.txt')
     expect(md).toContain('…and 3 more')
   })
@@ -134,6 +137,91 @@ describe('renderFooterCard deliverables', () => {
       ...turnStats,
       deliverables: [{ path: 'we`ird/name.txt' }],
     }) as any)
-    expect(md).toContain("• `we'ird/name.txt`")
+    // The label is cleaned (a stray backtick would open a code span), and the
+    // target stays verbatim so the file still resolves.
+    expect(md).toContain("• [we'ird/name.txt](we`ird/name.txt)")
+  })
+
+  it('escapes a description that would otherwise close the link early', () => {
+    const md = markdownOf(renderFooterCard(t, {}, {
+      ...turnStats,
+      deliverables: [{ path: 'out/a.mp4', description: 'v6a [保短裙] 第 1 张' }],
+    }) as any)
+    expect(md).toContain('• [v6a 保短裙 第 1 张](out/a.mp4)')
+  })
+
+  it('wraps a path with spaces so the reference scanner still sees a target', () => {
+    const md = markdownOf(renderFooterCard(t, {}, {
+      ...turnStats,
+      deliverables: [{ path: 'out/my clip.mp4' }],
+    }) as any)
+    expect(md).toContain('• [out/my clip.mp4](<out/my clip.mp4>)')
+  })
+})
+
+describe('Turn Complete media (deliverables go through the hydrator)', () => {
+  it('renders a delivered clip inline instead of leaving its path as text', async () => {
+    const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { startCardImages } = await import('../src/card-images.ts')
+    const { mp4Bytes } = await import('./stubs/media-bytes.ts')
+
+    const root = await mkdtemp(join(tmpdir(), 'dsh-footer-media-'))
+    try {
+      await mkdir(join(root, 'out'), { recursive: true })
+      await writeFile(join(root, 'out', 'clip.mp4'), mp4Bytes())
+      const handle = startCardImages({
+        resolveWorkspace: async () => root,
+        upload: async () => 'img_v3_probe',
+        uploadVideo: async () => ({ fileKey: 'file_v3_00or_probe' }),
+        logger: { warn: () => undefined },
+      })
+      // Exactly the shape the walking skeleton in channel.ts writes: the card is
+      // rendered first, then handed to the hydrator the same way `sendCard` does.
+      const card = renderFooterCard(t, { workspace: root }, {
+        ...turnStats,
+        deliverables: [{ path: 'out/clip.mp4', description: 'Draft clip' }],
+      }) as any
+      const out = await handle.hydrate(card, { workspace: root }) as any
+      const videos = out.body.elements.filter((element: any) => element.tag === 'video')
+      expect(videos).toHaveLength(1)
+      expect(videos[0].file_key).toBe('file_v3_00or_probe')
+      expect(videos[0].fallback.text.content).toBe('📹 Draft clip')
+      expect(JSON.stringify(out)).not.toContain('](out/clip.mp4)')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('degrades a non-media deliverable to label plus path, not to a dead link', async () => {
+    const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { startCardImages } = await import('../src/card-images.ts')
+    const { neutralizeCard } = await import('../src/card-markdown.ts')
+
+    const root = await mkdtemp(join(tmpdir(), 'dsh-footer-media-'))
+    try {
+      await mkdir(join(root, 'out'), { recursive: true })
+      await writeFile(join(root, 'out', 'summary.md'), '# report')
+      const handle = startCardImages({
+        resolveWorkspace: async () => root,
+        upload: async () => 'img_v3_probe',
+        logger: { warn: () => undefined },
+      })
+      const card = renderFooterCard(t, { workspace: root }, {
+        ...turnStats,
+        deliverables: [{ path: 'out/summary.md', description: 'Monthly rollup' }],
+      }) as any
+      const out = await handle.hydrate(card, { workspace: root })
+      // The writer neutralizes what the hydrator left alone: label first, path
+      // in a code span (the pre-2026-09-24 text), never a link Feishu cannot open.
+      const md = markdownOf(neutralizeCard(out as any) as any)
+      expect(md).toContain('Monthly rollup · `out/summary.md`')
+      expect(md).not.toContain('](out/summary.md)')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

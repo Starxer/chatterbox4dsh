@@ -141,6 +141,14 @@ export interface FeishuStreamingDeps {
    * text (see `card-images.ts`). Optional so tests need no filesystem.
    */
   hydrateImages?: CardImageHydrator
+  /**
+   * Resolve the media of the text being streamed WITHOUT writing a card, so the
+   * uploads (image / video / audio) are already done when the card that carries
+   * them is written. Fire-and-forget and safe to call on every delta: the
+   * implementation debounces nothing, deduplicates in-flight uploads and never
+   * rejects. Optional so tests need no filesystem.
+   */
+  warmImages?: (card: object, scope: { sessionId?: string }) => void
 }
 
 /** Per-step usage from assistant/message event. */
@@ -247,6 +255,12 @@ interface SessionStepState {
    */
   placeholderTimer: ReturnType<typeof setTimeout> | undefined
   /**
+   * Debounced media warm-up for the current step's text (see
+   * {@link warmStepMedia}). Cleared wherever the step's text is cleared, so a
+   * stale timer can never upload for a step that is already over.
+   */
+  warmTimer: ReturnType<typeof setTimeout> | undefined
+  /**
    * Debounced-but-not-yet-sent first card for the current step. While this is
    * set, `stepCardSent` is already true but `stepCardRef` is still undefined,
    * so later events skip the update path — the pending send rebuilds the card
@@ -301,7 +315,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations, noteDetachedJob, hydrateImages } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations, noteDetachedJob, hydrateImages, warmImages } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -317,6 +331,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         stepCardRef: undefined,
         stepEnded: false,
         placeholderTimer: undefined,
+        warmTimer: undefined,
         pendingSend: undefined,
         chat: undefined,
         lastStepHadContent: false,
@@ -352,6 +367,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.pendingSend = undefined
     state.stepEnded = false
     stopPlaceholderTick(state)
+    stopWarmTimer(state)
     // NOTE: do NOT clear state.chat — it is session-level chat coordinates,
     // not per-step data. Clearing it prevents step 2+ from sending cards
     // when the step has only tool calls (no text/reasoning), causing tool
@@ -543,6 +559,47 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       console.log(`dsh-feishu: [img] hydration failed for session ${sessionId}: ${reason}`)
       return card
     })
+  }
+
+  /**
+   * Start resolving the media references of the text being streamed, long
+   * before the card that will carry them is written.
+   *
+   * Uploading a clip takes seconds (and an ffmpeg pass can precede it), and the
+   * write that carries the answer is the one thing the operator is waiting for,
+   * so the work is moved into the model's own decode time. The warmer runs the
+   * SAME pipeline as the card write — same mode, workspace scope, byte caps and
+   * element budget — so nothing can be inlined here that the card would not have
+   * inlined anyway; it only arrives earlier, and the shared cache plus the
+   * in-flight map means the later write either finds a key or awaits the very
+   * same upload instead of starting a second one.
+   *
+   * Deliberately debounced and fire-and-forget: a card write never waits on this,
+   * and a step whose text is cleared drops its pending warm-up with it.
+   */
+  const warmStepMedia = (state: SessionStepState): void => {
+    if (warmImages === undefined) return
+    // Cheap gate: only `[](...)` destinations are ever resolved, so text without
+    // one never needs a card built (this runs on every token delta).
+    if (!state.text.includes('](')) return
+    if (state.warmTimer !== undefined) clearTimeout(state.warmTimer)
+    state.warmTimer = setTimeout(() => {
+      state.warmTimer = undefined
+      const text = state.text.trim()
+      if (text === '') return
+      // A throwaway one-element card: the warmer only reads markdown content, and
+      // the step card renders just its first TEXT_STEP_CAP characters while the
+      // overflow cards carry the rest — warming the whole text covers both.
+      const card = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: text }] } }
+      warmImages(card, { sessionId: state.sessionId })
+    }, MEDIA_WARM_DEBOUNCE_MS)
+  }
+
+  /** Drop a step's pending media warm-up (its text is gone). */
+  const stopWarmTimer = (state: SessionStepState): void => {
+    if (state.warmTimer === undefined) return
+    clearTimeout(state.warmTimer)
+    state.warmTimer = undefined
   }
 
   /**
@@ -1025,6 +1082,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             state.reasoningEndTime = event.time ?? Date.now()
           } else if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
             state.text += chunk.text
+            // Start resolving any media the sentence references now, so the card
+            // that carries the answer does not pay for the upload (pitfall 44).
+            warmStepMedia(state)
             // Record first token time for text (if no reasoning came first).
             if (state.firstTokenTime === 0) {
               state.firstTokenTime = event.time ?? Date.now()
@@ -1059,6 +1119,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
                 state.text += chunk.text
               }
             }
+            // This rebuild is the only place older DSH versions give us the
+            // text, so the warm-up has to be started from here too.
+            warmStepMedia(state)
           } catch (streamError: unknown) {
             console.log(`dsh-feishu: [message] expandAssistantStream failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`)
           }
@@ -1370,9 +1433,18 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           if (lastStepSend !== undefined) await lastStepSend
           // Send overflow text as follow-up "continued" cards so the full
           // reply is delivered without silent truncation.
+          //
+          // These go through the same media hydrator as every other card: they
+          // used to be handed to the raw channel, so a clip referenced past
+          // TEXT_STEP_CAP never rendered (found 2026-09-24). They are all
+          // resolved FIRST and sent in order afterwards: hydrating them one at a
+          // time would let N cards pay N budgets, while in parallel the shared
+          // cache bounds the whole batch by one budget per card at most.
           if (overflowChunks.length > 0 && overflowChat !== undefined && overflowOpts !== undefined) {
-            for (let i = 0; i < overflowChunks.length; i++) {
-              await channel.send(overflowChat.chatId, { card: renderOverflowCard(overflowChunks[i]!, i + 1, overflowChunks.length, overflowTps) }, overflowOpts)
+            const overflowCards = await Promise.all(overflowChunks.map((chunk, i) =>
+              prepareCard(renderOverflowCard(chunk, i + 1, overflowChunks.length, overflowTps), sessionId)))
+            for (const card of overflowCards) {
+              await channel.send(overflowChat.chatId, { card }, overflowOpts)
             }
           }
           const entry = flushPromises.get(sessionId)
@@ -1470,6 +1542,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       for (const state of sessionStates.values()) {
         if (state.pendingSend !== undefined) clearTimeout(state.pendingSend.timer)
         stopPlaceholderTick(state)
+        stopWarmTimer(state)
       }
       sessionStates.clear()
       turnStatsMap.clear()
@@ -1506,6 +1579,18 @@ const DELIVERABLE_CAP = 16
  * the step starts, and updated when the tool finishes.
  */
 const STEP_CARD_DEBOUNCE_MS = 150
+
+/**
+ * Coalescing window (ms) for the media warm-up that runs while the model is
+ * still streaming its text.
+ *
+ * Deliberately much longer than the card debounce: the warmer is not on any
+ * critical path, it only has to start the uploads well before the card that
+ * needs their keys is written, so a couple of rebuilds per sentence is enough
+ * and a per-token upload storm is what this avoids. It also coalesces the
+ * partial references of a token stream into one hydrate per (short) pause.
+ */
+const MEDIA_WARM_DEBOUNCE_MS = 400
 
 /**
  * How long a failed card write must stay unfixed before it is reported as a
