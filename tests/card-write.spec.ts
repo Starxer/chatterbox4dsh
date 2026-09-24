@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCardWriter, withCardSafety } from '../src/card-write.ts'
+import { createCardInstanceWithRetry, createCardWriter, withCardSafety } from '../src/card-write.ts'
 
 const imageKey = 'img_v3_0215q_0a59b5e6-4758-41de-95a5-a1b2c3d4'
 const warnings: string[] = []
@@ -145,5 +145,37 @@ describe('withCardSafety', () => {
     expect(wrapped.rawClient).toBe(base.rawClient)
     expect(wrapped.aFlag).toBe(42)
     await expect(wrapped.updateCard()).resolves.toBeUndefined()
+  })
+})
+
+describe('createCardInstanceWithRetry', () => {
+  it('retries a transport failure once and returns the instance', async () => {
+    let attempt = 0
+    const create = vi.fn(async () => {
+      attempt += 1
+      if (attempt === 1) throw new Error('Client network socket disconnected before secure TLS connection was established')
+      return 'card_1'
+    })
+    const onRetry = vi.fn()
+    await expect(createCardInstanceWithRetry(create, { retryMs: 0, onRetry })).resolves.toBe('card_1')
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(onRetry).toHaveBeenCalledWith('Client network socket disconnected before secure TLS connection was established')
+  })
+
+  it('does not retry content Feishu refused, and never swallows the failure', async () => {
+    // The card writer already re-attempted this with the image references
+    // stripped; a second create would ask for the same refusal.
+    const rejected = new Error('dsh-feishu: cardkit.card.create rejected the content: code=200570 msg=bad image key')
+    const create = vi.fn(async () => { throw rejected })
+    const onRetry = vi.fn()
+    await expect(createCardInstanceWithRetry(create, { retryMs: 0, onRetry })).rejects.toThrow('200570')
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  it('propagates the second transport failure instead of retrying forever', async () => {
+    const create = vi.fn(async () => { throw new Error('ECONNRESET') })
+    await expect(createCardInstanceWithRetry(create, { retryMs: 0 })).rejects.toThrow('ECONNRESET')
+    expect(create).toHaveBeenCalledTimes(2)
   })
 })

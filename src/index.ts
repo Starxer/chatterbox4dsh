@@ -37,7 +37,7 @@ import { resolveLocale, translationsFor, type LocaleId, type Translations } from
 import { dispatchCardAction } from './card-dispatch.ts'
 import { createCardSendBarrier } from './card-send-barrier.ts'
 import { isCardContentRejection } from './card-markdown.ts'
-import { createCardWriter, withCardSafety } from './card-write.ts'
+import { createCardInstanceWithRetry, createCardWriter, withCardSafety } from './card-write.ts'
 import { startCardImages } from './card-images.ts'
 import { createMediaUploader } from './media-upload.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
@@ -346,6 +346,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     uploadAudio: (absolutePath, format) => mediaUploader.audio(absolutePath, format),
     logger: ctx.logger('dsh-feishu'),
   })
+  /**
+   * The unbarriered half of {@link cardChannel.send}: the HTTP call itself,
+   * against the current channel (which is already card-safe — see
+   * `withCardSafety` at the factory).
+   */
+  const rawChannelSend = (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
+    const ch = channelHolder.current
+    if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+    return ch.send(to, input, opts) as Promise<{ messageId?: string }>
+  }
   const cardChannel = {
     // Every method below is bounded. The SDK's HTTP client has no request
     // timeout, so without this a single unanswered request leaves the promise
@@ -353,13 +363,29 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // step-card chain above all — waits forever too (key pitfall 29).
     send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
       // The bound covers the barrier plus the HTTP call it precedes.
-      return withTimeout(cardBarrier.run(to, pendingCardFlush, async () => {
-        const ch = channelHolder.current
-        if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
-        // `ch` is already card-safe (see `withCardSafety` at the factory).
-        return ch.send(to, input, opts) as Promise<{ messageId?: string }>
-      }), 'send card or text', CARD_SEND_TIMEOUT_MS)
+      return withTimeout(cardBarrier.run(to, pendingCardFlush, () => rawChannelSend(to, input, opts)), 'send card or text', CARD_SEND_TIMEOUT_MS)
     },
+    /**
+     * Post a step card WITHOUT the pre-send flush — the send the streaming
+     * module uses for the step card's own message when no CardKit reference is
+     * available.
+     *
+     * The barrier's flush exists to put a debounced step card in front of
+     * whatever ANOTHER module is about to post, and it ends by awaiting this
+     * chat's step-card send chain. When the card being posted IS that step
+     * card, the chain holds the very promise this send is inside, so waiting on
+     * it is a self-deadlock that only the barrier timeout ends (60s). Observed
+     * live 2026-09-24 19:30: the CardKit create dropped its socket, the
+     * fallback send wedged for exactly 60.0s, seven updates scheduled in
+     * between were released in one burst, Feishu refused the burst with `230020`
+     * (per-message edit frequency), and the card kept rendering "🧠 深度思考中"
+     * while the Turn Complete card had already been posted — the write carrying
+     * the answer never landed. Ordering between step cards is unaffected: the
+     * caller awaited the previous card's chain before calling this (key
+     * pitfall 45).
+     */
+    sendStepCard: (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> =>
+      withTimeout(rawChannelSend(to, input, opts), 'send step card', OUTBOUND_TIMEOUT_MS),
     /**
      * Register the streaming module's step-card flush. Called once at boot;
      * absent in tests and deployments that do not run the streaming module.
@@ -379,11 +405,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
      * even though it used card instances). Cards WITHOUT buttons (step cards)
      * are unaffected and may be updated repeatedly. Interactive cards must
      * post a NEW card per step instead; see `feishu-onboarding.ts` `sendCard`.
+     *
+     * A TRANSPORT failure (a dropped socket) is retried once — see
+     * `createCardInstanceWithRetry`; content rejections are not.
      */
-    createCardInstance: (card: object): Promise<string> => {
+    createCardInstance: async (card: object): Promise<string> => {
       const ch = channelHolder.current
-      if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return cardWriter.write(card, payload => withTimeout(ch.rawClient.cardkit.v1.card.create({
+      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+      return createCardInstanceWithRetry(() => cardWriter.write(card, payload => withTimeout(ch.rawClient.cardkit.v1.card.create({
         data: { type: 'card_json', data: JSON.stringify(payload) },
       }).then((r: any) => {
         const cardId = r.data?.card_id as string | undefined
@@ -402,7 +431,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           throw new Error('dsh-feishu: cardkit.card.create returned no card_id')
         }
         return cardId
-      }), 'create card instance'))
+      }), 'create card instance')), {
+        onRetry: reason => console.log(`dsh-feishu: [send] card instance create failed (${reason}); retrying once`),
+      })
     },
     /**
      * Send a message that references a card instance by `card_id` instead of

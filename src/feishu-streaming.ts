@@ -61,6 +61,15 @@ export interface FeishuStreamingChannel {
    * non-web deployments keep the plain send path.
    */
   registerPendingCardFlush?(flush: (chatId: string) => Promise<void>): void
+  /**
+   * Post a step card WITHOUT the pre-send flush registered above — the send
+   * used for the step card's own message when no CardKit reference is
+   * available. That flush ends by awaiting this chat's step-card send chain,
+   * which holds the very promise this send is inside, so going through
+   * {@link send} would make the card wait for itself (2026-09-24). Optional so
+   * tests and non-web deployments keep the plain send path.
+   */
+  sendStepCard?(to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
 }
 
 /**
@@ -527,8 +536,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * is handed to Feishu, not after Feishu confirms it. That is deliberate: the
    * confirmation could arrive arbitrarily late (or never), and channel.ts reads
    * the flag right after `flushed()`. The correction for a card that never
-   * made it is {@link ../../channel.ts}'s pair of `turnTextDelivered` +
-   * `clearIntermediateSent`, applied at `flushed()` — see key pitfall 29.
+   * made it is {@link ../../channel.ts}'s pair of the delivered-text record +
+   * `clearIntermediateSent`, applied at `flushed()` — see key pitfalls 29 and 45.
    */
   const noteStepCardText = (sessionId: string, state: SessionStepState): void => {
     if (state.text.trim() === '') return
@@ -536,14 +545,53 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /**
+   * Order of the writes that carried assistant text this turn, per session.
+   *
+   * Content order, not completion order: every card is stamped when it is BUILT
+   * (a card built later renders newer text), and a stamp is only recorded once
+   * that card's write actually ran. `flushed()` compares the newest stamp that
+   * landed with the newest one that was refused — if a refused stamp is ahead,
+   * the chat is rendering text older than the turn's answer and channel.ts must
+   * post the reply itself.
+   *
+   * A plain "some text landed" boolean is not enough: a turn whose first step
+   * landed and whose LAST step was refused used to look delivered, so
+   * channel.ts sent the footer alone and the final answer was silently gone
+   * while its card kept rendering "🧠 深度思考中" (2026-09-24, key pitfall 45).
+   *
+   * Turn-scoped on purpose: `resetStep` runs on every step, so a field on the
+   * session state would be wiped mid-turn.
+   */
+  const turnTextOrder = new Map<string, { next: number; delivered: number; failed: number }>()
+
+  /** Stamp a card that carries assistant text, in content order. */
+  const stampTextCard = (sessionId: string): number => {
+    const order = turnTextOrder.get(sessionId) ?? { next: 0, delivered: 0, failed: 0 }
+    order.next += 1
+    turnTextOrder.set(sessionId, order)
+    return order.next
+  }
+
+  /**
    * Record that text from this turn genuinely reached the chat.
    *
-   * `flushed()` uses it to decide whether the optimistic mark from
-   * {@link noteStepCardText} may stand. Set on a CONFIRMED send (the message id
-   * came back) or a confirmed update — never on the optimistic path.
+   * Set on a CONFIRMED send (the message id came back) or a confirmed update —
+   * never on the optimistic path (see {@link noteStepCardText}).
    */
-  const noteTextDelivered = (sessionId: string): void => {
-    turnTextDelivered.set(sessionId, true)
+  const noteTextDelivered = (sessionId: string, stamp: number): void => {
+    const order = turnTextOrder.get(sessionId)
+    if (order === undefined || stamp === 0) return
+    order.delivered = Math.max(order.delivered, stamp)
+  }
+
+  /**
+   * Record that a card carrying text was REFUSED, so what the chat renders is
+   * older than that card. Only a later confirmed write can outrank it.
+   */
+  const noteTextWriteFailed = (sessionId: string, stamp: number): void => {
+    const order = turnTextOrder.get(sessionId)
+    if (order === undefined || stamp === 0) return
+    order.failed = Math.max(order.failed, stamp)
   }
 
   /**
@@ -615,6 +663,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Captured now: `state.text` is cleared by resetStep before the send may
     // resolve, and the confirmation below must judge THIS card's content.
     const cardHasText = state.text.trim() !== ''
+    const textStamp = cardHasText ? stampTextCard(sessionId) : 0
     const opts = chat.threadId !== undefined
       ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
       : {}
@@ -649,8 +698,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           return undefined
         })
       }
-      return prepared.then(payload => channel.send(chat.chatId, { card: payload }, opts)).then((r) => {
-        console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via send`)
+      // The fallback send is the step card's OWN message, so it must not run
+      // the channel's pre-send flush: that flush awaits this chat's step-card
+      // send chain, which holds the promise this send is inside. Waiting on it
+      // deadlocks until the channel's barrier timeout (60s) — the card lands a
+      // minute late, every update scheduled in between is released in one
+      // burst, and Feishu's per-message edit rate limit (`230020`) then refuses
+      // the write carrying the answer, leaving the card on "深度思考中" after
+      // the Turn Complete card was already posted (2026-09-24, key pitfall 45).
+      // Ordering against the PREVIOUS step card is unaffected: `previousSettled`
+      // below already awaited it before this send started.
+      const post = channel.sendStepCard ?? channel.send
+      return prepared.then(payload => post(chat.chatId, { card: payload }, opts)).then((r) => {
+        console.log(`dsh-feishu: [send] message=${r.messageId ?? '-'} via ${channel.sendStepCard === undefined ? 'send' : 'own step card send'}`)
         return r.messageId
       }).catch((error: unknown) => {
         console.log(`dsh-feishu: [send] step card send failed: ${describeError(error)}`)
@@ -681,7 +741,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // `flushed()` awaits the same promise, so the flag is always set before
     // channel.ts reads it.
     void messageId.then((id) => {
-      if (id !== undefined && cardHasText) noteTextDelivered(sessionId)
+      if (id !== undefined && cardHasText) noteTextDelivered(sessionId, textStamp)
     }).catch(() => undefined)
     lastCardSendByChat.set(chat.chatId, messageId.catch(() => undefined))
     state.stepCardRef = {
@@ -773,14 +833,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   const pendingUpdates = new Map<StepCardRef, {
     timer: ReturnType<typeof setTimeout>
-    card: object
     /**
-     * Whether the card being written carried assistant text. Captured at
-     * schedule time because `state.text` may be cleared by `resetStep` before
-     * the update lands, and a confirmed update that carries text is what
-     * proves the answer reached the chat.
+     * The render to write, captured at schedule time: `state.text` may be
+     * cleared by `resetStep` before the timer fires, and a confirmed update
+     * that carries text is what proves the answer reached the chat.
      */
-    hasText: boolean
+    write: PendingWrite
   }>()
 
   /** Flush promises: resolved by turn/end after the final card update. */
@@ -797,8 +855,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   /**
    * Step-card UPDATE promises still in flight, per session.
    *
-   * `flushed()` reads `turnTextDelivered` to decide whether the turn's answer is
-   * already on screen. That read is only meaningful once every write that could
+   * `flushed()` reads the delivered-text record to decide whether the turn's
+   * answer is already on screen. That read is only meaningful once every write that could
    * carry the text has finished: a write that is still in flight would be judged
    * as "never reached Feishu", the optimistic mark would be withdrawn, and
    * channel.ts would post a full reply card next to the step card that is about
@@ -838,16 +896,6 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     })
     return promise
   }
-
-  /**
-   * Whether this turn's assistant text is CONFIRMED to be in the chat, per
-   * session. Reset on `turn/start`, set by {@link noteTextDelivered}, read and
-   * cleared by `flushed()`.
-   *
-   * Turn-scoped on purpose: `resetStep` runs on every step, so a field on the
-   * session state would be wiped mid-turn.
-   */
-  const turnTextDelivered = new Map<string, boolean>()
 
   /** Turn stats per session, stored independently of flush promise timing. */
   const turnStatsMap = new Map<string, TurnStats>()
@@ -992,16 +1040,90 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /**
-   * Apply one scheduled update and, when it lands carrying text, record that
-   * the turn's answer really is in the chat.
+   * One card render waiting to be written: what to write, plus the turn-scoped
+   * stamp of the text it carries (see {@link turnTextOrder}).
    */
-  const applyPendingUpdate = (ref: StepCardRef, card: object, hasText: boolean): Promise<void> =>
-    executeCardUpdate(ref, card).then((landed) => {
-      if (landed) noteWriteLanded(ref)
-      if (landed && hasText) noteTextDelivered(ref.sessionId)
+  interface PendingWrite {
+    card: object
+    hasText: boolean
+    /** {@link stampTextCard} of this card; 0 when it carries no text. */
+    stamp: number
+  }
+
+  /**
+   * Per-card write slots: at most ONE write per card may be in flight, and a
+   * render that arrives while it runs only remembers the LATEST card.
+   *
+   * Feishu answers a burst of edits to one message with `230020 This operation
+   * triggers the frequency limit`. Serializing alone would just move the burst
+   * one step back, so superseded renders are DROPPED instead of replayed: their
+   * content is older than the card replacing them, and the one the operator is
+   * waiting for — the render carrying the finished answer — is the last one.
+   * That is what makes the burst harmless (2026-09-24, key pitfall 45).
+   */
+  const writeSlots = new Map<StepCardRef, {
+    running: boolean
+    /** The render waiting for the slot; only the newest is kept. */
+    queued: { write: PendingWrite; resolve: (landed: boolean) => void } | undefined
+  }>()
+
+  /**
+   * Write one card render and, when it lands carrying text, record that the
+   * turn's answer really is in the chat.
+   *
+   * Resolves `true` only when Feishu confirmed THIS render; a render dropped as
+   * superseded resolves `false` because its content never reached the card.
+   */
+  const applyPendingUpdate = (ref: StepCardRef, write: PendingWrite): Promise<boolean> =>
+    executeCardUpdate(ref, write.card).then((landed) => {
+      if (landed) {
+        noteWriteLanded(ref)
+        if (write.hasText) noteTextDelivered(ref.sessionId, write.stamp)
+      } else if (write.hasText) {
+        // The card keeps rendering older content, so the turn's answer is NOT
+        // fully on screen even if an earlier write landed (key pitfall 45).
+        noteTextWriteFailed(ref.sessionId, write.stamp)
+      }
+      return landed
     }).catch((error: unknown) => {
       console.log(`dsh-feishu: [update] timer callback error: ${describeError(error)}`)
+      return false
     })
+
+  /** {@link applyPendingUpdate}, serialized per card with latest-wins coalescing. */
+  const scheduleCardWrite = (ref: StepCardRef, write: PendingWrite): Promise<boolean> => {
+    let slot = writeSlots.get(ref)
+    if (slot === undefined) {
+      slot = { running: false, queued: undefined }
+      writeSlots.set(ref, slot)
+    }
+    const current = slot
+    if (current.running) {
+      // Superseded before it was ever attempted: drop it (nothing is lost, its
+      // content is older) and tell its caller the truth.
+      current.queued?.resolve(false)
+      return new Promise<boolean>((resolve) => { current.queued = { write, resolve } })
+    }
+    current.running = true
+    return (async (): Promise<boolean> => {
+      let item: { write: PendingWrite; resolve?: (landed: boolean) => void } = { write }
+      let landed = false
+      try {
+        for (;;) {
+          landed = await applyPendingUpdate(ref, item.write)
+          item.resolve?.(landed)
+          const next = current.queued
+          if (next === undefined) break
+          current.queued = undefined
+          item = next
+        }
+      } finally {
+        current.running = false
+        if (current.queued === undefined) writeSlots.delete(ref)
+      }
+      return landed
+    })()
+  }
 
   /** Flush the pending debounce timer for a state, executing the updateCard immediately. */
   const flushPendingUpdate = (state: SessionStepState): Promise<void> => {
@@ -1012,7 +1134,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     clearTimeout(entry.timer)
     pendingUpdates.delete(ref)
     console.log('dsh-feishu: [update] flushing pending update for turn/end')
-    return trackUpdate(ref.sessionId, () => applyPendingUpdate(ref, entry.card, entry.hasText))
+    return trackUpdate(ref.sessionId, () => scheduleCardWrite(ref, entry.write).then(() => undefined))
   }
 
   /** Update the existing step card with current state (debounced). */
@@ -1031,17 +1153,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Captured now for the same reason as the card itself: the confirmation
     // must judge what THIS update carries, not whatever state holds later.
     const hasText = state.text.trim() !== ''
+    // Stamped with the card, i.e. in content order: this render may be replaced
+    // by a newer one before it is written, and only the newest content counts.
+    const write = { card, hasText, stamp: hasText ? stampTextCard(state.sessionId) : 0 }
     // Clear previous pending update for THIS card (a different card's pending
     // update must survive — see the map's comment).
     const existing = pendingUpdates.get(ref)
     if (existing !== undefined) clearTimeout(existing.timer)
     // Debounce: merge rapid updates into one
     pendingUpdates.set(ref, {
-      card,
-      hasText,
+      write,
       timer: setTimeout(() => {
         pendingUpdates.delete(ref)
-        void trackUpdate(ref.sessionId, () => applyPendingUpdate(ref, card, hasText))
+        void trackUpdate(ref.sessionId, () => scheduleCardWrite(ref, write).then(() => undefined))
       }, STEP_CARD_DEBOUNCE_MS),
     })
   }
@@ -1310,7 +1434,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         resetStep(state)
         lastStepSendPromises.delete(sessionId)
         // New turn, new delivery question.
-        turnTextDelivered.delete(sessionId)
+        turnTextOrder.delete(sessionId)
         // The trigger attribution belongs to one turn: re-decide it from this
         // turn's own first user message.
         state.sawTurnUserMessage = false
@@ -1493,9 +1617,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    *
    * Also the point where the optimistic "text is on screen" mark is either
    * allowed to stand or withdrawn: if no card carrying assistant text was
-   * CONFIRMED delivered this turn, the mark is cleared so channel.ts posts the
-   * answer itself. Without this, a card that Feishu never accepted silenced the
-   * whole reply (2026-09-21, key pitfall 29).
+   * CONFIRMED delivered this turn, or the NEWEST such card was refused, the
+   * mark is cleared so channel.ts posts the answer itself. Without this, a card
+   * that Feishu never accepted silenced the whole reply (2026-09-21, key
+   * pitfall 29), and a turn whose last step was refused ended with the footer
+   * alone while that step's card kept rendering "🧠 深度思考中" (2026-09-24,
+   * key pitfall 45).
    *
    * The wait is bounded as a last resort; running out of patience must not
    * become "no footer at all".
@@ -1510,7 +1637,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // Complete footer never overtakes the final step card in the chat.
         .then(() => lastSend)
         // Then for every write that is still in flight: their confirmations are
-        // what `turnTextDelivered` below reports, and a write delayed by media
+        // what the delivery record below reports, and a write delayed by media
         // hydration used to be read as "nothing reached the chat" (duplicate
         // reply card, 2026-09-24). Read the map HERE, not before the awaits, so
         // a write registered by the turn/end flush is included.
@@ -1523,10 +1650,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Read the delivery record only now: the confirmation for the final step
     // card is attached to the very promise awaited above, so it has run by the
     // time we get here.
-    const delivered = turnTextDelivered.get(sessionId) === true
-    turnTextDelivered.delete(sessionId)
+    const order = turnTextOrder.get(sessionId)
+    turnTextOrder.delete(sessionId)
+    const delivered = order !== undefined && order.delivered > 0 && order.failed <= order.delivered
     if (!delivered) {
-      // Nothing textual reached the chat: channel.ts must send the real reply.
+      // The turn's newest text never reached the chat: channel.ts must send the
+      // real reply.
       bridgeHolder.current?.clearIntermediateSent(sessionId)
     }
     return settled
@@ -1549,7 +1678,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       lastStepSendPromises.clear()
       inFlightUpdates.clear()
       lastCardSendByChat.clear()
-      turnTextDelivered.clear()
+      turnTextOrder.clear()
+      // Release a render still waiting for a slot: it will never be written,
+      // and its caller (a tracked update) must not stay pending.
+      for (const slot of writeSlots.values()) slot.queued?.resolve(false)
+      writeSlots.clear()
       for (const entry of flushPromises.values()) entry.resolve()
       flushPromises.clear()
     },

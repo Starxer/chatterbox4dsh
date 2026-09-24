@@ -41,6 +41,27 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 修复：最后一张步骤卡停在「深度思考中」——卡片发送自己等自己 60 秒（`src/feishu-streaming.ts` / `src/index.ts` / `src/card-write.ts`，2026-09-24）
+
+**现象**（使用者报告）：「刚才有个会话的最后卡片又卡在思考了，turn complete 卡片出来了以后那个卡片都没有最终更新」。journal 里这次留下了完整链条（19:30:27–19:31:28）：
+
+1. `[send] card instance create failed: Client network socket disconnected before secure TLS connection was established` —— CardKit 建卡掉线，走 `channel.send` 兜底；
+2. 之后 30 秒每 5 秒一条 `[update] no card instance, falling back to patch`（占位卡的计时 tick），全部悬在 `ref.messageId` 上；
+3. `pending card flush gave up: … step-card flush before send timed out after 60000ms` **紧跟** `[send] message=om_… via send` —— 卡片比它本该出现的时间晚了整整 **60.000s**（= `CARD_BARRIER_TIMEOUT_MS`）；随后 **7 次** `[update] patch` 在同一秒齐发，飞书回 `230020 This operation triggers the frequency limit, ext=Update the single messages too frequently`，载着这一版答案的那次写入被拒（400）；turn 随即结束，`[reply] a step card carried the text → footer only` —— 插件以为正文已上屏，于是只发了 footer，那张卡永远停在「🧠 深度思考中」。
+
+**根因（自锁死）**：`actuallySendStepCard` 在**发起 send 之前**就把这条 send 的 promise 登记进 `lastCardSendByChat`（这是"后一张卡必须等前一张卡的消息建好"的顺序保证），而 `cardChannel.send` 走 `cardBarrier.run(...)`，它的 flush 正是「flush 本聊天还没发的防抖卡 + `await lastCardSendByChat.get(chatId)`」。于是**步骤卡自己的兜底 send 在等自己**：只有「由 flush 内部触发的 send」（`flushPendingSend → actuallySendStepCard`）被屏障的 `flushing` 集合豁免，而由防抖定时器直接触发的那条路径不在其中 → 一直卡到 barrier 超时。首选的 `sendCardByReference` 不走屏障，所以这条路径平时看不见。
+
+**修法（三处，另加一处韧性）**：
+
+1. **步骤卡自己的 send 不再过屏障**：新增 `cardChannel.sendStepCard`（`index.ts`，只保留 HTTP 外层的有界超时），流式侧的兜底分支用 `channel.sendStepCard ?? channel.send`。这与首选的 `sendCardByReference` 同一档位；「与前一张卡的顺序」本来就由调用方的 `previousSettled` 保证（`resetStep` 会先 `flushPendingSend`，所以前一张卡一定已登记进链）。
+2. **一张卡同时只允许一次写入在飞，且只保留最新一张**：`writeSlots`（按 `StepCardRef`）。在飞时到达的渲染只记住最新那张，被顶掉的旧渲染直接以 `false` 结束——它的内容更旧，重放只会制造 `230020`。慢写入 + 5 秒 tick 因此不再堆积成突发。
+3. **送达判据从「有文本落地过」改成「最新一版文本落地了」**：`turnTextOrder`（`{next, delivered, failed}`）按**构建顺序**（内容新旧）盖戳，而不是完成顺序；被顶掉的写入不盖戳。`flushed()` 只在 `delivered > 0 && failed <= delivered` 时保留乐观标记，否则撤回 → `channel.ts` 照发回复卡。旧的布尔标记会把「第一步落地、最后一步被拒」判成"已送达"，于是最后一版答案静默消失。
+4. **建卡传输失败重试一次**：`createCardInstanceWithRetry`（`card-write.ts`）。内容类拒收不重试（card writer 已经剥图重试过）。一次掉线不再把这张卡**永久**降到 `patch` 路径——而 `patch` 正是有 `230020` 频率限制的那条路。
+
+**验证**：typecheck 0 error、**720 tests / 42 files** 全绿，产物已重建（`lib/index.js` 含 `sendStepCard`/`writeSlots`/`turnTextOrder`；`client/client.js` 逐字节未变）。新增 4 例回归（`tests/feishu-streaming.spec.ts`「the step card must not wait on the ordering barrier it belongs to」）+ 3 例重试（`tests/card-write.spec.ts`）。**反向验证**：三例在修前全红——真实 barrier 装配下 raw send **调用 0 次**（自锁死）、并发渲染产生 **4 次**写入而不是 1 次、被拒后 `clearIntermediateSent` **0 次**。
+
+**English**: the last step card of a turn could stay on "🧠 深度思考中" after the Turn Complete card had already been posted. The journal shows the whole chain: the CardKit instance create dropped its socket, the fallback send wedged for exactly 60.000s (`CARD_BARRIER_TIMEOUT_MS`) because it was waiting on the chat's own step-card send chain — which held the very promise that send was inside — then the seven updates scheduled in between were released in one burst, Feishu answered `230020` (per-message edit frequency) and the write carrying the answer was refused. Three changes: the step card's own send now goes through `cardChannel.sendStepCard`, which is deliberately not barrier-wrapped (ordering against the previous card is already guaranteed by the caller's `previousSettled`, and the preferred `sendCardByReference` path never used the barrier either); card writes are serialized per card with latest-wins coalescing (`writeSlots`), so a slow write plus the 5s placeholder tick can no longer pile up into a burst; and the delivery record became `turnTextOrder`, a content-order stamp of the newest text-carrying write that landed versus the newest one refused, because a plain "some text landed" boolean judged "first step landed, last step refused" as delivered and silently lost the final answer. A dropped socket during the instance create is also retried once (`createCardInstanceWithRetry`) instead of permanently downgrading that card to the rate-limited patch path. All 720 tests pass, and each of the three regressions fails before the fix.
+
 ### 新增：三个媒体**大小**上限分开设置；修 `feishu_send_file` 的图片兜底（`src/config.ts` / `src/card-images.ts` / `src/feishu-send-file.ts` / `src/client/`，2026-09-24）
 
 **动机**（使用者的要求）：「增加设置自动内联的媒体大小，默认 15mb。三个媒体分开设置，注意输入范围检查」，以及「顺便把刚才那个发图片的修了」（TODO O15）。

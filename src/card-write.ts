@@ -22,6 +22,13 @@ import { isCardContentRejection, neutralizeCard } from './card-markdown.ts'
 /** Default number of card instances whose bookkeeping is kept. */
 export const CARD_WRITE_TRACKED = 512
 
+/**
+ * How long to wait before retrying a CardKit instance create that failed on
+ * transport (a dropped socket). Long enough for a fresh TLS handshake, short
+ * enough that the step card is not visibly late.
+ */
+export const CARD_INSTANCE_RETRY_MS = 500
+
 export interface CardWriteDeps {
   /** Only `warn` is used — the retry itself is reported on stdout. */
   logger: { warn(message: string): unknown }
@@ -106,6 +113,37 @@ export interface CardSendChannel {
     input: { card: object } | { text: string },
     opts?: { replyInThread?: boolean; replyTo?: string },
   ): Promise<{ messageId?: string }>
+}
+
+/**
+ * Retry a CardKit instance create that failed on TRANSPORT, once.
+ *
+ * The step card prefers a card instance because `im.v1.message.patch` is
+ * subject to Feishu's per-message edit frequency limit (`230020`). Falling back
+ * to send + patch is therefore a permanent downgrade for that card, and a
+ * single dropped socket is not a reason for it — observed twice on 2026-09-24,
+ * and the second one cost a whole answer (key pitfall 45).
+ *
+ * Content rejections are NOT retried here: the card writer already re-attempts
+ * those with every image reference stripped, so a second create would ask for
+ * the same refusal.
+ *
+ * @param create - one attempt.
+ * @param deps - retry delay and a reporter for the first failure.
+ * @returns whatever the successful attempt returned.
+ */
+export async function createCardInstanceWithRetry<T>(
+  create: () => Promise<T>,
+  deps: { retryMs?: number; onRetry?: (reason: string) => void } = {},
+): Promise<T> {
+  try {
+    return await create()
+  } catch (error: unknown) {
+    if (isCardContentRejection(error)) throw error
+    deps.onRetry?.(error instanceof Error ? error.message : String(error))
+    await new Promise(resolve => setTimeout(resolve, deps.retryMs ?? CARD_INSTANCE_RETRY_MS))
+    return create()
+  }
 }
 
 /**

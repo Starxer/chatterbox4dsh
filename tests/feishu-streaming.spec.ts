@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createCardSendBarrier } from '../src/card-send-barrier.ts'
 import { deriveToolSummary, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
 import { translationsFor } from '../src/i18n.ts'
 
@@ -322,6 +323,7 @@ interface StepChannel {
   sendCardByReference?: ReturnType<typeof vi.fn>
   updateCardInstance?: ReturnType<typeof vi.fn>
   registerPendingCardFlush?: ReturnType<typeof vi.fn>
+  sendStepCard?: ReturnType<typeof vi.fn>
 }
 
 function stepHarness(
@@ -1410,5 +1412,163 @@ describe('card media hydration hooks', () => {
     expect(overflow.length).toBeGreaterThan(0)
     expect(JSON.stringify(overflow)).toContain('HYDRATED')
     streaming.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The step card's own send and the chat's ordering barrier (2026-09-24)
+// ---------------------------------------------------------------------------
+
+describe('the step card must not wait on the ordering barrier it belongs to', () => {
+  /**
+   * The real composition (see `index.ts`): every `channel.send` goes through
+   * `createCardSendBarrier`, and the barrier's flush is the streaming module's
+   * own "flush this chat's debounced step card, then await its send chain".
+   *
+   * That makes the step card's OWN send the one case the flush must not wait
+   * for: the chat chain holds the very promise this send is inside, so awaiting
+   * it is a self-deadlock that only the barrier timeout ends. Observed live on
+   * 2026-09-24 19:30: the CardKit instance create dropped its socket, the
+   * fallback send wedged for the full 60s, every update scheduled in between
+   * was released in one burst, Feishu's per-message edit rate limit (230020)
+   * killed the write carrying the answer, and the card kept rendering
+   * "🧠 深度思考中" after the Turn Complete card had already been posted.
+   */
+  const barrieredChannel = (rawSend: ReturnType<typeof vi.fn>): {
+    channel: StepChannel
+    gaveUp: string[]
+  } => {
+    let pendingFlush: ((chatId: string) => Promise<void>) | undefined
+    const gaveUp: string[] = []
+    const barrier = createCardSendBarrier({
+      timeoutMs: 60_000,
+      onTimeout: reason => gaveUp.push(reason),
+    })
+    const channel: StepChannel = {
+      // The raw half: producing the message id is what the chat waits for.
+      send: vi.fn((to: string, input: unknown, opts?: unknown) =>
+        barrier.run(to, pendingFlush, () => rawSend(to, input, opts))),
+      // The step card's own send: the same HTTP call, without the flush.
+      sendStepCard: vi.fn((to: string, input: unknown, opts?: unknown) => rawSend(to, input, opts)),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => {
+        throw new Error('Client network socket disconnected before secure TLS connection was established')
+      }),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+      registerPendingCardFlush: vi.fn((flush: (chatId: string) => Promise<void>) => { pendingFlush = flush }),
+    }
+    return { channel, gaveUp }
+  }
+
+  it('posts the card at once when CardKit is unavailable, instead of timing out on its own flush', async () => {
+    vi.useFakeTimers()
+    try {
+      const rawSend = vi.fn(async () => ({ messageId: 'm-plain' }))
+      const { channel, gaveUp } = barrieredChannel(rawSend)
+      const h = stepHarness(channel)
+      h.emit('step/start', { turn: 1, step: 1 })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(rawSend).toHaveBeenCalledOnce()
+      expect(gaveUp).toEqual([])
+      h.streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps one write per card in flight and supersedes the rest, so updates cannot burst', async () => {
+    vi.useFakeTimers()
+    try {
+      const written: string[] = []
+      let release: () => void = () => undefined
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const channel: StepChannel = {
+        send: vi.fn(async () => ({ messageId: 'm-plain' })),
+        updateCard: vi.fn(async () => undefined),
+        createCardInstance: vi.fn(async () => 'card-1'),
+        sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+        updateCardInstance: vi.fn(async (_cardId: string, card: any) => {
+          written.push(mdOf(card))
+          // The first write is as slow as a hydrated card (a video upload).
+          if (written.length === 1) await gate
+        }),
+      }
+      const h = stepHarness(channel)
+      h.emit('step/start', { turn: 1, step: 1 })
+      await vi.advanceTimersByTimeAsync(200)
+      h.emit('tool/call', { callId: 'c1', name: 'first-tool', arguments: '{}' })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(written).toHaveLength(1)
+
+      // Three more renders while that write is stuck: with no serialization
+      // each one becomes its own call, and Feishu answers 230020 for the burst.
+      h.emit('tool/call', { callId: 'c2', name: 'second-tool', arguments: '{}' })
+      await vi.advanceTimersByTimeAsync(200)
+      h.emit('tool/call', { callId: 'c3', name: 'third-tool', arguments: '{}' })
+      await vi.advanceTimersByTimeAsync(200)
+      h.emit('tool/call', { callId: 'c4', name: 'fourth-tool', arguments: '{}' })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(written).toHaveLength(1)
+
+      release()
+      await vi.advanceTimersByTimeAsync(50)
+      // Only the newest card was worth writing; the three superseded ones were
+      // dropped instead of being replayed into a rate limit.
+      expect(written).toHaveLength(2)
+      expect(written.at(-1)).toContain('fourth-tool')
+      h.streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /**
+   * Two steps of one turn: step 1's text lands on its card, step 2's text is
+   * only ever carried by an update — which is the write the operator is waiting
+   * for. Refusing THAT write while step 1's text already landed is the case
+   * that used to end the turn with "a step card carried the text → footer
+   * only": the mark stood, no reply card was posted, and step 2's answer was
+   * silently gone with a card left on "🧠 深度思考中".
+   */
+  const twoStepTurn = async (failSecondStep: boolean) => {
+    const channel: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async (_messageId: string, card: any) => {
+        if (failSecondStep && mdOf(card).includes('第二段')) {
+          // A transport answer, not a content rejection: the card writer does
+          // not retry it (see `isCardContentRejection`).
+          throw new Error('Request failed with status code 400')
+        }
+      }),
+    }
+    const h = stepHarness(channel)
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '第一段' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(250)
+    h.emit('step/start', { turn: 1, step: 2 })
+    // The card is posted bare first (a step opens its card before any text),
+    // so step 2's text can only reach the screen through an update.
+    await tick(250)
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '第二段' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(250)
+    expect(h.bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+    h.emit('turn/end')
+    await h.streaming.flushed('s-1')
+    h.streaming.stop()
+    return h
+  }
+
+  it('withdraws the delivery note when the newest text write failed', async () => {
+    const h = await twoStepTurn(true)
+    expect(h.bridge.clearIntermediateSent).toHaveBeenCalledWith('s-1')
+  })
+
+  it('keeps the delivery note when the newest text write landed', async () => {
+    const h = await twoStepTurn(false)
+    expect(h.bridge.clearIntermediateSent).not.toHaveBeenCalled()
   })
 })
