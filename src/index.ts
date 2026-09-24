@@ -15,7 +15,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
-import { ConfigSchema, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
+import { CARD_MEDIA_LIMIT, ConfigSchema, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -324,8 +324,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   const cardImages = startCardImages({
     resolveWorkspace: sessionId => bridgeHolder.current?.workspaceOf(sessionId) ?? Promise.resolve(undefined),
     // Live read: a settings write changes this without a restart (every field
-    // is `.volatile()`), including the "never upload" mode.
+    // is `.volatile()`), including the "never upload" mode and the per-card cap.
     mode: () => currentSettings().cardImages,
+    mediaLimit: () => currentSettings().cardMediaLimit ?? CARD_MEDIA_LIMIT.default,
     upload: async (absolutePath: string) => {
       const key = await mediaUploader.image(absolutePath)
       if (key === undefined) throw new Error('dsh-feishu: image upload returned no image_key')

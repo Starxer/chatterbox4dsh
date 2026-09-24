@@ -187,6 +187,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
     showToolResults: true        # 卡片显示：工具结果 · card display: tool results
     locale: auto                 # auto / zh / en
     cardImages: workspace        # text / workspace / any —— 正文媒体（图片/视频/音频）怎么处理 · how card-text media is handled
+    cardMediaLimit: 12           # 1–30 —— 单卡最多内联几个媒体 · most media one card may inline
 ```
 
 **中文**
@@ -210,6 +211,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `showToolResults` | `true` | 是否展示工具结果预览（需 `showToolCalls`） |
 | `locale` | `auto` | 插件语言：`auto`（跟随 Harness）/ `zh` / `en` |
 | `cardImages` | `workspace` | 正文里的**媒体**（图片 / 视频 / 音频）怎么处理：`text` 永不上传（只留路径文字）/ `workspace` 只上传会话工作区内、`realpath` 后仍在区内的媒体并内联显示 / `any` 工作区外的可读媒体路径也上传。键名保留 `cardImages`（改名会丢已保存的值），含义已扩到全部媒体。无论哪档，卡片都不会因媒体语法被飞书拒收 |
+| `cardMediaLimit` | `12` | 一张卡里最多内联几个媒体：**图片**算一处、**视频与音频**合起来算一处（各按这个数），1–30。超出的引用退回可读路径文字。飞书本身的边界高得多（一卡 200 个元素/组件，带封面的视频一个占 3 个名额 ⇒ 约 66 个），这个数字只是为了让消息别太长 |
 
 **English**
 
@@ -232,6 +234,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `showToolResults` | `true` | Show each tool call's result preview (requires `showToolCalls`) |
 | `locale` | `auto` | Plugin language: `auto` (follow Harness) / `zh` / `en` |
 | `cardImages` | `workspace` | How **media** (image / video / audio) referenced in card text is handled: `text` never uploads (the path stays text) / `workspace` uploads and inlines media inside the session workspace only / `any` also uploads readable media paths outside it. The key keeps its historical name so saved values survive; it now covers every media kind. Whichever mode is set, a card is never rejected over media syntax |
+| `cardMediaLimit` | `12` | How many media one card may inline, counted per group — **images** on the one hand, **video and audio** together on the other, each using this number, 1-30. References past it stay readable paths. Feishu's own ceiling is far higher (200 elements/components per card; a video with a cover spends three, so about 66 videos); this number only keeps a message readable |
 
 ---
 

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { collectImageTargets, startCardImages, type CardImageDeps } from '../src/card-images.ts'
+import { CARD_MEDIA_LIMIT } from '../src/config.ts'
 import { mp4Bytes, oggBytes } from './stubs/media-bytes.ts'
 
 const IMAGE_KEY = 'img_v3_0215q_0a59b5e6-4758-41de-95a5-a1b2c3d4'
@@ -440,6 +441,32 @@ describe('card media beyond images', () => {
     expect(uploaded).toHaveLength(2)
   })
 
+  it('reads the per-card cap live, so a settings write applies to the next card', async () => {
+    for (const name of ['b.mp4', 'c.mp4']) await writeFile(join(workspace, 'runs', name), mp4Bytes())
+    let limit = 1
+    const { handle } = hydrator({ mediaLimit: () => limit, uploadVideo: async () => ({ fileKey: VIDEO_KEY }) })
+    const value = card(['[一](runs/clip.mp4)', '[二](runs/b.mp4)', '[三](runs/c.mp4)'].join('\n\n'))
+    const first = await handle.hydrate(value, { workspace }) as any
+    expect(first.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+    limit = 3
+    const second = await handle.hydrate(value, { workspace }) as any
+    expect(second.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(3)
+  })
+
+  it('applies the setting number to each media group, not to one shared pool', async () => {
+    await writeFile(join(workspace, 'runs', 'clip.mp4'), mp4Bytes())
+    const { handle } = hydrator({
+      mediaLimit: () => 1,
+      uploadVideo: async () => ({ fileKey: VIDEO_KEY }),
+    })
+    const out = await handle.hydrate(card('![图](runs/a.png)\n\n[片段](runs/clip.mp4)'), { workspace }) as any
+    const elements = out.body.elements as any[]
+    // One image and one clip, so a reply that is image-heavy cannot starve its
+    // video (each group gets the number the operator set).
+    expect(elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+    expect(contentOf(out)).toContain(IMAGE_KEY)
+  })
+
   it('leaves media as text when the media budget is already spent', async () => {
     const { handle } = hydrator({ mediaBudgetMs: 0, uploadVideo: async () => ({ fileKey: VIDEO_KEY }) })
     const out = await handle.hydrate(card('[片段](runs/clip.mp4)'), { workspace })
@@ -527,26 +554,28 @@ describe('Feishu card budget', () => {
   it('keeps the worst case one card can build inside 200 elements and 30 KB', async () => {
     // Measured against the live API on 2026-09-24: a card may hold 200 elements
     // or components, and a `video` with `cover` + `fallback` spends three of
-    // them (66 videos accepted, 67 refused with 300305). The caps must therefore
-    // never be able to build a card Feishu would reject.
-    for (let i = 0; i < 12; i += 1) {
+    // them (66 videos accepted, 67 refused with 300305). The setting's MAXIMUM
+    // must therefore still build a card Feishu accepts.
+    for (let i = 0; i < CARD_MEDIA_LIMIT.max; i += 1) {
       await writeFile(join(workspace, 'runs', `v${i}.mp4`), mp4Bytes())
       await writeFile(join(workspace, 'runs', `i${i}.png`), PNG)
     }
     const { handle } = hydrator({
+      // The setting's maximum, which is what must still fit.
+      mediaLimit: () => CARD_MEDIA_LIMIT.max,
       uploadVideo: async (path: string) => ({ fileKey: VIDEO_KEY, coverKey: `${IMAGE_KEY}_${path}` }),
     })
     const lines: string[] = []
-    for (let i = 0; i < 12; i += 1) {
+    for (let i = 0; i < CARD_MEDIA_LIMIT.max; i += 1) {
       lines.push(`![still ${i}](runs/i${i}.png)`, `[clip ${i}](runs/v${i}.mp4)`)
     }
     const out = await handle.hydrate(card(lines.join('\n\n')), { workspace }) as any
     const elements = out.body.elements as unknown[]
     const videos = elements.filter((element: any) => element.tag === 'video')
-    expect(videos).toHaveLength(12)
+    expect(videos).toHaveLength(CARD_MEDIA_LIMIT.max)
     // Every image stays inside a markdown element; every video is its own, so
     // the card is one text segment per video plus the video elements.
-    expect(elements.filter((element: any) => element.tag === 'markdown')).toHaveLength(12)
+    expect(elements.filter((element: any) => element.tag === 'markdown')).toHaveLength(CARD_MEDIA_LIMIT.max)
     expect(JSON.stringify(out)).not.toContain('runs/i0.png')
     // Feishu counts the video, its cover and its fallback separately.
     const counted = elements.length + videos.length * 2

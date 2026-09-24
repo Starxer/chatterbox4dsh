@@ -30,6 +30,370 @@ __deepseek_ai_dsh_client_ui_primitives = __toESM(__deepseek_ai_dsh_client_ui_pri
 let react_jsx_runtime = require("react/jsx-runtime");
 react_jsx_runtime = __toESM(react_jsx_runtime);
 
+//#region src/client/snapshot-store.ts
+/** One published snapshot plus its listener set. */
+var SnapshotStore = class {
+	listeners = /* @__PURE__ */ new Set();
+	snapshot;
+	/** @param initial - first published state. */
+	constructor(initial) {
+		this.snapshot = initial;
+	}
+	/** @returns the current snapshot, stable until the next publish. */
+	getSnapshot = () => this.snapshot;
+	/** @param listener - invoked after each publish. @returns the disposer. */
+	subscribe = (listener) => {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	};
+	/** @param next - replacement state; notifies only when the reference changes. */
+	set(next) {
+		if (next === this.snapshot) return;
+		this.snapshot = next;
+		for (const listener of [...this.listeners]) listener();
+	}
+};
+
+//#endregion
+//#region src/client/LarkSettingsCardController.ts
+/**
+* Namespace of this plugin's Host entry (`options.id`): the profile row id,
+* which is what `settings.describe()` keys every descriptor on. Spelled here
+* rather than imported — the client half must not depend on a Host module.
+*/
+const LARK_SETTINGS_NAMESPACE = "lark-channel";
+/** Credential reference the plugin resolves when the section names none. */
+const LARK_APP_SECRET_REF = "DSH_LARK_APP_SECRET";
+/**
+* Bounds of the per-card media limit, mirroring `CARD_MEDIA_LIMIT` in
+* `src/config.ts`.
+*
+* Deliberately repeated: this bundle includes no Host module (it would drag the
+* config schema and zod into the browser), and the Host schema is what really
+* enforces them. These numbers only keep the input usable and the staged value
+* sane before it is written.
+*/
+const CARD_MEDIA_LIMIT = {
+	min: 1,
+	max: 30,
+	default: 12
+};
+/** Clamp a staged media limit the way the Host schema would. */
+function clampCardMediaLimit(value) {
+	if (!Number.isFinite(value)) return CARD_MEDIA_LIMIT.default;
+	return Math.min(CARD_MEDIA_LIMIT.max, Math.max(CARD_MEDIA_LIMIT.min, Math.trunc(value)));
+}
+/** The field order every save walks; also the only keys a save may write. */
+const EDITABLE_FIELDS = [
+	"appId",
+	"domain",
+	"requireMention",
+	"dmMode",
+	"groupAllowlist",
+	"dmAllowlist",
+	"reactEmoji",
+	"showReasoning",
+	"showToolCalls",
+	"showToolArgs",
+	"showToolResults",
+	"locale",
+	"cardImages",
+	"cardMediaLimit"
+];
+/** Bridges the `lark-channel` form and the credentials domain onto the page. */
+var LarkSettingsCardController = class {
+	store;
+	unsubscribeScope;
+	/** Fields the user edited since the last load; absent keys keep the Host value. */
+	edits = {};
+	/** Staged secret literal; blank means "keep whatever the Host holds". */
+	secretText = "";
+	credential = {
+		ref: "",
+		configured: false,
+		writable: true
+	};
+	busy = false;
+	noticeKey;
+	noticeDetail;
+	/**
+	* @param scope - the bound `lark-channel` settings form.
+	* @param host - the page plugin's context slice owning `remote.credentials`.
+	* @param t - the plugin's dictionary translator.
+	*/
+	constructor(scope, host, t) {
+		this.scope = scope;
+		this.host = host;
+		this.t = t;
+		this.store = new SnapshotStore(this.projection());
+		this.unsubscribeScope = scope.subscribe(() => {
+			this.onScopeChange();
+		});
+		this.onScopeChange();
+	}
+	/**
+	* Build the face the page's slot registration injects.
+	* @returns the page's snapshot observable and its actions.
+	*/
+	inject() {
+		return {
+			hooks: { larkSettings: this.store },
+			edit: (field, value) => {
+				this.edit(field, value);
+			},
+			setSecret: (value) => {
+				this.setSecret(value);
+			},
+			save: () => this.save(),
+			removeSecret: () => this.removeSecret()
+		};
+	}
+	/**
+	* Stage one edited control.
+	* @param field - control key.
+	* @param value - staged value.
+	*/
+	edit(field, value) {
+		const edits = { ...this.edits };
+		edits[field] = value;
+		this.edits = edits;
+		this.clearNotice();
+		this.publish();
+	}
+	/**
+	* Stage the secret literal. Leaving it blank never clears a stored secret;
+	* the separate remove control is the only way to clear one.
+	* @param value - staged literal.
+	*/
+	setSecret(value) {
+		this.secretText = value;
+		this.clearNotice();
+		this.publish();
+	}
+	/**
+	* Write every edited field in one revision-fenced mutate, then the staged
+	* secret when the user typed one. A refused mutate leaves the edits staged
+	* for a retry and does not write the secret.
+	* @returns a promise settling when the save attempt is reported.
+	*/
+	async save() {
+		if (this.busy) return;
+		this.busy = true;
+		this.noticeKey = "saving";
+		this.noticeDetail = void 0;
+		this.publish();
+		try {
+			const ops = this.buildOps();
+			const accepted = ops.length === 0 ? true : await this.scope.mutate(ops, this.scope.getSnapshot().revision);
+			let secretWritten = true;
+			if (accepted && this.secretText !== "") secretWritten = await this.writeSecret();
+			if (accepted && secretWritten) {
+				this.edits = {};
+				this.secretText = "";
+				this.noticeKey = "saved";
+				this.noticeDetail = void 0;
+			} else this.noticeKey = "saveFailed";
+		} catch (error) {
+			this.noticeKey = "saveFailed";
+			this.noticeDetail = messageOf$1(error);
+		} finally {
+			this.busy = false;
+			this.publish();
+		}
+	}
+	/**
+	* Clear the stored credential through the credentials domain, then re-read
+	* whether the Host still holds one.
+	* @returns a promise settling when the attempt is reported.
+	*/
+	async removeSecret() {
+		if (this.busy) return;
+		this.busy = true;
+		this.noticeKey = "removing";
+		this.noticeDetail = void 0;
+		this.publish();
+		try {
+			const response = await this.host.remote.credentials.unset(this.credentialRef());
+			if (!response.ok) throw new Error(response.error.message);
+			await this.readCredential();
+			this.noticeKey = "removed";
+		} catch (error) {
+			this.noticeKey = "removeFailed";
+			this.noticeDetail = messageOf$1(error);
+		} finally {
+			this.busy = false;
+			this.publish();
+		}
+	}
+	/**
+	* Re-read after the Host reports a change to the reference this page watches.
+	* @param ref - the reference the Host reports as changed.
+	*/
+	refreshCredential(ref) {
+		if (ref !== this.credential.ref) return;
+		this.readCredential();
+	}
+	/**
+	* Re-read the credential the section currently names.
+	*
+	* The scan-to-configure flow completes on another surface (the Plugins detail
+	* page) and the Host writes the secret there, so the badge has to be told.
+	*/
+	rereadCredential() {
+		this.readCredential();
+	}
+	/** Release the form subscription. */
+	dispose() {
+		this.unsubscribeScope();
+	}
+	/** Re-read the credential when the reference the section names changes. */
+	async onScopeChange() {
+		const ref = this.credentialRef();
+		if (ref !== this.credential.ref) {
+			this.credential = {
+				ref,
+				configured: false,
+				writable: true
+			};
+			this.publish();
+			await this.readCredential();
+			return;
+		}
+		this.publish();
+	}
+	/**
+	* Ask the credentials domain about the reference the section currently
+	* names. The answer is stored with the reference it describes, so a stale
+	* response for another reference is dropped.
+	*/
+	async readCredential() {
+		const ref = this.credentialRef();
+		try {
+			const response = await this.host.remote.credentials.describe([ref]);
+			if (!response.ok || ref !== this.credentialRef()) return;
+			const view = response.value[ref];
+			const source = view?.source;
+			this.credential = {
+				ref,
+				configured: view?.configured ?? false,
+				writable: view?.writable ?? true,
+				...source !== void 0 ? { source } : {}
+			};
+			this.publish();
+		} catch {}
+	}
+	/** @returns the credential reference the section names, or the plugin default. */
+	credentialRef() {
+		const declared = this.scope.getSnapshot().value?.appSecretRef;
+		return declared !== void 0 && declared.length > 0 ? declared : LARK_APP_SECRET_REF;
+	}
+	/** @returns the operations for exactly the fields the user edited. */
+	buildOps() {
+		const form = this.formValues();
+		const ops = [];
+		for (const field of EDITABLE_FIELDS) {
+			if (!Object.hasOwn(this.edits, field)) continue;
+			ops.push({
+				op: "set",
+				path: [field],
+				value: writeValue(field, form)
+			});
+		}
+		return ops;
+	}
+	/**
+	* Write the staged secret, then re-read whether the Host now holds one.
+	* @returns whether the credentials domain accepted the write.
+	*/
+	async writeSecret() {
+		const response = await this.host.remote.credentials.set(this.credentialRef(), this.secretText);
+		await this.readCredential();
+		if (!response.ok) {
+			this.noticeDetail = response.error.message;
+			return false;
+		}
+		return this.credential.configured;
+	}
+	/** @returns the staged form values, defaults and Host values folded under the edits. */
+	formValues() {
+		const value = this.scope.getSnapshot().value;
+		return {
+			appId: value?.appId ?? "",
+			domain: value?.domain ?? "feishu",
+			requireMention: value?.requireMention ?? true,
+			dmMode: value?.dmMode ?? "open",
+			groupAllowlist: (value?.groupAllowlist ?? []).join("\n"),
+			dmAllowlist: (value?.dmAllowlist ?? []).join("\n"),
+			reactEmoji: value?.reactEmoji ?? "",
+			showReasoning: value?.showReasoning ?? true,
+			showToolCalls: value?.showToolCalls ?? true,
+			showToolArgs: value?.showToolArgs ?? true,
+			showToolResults: value?.showToolResults ?? true,
+			locale: value?.locale ?? "auto",
+			cardImages: value?.cardImages ?? "workspace",
+			cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),
+			...this.edits
+		};
+	}
+	/** @returns the published page state. */
+	projection() {
+		const snapshot = this.scope.getSnapshot();
+		const source = this.credential.source;
+		return {
+			status: snapshot.status,
+			writable: snapshot.writable,
+			form: this.formValues(),
+			secret: {
+				value: this.secretText,
+				configured: this.credential.configured,
+				writable: this.credential.writable,
+				...source !== void 0 ? { source } : {}
+			},
+			busy: this.busy,
+			notice: this.noticeText()
+		};
+	}
+	/** @returns the localized notice line. */
+	noticeText() {
+		const head = this.noticeKey === void 0 ? "" : this.t(this.noticeKey);
+		if (this.noticeDetail === void 0 || this.noticeDetail === "") return head;
+		return head === "" ? this.noticeDetail : `${head}: ${this.noticeDetail}`;
+	}
+	/** Drop any staged notice (edits and discards invalidate it). */
+	clearNotice() {
+		this.noticeKey = void 0;
+		this.noticeDetail = void 0;
+	}
+	/** Publish a fresh projection. */
+	publish() {
+		this.store.set(this.projection());
+	}
+};
+/** @param value - one staged form value. @returns its wire shape for a `set` op. */
+function writeValue(field, form) {
+	switch (field) {
+		case "appId": return form.appId.trim();
+		case "cardMediaLimit": {
+			const raw = form.cardMediaLimit.trim();
+			return raw === "" ? CARD_MEDIA_LIMIT.default : clampCardMediaLimit(Number(raw));
+		}
+		case "groupAllowlist": return lines(form.groupAllowlist);
+		case "dmAllowlist": return lines(form.dmAllowlist);
+		default: return form[field];
+	}
+}
+/** @param value - textarea content. @returns trimmed non-empty lines. */
+function lines(value) {
+	return value.split(/\n/u).map((item) => item.trim()).filter(Boolean);
+}
+/** @param error - a thrown value. @returns its message. */
+function messageOf$1(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+
+//#endregion
 //#region src/client/LarkSettingsCard.tsx
 /**
 * Render the plugin's one-liner or its settings page, as the Plugins page asks.
@@ -289,6 +653,26 @@ function LarkSettingsCard(props) {
 									children: t("cardImagesHint")
 								})
 							] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("cardMediaLimit") }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+									"aria-label": "cardMediaLimit",
+									type: "number",
+									min: CARD_MEDIA_LIMIT.min,
+									max: CARD_MEDIA_LIMIT.max,
+									step: 1,
+									inputMode: "numeric",
+									disabled: blocked,
+									value: form.cardMediaLimit,
+									onChange: (event) => {
+										props.edit("cardMediaLimit", event.target.value);
+									}
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dsh-feishu-toggle-hint",
+									children: t("cardMediaLimitHint")
+								})
+							] }),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 								"aria-label": "locale",
 								disabled: blocked,
@@ -342,345 +726,6 @@ function LarkSettingsCard(props) {
 			}) : null
 		]
 	});
-}
-
-//#endregion
-//#region src/client/snapshot-store.ts
-/** One published snapshot plus its listener set. */
-var SnapshotStore = class {
-	listeners = /* @__PURE__ */ new Set();
-	snapshot;
-	/** @param initial - first published state. */
-	constructor(initial) {
-		this.snapshot = initial;
-	}
-	/** @returns the current snapshot, stable until the next publish. */
-	getSnapshot = () => this.snapshot;
-	/** @param listener - invoked after each publish. @returns the disposer. */
-	subscribe = (listener) => {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	};
-	/** @param next - replacement state; notifies only when the reference changes. */
-	set(next) {
-		if (next === this.snapshot) return;
-		this.snapshot = next;
-		for (const listener of [...this.listeners]) listener();
-	}
-};
-
-//#endregion
-//#region src/client/LarkSettingsCardController.ts
-/**
-* Namespace of this plugin's Host entry (`options.id`): the profile row id,
-* which is what `settings.describe()` keys every descriptor on. Spelled here
-* rather than imported — the client half must not depend on a Host module.
-*/
-const LARK_SETTINGS_NAMESPACE = "lark-channel";
-/** Credential reference the plugin resolves when the section names none. */
-const LARK_APP_SECRET_REF = "DSH_LARK_APP_SECRET";
-/** The field order every save walks; also the only keys a save may write. */
-const EDITABLE_FIELDS = [
-	"appId",
-	"domain",
-	"requireMention",
-	"dmMode",
-	"groupAllowlist",
-	"dmAllowlist",
-	"reactEmoji",
-	"showReasoning",
-	"showToolCalls",
-	"showToolArgs",
-	"showToolResults",
-	"locale",
-	"cardImages"
-];
-/** Bridges the `lark-channel` form and the credentials domain onto the page. */
-var LarkSettingsCardController = class {
-	store;
-	unsubscribeScope;
-	/** Fields the user edited since the last load; absent keys keep the Host value. */
-	edits = {};
-	/** Staged secret literal; blank means "keep whatever the Host holds". */
-	secretText = "";
-	credential = {
-		ref: "",
-		configured: false,
-		writable: true
-	};
-	busy = false;
-	noticeKey;
-	noticeDetail;
-	/**
-	* @param scope - the bound `lark-channel` settings form.
-	* @param host - the page plugin's context slice owning `remote.credentials`.
-	* @param t - the plugin's dictionary translator.
-	*/
-	constructor(scope, host, t) {
-		this.scope = scope;
-		this.host = host;
-		this.t = t;
-		this.store = new SnapshotStore(this.projection());
-		this.unsubscribeScope = scope.subscribe(() => {
-			this.onScopeChange();
-		});
-		this.onScopeChange();
-	}
-	/**
-	* Build the face the page's slot registration injects.
-	* @returns the page's snapshot observable and its actions.
-	*/
-	inject() {
-		return {
-			hooks: { larkSettings: this.store },
-			edit: (field, value) => {
-				this.edit(field, value);
-			},
-			setSecret: (value) => {
-				this.setSecret(value);
-			},
-			save: () => this.save(),
-			removeSecret: () => this.removeSecret()
-		};
-	}
-	/**
-	* Stage one edited control.
-	* @param field - control key.
-	* @param value - staged value.
-	*/
-	edit(field, value) {
-		const edits = { ...this.edits };
-		edits[field] = value;
-		this.edits = edits;
-		this.clearNotice();
-		this.publish();
-	}
-	/**
-	* Stage the secret literal. Leaving it blank never clears a stored secret;
-	* the separate remove control is the only way to clear one.
-	* @param value - staged literal.
-	*/
-	setSecret(value) {
-		this.secretText = value;
-		this.clearNotice();
-		this.publish();
-	}
-	/**
-	* Write every edited field in one revision-fenced mutate, then the staged
-	* secret when the user typed one. A refused mutate leaves the edits staged
-	* for a retry and does not write the secret.
-	* @returns a promise settling when the save attempt is reported.
-	*/
-	async save() {
-		if (this.busy) return;
-		this.busy = true;
-		this.noticeKey = "saving";
-		this.noticeDetail = void 0;
-		this.publish();
-		try {
-			const ops = this.buildOps();
-			const accepted = ops.length === 0 ? true : await this.scope.mutate(ops, this.scope.getSnapshot().revision);
-			let secretWritten = true;
-			if (accepted && this.secretText !== "") secretWritten = await this.writeSecret();
-			if (accepted && secretWritten) {
-				this.edits = {};
-				this.secretText = "";
-				this.noticeKey = "saved";
-				this.noticeDetail = void 0;
-			} else this.noticeKey = "saveFailed";
-		} catch (error) {
-			this.noticeKey = "saveFailed";
-			this.noticeDetail = messageOf$1(error);
-		} finally {
-			this.busy = false;
-			this.publish();
-		}
-	}
-	/**
-	* Clear the stored credential through the credentials domain, then re-read
-	* whether the Host still holds one.
-	* @returns a promise settling when the attempt is reported.
-	*/
-	async removeSecret() {
-		if (this.busy) return;
-		this.busy = true;
-		this.noticeKey = "removing";
-		this.noticeDetail = void 0;
-		this.publish();
-		try {
-			const response = await this.host.remote.credentials.unset(this.credentialRef());
-			if (!response.ok) throw new Error(response.error.message);
-			await this.readCredential();
-			this.noticeKey = "removed";
-		} catch (error) {
-			this.noticeKey = "removeFailed";
-			this.noticeDetail = messageOf$1(error);
-		} finally {
-			this.busy = false;
-			this.publish();
-		}
-	}
-	/**
-	* Re-read after the Host reports a change to the reference this page watches.
-	* @param ref - the reference the Host reports as changed.
-	*/
-	refreshCredential(ref) {
-		if (ref !== this.credential.ref) return;
-		this.readCredential();
-	}
-	/**
-	* Re-read the credential the section currently names.
-	*
-	* The scan-to-configure flow completes on another surface (the Plugins detail
-	* page) and the Host writes the secret there, so the badge has to be told.
-	*/
-	rereadCredential() {
-		this.readCredential();
-	}
-	/** Release the form subscription. */
-	dispose() {
-		this.unsubscribeScope();
-	}
-	/** Re-read the credential when the reference the section names changes. */
-	async onScopeChange() {
-		const ref = this.credentialRef();
-		if (ref !== this.credential.ref) {
-			this.credential = {
-				ref,
-				configured: false,
-				writable: true
-			};
-			this.publish();
-			await this.readCredential();
-			return;
-		}
-		this.publish();
-	}
-	/**
-	* Ask the credentials domain about the reference the section currently
-	* names. The answer is stored with the reference it describes, so a stale
-	* response for another reference is dropped.
-	*/
-	async readCredential() {
-		const ref = this.credentialRef();
-		try {
-			const response = await this.host.remote.credentials.describe([ref]);
-			if (!response.ok || ref !== this.credentialRef()) return;
-			const view = response.value[ref];
-			const source = view?.source;
-			this.credential = {
-				ref,
-				configured: view?.configured ?? false,
-				writable: view?.writable ?? true,
-				...source !== void 0 ? { source } : {}
-			};
-			this.publish();
-		} catch {}
-	}
-	/** @returns the credential reference the section names, or the plugin default. */
-	credentialRef() {
-		const declared = this.scope.getSnapshot().value?.appSecretRef;
-		return declared !== void 0 && declared.length > 0 ? declared : LARK_APP_SECRET_REF;
-	}
-	/** @returns the operations for exactly the fields the user edited. */
-	buildOps() {
-		const form = this.formValues();
-		const ops = [];
-		for (const field of EDITABLE_FIELDS) {
-			if (!Object.hasOwn(this.edits, field)) continue;
-			ops.push({
-				op: "set",
-				path: [field],
-				value: writeValue(field, form)
-			});
-		}
-		return ops;
-	}
-	/**
-	* Write the staged secret, then re-read whether the Host now holds one.
-	* @returns whether the credentials domain accepted the write.
-	*/
-	async writeSecret() {
-		const response = await this.host.remote.credentials.set(this.credentialRef(), this.secretText);
-		await this.readCredential();
-		if (!response.ok) {
-			this.noticeDetail = response.error.message;
-			return false;
-		}
-		return this.credential.configured;
-	}
-	/** @returns the staged form values, defaults and Host values folded under the edits. */
-	formValues() {
-		const value = this.scope.getSnapshot().value;
-		return {
-			appId: value?.appId ?? "",
-			domain: value?.domain ?? "feishu",
-			requireMention: value?.requireMention ?? true,
-			dmMode: value?.dmMode ?? "open",
-			groupAllowlist: (value?.groupAllowlist ?? []).join("\n"),
-			dmAllowlist: (value?.dmAllowlist ?? []).join("\n"),
-			reactEmoji: value?.reactEmoji ?? "",
-			showReasoning: value?.showReasoning ?? true,
-			showToolCalls: value?.showToolCalls ?? true,
-			showToolArgs: value?.showToolArgs ?? true,
-			showToolResults: value?.showToolResults ?? true,
-			locale: value?.locale ?? "auto",
-			cardImages: value?.cardImages ?? "workspace",
-			...this.edits
-		};
-	}
-	/** @returns the published page state. */
-	projection() {
-		const snapshot = this.scope.getSnapshot();
-		const source = this.credential.source;
-		return {
-			status: snapshot.status,
-			writable: snapshot.writable,
-			form: this.formValues(),
-			secret: {
-				value: this.secretText,
-				configured: this.credential.configured,
-				writable: this.credential.writable,
-				...source !== void 0 ? { source } : {}
-			},
-			busy: this.busy,
-			notice: this.noticeText()
-		};
-	}
-	/** @returns the localized notice line. */
-	noticeText() {
-		const head = this.noticeKey === void 0 ? "" : this.t(this.noticeKey);
-		if (this.noticeDetail === void 0 || this.noticeDetail === "") return head;
-		return head === "" ? this.noticeDetail : `${head}: ${this.noticeDetail}`;
-	}
-	/** Drop any staged notice (edits and discards invalidate it). */
-	clearNotice() {
-		this.noticeKey = void 0;
-		this.noticeDetail = void 0;
-	}
-	/** Publish a fresh projection. */
-	publish() {
-		this.store.set(this.projection());
-	}
-};
-/** @param value - one staged form value. @returns its wire shape for a `set` op. */
-function writeValue(field, form) {
-	switch (field) {
-		case "appId": return form.appId.trim();
-		case "groupAllowlist": return lines(form.groupAllowlist);
-		case "dmAllowlist": return lines(form.dmAllowlist);
-		default: return form[field];
-	}
-}
-/** @param value - textarea content. @returns trimmed non-empty lines. */
-function lines(value) {
-	return value.split(/\n/u).map((item) => item.trim()).filter(Boolean);
-}
-/** @param error - a thrown value. @returns its message. */
-function messageOf$1(error) {
-	return error instanceof Error ? error.message : String(error);
 }
 
 //#endregion
@@ -2352,6 +2397,8 @@ const dictionaries = {
 		cardImagesWorkspace: "仅工作区内（默认）：自动上传并内联显示",
 		cardImagesText: "不上传：只显示路径文字",
 		cardImagesAny: "任意可读路径：工作区外的媒体也上传",
+		cardMediaLimit: "单卡媒体上限",
+		cardMediaLimitHint: "一张卡里最多内联几个：图片算一处、视频与音频合起来算一处（各按这个数），1–30，默认 12；超出的一律退回可读路径文字。飞书本身能放更多（一张卡 200 个元素/组件，带封面的视频一个占 3 个名额、约 66 个），这个数字只是为了让消息别太长。",
 		locale: "插件语言",
 		localeAuto: "跟随 Harness",
 		localeZh: "中文",
@@ -2421,6 +2468,8 @@ const dictionaries = {
 		cardImagesWorkspace: "Workspace only (default): upload and show inline",
 		cardImagesText: "Never upload: show the path as text",
 		cardImagesAny: "Any readable path: upload media outside the workspace too",
+		cardMediaLimit: "Media per card",
+		cardMediaLimitHint: "How many media one card may inline, counted per group: images on the one hand, video and audio together on the other, 1-30, default 12; anything past it stays a readable path. Feishu itself allows far more (200 elements/components per card, and a video with a cover spends three, so about 66 videos) — this number is here to keep a message readable.",
 		locale: "Plugin language",
 		localeAuto: "Follow Harness",
 		localeZh: "中文",

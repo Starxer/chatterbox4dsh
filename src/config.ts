@@ -56,6 +56,26 @@ export interface Config {
   locale?: PluginLocale
   /** How media (image / video / audio) referenced in card text is handled; see {@link CardImageMode}. */
   cardImages?: CardImageMode
+  /** Most media (image / video / audio) one card may inline; see {@link CARD_MEDIA_LIMIT}. */
+  cardMediaLimit?: number
+}
+
+/**
+ * Bounds of the `cardMediaLimit` setting.
+ *
+ * Feishu's own ceiling is far above this — a card holds 200 elements or
+ * components, and a `video` carrying `cover` + `fallback` spends three of them,
+ * so it accepts 66 videos (measured 2026-09-24; 67 are refused with `300305`).
+ * The setting exists because a message with thirty players is unreadable, not
+ * because the platform would refuse it: 30 videos cost 90 counted elements plus
+ * the text segments around them, still well inside the 200-element budget.
+ */
+export const CARD_MEDIA_LIMIT = { min: 1, max: 30, default: 12 } as const
+
+/** Clamp a user-supplied per-card media limit into {@link CARD_MEDIA_LIMIT}. */
+export function clampCardMediaLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return CARD_MEDIA_LIMIT.default
+  return Math.min(CARD_MEDIA_LIMIT.max, Math.max(CARD_MEDIA_LIMIT.min, Math.trunc(value)))
 }
 
 /**
@@ -104,6 +124,8 @@ export interface SettingsConfig extends Required<Pick<Config,
    * fills it in, so a live read never sees `undefined`.
    */
   cardImages?: CardImageMode
+  /** Most media one card may inline (images, video and audio share the number). */
+  cardMediaLimit?: number
 }
 
 export interface RuntimeConfig extends Omit<SettingsConfig, 'appSecretRef'> {
@@ -139,6 +161,7 @@ export const ConfigSchema = z.object({
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
   cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Media the model references in card text (image / video / audio): text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable media path'),
+  cardMediaLimit: z.number().min(CARD_MEDIA_LIMIT.min).max(CARD_MEDIA_LIMIT.max).default(CARD_MEDIA_LIMIT.default).volatile().description('Most media (image / video / audio) one card may inline; anything past the limit stays readable text. Feishu itself allows about 66 videos per card.'),
 })
 
 export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
@@ -167,6 +190,9 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
     cardImages: readField(config.cardImages) ?? 'workspace',
+    // Clamped rather than trusted: `ConfigInput` also admits a plain object, so
+    // a value that never went through the schema must not reach the hydrator.
+    cardMediaLimit: clampCardMediaLimit(readField(config.cardMediaLimit)),
     ...(appSecret === undefined ? {} : { appSecret }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),

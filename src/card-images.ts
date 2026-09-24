@@ -143,6 +143,14 @@ export interface CardImageDeps {
   maxFileBytes?: number
   maxPerCard?: number
   maxMediaPerCard?: number
+  /**
+   * Read the CURRENT per-card media cap (live, so a settings write applies
+   * without a restart). When present it overrides BOTH {@link maxPerCard} and
+   * {@link maxMediaPerCard}: the setting is one number for every media kind,
+   * because that is how an operator thinks about it ("how many will show up on
+   * one card"), while the two constants stay separate seams for tests.
+   */
+  mediaLimit?: () => number
   maxCached?: number
   /**
    * Read the CURRENT image mode (live, so a settings write applies without a
@@ -466,9 +474,12 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
       // `text` means "never upload": nothing to resolve, and the reference is
       // left for the writer to turn into readable text.
       if (mode() === 'text') return card
-      // Over-collect on purpose: the per-kind caps are enforced below, and a
-      // reply that lists ten pictures must still have its clip considered.
-      const targets = collectMediaTargets(card, (maxPerCard + maxMediaPerCard) * 2)
+      // Over-collect on purpose: the caps are enforced below, and a reply that
+      // lists many non-media links must still have its clips considered. The
+      // room scales with the live cap, otherwise a raised setting could not be
+      // reached on a card that also carries images or plain links.
+      const liveCap = deps.mediaLimit?.() ?? 0
+      const targets = collectMediaTargets(card, liveCap > 0 ? liveCap * 4 : (maxPerCard + maxMediaPerCard) * 2)
       if (targets.length === 0) return card
       const workspace = scope.workspace !== undefined && scope.workspace !== ''
         ? scope.workspace
@@ -495,12 +506,15 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
        * whether the third made it depended on cache timing.
        */
       const claim = (kind: Inspected['kind']): boolean => {
+        // Read live on every card: the settings page owns this number, and a
+        // write must apply to the next card without a restart.
+        const limit = deps.mediaLimit?.() ?? (kind === 'image' ? maxPerCard : maxMediaPerCard)
         if (kind === 'image') {
-          if (maxPerCard - images <= 0) return false
+          if (limit - images <= 0) return false
           images += 1
           return true
         }
-        if (maxMediaPerCard - media <= 0) return false
+        if (limit - media <= 0) return false
         media += 1
         return true
       }

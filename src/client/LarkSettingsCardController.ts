@@ -44,6 +44,23 @@ export type PluginLocale = 'auto' | 'zh' | 'en'
 export type CardImageMode = 'text' | 'workspace' | 'any'
 
 /**
+ * Bounds of the per-card media limit, mirroring `CARD_MEDIA_LIMIT` in
+ * `src/config.ts`.
+ *
+ * Deliberately repeated: this bundle includes no Host module (it would drag the
+ * config schema and zod into the browser), and the Host schema is what really
+ * enforces them. These numbers only keep the input usable and the staged value
+ * sane before it is written.
+ */
+export const CARD_MEDIA_LIMIT = { min: 1, max: 30, default: 12 } as const
+
+/** Clamp a staged media limit the way the Host schema would. */
+function clampCardMediaLimit(value: number): number {
+  if (!Number.isFinite(value)) return CARD_MEDIA_LIMIT.default
+  return Math.min(CARD_MEDIA_LIMIT.max, Math.max(CARD_MEDIA_LIMIT.min, Math.trunc(value)))
+}
+
+/**
  * The `lark-channel` fields this page reads. `provider`, `model`, `workspace`
  * and `agentPreset` exist in the schema but are deliberately not edited here.
  */
@@ -62,6 +79,7 @@ export interface LarkSettingsValues {
   showToolResults?: boolean
   locale?: PluginLocale
   cardImages?: CardImageMode
+  cardMediaLimit?: number
 }
 
 /** The page's staged controls, after defaults and edits are folded together. */
@@ -82,12 +100,19 @@ export interface LarkFormValues {
   locale: PluginLocale
   /** How images the model references in card text are handled. */
   cardImages: CardImageMode
+  /**
+   * Most media one card may inline. Staged as the raw input text so a half-typed
+   * or emptied field does not have to mean a number yet; {@link writeValue}
+   * parses and clamps it on save.
+   */
+  cardMediaLimit: string
 }
 
 /** The field order every save walks; also the only keys a save may write. */
 const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'appId', 'domain', 'requireMention', 'dmMode', 'groupAllowlist', 'dmAllowlist', 'reactEmoji',
   'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'locale', 'cardImages',
+  'cardMediaLimit',
 ]
 
 /** What the credentials domain last reported, and for which reference. */
@@ -393,6 +418,7 @@ export class LarkSettingsCardController {
       showToolResults: value?.showToolResults ?? true,
       locale: value?.locale ?? 'auto',
       cardImages: value?.cardImages ?? 'workspace',
+      cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),
     }
     return { ...base, ...this.edits }
   }
@@ -437,6 +463,12 @@ export class LarkSettingsCardController {
 function writeValue(field: keyof LarkFormValues, form: LarkFormValues): unknown {
   switch (field) {
     case 'appId': return form.appId.trim()
+    case 'cardMediaLimit': {
+      // A blank field means "the user cleared it", not zero: fall back to the
+      // default rather than writing the minimum.
+      const raw = form.cardMediaLimit.trim()
+      return raw === '' ? CARD_MEDIA_LIMIT.default : clampCardMediaLimit(Number(raw))
+    }
     case 'groupAllowlist': return lines(form.groupAllowlist)
     case 'dmAllowlist': return lines(form.dmAllowlist)
     default: return form[field]

@@ -41,6 +41,16 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 新增：单卡媒体上限做成设置项（`src/config.ts` / `src/card-images.ts` / `src/index.ts` / `src/client/`，2026-09-24）
+
+**动机**（使用者的要求）：「这个媒体文件的数量限制也在设置页面做一个」——上一批把视频/音频上限从 2 提到 12，但那个数字是代码里的常量，改它要发版。
+
+**做法**：新增配置字段 `cardMediaLimit`（`1–30`，默认 `12`，`.volatile()` ⇒ 保存即生效、不重启、不打断正在跑的 turn）。语义与设置页文案一致：**图片算一处、视频与音频合起来算一处（各按这个数）**——这样一份图片很多的回答不会把同一条消息里的视频挤掉。hydrator 通过 `mediaLimit: () => currentSettings().cardMediaLimit` **每次判定时实时读**，所以下一次卡片写入就用新值；`claim()` 里两个计数各自对着这个数判。客户端是自包含的（不 import host 模块，否则会把 zod 和 config schema 打进浏览器包），所以 `CARD_MEDIA_LIMIT` 的边界在 `src/client/LarkSettingsCardController.ts` 里镜像了一份，真正校验的是 host schema；客户端 `writeValue` 再把暂存的文本转成**数字**（`999 → 30`、空 → 回到默认 12 而不是写最小值）。上限取 30 不是随意的：30 个视频 = 90 个计名额 + 它们拆出的文本段，仍在飞书 200 元素预算内，不变量测试就按**设置的上限**跑。
+
+**验证**：typecheck 0 error、**704 tests / 42 files** 全绿（新增 `tests/config.spec.ts` 2 例：默认值/取值 + 越界钳制；`tests/client.spec.ts` 2 例：输入框渲染与 min/max、保存写出**数字**、越界与清空分别落到 30 / 默认；`tests/card-images.spec.ts` 2 例：上限**实时**生效、按组各算一份而不是一个共享池；最坏情况不变量测试改用设置的上限）。
+
+**English**：The per-card media limit is now a setting, `cardMediaLimit` (1-30, default 12, `.volatile()` so a save applies without a restart and without killing a running turn). It counts per group — images on the one hand, video and audio together on the other — so an image-heavy reply cannot starve its own clips. The hydrator reads it live on every card write, and the worst-case card-budget test now runs at the setting's maximum, which is why 30 is the ceiling (30 videos spend 90 counted elements plus the text segments around them, still inside Feishu's 200). The client bundle mirrors the bounds because it deliberately imports no host module.
+
 ### 修复：卡片内联媒体的三个缺口——单卡只放 2 个、交付清单走不到内联、溢出续卡不过 hydrator（`src/card-images.ts` / `src/channel.ts` / `src/feishu-streaming.ts`，2026-09-24）
 
 **现象**（使用者报告）：① 一张卡里的视频超过两个就不再内联，只剩路径文字；② 末尾那张 Turn Complete（交付文件）卡完全不渲染媒体。

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { LARK_APP_SECRET_REF, connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig } from '../src/config.ts'
+import {
+  CARD_MEDIA_LIMIT, LARK_APP_SECRET_REF, clampCardMediaLimit, connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig,
+} from '../src/config.ts'
 import type { ConfigInput } from '../src/config.ts'
 
 describe('resolveSettingsConfig', () => {
@@ -22,6 +24,23 @@ describe('resolveSettingsConfig', () => {
     expect(resolveSettingsConfig({ appId: 'id' }).cardImages).toBe('workspace')
     expect(resolveSettingsConfig({ appId: 'id', cardImages: 'text' }).cardImages).toBe('text')
     expect(resolveSettingsConfig({ appId: 'id', cardImages: 'any' }).cardImages).toBe('any')
+  })
+
+  it('defaults the per-card media limit and keeps whatever the user picked', () => {
+    expect(resolveSettingsConfig({ appId: 'id' }).cardMediaLimit).toBe(CARD_MEDIA_LIMIT.default)
+    expect(resolveSettingsConfig({ appId: 'id', cardMediaLimit: 3 }).cardMediaLimit).toBe(3)
+  })
+
+  it('clamps a media limit that never went through the schema', () => {
+    // `ConfigInput` also admits a plain object (tests, older hosts), so a value
+    // out of range must be clamped rather than handed to the hydrator.
+    expect(clampCardMediaLimit(0)).toBe(CARD_MEDIA_LIMIT.min)
+    expect(clampCardMediaLimit(999)).toBe(CARD_MEDIA_LIMIT.max)
+    expect(clampCardMediaLimit(3.7)).toBe(3)
+    expect(clampCardMediaLimit(Number.NaN)).toBe(CARD_MEDIA_LIMIT.default)
+    expect(clampCardMediaLimit(undefined)).toBe(CARD_MEDIA_LIMIT.default)
+    expect(resolveSettingsConfig({ appId: 'id', cardMediaLimit: 0 }).cardMediaLimit).toBe(CARD_MEDIA_LIMIT.min)
+    expect(resolveSettingsConfig({ appId: 'id', cardMediaLimit: 1e9 }).cardMediaLimit).toBe(CARD_MEDIA_LIMIT.max)
   })
 
   it('preserves an empty reaction override that disables the acknowledgement', () => {

@@ -332,6 +332,61 @@ describe('Lark settings client plugin', () => {
     expect(ops).toEqual([{ op: 'set', path: ['cardImages'], value: 'any' }])
   })
 
+  it('stages the per-card media limit as a number, clamped to the allowed range', async () => {
+    stubStatus()
+    const form = createForm({ cardMediaLimit: 20 })
+    const harness = mount(form)
+    renderSettings(harness)
+
+    await screen.findByDisplayValue('cli_existing')
+    const input = screen.getByLabelText('cardMediaLimit') as HTMLInputElement
+    expect(input.value).toBe('20')
+    expect(input.getAttribute('min')).toBe('1')
+    expect(input.getAttribute('max')).toBe('30')
+
+    // A typed value is written as a NUMBER, not as the raw input text.
+    fireEvent.change(input, { target: { value: '8' } })
+    fireEvent.click(screen.getByRole('button', { name: 'save' }))
+    await waitFor(() => { expect(form.mutate).toHaveBeenCalledTimes(1) })
+    const [ops] = form.mutate.mock.calls[0] as [SettingsPathOpView[]]
+    expect(ops).toEqual([{ op: 'set', path: ['cardMediaLimit'], value: 8 }])
+  })
+
+  it('labels and explains the per-card media limit on the settings page', async () => {
+    stubStatus()
+    renderSettings(mount(createForm()))
+
+    await screen.findByDisplayValue('cli_existing')
+    const input = screen.getByLabelText('cardMediaLimit') as HTMLInputElement
+    expect(input.type).toBe('number')
+    // Labelled AND explained: the number is meaningless without saying what it
+    // counts (images on one side, video/audio on the other) and that it is our
+    // readability bound rather than Feishu's ceiling.
+    expect(screen.getByText('cardMediaLimit')).toBeTruthy()
+    const hint = screen.getByText('cardMediaLimitHint')
+    expect(hint.className).toContain('dsh-feishu-toggle-hint')
+  })
+
+  it('clamps a media limit that reaches the controller out of range', async () => {
+    stubStatus()
+    const form = createForm()
+    const harness = mount(form)
+    const props = settingsProps(harness)
+    // A number input refuses to hand over a value above `max`, so the clamp is
+    // exercised the way such a value can still arrive: staged directly (the Host
+    // schema is the second line of defence).
+    props.edit('cardMediaLimit', '999')
+    await props.save()
+    expect(form.mutate).toHaveBeenCalledTimes(1)
+    expect(form.mutate.mock.calls[0]![0]).toEqual([{ op: 'set', path: ['cardMediaLimit'], value: 30 }])
+
+    // An emptied field falls back to the default instead of writing the minimum.
+    props.edit('cardMediaLimit', '')
+    await props.save()
+    expect(form.mutate).toHaveBeenCalledTimes(2)
+    expect(form.mutate.mock.calls[1]![0]).toEqual([{ op: 'set', path: ['cardMediaLimit'], value: 12 }])
+  })
+
   it('disables the tool args and result toggles while tool calls are hidden', async () => {
     stubStatus()
     const harness = mount(createForm({ showToolCalls: false }))

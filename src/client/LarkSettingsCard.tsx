@@ -10,6 +10,7 @@
 
 import * as React from 'react'
 import { Button, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { CARD_MEDIA_LIMIT } from './LarkSettingsCardController.ts'
 import type { LarkCardProps, LarkFormValues } from './LarkSettingsCardController.ts'
 
 /**
@@ -138,6 +139,7 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
           <option value="text">{t('cardImagesText')}</option>
           <option value="any">{t('cardImagesAny')}</option>
         </select><span className="dsh-feishu-toggle-hint">{t('cardImagesHint')}</span></label>
+        <label><span>{t('cardMediaLimit')}</span><Input aria-label="cardMediaLimit" type="number" min={CARD_MEDIA_LIMIT.min} max={CARD_MEDIA_LIMIT.max} step={1} inputMode="numeric" disabled={blocked} value={form.cardMediaLimit} onChange={event => { props.edit('cardMediaLimit', event.target.value) }} /><span className="dsh-feishu-toggle-hint">{t('cardMediaLimitHint')}</span></label>
         <label><span>{t('locale')}</span><select aria-label="locale" disabled={blocked} value={form.locale} onChange={event => { props.edit('locale', event.target.value as LarkFormValues['locale']) }}>
           <option value="auto">{t('localeAuto')}</option>
           <option value="zh">{t('localeZh')}</option>
