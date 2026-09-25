@@ -132,7 +132,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/session [N\|list]` | 无参：交互式会话管理面板；`list`：表格；`N`：按下标快速切换 |
 | `/status` | 展示会话状态（token/TTFT/吞吐量/缓存命中率/权限模式/Enter while busy 等） |
 | `/reasoning [off\|low\|high\|max]` | 设置推理强度（`show on\|off` 切换思考过程显示） |
-| `/display [reasoning\|tools\|args\|results] [on\|off]` | 查看/切换卡片显示开关（思考过程 / 工具调用 / 参数 / 结果）。**无参时发交互卡片**，点按钮即可切换 |
+| `/display [reasoning\|tools\|args\|results] [on\|off]` | 查看/切换卡片显示开关（思考过程 / 工具调用 / 参数 / 结果）。**无参时发交互卡片**，点按钮即可切换。**全局开关**：一个部署一份，所有会话/群共用 |
 | `/stop` | 中止当前轮次并丢弃排队消息（不再进入下一 turn） |
 | `/steer <内容>` | agent 运行中，把一条消息注入当前 turn；**空闲时自动回退为发新消息** |
 | `/queue <内容>` | /steer 的共轭：强制把消息排队为新轮（即使处于 steer 模式）；空闲时回退为发新消息 |
@@ -150,7 +150,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/session [N\|list]` | No args: interactive session panel; `list`: table; `N`: switch by index |
 | `/status` | Session status (tokens / TTFT / throughput / cache hit rate / permission mode / Enter while busy) |
 | `/reasoning [off\|low\|high\|max]` | Set the reasoning effort (`show on\|off` toggles reasoning display) |
-| `/display [reasoning\|tools\|args\|results] [on\|off]` | View / toggle the card display switches (reasoning / tool calls / arguments / results). With no argument it posts an **interactive card** — just tap a switch |
+| `/display [reasoning\|tools\|args\|results] [on\|off]` | View / toggle the card display switches (reasoning / tool calls / arguments / results). With no argument it posts an **interactive card** — just tap a switch. **Global switches**: one set per deployment, shared by every session and chat |
 | `/stop` | Abort the current turn and drop queued messages (they no longer run as the next turn) |
 | `/steer <text>` | While the agent runs, inject a message into the current turn; **falls back to a new message when idle** |
 | `/queue <text>` | The counterpart of `/steer`: force the message to queue as a new turn (even in steer mode); falls back to a new message when idle |

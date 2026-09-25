@@ -12,6 +12,8 @@
 
 目标：**无参 `/display` 发一张交互卡片**，用户直接在卡片上点选切换 `showReasoning` / `showToolCalls` / `showToolArgs` / `showToolResults`，不必记命令语法。写路径不变——仍是同一批配置字段（WebUI 面板、`/display` 命令、卡片三者同源）。
 
+**作用域：全局（profile 级），不按会话 / 群 / 话题区分。** 四个开关就是插件配置字段（[`src/config.ts`](../src/config.ts) 的 `showReasoning` / `showToolCalls` / `showToolArgs` / `showToolResults`，均 `.volatile()`），写的是这一份部署的唯一 settings：改一次，**所有**会话（含 WebUI 里的对话）一起变，跨重启保留；`/display <key> on|off`、`/display` 卡片、WebUI 设置面板三处读写的是同一个值。要做「按会话各自一份」得另加 per-session 状态（现在没有，也不在计划里）。
+
 ## 二、结论
 
 **可行，且仓库里已有两套成熟范式可直接照搬。** 推荐方案 A（每次点击发新卡 + 旧卡改写为失效），不用就地更新。理由见第四节。
