@@ -144,6 +144,15 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
           disabled: blocked || toolsOff,
           nested: true,
         })}
+        {/* The work-detail level comes FIRST: it is the baseline the four
+            switches below refine, so reading the block top-down matches how it
+            is applied (level sets the ceiling, switches can only take away). */}
+        <label><span>{t('transcriptView')}</span><select aria-label="transcriptView" disabled={blocked} value={form.transcriptView} onChange={event => { props.edit('transcriptView', event.target.value as LarkFormValues['transcriptView']) }}>
+          <option value="compact">{t('transcriptViewCompact')}</option>
+          <option value="standard">{t('transcriptViewStandard')}</option>
+          <option value="detailed">{t('transcriptViewDetailed')}</option>
+          <option value="verbose">{t('transcriptViewVerbose')}</option>
+        </select><span className="dsh-feishu-toggle-hint">{t('transcriptViewHint')}</span></label>
         <label><span>{t('cardImages')}</span><select aria-label="cardImages" disabled={blocked} value={form.cardImages} onChange={event => { props.edit('cardImages', event.target.value as LarkFormValues['cardImages']) }}>
           <option value="workspace">{t('cardImagesWorkspace')}</option>
           <option value="text">{t('cardImagesText')}</option>

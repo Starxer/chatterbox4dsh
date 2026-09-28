@@ -58,6 +58,23 @@ var SnapshotStore = class {
 
 //#endregion
 //#region src/client/LarkSettingsCardController.ts
+/** The levels in the order the DSH settings page lists them. */
+const TRANSCRIPT_VIEWS = [
+	"compact",
+	"standard",
+	"detailed",
+	"verbose"
+];
+/**
+* Read one stored level. The WebUI's two legacy spellings (`normal`,
+* `expanded`) both mean `detailed` in 0.2.0, and a value this page cannot
+* recognize must not silently render as "compact" — so anything unknown falls
+* back to the default too.
+*/
+function parseTranscriptView(value) {
+	if (value === "normal" || value === "expanded") return "detailed";
+	return typeof value === "string" && TRANSCRIPT_VIEWS.includes(value) ? value : "detailed";
+}
 /**
 * Namespace of this plugin's Host entry (`options.id`): the profile row id,
 * which is what `settings.describe()` keys every descriptor on. Spelled here
@@ -138,6 +155,7 @@ const EDITABLE_FIELDS = [
 	"showToolCalls",
 	"showToolArgs",
 	"showToolResults",
+	"transcriptView",
 	"locale",
 	"cardImages",
 	"cardMediaLimit",
@@ -374,6 +392,7 @@ var LarkSettingsCardController = class {
 			showToolCalls: value?.showToolCalls ?? true,
 			showToolArgs: value?.showToolArgs ?? true,
 			showToolResults: value?.showToolResults ?? true,
+			transcriptView: parseTranscriptView(value?.transcriptView),
 			locale: value?.locale ?? "auto",
 			cardImages: value?.cardImages ?? "workspace",
 			cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),
@@ -697,6 +716,39 @@ function LarkSettingsCard(props) {
 								disabled: blocked || toolsOff,
 								nested: true
 							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("transcriptView") }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+									"aria-label": "transcriptView",
+									disabled: blocked,
+									value: form.transcriptView,
+									onChange: (event) => {
+										props.edit("transcriptView", event.target.value);
+									},
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "compact",
+											children: t("transcriptViewCompact")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "standard",
+											children: t("transcriptViewStandard")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "detailed",
+											children: t("transcriptViewDetailed")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "verbose",
+											children: t("transcriptViewVerbose")
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dsh-feishu-toggle-hint",
+									children: t("transcriptViewHint")
+								})
+							] }),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("cardImages") }),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
@@ -2459,6 +2511,12 @@ const dictionaries = {
 		reactEmoji: "表情回应",
 		reactEmojiHint: "留空表示不添加（默认 THUMBSUP）",
 		display: "卡片显示",
+		transcriptView: "工作步骤展示",
+		transcriptViewHint: "对齐 DSH WebUI 的四档：简洁只报工具调用计数、标准每个工具一行摘要（推理只给首行）、详细（默认）带参数与结果、完全展开给出推理全文且不截断。下面四个开关只能在此基础上再关掉内容，不会让卡片比档位更详细。",
+		transcriptViewCompact: "简洁",
+		transcriptViewStandard: "标准",
+		transcriptViewDetailed: "详细（默认）",
+		transcriptViewVerbose: "完全展开",
 		showReasoning: "显示思考过程",
 		showReasoningHint: "步骤卡上展示模型的 reasoning 预览（最多 200 字）",
 		showToolCalls: "显示工具调用",
@@ -2536,8 +2594,14 @@ const dictionaries = {
 		reactEmoji: "Emoji reaction",
 		reactEmojiHint: "Leave empty to disable (default THUMBSUP)",
 		display: "Card display",
+		transcriptView: "Work details",
+		transcriptViewHint: "The DSH WebUI's four levels: Compact counts tool calls only, Standard gives each call one summary line (reasoning first line only), Detailed (default) adds arguments and result previews, Verbose shows the whole reasoning untruncated. The four switches below can only remove detail from the level, never add.",
+		transcriptViewCompact: "Compact",
+		transcriptViewStandard: "Standard",
+		transcriptViewDetailed: "Detailed (default)",
+		transcriptViewVerbose: "Verbose",
 		showReasoning: "Show reasoning",
-		showReasoningHint: "Show the model reasoning preview on step cards (up to 200 chars)",
+		showReasoningHint: "Show the model reasoning preview on step cards",
 		showToolCalls: "Show tool calls",
 		showToolCallsHint: "When off, step cards show no tool details and tool-only steps post no card",
 		showToolArgs: "Show arguments",

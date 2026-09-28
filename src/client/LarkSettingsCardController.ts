@@ -21,6 +21,30 @@ import type {
 import { SnapshotStore } from './snapshot-store.ts'
 
 /**
+ * The four work-detail levels, spelled exactly as the DSH WebUI's own
+ * `ui-chat.transcriptView` setting spells them. Declared locally because the
+ * client half must not import a Host module, and duplicated here rather than
+ * shared so a Host-side rename cannot silently change this page's options.
+ */
+export type TranscriptView = 'compact' | 'standard' | 'detailed' | 'verbose'
+
+/** The levels in the order the DSH settings page lists them. */
+export const TRANSCRIPT_VIEWS: readonly TranscriptView[] = ['compact', 'standard', 'detailed', 'verbose']
+
+/**
+ * Read one stored level. The WebUI's two legacy spellings (`normal`,
+ * `expanded`) both mean `detailed` in 0.2.0, and a value this page cannot
+ * recognize must not silently render as "compact" — so anything unknown falls
+ * back to the default too.
+ */
+export function parseTranscriptView(value: unknown): TranscriptView {
+  if (value === 'normal' || value === 'expanded') return 'detailed'
+  return typeof value === 'string' && (TRANSCRIPT_VIEWS as readonly string[]).includes(value)
+    ? value as TranscriptView
+    : 'detailed'
+}
+
+/**
  * Namespace of this plugin's Host entry (`options.id`): the profile row id,
  * which is what `settings.describe()` keys every descriptor on. Spelled here
  * rather than imported — the client half must not depend on a Host module.
@@ -110,6 +134,8 @@ export interface LarkSettingsValues {
   showToolCalls?: boolean
   showToolArgs?: boolean
   showToolResults?: boolean
+  /** Work-detail level, the same field the WebUI's own `ui-chat` page writes. */
+  transcriptView?: TranscriptView
   locale?: PluginLocale
   cardImages?: CardImageMode
   cardMediaLimit?: number
@@ -133,6 +159,8 @@ export interface LarkFormValues {
   showToolCalls: boolean
   showToolArgs: boolean
   showToolResults: boolean
+  /** Work-detail level; mirrors `ui-chat.transcriptView` on the DSH side. */
+  transcriptView: TranscriptView
   locale: PluginLocale
   /** How images the model references in card text are handled. */
   cardImages: CardImageMode
@@ -151,7 +179,7 @@ export interface LarkFormValues {
 /** The field order every save walks; also the only keys a save may write. */
 const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'appId', 'domain', 'requireMention', 'dmMode', 'groupAllowlist', 'dmAllowlist', 'reactEmoji',
-  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'locale', 'cardImages',
+  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'transcriptView', 'locale', 'cardImages',
   'cardMediaLimit',
   'cardImageMaxMb', 'cardVideoMaxMb', 'cardAudioMaxMb',
 ]
@@ -457,6 +485,7 @@ export class LarkSettingsCardController {
       showToolCalls: value?.showToolCalls ?? true,
       showToolArgs: value?.showToolArgs ?? true,
       showToolResults: value?.showToolResults ?? true,
+      transcriptView: parseTranscriptView(value?.transcriptView),
       locale: value?.locale ?? 'auto',
       cardImages: value?.cardImages ?? 'workspace',
       cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),

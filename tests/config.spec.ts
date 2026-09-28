@@ -21,6 +21,17 @@ describe('resolveSettingsConfig', () => {
     expect(resolveSettingsConfig({ appId: 'id' })).not.toHaveProperty('workspace')
   })
 
+  it('defaults the work-detail level to `detailed` and reads legacy values', () => {
+    expect(resolveSettingsConfig({ appId: 'id' }).transcriptView).toBe('detailed')
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'compact' }).transcriptView).toBe('compact')
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'verbose' }).transcriptView).toBe('verbose')
+    // 0.2.0 reads the two WebUI legacy spellings as `detailed` (a hand-edited
+    // settings.yaml can still hold one) and anything unreadable as the default.
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'normal' as any }).transcriptView).toBe('detailed')
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'expanded' as any }).transcriptView).toBe('detailed')
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'nope' as any }).transcriptView).toBe('detailed')
+  })
+
   it('defaults the card image mode to workspace-only uploads', () => {
     expect(resolveSettingsConfig({ appId: 'id' }).cardImages).toBe('workspace')
     expect(resolveSettingsConfig({ appId: 'id', cardImages: 'text' }).cardImages).toBe('text')
@@ -131,6 +142,7 @@ describe('connectionFingerprint', () => {
     const same = connectionFingerprint({
       ...base,
       showReasoning: false, showToolCalls: false, showToolArgs: false, showToolResults: false,
+      transcriptView: 'verbose',
       locale: 'en',
       errorMessage: 'changed',
       workspace: '/other', agentPreset: 'other', provider: 'p', model: 'm',

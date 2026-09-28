@@ -41,6 +41,59 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 新增：四档「工作步骤展示」+ 推理可折叠 + 压缩卡 + 注入提示行（O22 / O5 / O21，`src/display-level.ts`（新）/ `src/injection-notice.ts`（新）/ `src/feishu-compaction.ts`（新）/ `src/feishu-streaming.ts` / `src/config.ts` / `src/commands.ts` / `src/feishu-display.ts` / `src/i18n.ts` / `src/client/`，2026-09-29）
+
+一批四件事，全部围绕「飞书里能看到多少、以及看不到的那两件事」。调研与逐条实测见 [`docs/transcript-parity-design.md`](./docs/transcript-parity-design.md)。
+
+**① 四档显示级别（对齐 WebUI 的 `ui-chat.transcriptView`，O22）**
+
+新增设置项 `transcriptView`：`compact｜standard｜detailed｜verbose`，**默认 `detailed`**，文案与 WebUI 逐字一致（简洁 / 标准 / 详细 / 完全展开）；`/display <档位>` 与 `/display` 卡片顶部四个按钮都能切换，WebUI 设置页也新增同名下拉框。历史写法 `normal` / `expanded` 一律**按 `detailed` 读**（0.2.0 自己的读法），非法值也退回默认。
+
+- 档位**只改渲染轴**，不比对枚举：`compact` = 推理不显示 + 工具只报计数；`standard` = 推理首行 + 每个工具一行摘要（无参数、无结果）；`detailed` = 推理 200 字折叠 + 参数 + 结果（**与加档位之前完全相同**）；`verbose` = 推理全文 + 参数/结果放宽到 4 倍上限。
+- **档位是基线，四个老开关只能「减」不能「加」**（用 AND 合成）：任何档位下 `showReasoning=false` 都等于「推理 off」，`detailed` 下 `showToolArgs=false` 仍生效。这样升级不会把用户关掉的东西又打开，也不需要再造一个 `custom` 档。
+- **飞书侧不做「合并卡片」**：WebUI 的 `foldCompletedTurns` / `stepGrouping` 两轴在飞书没有视觉等价物（一个 step 只能一张卡，关键坑 12），所以 `compact` 只是把卡片缩成状态行，**不合并一轮里的多张卡**——合并会让交付正文归属变得含混。
+- 一处诚实说明：`verbose` 的「不截断」是**把上限提到 4 倍**（结果 1500→6000、参数 2000→6000 字符），不是真的无限——卡片 JSON 过 ~30KB 会被整张拒收（关键坑 42），而**被拒收的卡什么都不显示**，所以上界必须留。
+
+**② 推理可折叠（O5，`collapsible_panel` 首次真机使用）**
+
+推理段从「明文代码块 + 开头 200 字」改成**默认收起、点开看全文**的折叠面板：头部就是原来的 `💬 **推理** · 耗时 · tokens`（外加推理时长与思考 token 数），正文在面板里。
+
+- 组件名是 **`collapsible_panel`**（2.0 的名字）；1.0 时代的 `collapsible` 会被服务端以 `10002 not support tag` 拒收——本机文档不可达，这条是用**只建实体、不发送**的 `cardkit.v1.card.create` 探针 + **伪造 tag 对照**实测出来的（见 `docs/feishu-capabilities.md` §2.3.1）。
+- **顺带解决了信息损失**：以前砍到 200 字是因为「不折叠会占满屏」；收起来之后 `detailed` 仍给 200 字（与旧观感一致）、`verbose` 给全文。
+- 已知小限制：卡片**就地更新会重写整张卡的 JSON**，客户端本地的展开状态可能被重置（一步通常只剩 1–2 次写入）；压缩卡同理。
+
+**③ 压缩卡（O21 第②件）**
+
+以前自动压缩与 `/compact` 在聊天里**完全没有迹象**（插件根本没订阅 `compaction/*`），使用者不知道模型刚丢掉了几百条历史。现在一次压缩是一张可更新卡：
+
+```
+🗜️ 正在压缩上下文…            ← compaction/start，grey，写明触发方式（自动 / /compact）
+🗜️ 上下文已压缩                ← compaction/summary，green
+已折叠 609 条历史记录 · 约 302K tokens · provider/model   ← 详情行在折叠区【之上】
+ ▸ 摘要                        ← collapsible_panel，expanded:false，正文上限 200 字
+⚠️ 上下文压缩失败 + 原因 + 「本次没有产生摘要」  ← compaction/end 带 error 时，red
+```
+
+- **不假设「start 之后必有 summary」**：失败路径（`compaction/end.error`）没有摘要；`compaction/prune`（无模型的纯裁剪）整场都没有 `summary` 事件——两者都按实际有的事实渲染，没有正文时明说「这次压缩没有摘要内容」。
+- **没有「把完整摘要另发文件」按钮**（使用者已否掉）；摘要超 200 字即截断。
+- 写入走同一套 CardKit 实例更新（一次一张、序列递增）；**卡片完全发不出去时退回纯文本**一行（关键坑 40：报告写入失败的东西不能又是卡片）。
+
+**④ 上下文注入提示行（O21 第①件）**
+
+DSH 的上下文注入是持久事件（统一落在 `user/message`，`data.source.kind !== 'user'`），来源是**开放集合**；以前插件只认 `tool-jobs`，其余**全部静默丢弃**，所以「这轮被喂了什么」在飞书完全看不到。现在每条注入在**它所归属的那张 step 卡的正文最前面**加**一行提示**：
+
+- 只显示**元数据**，**绝不显示注入内容**（`content` 是给模型看的，实测 `AGENTS.md` 基线一条 6.2k 字）；
+- 例如 `📥 注入上下文 · AGENTS.md（已更新）`、`📥 注入上下文 · 技能目录（12 条）`、`📥 注入上下文 · 插件 @deepseek-ai/dsh-system-prompt`、`🔗 跨会话召回 · …`、`✉️ 会话间消息 · 来自会话 …`、`🤖 子代理已结算 · …`；未知 kind 只报种类，**不 dump 原始字段**（将来的生产者不能借这个通道往卡片上贴任意文本）；
+- **`compact-checkpoint` 与 `tool-jobs` 静默**：前者由压缩卡负责，后者已有「本回合由后台任务完成通知触发」标记（关键坑 37），不能重复；
+- **位置规则**：注入总是先于它所归属的那次请求落盘（实测 93.0% 落在 `step/start` 之后、`request/header` 之前），所以「插到卡的最前面」既是语义正确、也是「这一次请求确实读到了它」的可视证据；剩下 6.8% 落在 `step/start` **之前**（全是压缩事务里的插件重注入）→ **先进会话级缓冲**，等那个 step 建卡时并入首版（放在 step 状态里会被 `resetStep` 清掉，这正是要缓冲的原因）；提案里「追加到卡片末尾」那一档在持久事件里**实测 0 条**，故不实现。
+- 卡片总数**不增加一张**；有注入的 step 一定有卡（`step/start` 的建卡是无条件的，已就地注释）。
+
+**同时改动**：`/display` 文本命令新增档位形式（`/display compact`），`/display` 后不带参数会先报当前档位；`src/commands.ts` 的 `DisplayControl` 增加 `getLevel` / `setLevel`（档位与四个开关写的是同一批 `lark-channel` 配置字段，三个入口永远同源）；WebUI 设置页新增「工作步骤展示」下拉框（`transcriptView`）。
+
+**验证**：`npm run typecheck` 0 error（含 client）；**782 tests / 45 files 全绿**（新增 **51 例**：三个新模块自带 35 例——档位→策略映射与 legacy 读法、注入提示行（**用真机会话日志里的真实 `source` 载荷**逐个核对字段名）、压缩卡渲染与控制器（顺序、序列、话题、纯文本兜底、`stop()` 后不再开卡）；`feishu-streaming.spec.ts` 新增 13 例折叠/档位/注入/压缩接线；`config.spec.ts` 1 例、`client.spec.ts` 2 例）；`npm run build` 通过，`lib/index.js` 与受跟踪的 `client/client.js` 均已重建。另跑了一次**只建实体、不发送**的整卡探针（`~/.dsh/probe-step-card-panel.py`，用例与结果见 [`docs/feishu-capabilities.md`](./docs/feishu-capabilities.md) §2.3.1）：本批产出的**步骤卡**（注入提示行 + 折叠推理面板 + 正文 + 工具参数/结果 + 页脚）与**压缩卡**都被 CardKit 接受（`code=0`），把面板换回 1.0 的 `collapsible` 则被拒（`10002`）——对照组有效。**真机验证（2026-09-29 01:55 重启后）**：按 09-23 那次内联媒体验证用过的同一招读回线上卡片（`im.v1.messages` + **`card_msg_content_type=user_card_content`**；不加这个参数只会拿到降级内容、只有 title 是新的），**一张真实步骤卡同时确认三件事**——`📥 注入上下文 · AGENTS.md（已更新）` 在**正文最前面**且卡内没有注入正文（由一次真实的 `agent-instructions/replace` 注入触发）、推理面板 `collapsible_panel` + **`expanded:false`（默认收起真的生效）**、默认「详细」档的工具段完整；元素顺序与页脚正确，写入链 seq 1→4 完好、无 `230020`。WebUI 半边也已核对：启动页拼出的插件包里含 `transcriptView*` 全部键与「工作步骤展示」文案。**仍未真机验**：压缩卡三态（需一次真压缩）、`/display compact|verbose` 的观感切换。
+
+**English**: four things in one batch. (1) A new `transcriptView` setting mirroring the WebUI's `ui-chat.transcriptView` (`compact`/`standard`/`detailed`/`verbose`, default `detailed`, same wording), switchable from `/display <level>`, from four buttons on the `/display` card, and from the WebUI settings page; the two WebUI legacy spellings (`normal`, `expanded`) both read as `detailed` and anything unreadable falls back to the default. A level only projects onto render axes (compact = no reasoning text + tool counts; standard = reasoning first line + one summary line per call; detailed = the exact pre-level behavior; verbose = whole reasoning + 4x payload caps), and it is a BASELINE: the four existing switches are ANDed in and can only ever remove detail, so an upgrade cannot re-enable something a deployment had turned off. Feishu deliberately does NOT merge cards across a turn — the WebUI's folding axes have no visual equivalent when one step is one card. "Untruncated" at `verbose` honestly means four times the cap, because a card over ~30 KB is refused whole and would show nothing. (2) Reasoning is now a collapsed `collapsible_panel` (the 1.0-era `collapsible` tag is refused with `10002 not support tag` — verified with a send-free `cardkit.card.create` probe plus a bogus-tag control), which also lifts the information loss: the 200-character cut only ever existed because an unfolded chain filled the screen. (3) A compaction card finally reports what used to be invisible: `compaction/start` opens it, `compaction/summary` adds a details line above a folded, 200-character-capped summary, and `compaction/end` closes it green or red with the failure reason and an explicit "no summary was produced" — never assuming a summary exists, since neither a failed attempt nor a `compaction/prune` emits one. (4) Every injected context message now adds ONE metadata-only notice line at the top of the step card whose request reads it (`compact-checkpoint` and `tool-jobs` stay silent, unknown kinds are named but never dumped), buffered session-side when it arrives before `step/start` (6.8%, all of them compaction re-injections) so `resetStep` cannot lose it; the proposed "append before the footer" position has zero occurrences in the durable log and is not implemented. Typecheck clean, 782 tests across 45 files pass (51 new, using real `source` payloads copied from this machine's session logs), artifacts rebuilt.
+
 ### 变更：步骤卡区分「请求还没发出 / 已发出等待 / 思考中 / 回复中」（O20 方案 2，`src/feishu-streaming.ts` / `src/i18n.ts`，2026-09-29）
 
 **问题**（使用者原话）：「卡片就是在模型输出首字之前的那个卡片，和模型开始思考的卡片要区分开来」。占位卡在 `step/start` 就发出，而那一刻 DSH **还没组装、更没发出**请求，标题却写着「🧠 深度思考中…」——该说「等待」的时候说「思考」；等模型真的开始思考时，插件手里**没有任何实时信号**（0.1.3 起 token 级增量不再是持久事件，`assistant/chunk` 已死，代码里那段是只累加不发卡的历史遗留），只能等整条消息落地后一次性写进同一张卡，标题此刻已经是「回复」——该说「思考」的时候又说了「回复」。

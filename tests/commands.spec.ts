@@ -82,6 +82,9 @@ const translations: CommandTranslations = {
   displayState: (label: string, enabled: boolean) => `${label}: ${enabled ? 'on' : 'off'}`,
   displaySet: (label: string, enabled: boolean) => `${label} set to ${enabled ? 'on' : 'off'}`,
   displayUnknown: (value: string) => `Unknown: ${value}`,
+  displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
+  displayLevelSet: name => `level set to ${name}`,
+  displayLevelLabel: 'Level',
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -98,6 +101,8 @@ const stubShowReasoning = {
 const stubDisplay: DisplayControl = {
   get: () => ({ reasoning: true, tools: true, args: true, results: true }),
   set: vi.fn(),
+  getLevel: () => 'detailed',
+  setLevel: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -241,6 +246,8 @@ describe('/display command', () => {
     const display: DisplayControl = {
       get: () => ({ reasoning: true, tools: false, args: true, results: false }),
       set: vi.fn(),
+      getLevel: () => 'detailed',
+      setLevel: vi.fn(),
     }
     const result = handleDisplayCommand(invocation(''), translations, display)
     expect(result.kind).toBe('success')
@@ -255,6 +262,8 @@ describe('/display command', () => {
     const display: DisplayControl = {
       get: () => ({ reasoning: true, tools: true, args: true, results: true }),
       set,
+      getLevel: () => 'detailed',
+      setLevel: vi.fn(),
     }
     const result = handleDisplayCommand(invocation('tools off'), translations, display)
     expect(set).toHaveBeenCalledWith('tools', false)
@@ -266,6 +275,8 @@ describe('/display command', () => {
     const display: DisplayControl = {
       get: () => ({ reasoning: true, tools: true, args: true, results: true }),
       set,
+      getLevel: () => 'detailed',
+      setLevel: vi.fn(),
     }
     handleDisplayCommand(invocation('arguments 0'), translations, display)
     handleDisplayCommand(invocation('thinking 1'), translations, display)
@@ -277,6 +288,8 @@ describe('/display command', () => {
     const display: DisplayControl = {
       get: () => ({ reasoning: true, tools: true, args: true, results: true }),
       set: vi.fn(),
+      getLevel: () => 'detailed',
+      setLevel: vi.fn(),
     }
     expect(handleDisplayCommand(invocation('nope on'), translations, display).kind).toBe('error')
     expect(handleDisplayCommand(invocation('tools'), translations, display).kind).toBe('error')

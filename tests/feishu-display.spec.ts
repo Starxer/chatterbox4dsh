@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DISPLAY_KEYS, renderDisplayCard, startFeishuDisplay } from '../src/feishu-display.ts'
 import type { DisplayToggleKey } from '../src/commands.ts'
+import type { TranscriptView } from '../src/display-level.ts'
 import { translationsFor } from '../src/i18n.ts'
 
 const t = translationsFor('zh')
@@ -8,6 +9,21 @@ const tEn = translationsFor('en')
 
 function buttonsOf(card: any): any[] {
   return card.body.elements.filter((el: any) => el.tag === 'button')
+}
+
+/** Only the four SWITCH buttons (the card also carries four level buttons). */
+function switchesOf(card: any): any[] {
+  return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.key !== undefined)
+}
+
+/** Only the four LEVEL buttons. */
+function levelsOf(card: any): any[] {
+  return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.level !== undefined)
+}
+
+/** The switch-card input for one set of switches at the default level. */
+function cardFor(switches: Record<DisplayToggleKey, boolean>, level = 'detailed' as const): any {
+  return { level, switches }
 }
 
 /**
@@ -31,17 +47,18 @@ const ALL_ON: Record<DisplayToggleKey, boolean> = { reasoning: true, tools: true
 
 describe('renderDisplayCard', () => {
   it('renders one button per switch with its state', () => {
-    const card = renderDisplayCard(ALL_ON, t) as any
+    const card = renderDisplayCard(cardFor(ALL_ON), t) as any
     expect(card.header.title.content).toBe('📇 卡片显示')
     expect(DISPLAY_KEYS).toEqual(['reasoning', 'tools', 'args', 'results'])
-    const buttons = buttonsOf(card)
-    expect(buttons).toHaveLength(4)
+    // Four level buttons on top, then one button per switch.
+    expect(levelsOf(card)).toHaveLength(4)
+    expect(switchesOf(card)).toHaveLength(4)
     expect(buttonFor(card, 'tools').text.content).toBe('✅ 工具调用：开')
     expect(buttonFor(card, 'tools').type).toBe('primary')
   })
 
   it('declares the callback through behaviors, never a top-level value', () => {
-    const card = renderDisplayCard(ALL_ON, t) as any
+    const card = renderDisplayCard(cardFor(ALL_ON), t) as any
     for (const button of buttonsOf(card)) {
       // A CardKit card instance only honours `behaviors`; a top-level `value`
       // is dropped and the button does nothing when clicked.
@@ -53,7 +70,7 @@ describe('renderDisplayCard', () => {
   })
 
   it('marks a disabled switch and carries the TARGET value, not a toggle marker', () => {
-    const card = renderDisplayCard({ ...ALL_ON, reasoning: false, args: false }, t) as any
+    const card = renderDisplayCard(cardFor({ ...ALL_ON, reasoning: false, args: false }), t) as any
     const reasoning = buttonFor(card, 'reasoning')
     expect(reasoning.text.content).toBe('⬜ 思考过程：关')
     expect(reasoning.type).toBe('default')
@@ -63,7 +80,7 @@ describe('renderDisplayCard', () => {
   })
 
   it('localizes the card', () => {
-    const card = renderDisplayCard(ALL_ON, tEn) as any
+    const card = renderDisplayCard(cardFor(ALL_ON), tEn) as any
     expect(card.header.title.content).toBe('📇 Card display')
     expect(buttonFor(card, 'results').text.content).toBe('✅ Results: on')
     expect(payloadOf(card, 'results')).toMatchObject({ p: 'display' })
@@ -71,9 +88,9 @@ describe('renderDisplayCard', () => {
   })
 
   it('hides the argument and result switches while tool display is off', () => {
-    const card = renderDisplayCard({ ...ALL_ON, tools: false }, t) as any
+    const card = renderDisplayCard(cardFor({ ...ALL_ON, tools: false }), t) as any
     // Only the two switches that still do something remain.
-    expect(buttonsOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
+    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
     expect(buttonFor(card, 'tools').text.content).toBe('⬜ 工具调用：关')
     // The card says why two switches are missing instead of just looking broken.
     const markdown = card.body.elements
@@ -84,24 +101,36 @@ describe('renderDisplayCard', () => {
   })
 
   it('brings the hidden switches back when tool display is re-enabled', () => {
-    const card = renderDisplayCard({ ...ALL_ON, tools: true, args: false, results: false }, t) as any
-    expect(buttonsOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools', 'args', 'results'])
+    const card = renderDisplayCard(cardFor({ ...ALL_ON, tools: true, args: false, results: false }), t) as any
+    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools', 'args', 'results'])
     // The stored off values are preserved, not silently forced on.
     expect(buttonFor(card, 'args').text.content).toBe('⬜ 参数：关')
     expect(buttonFor(card, 'results').text.content).toBe('⬜ 结果：关')
   })
 })
 
-/** Mutable display control stub: the setter records the call AND updates state. */
-function makeDisplay(state: Record<DisplayToggleKey, boolean>) {
+/**
+ * Mutable display control stub: the setters record the call AND update state
+ * (and the `state` object is the same reference `get`/`getLevel` read, so a
+ * repaint after a write sees the new value — exactly like the volatile config
+ * references in production).
+ */
+function makeDisplay(state: Record<DisplayToggleKey, boolean>, level: TranscriptView = 'detailed') {
   const spy = vi.fn()
+  const levelSpy = vi.fn()
   return {
     spy,
+    levelSpy,
     control: {
       get: () => state,
       set: (key: DisplayToggleKey, value: boolean): void => {
         spy(key, value)
         state[key] = value
+      },
+      getLevel: () => level,
+      setLevel: (next: TranscriptView): void => {
+        levelSpy(next)
+        level = next
       },
     },
   }
@@ -169,7 +198,7 @@ describe('startFeishuDisplay', () => {
     // The refreshed card reflects the persisted value.
     expect(buttonFor(lastCard(1), 'tools').text.content).toBe('⬜ 工具调用：关')
     // ...and drops the switches that no longer do anything.
-    expect(buttonsOf(lastCard(1)).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
+    expect(switchesOf(lastCard(1)).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
     handle.stop()
   })
 
@@ -182,6 +211,8 @@ describe('startFeishuDisplay', () => {
       channel: channel as any,
       display: {
         get: () => state,
+        getLevel: () => 'detailed' as const,
+        setLevel: () => undefined,
         // Persisting is asynchronous: the readable snapshot only changes at the
         // end, exactly like `settings.mutate` / `settingsScope.get()`.
         set: (key: DisplayToggleKey, value: boolean) => persisted.then(() => { state[key] = value }),

@@ -47,6 +47,7 @@ function createForm(overrides: Partial<LarkSettingsValues> = {}): FormHarness {
       showToolCalls: true,
       showToolArgs: true,
       showToolResults: true,
+      transcriptView: 'detailed',
       locale: 'auto',
       cardImages: 'workspace',
       ...overrides,
@@ -298,6 +299,32 @@ describe('Lark settings client plugin', () => {
     await screen.findByDisplayValue('cli_existing')
     expect(screen.queryByText('scanToConfigure')).toBeNull()
     expect(screen.queryByText('statusConnected')).toBeNull()
+  })
+
+  it('renders the work-detail level with the WebUI\'s four names', async () => {
+    stubStatus()
+    const harness = mount(createForm())
+    renderSettings(harness)
+
+    await screen.findByDisplayValue('cli_existing')
+    const level = screen.getByLabelText('transcriptView') as HTMLSelectElement
+    expect(level.value).toBe('detailed')
+    // Same four values and the same order as the DSH WebUI's own setting.
+    expect([...level.options].map(option => option.value)).toEqual(['compact', 'standard', 'detailed', 'verbose'])
+  })
+
+  it('writes the level it was given, including the legacy spellings', async () => {
+    stubStatus()
+    const form = createForm({ transcriptView: 'compact' })
+    renderSettings(mount(form))
+
+    await screen.findByDisplayValue('cli_existing')
+    expect((screen.getByLabelText('transcriptView') as HTMLSelectElement).value).toBe('compact')
+    // A stored `expanded` (0.1.x) reads as `detailed` in 0.2.0; the page must
+    // show that, not silently render the first option.
+    renderSettings(mount(createForm({ transcriptView: 'expanded' as any })))
+    expect((await screen.findAllByLabelText('transcriptView'))[1] as HTMLSelectElement)
+      .toHaveProperty('value', 'detailed')
   })
 
   it('renders every display toggle, the image mode and the plugin language selector', async () => {

@@ -20,6 +20,7 @@
  */
 
 import type { DisplayControl, DisplayToggleKey } from './commands.ts'
+import { TRANSCRIPT_VIEWS, type TranscriptView } from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { decodeCardValue } from './card-action.ts'
@@ -69,16 +70,54 @@ function isDisplayKey(value: unknown): value is DisplayToggleKey {
   return typeof value === 'string' && (DISPLAY_KEYS as readonly string[]).includes(value)
 }
 
-/** Render the switch card with every switch's current state marked. */
-export function renderDisplayCard(state: Record<DisplayToggleKey, boolean>, t: Translations): object {
-  const elements: object[] = [{ tag: 'markdown', content: t.displayCardHint }]
+/** One render's inputs: the level's own state plus the four switches. */
+export interface DisplayCardState {
+  /** The active work-detail level (`transcriptView`). */
+  level: TranscriptView
+  /** The four card-display switches. */
+  switches: Record<DisplayToggleKey, boolean>
+}
+
+/** True when `value` is one of the four levels. */
+function isLevel(value: unknown): value is TranscriptView {
+  return typeof value === 'string' && (TRANSCRIPT_VIEWS as readonly string[]).includes(value)
+}
+
+/**
+ * Render the display card: the four levels on top, the four switches below.
+ *
+ * The levels are buttons like the switches, and for the same reason: this card
+ * invites several taps in a row and every tap posts a FRESH card (关键坑 11), so
+ * a payload carrying the target value is idempotent under a duplicated click.
+ */
+export function renderDisplayCard(state: DisplayCardState, t: Translations): object {
+  const elements: object[] = [
+    { tag: 'markdown', content: t.displayCardLevelTitle },
+    // One line saying what the active level means — the same words the WebUI
+    // settings page uses, so the two pages can be read side by side.
+    { tag: 'markdown', content: t.displayLevelHint(state.level), text_size: 'notation' },
+  ]
+  for (const level of TRANSCRIPT_VIEWS) {
+    const active = level === state.level
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayLevelName(level), active) },
+      // The ACTIVE level is primary so the current choice reads at a glance;
+      // the rest stay grey.
+      type: active ? 'primary' : 'default',
+      behaviors: [{ type: 'callback', value: { p: 'display', level, value: !active } }],
+    })
+  }
+  elements.push({ tag: 'hr' })
+  elements.push({ tag: 'markdown', content: t.displayCardHint })
+  const switches = state.switches
   for (const key of DISPLAY_KEYS) {
     // Arguments and results only describe tool calls, so with tool display off
     // they have nothing to act on. Hide their switches rather than offer a
     // toggle that cannot change anything; the stored values are left untouched
     // and the switches come back with tool display.
-    if (!state.tools && (key === 'args' || key === 'results')) continue
-    const enabled = state[key]
+    if (!switches.tools && (key === 'args' || key === 'results')) continue
+    const enabled = switches[key]
     elements.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel(key), enabled) },
@@ -95,7 +134,7 @@ export function renderDisplayCard(state: Record<DisplayToggleKey, boolean>, t: T
     })
   }
   // Say why two switches are missing, so the card does not just look broken.
-  if (!state.tools) {
+  if (!switches.tools) {
     elements.push({ tag: 'markdown', content: t.displayCardHiddenByTools, text_size: 'notation' })
   }
   elements.push({ tag: 'markdown', content: t.displayCardNote, text_size: 'notation' })
@@ -131,7 +170,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
    *   the lookup so a stale entry cannot be clicked again later.
    */
   const post = async (chat: ConversationMessage, supersededMessageId?: string): Promise<string | undefined> => {
-    const card = renderDisplayCard(display.get(), getTranslations())
+    const card = renderDisplayCard({ level: display.getLevel(), switches: display.get() }, getTranslations())
     const opts = topicOpts(chat)
     const cardId = await channel.createCardInstance(card)
     const result = await channel.sendCardByReference(chat.chatId, cardId, opts)
@@ -144,6 +183,16 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     return result.messageId
   }
 
+  /** Repaint after an action; a failed write honestly shows the old state. */
+  const repaint = async (chat: ConversationMessage, messageId: string): Promise<void> => {
+    try {
+      await post(chat, messageId)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: display card refresh failed: ${msg}`)
+    }
+  }
+
   const onCardAction = async (evt: DisplayCardEvent): Promise<void> => {
     const messageId = evt.messageId
     if (messageId === undefined) return
@@ -151,12 +200,6 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     // a plain object. `decodeCardValue` accepts either.
     const parsed = decodeCardValue(evt.action?.value)
     if (parsed === undefined || parsed.p !== 'display') return
-    // Past this point the payload is ours, so a rejection is worth a log line:
-    // a silently ignored click is exactly how this card first failed.
-    if (!isDisplayKey(parsed.key) || typeof parsed.value !== 'boolean') {
-      console.log(`dsh-feishu: [display] ignored malformed action key=${String(parsed.key)} value=${String(parsed.value)}`)
-      return
-    }
     const chat = byCard.get(messageId)
     if (chat === undefined) {
       console.log(`dsh-feishu: [display] action for unknown card message=${messageId}`)
@@ -165,21 +208,33 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     // The settings write commits asynchronously (the scope's snapshot is only
     // replaced after it persists), so it MUST be awaited before re-reading —
     // otherwise the refreshed card repaints the OLD state.
+    //
+    // Past this point the payload is ours, so a rejection is worth a log line:
+    // a silently ignored click is exactly how this card first failed.
+    const level = parsed.level
+    if (isLevel(level) && typeof parsed.value === 'boolean') {
+      try {
+        await display.setLevel(level)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display level write failed: ${msg}`)
+      }
+      await repaint(chat, messageId)
+      console.log(`dsh-feishu: [display] level=${level} card=${messageId}`)
+      return
+    }
+    if (!isDisplayKey(parsed.key) || typeof parsed.value !== 'boolean') {
+      console.log(`dsh-feishu: [display] ignored malformed action key=${String(parsed.key)} level=${String(parsed.level)}`)
+      return
+    }
     try {
       await display.set(parsed.key, parsed.value)
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       logger.warn(`dsh-feishu: display switch write failed: ${msg}`)
     }
-    // Repaint either way: after a failed write the card honestly shows the
-    // unchanged state instead of going silent.
-    try {
-      await post(chat, messageId)
-      console.log(`dsh-feishu: [display] ${parsed.key}=${String(parsed.value)} card=${messageId}`)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      logger.warn(`dsh-feishu: display card refresh failed: ${msg}`)
-    }
+    await repaint(chat, messageId)
+    console.log(`dsh-feishu: [display] ${parsed.key}=${String(parsed.value)} card=${messageId}`)
   }
   const unsubscribe = channel.onCardAction(onCardAction)
 

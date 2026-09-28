@@ -79,7 +79,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 | 组件 | tag | 说明 | dsh-feishu 现状 | 潜在场景 |
 |---|---|---|---|---|
-| **可折叠面板** | `collapsible_panel` | 折叠/展开内容块 | ⚠️ **组件已验证可用、插件尚未使用**（2026-09-29 探针，见下） | 🔥 压缩摘要、长 reasoning、长工具输出 |
+| **可折叠面板** | `collapsible_panel` | 折叠/展开内容块 | ✅ **已用于真机**（2026-09-29：推理段与压缩摘要；探针见下） | 🔥 压缩摘要、长 reasoning、长工具输出 |
 | **标签页** | `tab` + `tab_content` | 多标签页切换 | ❌ 未使用 | 多 step 结果分页查看 |
 | 分割线 | `hr` | 水平分割线 | ✅ 已使用 | — |
 | 注释 | `note` | 底部注释（Card JSON 1.0） | ⚠️ 2.0 不支持 | 用 `markdown` + `text_size: 'notation'` 替代 |
@@ -96,6 +96,28 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 | 对照：伪造 tag `collapsible_bogus` | `code=10002 not support tag` ❌（对照有效 ⇒ 上面的成功有意义） |
 
 结论：**tag 必须写 `collapsible_panel`**；初始展开态的字段名（`expanded` vs `default_expanded`）用 create 分不出来，按 `expanded` 实现、真机再校（纯外观，不影响结构，也不会让卡片发不出去）。
+
+**2026-09-29 起已在产品里使用**：步骤卡的推理段（`src/feishu-streaming.ts` 的 `renderStepCard`）与压缩卡的摘要（`src/feishu-compaction.ts`）都用 `collapsible_panel` + `expanded:false` + `header.title` + `elements`，是把上面这份探针 JSON 原样搬进渲染器的。
+
+**同日的第二个探针（`~/.dsh/probe-step-card-panel.py`）**：上面验的是面板**自己**，这里再验**整张卡**——因为真实卡片是 markdown + `hr` + `text_size: notation` + 面板混排，而 `cardkit.card.create` 会对整份 JSON 做服务端校验。三个用例（只建实体、不发送）：
+
+| 用例 | 结果 |
+|---|---|
+| A 步骤卡（注入提示行 + 折叠推理面板 + 正文 + 工具参数/结果 + 页脚两行） | `code=0`，拿到 `card_id`（1457 字节）✅ |
+| B 压缩卡（详情行 + 折叠摘要） | `code=0`，拿到 `card_id`（583 字节）✅ |
+| C 对照：A 的卡片把面板换回 1.0 的 `collapsible` | `code=10002 not support tag` ❌ |
+
+⇒ 本批产出的两种卡**服务端可创建**；`expanded:false` 的真实渲染态另用**读回线上卡片**确认（见下一条）。
+
+**2026-09-29 01:55 真机读回（唯一能看见「渲染成什么样」的服务端手段）**：`GET /im/v1/messages/<message_id>` 默认只回**降级**内容（CardKit 2.0 卡被折成一句「请升级至最新版本客户端」，**只有 title 是新的**）；加 **`?card_msg_content_type=user_card_content`** 才拿到**当前渲染态**的完整卡片 JSON。本批上线后的第一张真实步骤卡读回结果：
+
+```
+0  markdown           📥 注入上下文 · AGENTS.md（已更新）
+1  collapsible_panel  expanded=false  title=💬 **推理** · 1.9s
+2  hr → 📝 **消息** → 🔧 **工具调用** + 参数 + 结果 → 页脚
+```
+
+⇒ **推理折叠默认收起**（`expanded:false`）、**注入提示行在正文最前面且卡内没有注入正文**、档位是默认「详细」——三项一次读完。**仍未验证的一点**：真机上「初始到底是不是收起」——`expanded` 若被忽略就会默认展开；若真机看到的是展开，只改一个字段名（`default_expanded`）即可，不影响结构、也不会让卡片发不出去。
 
 ### 2.4 交互回调
 
@@ -200,8 +222,8 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 | 功能 | 组件 | 状态 | 说明 |
 |---|---|---|---|
 | `/model` 下拉选择 | `select_static` | ✅ 已实现 | `feishu-model-select.ts`：provider → model → reasoning 三步卡片 |
-| Reasoning 可折叠 | `collapsible_panel` | 🔲 未实现（组件已验证可用） | 当前 reasoning 只展示 **200 字预览**（不展示完整思维链），text 超 3000 字已改为拆溢出续卡 |
-| 长工具输出可折叠 | `collapsible_panel` | 🔲 未实现（组件已验证可用） | bash/read 等工具的长输出也适用 |
+| Reasoning 可折叠 | `collapsible_panel` | ✅ **已实现**（2026-09-29，O5） | 默认收起，头部带推理时长与思考 token 数；`detailed` 档正文 200 字、`verbose` 档给全文——折叠之后「只给开头」这条信息损失不再必要 |
+| 长工具输出可折叠 | `collapsible_panel` | 🔲 未实现（组件已可用于此处） | bash/read 等工具的长输出仍走**截断预览**（`detailed` 1500 字符 / `verbose` 6000 字符）；折叠它需要一个能记住展开状态的写入策略，单独一批做 |
 
 ### P1 — 后续实现
 

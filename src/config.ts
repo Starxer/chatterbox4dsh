@@ -1,6 +1,7 @@
 import z from '@deepseek-ai/schemastery'
 import type { Volatile } from '@deepseek-ai/cordis'
 import type { PluginLocale } from './i18n.ts'
+import { DEFAULT_TRANSCRIPT_VIEW, TRANSCRIPT_VIEWS, parseTranscriptView, type TranscriptView } from './display-level.ts'
 
 export type DomainName = 'feishu' | 'lark'
 export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
@@ -52,6 +53,13 @@ export interface Config {
   showToolArgs?: boolean
   /** Show each tool call's result preview (requires `showToolCalls`). */
   showToolResults?: boolean
+  /**
+   * How much work detail a step card carries, mirroring the WebUI's
+   * `ui-chat.transcriptView` (`compact` / `standard` / `detailed` / `verbose`,
+   * default `detailed`). The four switches above still apply: a level can only
+   * ever show LESS, never more (see {@link ../display-level.ts}).
+   */
+  transcriptView?: TranscriptView
   /** Plugin language; `auto` (default) follows the DSH browser-language preference. */
   locale?: PluginLocale
   /** How media (image / video / audio) referenced in card text is handled; see {@link CardImageMode}. */
@@ -153,7 +161,7 @@ export function readField<T>(field: Volatile<T> | T | undefined): T | undefined 
 export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
   'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
-  'showToolArgs' | 'showToolResults'>> {
+  'showToolArgs' | 'showToolResults' | 'transcriptView'>> {
   appSecret?: string
   provider?: string
   model?: string
@@ -208,6 +216,7 @@ export const ConfigSchema = z.object({
   showToolCalls: z.boolean().default(true).volatile().description('Show tool calls on step cards; when false a tool-only step sends no card'),
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
+  transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact counts tool calls only, standard adds one summary line per call, detailed (default) adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
   cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Media the model references in card text (image / video / audio): text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable media path'),
   cardMediaLimit: z.number().min(CARD_MEDIA_LIMIT.min).max(CARD_MEDIA_LIMIT.max).default(CARD_MEDIA_LIMIT.default).volatile().description('Most media (image / video / audio) one card may inline; anything past the limit stays readable text. Feishu itself allows about 66 videos per card.'),
@@ -241,6 +250,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolCalls: readField(config.showToolCalls) ?? true,
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
+    transcriptView: parseTranscriptView(readField(config.transcriptView)),
     cardImages: readField(config.cardImages) ?? 'workspace',
     // Clamped rather than trusted: `ConfigInput` also admits a plain object, so
     // a value that never went through the schema must not reach the hydrator.

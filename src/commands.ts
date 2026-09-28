@@ -5,6 +5,7 @@ import type { LlmProviderInfo, LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
+import { type TranscriptView } from './display-level.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -56,7 +57,7 @@ async function buildModelCatalog(
  *  `showToolCalls`, `showToolArgs`, `showToolResults` in the config schema). */
 export type DisplayToggleKey = 'reasoning' | 'tools' | 'args' | 'results'
 
-/** Read/write face for the card-display switches, shared by the `/display`
+/** Read/write face for the card-display settings, shared by the `/display`
  *  command and the WebUI settings panel (both persist the same config fields). */
 export interface DisplayControl {
   get: () => Record<DisplayToggleKey, boolean>
@@ -66,6 +67,10 @@ export interface DisplayControl {
    * (the interactive card repaints itself) MUST await this.
    */
   set: (key: DisplayToggleKey, value: boolean) => void | Promise<void>
+  /** The work-detail level (`transcriptView`), mirroring the WebUI's four. */
+  getLevel: () => TranscriptView
+  /** Persist the level. Asynchronous for the same reason as {@link set}. */
+  setLevel: (level: TranscriptView) => void | Promise<void>
 }
 
 export interface CommandTranslations {
@@ -150,6 +155,11 @@ export interface CommandTranslations {
   readonly displayState: (label: string, enabled: boolean) => string
   readonly displaySet: (label: string, enabled: boolean) => string
   readonly displayUnknown: (value: string) => string
+  /** One work-detail level's own name, spelled as the WebUI spells it. */
+  readonly displayLevelName: (level: TranscriptView) => string
+  readonly displayLevelSet: (name: string) => string
+  /** Shown next to the level in the text listing. */
+  readonly displayLevelLabel: string
 }
 
 /**
@@ -551,12 +561,35 @@ function parseDisplayValue(value: string | undefined): boolean | undefined {
 
 const DISPLAY_KEYS: readonly DisplayToggleKey[] = ['reasoning', 'tools', 'args', 'results']
 
+/** Accepted level spellings, including the WebUI's two legacy ones. */
+const DISPLAY_LEVEL_ALIASES: Record<string, TranscriptView> = {
+  compact: 'compact',
+  simple: 'compact',
+  standard: 'standard',
+  normal: 'detailed',
+  detailed: 'detailed',
+  detail: 'detailed',
+  verbose: 'verbose',
+  expanded: 'verbose',
+  full: 'verbose',
+}
+
 /**
- * Handle `/display [reasoning|tools|args|results] [on|off]`. With no argument
- * it reports all four card-display switches; with a key and value it flips
- * that one. The values are the same config fields the WebUI settings panel
- * writes (`showReasoning` / `showToolCalls` / `showToolArgs` /
+ * Handle `/display [reasoning|tools|args|results] [on|off]` and
+ * `/display <level>`.
+ *
+ * With no argument it reports the level plus all four switches; with a switch
+ * and a value it flips that one; with a bare level name it switches the level.
+ * All of them are the same config fields the WebUI settings panel writes
+ * (`transcriptView` / `showReasoning` / `showToolCalls` / `showToolArgs` /
  * `showToolResults`), so the two surfaces always agree.
+ *
+ * Note the WebUI's own legacy reading: a stored `normal` means `detailed` and a
+ * stored `expanded` also means `detailed` (0.2.0 no longer offers either). The
+ * `/display` aliases are deliberately NOT that mapping — this is a command the
+ * user types NOW, so `expanded` is the natural spelling for the most detailed
+ * level ("完全展开"). {@link parseTranscriptView} still reads a stored value the
+ * WebUI way, and that is the only thing that decides what an upgrade does.
  */
 export function handleDisplayCommand(
   invocation: CommandInvocation,
@@ -566,10 +599,25 @@ export function handleDisplayCommand(
   const raw = invocation.rawInput.trim().toLowerCase()
   if (raw === '') {
     const state = display.get()
-    const lines = DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key]))
+    const level = display.getLevel()
+    const lines = [
+      `${t.displayLevelLabel}: ${t.displayLevelName(level)}`,
+      ...DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key])),
+    ]
     return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
   }
   const [rawKey, rawValue] = raw.split(/\s+/u)
+
+  // A bare level name (one token) switches the level. Two tokens keep the old
+  // switch semantics, so an existing `/display tools off` is untouched.
+  if (rawValue === undefined) {
+    const level = DISPLAY_LEVEL_ALIASES[rawKey ?? '']
+    if (level !== undefined) {
+      display.setLevel(level)
+      return { kind: 'success', text: t.displayLevelSet(t.displayLevelName(level)) }
+    }
+  }
+
   const key = resolveDisplayKey(rawKey)
   if (key === undefined) {
     return { kind: 'error', text: `${t.displayUnknown(rawKey ?? raw)}\n${t.displayUsage}` }

@@ -26,6 +26,12 @@ import { chunkText } from './text-chunk.ts'
 import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
 import type { CardImageHydrator } from './card-images.ts'
+import {
+  DETAILED_POLICY, REASONING_HEAD_CAP, REASONING_PREVIEW_CAP,
+  resolveDisplayPolicy, type DisplayPolicy, type TranscriptView,
+} from './display-level.ts'
+import { injectionNotice } from './injection-notice.ts'
+import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -134,6 +140,13 @@ export interface FeishuStreamingDeps {
   showToolArgs?: () => boolean
   /** Whether to show each tool call's result preview. */
   showToolResults?: () => boolean
+  /**
+   * The work-detail level (`transcriptView`), read live. Together with the four
+   * switches above it resolves to the {@link DisplayPolicy} every render uses
+   * (see display-level.ts): the level sets the baseline and each switch can
+   * only take detail away.
+   */
+  transcriptView?: () => TranscriptView
   /** Current translations for the user's language. */
   getTranslations?: () => Translations
   /**
@@ -313,6 +326,14 @@ interface SessionStepState {
   } | undefined
   /** Chat info for the current step. */
   chat: ConversationMessage | undefined
+  /**
+   * Context-injection notice lines claimed by the CURRENT step, rendered at the
+   * very top of its card. Per-step: `resetStep` clears them, because an
+   * injection belongs to the request it precedes (see §1.5 of the parity
+   * design). Injections that arrive BEFORE `step/start` wait in
+   * {@link pendingInjections} and are moved in here by the `step/start` branch.
+   */
+  injections: string[]
   /** Whether the last assistant/message sent a step card with content. */
   lastStepHadContent: boolean
   // --- Timing fields (event.time from mux stream) ---
@@ -366,9 +387,31 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, getTranslations, noteDetachedJob, hydrateImages, warmImages } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
+
+  /**
+   * Injection notice lines that arrived BEFORE the step which will claim them.
+   *
+   * Session-scoped on purpose. `resetStep` runs at `step/start`, so a field on
+   * the step state would be wiped by the very event that opens the card the
+   * injection belongs on: 6.8% of injections (177/2589, measured) land in the
+   * gap before `step/start` — they are the plugin/skill re-injections a
+   * compaction transaction performs — and turning them into step state at the
+   * wrong moment would silently drop exactly those.
+   */
+  const pendingInjections = new Map<string, string[]>()
+
+  /**
+   * The compaction card writer. A compaction happens BETWEEN steps, so it never
+   * interleaves with a step card's own writes; it shares the channel only.
+   */
+  const compactionCards = createCompactionCards({
+    channel,
+    logger,
+    getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
+  })
 
   const getState = (sessionId: string): SessionStepState => {
     let state = sessionStates.get(sessionId)
@@ -396,6 +439,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         completedTime: 0,
         usage: undefined,
         contextMeta: undefined,
+        injections: [],
         sawTurnUserMessage: false,
         turnTriggeredByJob: false,
         livePhase: 'none',
@@ -415,6 +459,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.reasoning = ''
     state.text = ''
     state.toolCalls = []
+    // An injection belongs to the request it precedes, so it dies with the step
+    // that claimed it. The ones that arrived before `step/start` are held in
+    // `pendingInjections` precisely so this clear cannot lose them.
+    state.injections = []
     state.stepCardSent = false
     state.stepCardRef = undefined
     state.pendingSend = undefined
@@ -439,11 +487,28 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.livePhase = 'none'
   }
 
+  /**
+   * The display policy in force right now: the work-detail level with the four
+   * switches folded in (each switch can only take detail away).
+   *
+   * Read on every render rather than cached: every input is a `.volatile()`
+   * settings reference, so a `/display` or WebUI change applies to the very next
+   * card without remounting anything (关键坑 20 keeps them out of the connection
+   * fingerprint for the same reason).
+   */
+  const displayPolicy = (): DisplayPolicy => resolveDisplayPolicy({
+    transcriptView: transcriptView?.(),
+    showReasoning: showReasoning?.(),
+    showToolCalls: showToolCalls?.(),
+    showToolArgs: showToolArgs?.(),
+    showToolResults: showToolResults?.(),
+  })
+
   /** Whether reasoning content is rendered on cards. */
-  const reasoningShown = (): boolean => showReasoning?.() !== false
+  const reasoningShown = (): boolean => displayPolicy().reasoning !== 'off'
 
   /** Whether tool calls are rendered at all. */
-  const toolsShown = (): boolean => showToolCalls?.() !== false
+  const toolsShown = (): boolean => displayPolicy().tools !== 'off'
 
   /**
    * Whether this step has anything visible to render. A step whose only
@@ -533,9 +598,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       state.turnNumber > 0 ? state.turnNumber : undefined,
       state.stepNumber > 0 ? state.stepNumber : undefined,
       {
-        showToolArgs: showToolArgs?.() !== false,
-        showToolResults: showToolResults?.() !== false,
         ...(emptyPhase !== undefined ? { empty: emptyPhase } : {}),
+        // The resolved level+switches. No `showToolArgs`/`showToolResults` pair
+        // is passed: those two are part of the policy now, and having two ways
+        // to say the same thing is how a renderer starts disagreeing with the
+        // settings page.
+        display: displayPolicy(),
+        ...(state.injections.length > 0 ? { injections: state.injections } : {}),
         ...(state.turnTriggeredByJob ? { triggeredByJob: true } : {}),
         // The live phase only has meaning on the content-free form; passing it
         // alongside content would let a stale phase name a settled card.
@@ -1440,7 +1509,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
           toolCall.result = {
             isError,
-            content: summarizeValue(result, RESULT_CONTENT_CAP) || '',
+            content: summarizeValue(
+              result,
+              displayPolicy().fullToolOutput ? RESULT_CONTENT_CAP_FULL : RESULT_CONTENT_CAP,
+            ) || '',
             elapsed,
           }
           // tool/result carries a tool-private `meta` payload — the
@@ -1466,11 +1538,25 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         state.stepStartTime = event.time ?? Date.now()
         state.turnNumber = (event.data?.turn as number | undefined) ?? 0
         state.stepNumber = (event.data?.step as number | undefined) ?? 0
+        // Injections that arrived before this `step/start` (a compaction's
+        // re-injection, a session's opening baseline) belong to THIS step's
+        // request, so they join the first render of its card. Moved after
+        // `resetStep`, which is what cleared the per-step list.
+        const buffered = pendingInjections.get(sessionId)
+        if (buffered !== undefined && buffered.length > 0) {
+          state.injections = buffered
+          pendingInjections.delete(sessionId)
+        }
         // Stage 1 of the step card: say "thinking" NOW instead of after the
         // output lands. `step/start` is appended before the model request is
         // sent, so it is the only event that predates the reasoning. The card
         // it opens is the SAME card every later stage updates in place —
         // `assistant/message` (reasoning/text) → `tool/call` → `tool/result`.
+        //
+        // This send is UNCONDITIONAL, which is also what keeps the promise that a
+        // step carrying an injection always has a card to carry it on. If the send
+        // ever becomes conditional (a "tool-only steps post no card" policy), the
+        // injection case must stay an exception or the notice silently vanishes.
         queueStepCardSend(chat, sessionId, state)
         startPlaceholderTick(sessionId, state)
       } else if (event.type === 'step/end') {
@@ -1524,16 +1610,52 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // the turn's FIRST user message is what identifies a waking notice.
         // Only the background-job notice is marked here (`tool-jobs`, the same
         // source the Web UI attributes a "job" turn trigger from).
+        const source = (event.data as { source?: unknown } | undefined)?.source
         if (!state.sawTurnUserMessage) {
           state.sawTurnUserMessage = true
-          const source = (event.data as { source?: { kind?: unknown } } | undefined)?.source
-          if (source?.kind === 'tool-jobs') {
+          if ((source as { kind?: unknown } | undefined)?.kind === 'tool-jobs') {
             state.turnTriggeredByJob = true
             // The placeholder card is already on screen (posted at step/start,
             // which precedes this message), so repaint it with the marker.
             if (state.stepCardSent) updateStepCard(state)
           }
         }
+
+        // Every other non-`user` source is an injected context message. It gets
+        // ONE notice line at the top of the card for the step whose request
+        // reads it — never its content (the user's call, 2026-09-28) and never
+        // a card of its own.
+        const notice = injectionNotice(source, getTranslations?.() ?? translationsFor('zh'))
+        if (notice !== undefined) {
+          if (state.stepCardSent && !state.stepEnded) {
+            // The step's card is on screen and the step is still running: this
+            // injection precedes a request that has not been sent yet, so it
+            // goes on top of the card the user is already looking at.
+            state.injections.push(notice)
+            updateStepCard(state)
+          } else if (!state.stepEnded && state.stepStartTime > 0) {
+            // Inside a step whose card is still inside its debounce window: the
+            // pending send rebuilds from this state, so adding it here is enough.
+            state.injections.push(notice)
+          } else {
+            // Between steps (or before the first one): DSH materializes an
+            // injection when a step CLAIMS its inbox, so it belongs to the NEXT
+            // step's request. Buffer it; `step/start` moves it in.
+            const buffered = pendingInjections.get(sessionId) ?? []
+            buffered.push(notice)
+            pendingInjections.set(sessionId, buffered)
+          }
+        }
+      } else if (event.type === 'compaction/start') {
+        // A compaction happens between steps: `start` opens a card, `summary`
+        // fills it in, `end` closes it. The three branches share one card per
+        // session (see feishu-compaction.ts).
+        compactionCards.start(chat, sessionId, typeof event.data?.sourceCommandId === 'string')
+      } else if (event.type === 'compaction/summary') {
+        compactionCards.applySummary(chat, sessionId, compactionFacts(event.data))
+      } else if (event.type === 'compaction/end') {
+        const failure = event.data?.error
+        compactionCards.end(chat, sessionId, typeof failure === 'string' && failure !== '' ? failure : undefined)
       } else if (event.type === 'deliverables/presented') {
         // DSH's `present` tool declares the turn's final deliverables (Web UI
         // renders them as a card row). Collect them for the Turn Complete
@@ -1826,6 +1948,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       writeSlots.clear()
       for (const entry of flushPromises.values()) entry.resolve()
       flushPromises.clear()
+      pendingInjections.clear()
+      compactionCards.stop()
     },
     consumeReasoning,
     consumeLastStepHadContent,
@@ -1833,8 +1957,43 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 }
 
-/** Cap for one tool call's kept raw result content (characters). */
+/**
+ * Read a `compaction/summary` payload into the card's own facts.
+ *
+ * Every field is optional in practice: a provider that reports no usage, a
+ * summary whose blocks carry no text, or a prune (which has no summary event at
+ * all) must all still render something honest rather than a hole.
+ *
+ * @param data - the event's `data`.
+ * @returns the facts the compaction card can state; absent fields stay absent.
+ */
+function compactionFacts(data: unknown): CompactionFacts {
+  const record = (data ?? {}) as Record<string, unknown>
+  const seqs = Array.isArray(record.shadowedSeqs) ? record.shadowedSeqs.length : undefined
+  const tokens = typeof record.shadowedTokenCount === 'number' ? record.shadowedTokenCount : undefined
+  const provider = typeof record.provider === 'string' && record.provider !== '' ? record.provider : undefined
+  const model = typeof record.model === 'string' && record.model !== '' ? record.model : undefined
+  const summary = summaryText(record.summary)
+  return {
+    ...(seqs !== undefined ? { foldedItems: seqs } : {}),
+    ...(tokens !== undefined ? { foldedTokens: tokens } : {}),
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(summary !== undefined ? { summary } : {}),
+  }
+}
+
+/**
+ * Cap for one tool call's KEPT raw result content (characters).
+ *
+ * What is remembered, not what is rendered: a card can only render what was
+ * kept, so the `verbose` level keeps four times as much (below) instead of
+ * re-reading a result the event will never carry again.
+ */
 const RESULT_CONTENT_CAP = 1500
+
+/** Kept-result cap for the `verbose` level (see {@link RESULT_CONTENT_CAP}). */
+const RESULT_CONTENT_CAP_FULL = 6000
 
 /**
  * Cap on remembered deliverables per turn. DSH's `present` tool already caps a
@@ -1887,11 +2046,21 @@ const PLACEHOLDER_TICK_MS = 5_000
 /** Cap for one tool result preview rendered into the card (characters). */
 const RESULT_PREVIEW_CAP = 1500
 
-/** Max reasoning characters shown on a step card (preview only). */
-const REASONING_CAP = 200
+/**
+ * Cap for one tool result under the `verbose` level (characters).
+ *
+ * Four times the normal cap rather than "no cap": a card is refused whole when
+ * its JSON passes ~30 KB (关键坑 42), and a refused card shows NOTHING — so the
+ * honest meaning of "untruncated" here is "four times as much, still inside the
+ * card's own budget", never "whatever the tool returned".
+ */
+const RESULT_PREVIEW_CAP_FULL = 6000
 
 /** Cap for one tool call's args rendered in the fenced code block (characters). */
 const ARGS_DISPLAY_CAP = 2000
+
+/** Cap for one tool call's args under the `verbose` level (characters). */
+const ARGS_DISPLAY_CAP_FULL = 6000
 
 /** Cap for the text section of a step card (characters). Overflow is sent as
  *  follow-up "continued" cards so no content is silently dropped. The cap is a
@@ -1919,8 +2088,9 @@ function summarizeValue(value: unknown, maxLen: number = 200): string {
  * instead of one line; passes through plain strings unchanged. Capped at
  * `ARGS_DISPLAY_CAP` characters so a single args block never blows the card.
  */
-function formatToolArgs(value: unknown): string {
+function formatToolArgs(value: unknown, full = false): string {
   if (value === undefined || value === null) return ''
+  const cap = full ? ARGS_DISPLAY_CAP_FULL : ARGS_DISPLAY_CAP
   let str: string
   if (typeof value === 'string') {
     // Try to pretty-print a JSON string so multi-arg calls stay legible.
@@ -1933,7 +2103,7 @@ function formatToolArgs(value: unknown): string {
   } else {
     str = JSON.stringify(value, null, 2)
   }
-  return str.length > ARGS_DISPLAY_CAP ? str.slice(0, ARGS_DISPLAY_CAP) + '\n…' : str
+  return str.length > cap ? str.slice(0, cap) + '\n…' : str
 }
 
 /** Sanitize raw content for embedding in a fenced code block: collapse any
@@ -2138,9 +2308,39 @@ export function renderStepCard(
     phase?: StepLivePhase
     /** Route of the request in flight, named on the awaiting card. */
     route?: { provider: string; model: string }
+    /**
+     * Resolved display policy (level + switches). Omitted only by direct
+     * callers such as tests; the default is the `detailed` level with both
+     * tool-output switches on, which is exactly the pre-level behavior. The
+     * legacy `showToolArgs` / `showToolResults` booleans are still honoured
+     * when no policy is passed.
+     */
+    display?: DisplayPolicy
+    /**
+     * Context-injection notice lines for THIS step, one per injected message,
+     * rendered before everything else. Metadata only — never the injected text.
+     */
+    injections?: readonly string[]
   },
 ): object {
   const elements: object[] = []
+  // One policy for the whole render: reading it per section could show a card
+  // built from two different settings if the user tapped `/display` mid-render.
+  const display: DisplayPolicy = options?.display ?? {
+    ...DETAILED_POLICY,
+    toolArgs: options?.showToolArgs !== false,
+    toolResults: options?.showToolResults !== false,
+  }
+
+  // Context-injection notices, FIRST: they are why this request carries what it
+  // carries, so they read as the preamble of the step rather than as one more
+  // detail inside it (§1.5 of the parity design).
+  if (options?.injections !== undefined) {
+    for (const notice of options.injections) {
+      if (notice === '') continue
+      elements.push({ tag: 'markdown', content: notice, text_size: 'notation' })
+    }
+  }
 
   // Attribution line, first so it reads as the reason this card exists at all.
   // A background-job completion notice opens its own turn (DSH wakes an idle
@@ -2179,12 +2379,17 @@ export function renderStepCard(
     }
   }
 
-  // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning).
-  // Reasoning is a preview only: keep a short window, never the full chain.
-  // Its own duration and thinking-token count are appended to the header once
-  // thinking has finished (the card is built after `assistant/message`).
-  if (reasoning !== undefined && reasoning !== '') {
-    const displayReasoning = reasoning.length > REASONING_CAP ? reasoning.slice(0, REASONING_CAP) + '\n…(truncated)' : reasoning
+  // Reasoning section. The level decides HOW MUCH and whether it folds:
+  //
+  //   preview — the header plus the first line (the WebUI's `settledReasoningPreview`);
+  //   head    — a folded panel whose body is the first REASONING_HEAD_CAP characters;
+  //   full    — a folded panel with the whole chain.
+  //
+  // Folding is what makes `full` affordable: the panel is collapsed by default,
+  // so a long chain no longer eats the card, and the CAP that used to exist only
+  // to protect the layout is no longer needed for `full`. Use 4 backticks inside
+  // the panel to avoid colliding with a code fence in the reasoning itself.
+  if (reasoning !== undefined && reasoning !== '' && display.reasoning !== 'off') {
     const meta: string[] = []
     if (reasoningMs !== undefined && reasoningMs > 0) meta.push(formatMsShort(reasoningMs))
     const reasoningTokens = usage?.reasoningTokens
@@ -2192,10 +2397,32 @@ export function renderStepCard(
       meta.push(`${formatTokenCount(reasoningTokens)} tokens`)
     }
     const header = meta.length > 0 ? `${t.stepReasoningHeader} · ${meta.join(' · ')}` : t.stepReasoningHeader
-    elements.push({
-      tag: 'markdown',
-      content: `${header}\n\`\`\`\`\`\n${displayReasoning}\n\`\`\`\`\``,
-    })
+    if (display.reasoning === 'preview') {
+      const firstLine = reasoning.split('\n').find(line => line.trim() !== '') ?? reasoning
+      const preview = firstLine.trim().length > REASONING_PREVIEW_CAP
+        ? `${firstLine.trim().slice(0, REASONING_PREVIEW_CAP)}…`
+        : firstLine.trim()
+      elements.push({
+        tag: 'markdown',
+        content: preview === '' ? header : `${header}\n> ${preview}`,
+      })
+    } else {
+      const body = display.reasoning === 'full'
+        ? reasoning
+        : reasoning.length > REASONING_HEAD_CAP
+          ? `${reasoning.slice(0, REASONING_HEAD_CAP)}\n…(truncated)`
+          : reasoning
+      elements.push({
+        tag: 'collapsible_panel',
+        // Collapsed by default: the header (with its duration and token count)
+        // is the summary, the chain is one tap away. Field name verified against
+        // the live API 2026-09-29 — `collapsible_panel` is the 2.0 tag and
+        // `collapsible` (the 1.0 name) is refused with `10002 not support tag`.
+        expanded: false,
+        header: { title: { tag: 'markdown', content: header } },
+        elements: [{ tag: 'markdown', content: `\`\`\`\`\`\n${body}\n\`\`\`\`\`` }],
+      })
+    }
   }
 
   // Text section — with a title, mirroring the Reasoning / Tool Call sections.
@@ -2210,8 +2437,14 @@ export function renderStepCard(
     elements.push({ tag: 'markdown', content: `${t.stepMessageHeader}\n\n${displayText}` })
   }
 
-  // Tool calls section
-  if (tools.length > 0) {
+  // Tool calls section. `count` collapses the whole section to one line of
+  // totals (the `compact` level); `summary` names each call but carries no
+  // payloads (the `standard` level); `full` is the original rendering.
+  if (tools.length > 0 && display.tools === 'count') {
+    if (elements.length > 0) elements.push({ tag: 'hr' })
+    const failed = tools.filter(tool => tool.result?.isError === true).length
+    elements.push({ tag: 'markdown', content: t.stepToolCount(tools.length, failed) })
+  } else if (tools.length > 0) {
     if (elements.length > 0) {
       elements.push({ tag: 'hr' })
       elements.push({ tag: 'markdown', content: t.stepToolHeader })
@@ -2245,10 +2478,11 @@ export function renderStepCard(
       // break the inline `...` formatting. Label it so it is not confused
       // with the tool result block below. Args are shown in full detail
       // (pretty-printed JSON) up to a generous cap so the reader can see the
-      // actual parameters, not an ellipsized digest. Suppressed when the
-      // `showToolArgs` display toggle is off.
-      if (options?.showToolArgs !== false) {
-        const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments))
+      // actual parameters, not an ellipsized digest. Suppressed unless the
+      // resolved policy allows argument blocks (level `detailed`/`verbose` AND
+      // the `showToolArgs` switch on).
+      if (display.toolArgs) {
+        const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments, display.fullToolOutput))
         if (argsCode !== '') {
           elements.push({ tag: 'markdown', content: `${t.stepToolArgsHeader}\n\`\`\`\n${argsCode}\n\`\`\`` })
         }
@@ -2256,9 +2490,9 @@ export function renderStepCard(
 
       // Result preview: dispatch on resultView.card type. Label the emitted
       // block(s) as the tool result so it is not confused with the args block.
-      // Suppressed when the `showToolResults` display toggle is off.
-      if (tool.result !== undefined && options?.showToolResults !== false) {
-        const resultElements = renderResultPreview(tool)
+      // Suppressed unless the resolved policy allows result previews.
+      if (tool.result !== undefined && display.toolResults) {
+        const resultElements = renderResultPreview(tool, display.fullToolOutput)
         if (resultElements.length > 0) {
           elements.push({ tag: 'markdown', content: t.stepToolResultHeader })
           elements.push(...resultElements)
@@ -2384,9 +2618,10 @@ function formatMsShort(ms: number): string {
 /**
  * Render one tool result's raw text as a fenced code block, capped.
  */
-function renderRawCode(content: string, lang = ''): object[] {
+function renderRawCode(content: string, lang = '', full = false): object[] {
   if (content === '') return []
-  const output = content.length > RESULT_PREVIEW_CAP ? content.slice(0, RESULT_PREVIEW_CAP) + '…' : content
+  const cap = full ? RESULT_PREVIEW_CAP_FULL : RESULT_PREVIEW_CAP
+  const output = content.length > cap ? content.slice(0, cap) + '…' : content
   return [{ tag: 'markdown', content: `\`\`\`${lang}\n${sanitizeCodeblock(output)}\n\`\`\`` }]
 }
 
@@ -2400,12 +2635,12 @@ function renderRawCode(content: string, lang = ''): object[] {
  * when the shape is unknown. Every branch ends in `finish`, which guarantees
  * the raw content is shown when a matched shape renders nothing.
  */
-function renderResultPreview(tool: StepToolCall): object[] {
+function renderResultPreview(tool: StepToolCall, full = false): object[] {
   const rv = tool.resultView
   const elements: object[] = []
   const finish = (els: object[]): object[] => {
     if (els.length === 0 && tool.result !== undefined && tool.result.content !== '') {
-      els.push(...renderRawCode(tool.result.content))
+      els.push(...renderRawCode(tool.result.content, '', full))
     }
     return els
   }
@@ -2474,7 +2709,7 @@ function renderResultPreview(tool: StepToolCall): object[] {
 
   // Last resort: the raw result text is the authoritative source.
   if (tool.result !== undefined && tool.result.content !== '') {
-    elements.push(...renderRawCode(tool.result.content))
+    elements.push(...renderRawCode(tool.result.content, '', full))
   }
 
   return elements

@@ -847,6 +847,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolCalls: () => currentSettings().showToolCalls,
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
+      transcriptView: () => currentSettings().transcriptView,
       getTranslations: () => translationsFor(currentLocale().id),
       ...(noteDetachedJob !== undefined ? { noteDetachedJob } : {}),
       hydrateImages: cardImages.hydrate,
@@ -1010,9 +1011,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       void settings.mutate(namespace, [{ op: 'set', path: ['showReasoning'], value: !current }], currentRevision())
     },
   }
-  // `/display` reads and writes the same four config fields the WebUI settings
-  // panel uses, so both surfaces stay in sync. `showReasoning` keeps its own
-  // `/reasoning show on|off` alias for backwards compatibility.
+  // `/display` reads and writes the same five config fields the WebUI settings
+  // panel uses (`transcriptView` plus the four switches), so both surfaces stay
+  // in sync. `showReasoning` keeps its own `/reasoning show on|off` alias for
+  // backwards compatibility.
   const displayControl: DisplayControl = {
     get: () => {
       const current = currentSettings()
@@ -1022,6 +1024,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         args: current.showToolArgs,
         results: current.showToolResults,
       }
+    },
+    getLevel: () => currentSettings().transcriptView,
+    setLevel: (level) => {
+      const write = settings.mutate(namespace, [{ op: 'set', path: ['transcriptView'], value: level }], currentRevision())
+      write.catch((error: unknown) => {
+        console.log(`dsh-feishu: /display level write failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return write
     },
     set: (key, value) => {
       const field = key === 'reasoning'

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
 import { deriveToolSummary, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
 import { translationsFor } from '../src/i18n.ts'
+import type { TranscriptView } from '../src/display-level.ts'
 
 const t = translationsFor('zh')
 
@@ -14,11 +15,24 @@ function codeBlocksOf(card: any): string[] {
     .filter((c: string) => c.includes('```'))
 }
 
+/**
+ * Every markdown string a card renders, at any depth.
+ *
+ * Depth matters since the reasoning section became a `collapsible_panel`: its
+ * header title and its body are markdown, but nested one level down, and a
+ * shallow collector would report the card as having no reasoning at all.
+ */
 function mdOf(card: any): string {
-  return card.body.elements
-    .filter((el: any) => el.tag === 'markdown')
-    .map((el: any) => el.content)
-    .join('\n')
+  const out: string[] = []
+  const walk = (elements: any[] | undefined): void => {
+    for (const el of elements ?? []) {
+      if (el.tag === 'markdown' && typeof el.content === 'string') out.push(el.content)
+      if (typeof el.header?.title?.content === 'string') out.push(el.header.title.content)
+      if (Array.isArray(el.elements)) walk(el.elements)
+    }
+  }
+  walk(card.body.elements)
+  return out.join('\n')
 }
 
 describe('renderStepCard tool result/args rendering', () => {
@@ -333,6 +347,8 @@ function stepHarness(
     showToolCalls?: () => boolean
     showToolArgs?: () => boolean
     showToolResults?: () => boolean
+    /** Work-detail level; omitted means the `detailed` default. */
+    transcriptView?: () => TranscriptView
   } = {},
   extra: {
     noteDetachedJob?: (notice: any) => void
@@ -1820,6 +1836,193 @@ describe('awaiting card route line (O20)', () => {
     h.emit('step/start', { turn: 1, step: 2 })
     h.emitStream({ type: 'start', attemptId: 'a2', revision: 2, turn: 1, step: 2 })
     await vi.waitFor(() => { expect(mdOf(lastCardOf(ch))).toContain('deepseek-flash') })
+    h.streaming.stop()
+  })
+})
+
+describe('display levels on the step card (O22/O5)', () => {
+  /** A card whose reasoning was rendered as a folded panel, or undefined. */
+  const panelOf = (card: any): any =>
+    (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+
+  it('folds the reasoning into a collapsed panel at the default level', () => {
+    const card = renderStepCard(t, 'step one\nstep two', undefined, []) as any
+    const panel = panelOf(card)
+    expect(panel).toBeDefined()
+    // Collapsed by default: the header is the summary, the chain is one tap away.
+    expect(panel.expanded).toBe(false)
+    expect(panel.header.title.content).toBe(t.stepReasoningHeader)
+    // The body is a fenced block inside the panel, not a top-level markdown.
+    expect(panel.elements[0].content).toContain('step one\nstep two')
+    expect((card.body.elements as any[]).some(el => el.tag === 'markdown'
+      && String(el.content).includes('step one'))).toBe(false)
+  })
+
+  it('gives the verbose level the whole chain, still folded', () => {
+    const long = 'y'.repeat(900)
+    const card = renderStepCard(t, long, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { display: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true } }) as any
+    const panel = panelOf(card)
+    expect(panel.expanded).toBe(false)
+    expect(panel.elements[0].content).toContain(long)
+    expect(panel.elements[0].content).not.toContain('truncated')
+  })
+
+  it('shows only the first line and nothing to expand at the standard level', () => {
+    const card = renderStepCard(t, 'first line\nsecond line', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+    expect(panelOf(card)).toBeUndefined()
+    const md = mdOf(card)
+    expect(md).toContain('first line')
+    expect(md).not.toContain('second line')
+  })
+
+  it('drops the reasoning entirely at the compact level', () => {
+    const card = renderStepCard(t, 'hidden chain', undefined, []) as any
+    expect(mdOf(card)).toContain('hidden chain')
+    const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+    expect(mdOf(compact)).not.toContain('hidden chain')
+    expect(panelOf(compact)).toBeUndefined()
+  })
+
+  const tool = {
+    toolName: 'bash',
+    callId: 'c1',
+    arguments: '{"command":"ls"}',
+    result: { isError: false, content: 'a\nb', elapsed: 1200 },
+  } as any
+
+  it('collapses tools to one count line at the compact level', () => {
+    const card = renderStepCard(t, undefined, undefined, [tool, { ...tool, callId: 'c2', result: { ...tool.result, isError: true } }], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+    const md = mdOf(card)
+    expect(md).toContain(t.stepToolCount(2, 1))
+    // No per-call lines, no args, no result blocks.
+    expect(md).not.toContain('`bash`')
+    expect(md).not.toContain(t.stepToolArgsHeader)
+    expect(md).not.toContain(t.stepToolResultHeader)
+  })
+
+  it('names each call but carries no payload at the standard level', () => {
+    const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+    const md = mdOf(card)
+    expect(md).toContain('bash')
+    expect(md).not.toContain(t.stepToolArgsHeader)
+    expect(md).not.toContain(t.stepToolResultHeader)
+  })
+
+  it('renders args and results at the detailed level (the pre-level default)', () => {
+    const card = renderStepCard(t, undefined, undefined, [tool]) as any
+    const md = mdOf(card)
+    expect(md).toContain(t.stepToolArgsHeader)
+    expect(md).toContain(t.stepToolResultHeader)
+  })
+
+  it('puts injection notices above everything else on the card', () => {
+    const card = renderStepCard(t, 'the answer', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { injections: ['📥 注入上下文 · AGENTS.md（已更新）', '🔗 跨会话召回 · other'] }) as any
+    const markdown = (card.body.elements as any[]).filter(el => el.tag === 'markdown')
+    expect(markdown[0].content).toBe('📥 注入上下文 · AGENTS.md（已更新）')
+    expect(markdown[1].content).toBe('🔗 跨会话召回 · other')
+    // Marked as notation so attributions never compete with the content.
+    expect(markdown[0].text_size).toBe('notation')
+  })
+})
+
+describe('level + injection wiring through session events', () => {
+  const levelChannel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+    createCardInstance: vi.fn(async () => 'card-1'),
+    sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+    updateCardInstance: vi.fn(async () => undefined),
+  })
+  const lastCard = (ch: StepChannel): any => {
+    const updates = (ch.updateCardInstance as any).mock.calls
+    if (updates.length > 0) return updates.at(-1)![1]
+    return (ch.createCardInstance as any).mock.calls.at(-1)![0]
+  }
+
+  it('folds a live step card according to the level the settings hold', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: 'private chain' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    await tick(250)
+    expect(mdOf(lastCard(ch))).not.toContain('private chain')
+    h.streaming.stop()
+  })
+
+  it('attaches an injection notice to the card of the step it precedes', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('step/start', { turn: 1, step: 1 })
+    await tick(250)
+    h.emit('user/message', { source: { kind: 'agent-instructions', form: 'instructions', changes: [{ action: 'replace', path: 'AGENTS.md' }] } })
+    await tick(250)
+    expect(mdOf(lastCard(ch))).toContain('AGENTS.md（已更新）')
+    h.streaming.stop()
+  })
+
+  it('buffers an injection that arrives before step/start and lands on that step card', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    // A compaction transaction re-injects the plugin list BEFORE the step opens;
+    // putting it in step state at that moment would be wiped by `resetStep`.
+    h.emit('user/message', { source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'answer' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    await tick(250)
+    const md = mdOf(lastCard(ch))
+    expect(md).toContain('@deepseek-ai/dsh-system-prompt')
+    // Still first: the injection belongs to the request this step sends.
+    const markdown = (lastCard(ch).body.elements as any[]).filter(el => el.tag === 'markdown')
+    expect(String(markdown[0].content)).toContain('@deepseek-ai/dsh-system-prompt')
+    h.streaming.stop()
+  })
+
+  it('never shows the human trigger message or the compaction checkpoint as an injection', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('step/start', { turn: 1, step: 1 })
+    await tick(250)
+    const before = mdOf(lastCard(ch))
+    h.emit('user/message', { source: { kind: 'user' } })
+    h.emit('user/message', { source: { kind: 'compact-checkpoint', compactionId: 'x' } })
+    await tick(250)
+    expect(mdOf(lastCard(ch))).toBe(before)
+    h.streaming.stop()
+  })
+
+  it('opens a compaction card on compaction/start and closes it on compaction/end', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('compaction/start', { compactionId: 'c1', turn: null })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalledTimes(1) })
+    expect(String((ch.createCardInstance as any).mock.calls[0]![0].header.title.content)).toContain('压缩上下文')
+    h.emit('compaction/summary', {
+      compactionId: 'c1',
+      summary: [{ type: 'text', text: 'a long summary' }],
+      shadowedSeqs: [1, 2, 3],
+      shadowedTokenCount: 302000,
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+    })
+    await vi.waitFor(() => { expect(ch.updateCardInstance).toHaveBeenCalled() })
+    const updated = (ch.updateCardInstance as any).mock.calls.at(-1)![1]
+    const md = mdOf(updated)
+    expect(md).toContain('3 条历史记录')
+    expect(md).toContain('302K tokens')
+    const panel = (updated.body.elements as any[]).find((el: any) => el.tag === 'collapsible_panel')
+    expect(panel.elements[0].content).toBe('a long summary')
+    h.emit('compaction/end', { compactionId: 'c1', turn: null })
+    await tick(50)
     h.streaming.stop()
   })
 })

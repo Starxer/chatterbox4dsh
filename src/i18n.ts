@@ -20,10 +20,11 @@
  * @module @starxer/chatterbox4dsh/i18n
  */
 
+import type { TranscriptView } from './display-level.ts'
+
 /** Locale identifiers the plugin ships. */
 export const LOCALE_IDS = ['zh', 'en'] as const
 export type LocaleId = (typeof LOCALE_IDS)[number]
-
 /** Canonical plugin locale; `'auto'` means "follow the DSH preference". */
 export type PluginLocale = LocaleId | 'auto'
 
@@ -181,6 +182,51 @@ export interface Translations {
    * therefore keeps rendering older content than the chat state.
    */
   stepCardStaleNotice: (turn: number, step: number, reason: string) => string
+  /** One line of tool-call totals, shown by the `compact` detail level. */
+  stepToolCount: (calls: number, failed: number) => string
+
+  // ---- Context injections (injection-notice.ts) ----
+  // One line per injected context message, carried at the TOP of the step card
+  // that claims it. Only `source` metadata is ever rendered, never the injected
+  // content (see docs/transcript-parity-design.md §1.5).
+  /** Generic prefix, e.g. `📥 注入上下文`. */
+  injectionContext: string
+  injectionRecall: string
+  injectionRelay: string
+  injectionSubagent: string
+  injectionGoal: string
+  injectionSkillLoaded: string
+  /** `（N 条）` suffix naming a skill catalog's entry count. */
+  injectionSkillCatalog: (entries: number) => string
+  /** Names the plugin package a `plugin` injection re-declared. */
+  injectionPlugin: (name: string) => string
+  injectionRuntimeSnapshot: string
+  injectionApproval: string
+  /** The four `agent-instructions` actions, worded as the WebUI words them. */
+  injectionActionLoaded: string
+  injectionActionAdded: string
+  injectionActionUpdated: string
+  injectionActionRemoved: string
+  injectionFromSession: (sessionId: string) => string
+  injectionRound: (round: number) => string
+
+  // ---- Compaction card (feishu-compaction.ts) ----
+  compactionCardTitleStart: string
+  compactionCardTitleDone: string
+  /** Done title for a manual transaction, which the WebUI labels with the command. */
+  compactionCardTitleDoneManual: string
+  compactionCardTitleFailed: string
+  compactionStartBody: (trigger: string) => string
+  compactionTriggerAuto: string
+  compactionTriggerManual: string
+  /** Details line above the fold: how many history items were replaced. */
+  compactionFoldedItems: (items: number) => string
+  /** Details line above the fold: their token price. */
+  compactionFoldedTokens: (tokens: string) => string
+  compactionSummaryLabel: string
+  compactionSummaryUnavailable: string
+  compactionFailedReason: (reason: string) => string
+  compactionNoSummary: string
   turnCompleteTitle: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
@@ -244,6 +290,18 @@ export interface Translations {
   displayCardButton: (label: string, enabled: boolean) => string
   displayCardHiddenByTools: string
   displayCardNote: string
+  /** Section heading for the four detail levels on the card. */
+  displayCardLevelTitle: string
+  /** One level's own name, spelled as the WebUI settings page spells it. */
+  displayLevelName: (level: TranscriptView) => string
+  /** A level button, marked when it is the active one. */
+  displayCardLevelButton: (name: string, active: boolean) => string
+  /** What a level means, one line per level. */
+  displayLevelHint: (level: TranscriptView) => string
+  /** The level today's four switches add up to, when no level has been chosen. */
+  displayLevelCustom: string
+  /** Confirmation after `/display <level>`. */
+  displayLevelSet: (name: string) => string
 
   // Model select extras (feishu-model-select.ts)
   modelSelectProviderLabel: (label: string) => string
@@ -540,6 +598,41 @@ export const zh = {
   stepPosition: (turn, step) => `第 ${turn} 轮 · 第 ${step} 步`,
   stepCardStaleNotice: (turn, step, reason) =>
     `⚠️ ${turn > 0 && step > 0 ? `第 ${turn} 轮第 ${step} 步的卡片` : '这张卡片'}没能更新，已停在旧内容。\n原因：${reason}`,
+  stepToolCount: (calls, failed) =>
+    `🔧 ${calls} 个工具调用${failed > 0 ? ` · ${failed} 个失败` : ''}`,
+
+  // 上下文注入提示行（injection-notice.ts）：只报来源，不显示注入内容。
+  injectionContext: '📥 注入上下文',
+  injectionRecall: '🔗 跨会话召回',
+  injectionRelay: '✉️ 会话间消息',
+  injectionSubagent: '🤖 子代理已结算',
+  injectionGoal: '🎯 目标更新',
+  injectionSkillLoaded: '📥 已载入技能',
+  injectionSkillCatalog: entries => `技能目录（${entries} 条）`,
+  injectionPlugin: name => `插件 ${name}`,
+  injectionRuntimeSnapshot: '运行时快照',
+  injectionApproval: '审批结果',
+  injectionActionLoaded: '已载入',
+  injectionActionAdded: '已新增',
+  injectionActionUpdated: '已更新',
+  injectionActionRemoved: '已移除',
+  injectionFromSession: sessionId => `来自会话 ${sessionId}`,
+  injectionRound: round => `第 ${round} 轮`,
+
+  // 压缩卡（feishu-compaction.ts）
+  compactionCardTitleStart: '🗜️ 正在压缩上下文…',
+  compactionCardTitleDone: '🗜️ 上下文已压缩',
+  compactionCardTitleDoneManual: '🗜️ 上下文已压缩（/compact）',
+  compactionCardTitleFailed: '⚠️ 上下文压缩失败',
+  compactionStartBody: trigger => `触发方式：${trigger}`,
+  compactionTriggerAuto: '自动（上下文压力）',
+  compactionTriggerManual: '/compact',
+  compactionFoldedItems: items => `已折叠 ${items} 条历史记录`,
+  compactionFoldedTokens: tokens => `约 ${tokens} tokens`,
+  compactionSummaryLabel: '摘要',
+  compactionSummaryUnavailable: '（这次压缩没有摘要内容）',
+  compactionFailedReason: reason => `原因：${reason}`,
+  compactionNoSummary: '本次没有产生摘要，会话历史没有被替换。',
   turnCompleteTitle: '✅ Turn 已完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
@@ -588,6 +681,17 @@ export const zh = {
   displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
   displayCardHiddenByTools: '_「参数」「结果」随「工具调用」一起隐藏；重新开启工具调用后会回来。_',
   displayCardNote: '也支持 `/display <开关> on|off`。',
+  displayCardLevelTitle: '**工作步骤展示**（对齐 WebUI 的四档）',
+  displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
+  displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
+  displayLevelHint: level => ({
+    compact: '只报工具调用计数与状态，不显示推理内容',
+    standard: '每个工具一行摘要，推理只给首行；无参数、无结果',
+    detailed: '推理可展开，工具带参数与结果（默认）',
+    verbose: '推理给出全文，参数与结果不截断',
+  })[level],
+  displayLevelCustom: '当前四个开关的组合不等于任何一档',
+  displayLevelSet: name => `✅ 已切换到「${name}」。`,
 
   permissionNoSession: '当前 chat 还没有会话，请先发一条消息再执行 /permission',
   permissionSwitchFailed: reason => `⚠️ **切换未生效**：${reason}`,
@@ -880,6 +984,42 @@ export const en: Translations = {
   stepPosition: (turn, step) => `Turn ${turn} · Step ${step}`,
   stepCardStaleNotice: (turn, step, reason) =>
     `⚠️ ${turn > 0 && step > 0 ? `The card for turn ${turn}, step ${step}` : 'A card'} could not be updated and is stuck on its old content.\nReason: ${reason}`,
+  stepToolCount: (calls, failed) =>
+    `🔧 ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''}`,
+
+  // Context-injection notices (injection-notice.ts): attribution only, never the
+  // injected content.
+  injectionContext: '📥 Context injected',
+  injectionRecall: '🔗 Cross-session recall',
+  injectionRelay: '✉️ Inter-session message',
+  injectionSubagent: '🤖 Subagent settled',
+  injectionGoal: '🎯 Goal updated',
+  injectionSkillLoaded: '📥 Skill loaded',
+  injectionSkillCatalog: entries => `skill catalog (${entries})`,
+  injectionPlugin: name => `plugin ${name}`,
+  injectionRuntimeSnapshot: 'runtime snapshot',
+  injectionApproval: 'approval result',
+  injectionActionLoaded: 'loaded',
+  injectionActionAdded: 'added',
+  injectionActionUpdated: 'updated',
+  injectionActionRemoved: 'removed',
+  injectionFromSession: sessionId => `from session ${sessionId}`,
+  injectionRound: round => `round ${round}`,
+
+  // Compaction card (feishu-compaction.ts)
+  compactionCardTitleStart: '🗜️ Compacting context…',
+  compactionCardTitleDone: '🗜️ Context compacted',
+  compactionCardTitleDoneManual: '🗜️ Context compacted (/compact)',
+  compactionCardTitleFailed: '⚠️ Context compaction failed',
+  compactionStartBody: trigger => `Triggered by: ${trigger}`,
+  compactionTriggerAuto: 'automatic (context pressure)',
+  compactionTriggerManual: '/compact',
+  compactionFoldedItems: items => `folded ${items} history ${items === 1 ? 'item' : 'items'}`,
+  compactionFoldedTokens: tokens => `about ${tokens} tokens`,
+  compactionSummaryLabel: 'Summary',
+  compactionSummaryUnavailable: '(this compaction carried no summary)',
+  compactionFailedReason: reason => `Reason: ${reason}`,
+  compactionNoSummary: 'No summary was produced, so the session history was left unchanged.',
   turnCompleteTitle: '✅ Turn complete',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
@@ -928,6 +1068,17 @@ export const en: Translations = {
   displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,
   displayCardHiddenByTools: '_Arguments and results are hidden together with tool calls; they come back when tool calls are re-enabled._',
   displayCardNote: 'Also available as `/display <switch> on|off`.',
+  displayCardLevelTitle: '**Work details** (the WebUI\'s four levels)',
+  displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
+  displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
+  displayLevelHint: level => ({
+    compact: 'Tool-call counts and status only; no reasoning text',
+    standard: 'One summary line per call, reasoning first line only; no arguments or results',
+    detailed: 'Reasoning expandable, tools with arguments and results (default)',
+    verbose: 'Full reasoning, arguments and results untruncated',
+  })[level],
+  displayLevelCustom: 'The four switches below no longer add up to any single level',
+  displayLevelSet: name => `✅ Detail level set to "${name}".`,
 
   permissionNoSession: 'This chat has no session yet — send a message first, then run /permission',
   permissionSwitchFailed: reason => `⚠️ **Switch not applied**: ${reason}`,
