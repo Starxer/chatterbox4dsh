@@ -181,6 +181,21 @@
 
 ---
 
+---
+
+## DSH 0.2.0-rc.1 适配（已评估并升级，2026-09-28）
+
+> 对比 `dsh-v0.1.7-rc.1...dsh-v0.2.0-rc.1`：**607 commits / 3838 个文件**（新增 9 个包目录、**0 个删除**）。完整执行记录见本机 `notes/upgrade-0.2.0-rc.1.md`。**这是第一次跨 semver tuple（0.1 → 0.2）的跳跃**，且发行说明从 `v0.1.7-rc.2` 累计 —— 实际吃了两段变更。
+
+- ✅ **先彩排后切换**：临时克隆全新构建 + **真实 profile 补丁**冷启动（插件一并装上、凭据置假不连飞书）都通过，才动线上；彩排断言见本机笔记。
+- ✅ **逐符号 0 删除**：16 个被 import 的包 **0 个导出符号被删**（`dsh-llm` 纯新增 `ToolUpdate` / `ToolHistory` / `ProjectedToolUpdates` / `projectToolUpdates` / `ACCOUNT_QUOTA_EXCEEDED_CODE`）；`agent/assistant-stream`、事件目录、`llm-pi-ai` 的 config/catalog、`session-format`、`settings` **逐字节未变** ⇒ 台账 **O20 的实时流方案原样成立**。
+- ⚠️ **插件这次必须动，但只需动依赖**：34 处 `@deepseek-ai/dsh-*` 由 `^0.1.7-alpha.1` 升到 `^0.2.0-rc.1`（不升会被 peer 闸门判不兼容、**每次启动只提示一次就静默跳过**）；**源码零改动**，typecheck 0 error、**720 tests / 42 files** 全绿，`client/client.js` 重建逐字节未变。升级脚本的两次失败（守卫前置判死构建与自动回滚 / 旧 `node_modules` 触发 `ERESOLVE`）已成坑 **46/47**。
+- ⚠️ **部署侧三条变化**：① 工作过程展示默认值 `standard` → **`detailed`**，且 legacy `expanded` **这跳起读作 `detailed`**（0.1.7 时读作 `standard`）——本部署 profile 补丁正钉着 `expanded`，观感会自动变详细一档，要保持原样得显式钉 `standard`（**待使用者定**）；② 定时/自动化任务改为**可选插件包**，本部署未启用；③ `llm-deepseek` 拆成 api-key + account 两条，**`deepseek-official` route id 不变**（默认模型不受影响）。
+- 🔲 **待真机观察**：0.2.0 的 `agent-loop` 给失败步骤补记了 pending `tool/result`（`ToolCallRecovery`）→ 插件会收到"没有 `tool/call` 前置"的结果，需跑一轮「工具失败」确认步骤卡不错位。
+- 🔲 **仍未解决**：坑 28 的上游讨论（源码入口下 `dsh-tools` 被求值两次）本次**未撤权宜**、也未确认修复；`dsh-tools` 双实例规避继续走构建产物入口。
+
+---
+
 ## DSH 0.1.7-alpha.2 适配（已评估并升级，2026-09-23）
 
 > 对比 `dsh-v0.1.7-alpha.1...dsh-v0.1.7-alpha.2`：**162 commits / 869 个文件**。完整执行记录见本机 `notes/upgrade-0.1.7-alpha.2.md`。
