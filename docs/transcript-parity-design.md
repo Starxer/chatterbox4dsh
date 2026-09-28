@@ -1,6 +1,7 @@
 # 上下文注入、压缩摘要与显示级别：与 WebUI 的对齐调研
 
 > 状态：**调研完成；§1 注入与 §2 压缩已拍板，§3 显示档位待拍板（2026-09-28）——尚未动代码**。
+> 修订：2026-09-28 第二版按使用者质疑复核，**更正了 §1.1（来源是开放集合，不是 8 种）/ §1.2（注入行会被整轮折叠）/ §1.4（真实频次远低于第一版采信的单次开发期会话）**。
 > 关联：[`src/feishu-streaming.ts`](../src/feishu-streaming.ts)（`session/event` fan-out 与步骤卡全部逻辑）、[`src/feishu-display.ts`](../src/feishu-display.ts)（`/display` 卡片）、[`src/config.ts`](../src/config.ts)（4 个显示开关）、[`docs/step-card-phases-design.md`](./step-card-phases-design.md)（O20，同一片代码、同一批信号）、[`docs/display-card-design.md`](./display-card-design.md)。
 > 台账：`TODO.md` 的 **O21**（注入与压缩完全不可见）、**O22**（显示级别不对齐）。
 > 依据的 DSH 版本：**0.2.0-rc.1**（`dsh-v0.2.0-rc.1` = `4878cdabd8`）。下文所有源码路径都相对 DSH 检出根。
@@ -9,7 +10,7 @@
 
 | # | 缺口 | DSH 侧事实 | WebUI 怎么演 | 飞书现状 | 建议修法 |
 |---|---|---|---|---|---|
-| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`），共 8 种来源 | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派 | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **每次注入发一张独立卡片**，落在它发生的时刻（✅ 已拍板，见 §1.5） |
+| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`）；来源是**开放集合**（17+ 个声明点，实测出现过 12 种） | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派；**但会被整轮折叠吃掉**（§1.4②） | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **每次注入发一张独立卡片**，落在它发生的时刻（✅ 已拍板，见 §1.5）；真实频次见 §1.4① |
 | 2 | **压缩不可见**（自动压缩 + `/compact`） | `compaction/start` → `compaction/summary` → `compaction/end`（失败时 `end` 带 `error`），外加一条 replacement checkpoint | 「上下文已压缩 · 已折叠 N 条历史 · ~M tokens」+ 展开看摘要 | **完全没有订阅**（`compaction/*`、`command/*` 都没订阅） | 一张压缩卡：进行中 → **详情行在折叠区之上、摘要可折叠且 ≤200 字** → 收尾/失败原因（✅ 已拍板，见 §2.4） |
 | 3 | **显示级别不对齐** | WebUI 是**一个 4 档枚举 + 4 条策略轴** | 简洁 / 标准 / 详细 / 完全展开（默认「详细」） | **4 个互不相干的布尔**（思考 / 工具 / 参数 / 结果），轴的含意都不同 | 引入同名的 4 档 `transcriptView` 作权威档位，4 个布尔降为「自定义」档的细分 |
 
@@ -21,18 +22,25 @@
 
 ### 1.1 DSH 侧：注入是持久事件，不是隐藏的请求头
 
-`@deepseek-ai/dsh-agent-instructions`（`packages/context/agent-instructions/`）把工作区指令文件（`AGENTS.md` 这一族）作为**上下文消息**写进会话；同族还有技能目录、插件清单、跨会话召回、子代理结算通知等。它们的持久形态**统一是 `user/message`**，靠 `data.source` 区分：
+`@deepseek-ai/dsh-agent-instructions`（`packages/context/agent-instructions/`）把工作区指令文件（`AGENTS.md` 这一族）作为**上下文消息**写进会话；同族还有技能目录、插件清单、跨会话召回、子代理结算通知等。它们的持久形态**统一是 `user/message`**，靠 `data.source.kind` 区分。
+
+**这不是一份固定清单**：`MessageSourceMap`（`packages/llm/llm/src/message.ts:110`）是 merge-extensible 接口，任何插件都能 `declare module` 往里加一种——0.2.0-rc.1 里有 **17 个真实声明点**。所以渲染**必须按未知 kind 兜底**，不能写死一张表。本次全量会话统计里实际出现过的：
 
 | `source.kind` | `form` | 何时出现 | 有价值的字段 |
 |---|---|---|---|
 | `agent-instructions` | `instructions` | 基线一次（`baseline: true`）+ 每次 `read`/`write`/`edit` 碰到指令文件时的增量 | `changes: [{action, scope, path, digest}]`、`baselineIdentity` |
 | `skill-catalog` | `catalog` | 可用技能集合变化时 | `entries` |
 | `plugin` | `snapshot` | 存活插件包清单变化时 | `plugin`、`sections` |
+| `runtime-context` | — | agent-loop 的动态运行时快照变化时（`packages/core/agent-loop/src/runtime-context.ts`） | 整段快照文本 |
 | `session-reference` | `recall` | 跨会话召回 | `references: [{label, …}]` |
 | `skill-invocation` | — | 模型调用某个 skill | `name` |
+| `model-selection` / `plan-mode` / `user-approval` | 多为 `notice` / 无 | 模型切换 / 计划模式进出 / 审批结果回填 | 各自的判定字段 |
 | `agent-message` | `relay` | 别的会话发来的消息 | `senderSessionId` |
 | `subagent-settled` | `notice` | **子代理结算**（宿主把结果注入父会话） | `senderSessionId`、`summary` |
+| `tool-jobs` | — | 后台任务完成通知（**插件已识别**，见 O11） | 任务 id / 结果 |
 | `goal` | — | 目标轮次推进 | `goalId`、`revision`、`round` |
+| **`compact-checkpoint`** | — | 压缩落地时的替换型 checkpoint | **必须排除**，见 §2.3 |
+| 其余（`time-context`、`tmux-context`、`schedule`、`repeat-tool-reminder`、`team-message`、`hooks-*`、`cordis-host-runner`…） | 多为 `notice` / 无 | 各自插件决定 | — |
 
 另有一族 `developer/message`（`packages/session/session-format-v3-to-v4/src/developer.ts`）走同一套展示，插件同样没订阅。
 
@@ -43,29 +51,43 @@
 - 分类：`packages/client/ui-chat/src/client/conversation-nodes/message.ts:76` 只判断 `event.data.source.kind !== 'user'`，是就造 `kind: 'context'` 节点（`developer/message` 走 `developerMessageDefinition`，共用同一套呈现）。
 - 渲染：`packages/client/ui-chat/src/client/chat/ContextInjectionRow.tsx` —— 标题 `上下文注入`（`producer.role === 'recall'` 时是 `跨会话召回`），标题右侧是 **producer label**（`agent-instructions` 取 `changes[].path`，如 `AGENTS.md`；`skill-invocation` 取 skill 名），只有 `notice` 形态额外带一行摘要。整行默认**收起**，点开才看正文。
 - 正文按 `form` 分派 6 种（`packages/client/ui-chat/src/client/chat/ContextBody.tsx:551`）：`instructions` / `catalog` / `snapshot` / `notice` / `relay` / `recall`；**form 缺失或本版本不认识就退回 opaque**（把 `source` 字段原样列出来）——这条兜底很重要：未知来源也必须能渲染。
-- **不随显示级别折叠**：注入行属于 `input-message` 家族（与用户消息同级），不是过程组（`turn-process`）的成员，所以 4 档下都在。
+- **⚠️ 这些行其实会被「整轮折叠」吃掉**——本文档第一版写的「不随显示级别折叠」**是错的**，正确机制见 §1.4②。
 
 ### 1.3 飞书侧现状
 
-[`src/feishu-streaming.ts:1469`](../src/feishu-streaming.ts) 的 `user/message` 分支只做一件事：判断「本轮是不是被后台任务完成通知唤醒的」（O11）。命中条件是 `source.kind === 'tool-jobs'`，**其余 8 种来源一律落空**——`agent-instructions` 连一行日志都没有。
+[`src/feishu-streaming.ts:1469`](../src/feishu-streaming.ts) 的 `user/message` 分支只做一件事：判断「本轮是不是被后台任务完成通知唤醒的」（O11）。命中条件是 `source.kind === 'tool-jobs'`，**其余来源一律落空**（来源是开放集合，§1.1）——`agent-instructions` 连一行日志都没有。
 
 后果：使用者看不到「这一轮被喂了哪些上下文」；**子代理结算通知**（`subagent-settled`）看不到；跨会话召回（`session-reference`）看不到；指令文件被改动时的增量（`changes`）也看不到。
 
-### 1.4 关键约束：注入的**频次**决定了不能照抄 WebUI
+### 1.4 实测：真实频次，以及 WebUI 为什么看起来不频繁
 
-同一次真实会话（39 轮）里非 user 的注入条数：
+**① 频次（全量会话统计：73 个会话、逐条解压后统计非 user 的 `user/message`）**
 
-| kind | 条数 |
+| 指标 | 值 |
 |---|---|
-| `agent-instructions` | 19 |
-| `plugin` | 14 |
-| `skill-catalog` | 8 |
-| `agent-message` | 6 |
-| `subagent-settled` | 6 |
-| `goal` | 2 |
-| **合计** | **55**（同一会话的真实用户消息是 34 条） |
+| 每个会话的注入条数 | **中位数 3** · 均值 41 · p90 275 · 最大 306 |
+| 长会话的每轮注入 | 约 **0.4 – 1.2 条/轮**（样本 306/260 轮、286/762 轮、281/747 轮） |
+| 按 kind 的总量 | `agent-instructions` 1221 · `plugin` 811 · `skill-catalog` 629 · `subagent-settled` 99 · `runtime-context` 89 · `agent-message` 70 · `tool-jobs` 23 · `goal` 19 · `model-selection` 12 · `plan-mode` 2 · `user-approval` 2 |
+| 0 条注入的会话 | **0**（每个会话至少有会话开始那一批：AGENTS.md 基线 + 插件清单 + 技能目录） |
 
-⇒ **「一条注入 = 一条消息」会让聊天消息量翻倍以上**。WebUI 能这么干是因为它是一个可滚动的转录流、折叠行只占一行且默认收起；飞书的消息是**持久气泡**，缩不回去。所以飞书侧必须默认聚合。
+> **❗重要更正（2026-09-28，使用者质疑后复核）**：本文档第一版写「一次 39 轮样本会产生 55 张注入卡 → 聊天会被淹没」，并据此建议飞书侧默认聚合。**那个结论是错的**：
+>
+> - 那 55 条来自**一次开发期会话**——在里面 `AGENTS.md` 自己被测了 19 次（内容 6258 → 6501 字逐版增长，每次改动触发一条 `agent-instructions`），插件集也在反复变动（14 条 `plugin`）。它**不代表常态**。
+> - 常态是**每个会话 3 条上下**（中位数），其中 2–3 条是会话开始时的固定批次；长会话每轮约 0.4–1.2 条。
+> - ⇒ 「淹没」不成立。按真实频次，「每次注入一张卡」完全可承受。
+
+**② 可见性：WebUI 里这些行其实被「整轮折叠」吃掉了**
+
+第一版还写「注入行不随显示级别折叠」——**同样错了**，真实机制恰好相反：
+
+- `packages/client/ui-chat/src/client/contract/turn-process.ts:32` 的 `TURN_PROCESS_INDEPENDENT_KINDS` 明确列出「**不参与**回合过程折叠」的 kind：`system-prompt` / `user` / `steering` / `turn-trigger` / `turn-process` / `turn-error` / `turn-max-tokens` / `turn-tail` —— **`context` 与 `compaction` 都不在名单里**。名单语义是「independent of a Turn's process disclosure」，没进名单就是**过程内容**。
+- 于是注入行被判为**过程组成员**：`ChatNodeSeat.tsx:83` 的 `processMember` = 非独立 kind + `anchorSeq` 落在 `[turn.start.seq, answerAnchorSeq)` 窗口内（`turn-process.ts:161` 的 `processStartSeq = turn.start?.seq`）。
+- 过程成员在 `ChatNodeSeat.tsx:110` 的 `processHidden` 下被整段隐藏（`useSearchableHidden`）；回合结束后整轮过程再折一次（`ChatGroupSeat.tsx:152` 的 `outerHidden`）。
+- 使用者的 WebUI 默认观感正是如此：本机 profile 把 `ui-chat.transcriptView` 钉在 legacy 值 `expanded`，**0.2.0 读作 `detailed`**，而 `detailed` 的 `foldCompletedTurns: true`。
+- `packages/client/ui-chat/src/client/conversation-nodes/README.md` 的「What the reader sees」表同口径：整轮折叠时只剩「输入、整轮控制条、最终回答、footer」，**没有任何过程内容**。
+- 唯一会独立成行的是**唤醒型**注入：把一个空闲 agent 唤醒的注入被归为 `turn-trigger`（在独立名单里）→ 独立可见（`conversation-nodes/message.ts:88-91` 的 `waking` 判定）。
+
+⇒ 结论两条：**(1)** WebUI 对中途注入的实际呈现是「折进该回合的过程里」，要展开那一轮才看得见——这就是「感觉不频繁」的真正原因；**(2)** 飞书没有折叠层，所以「每次注入一张卡」在飞书里**比 WebUI 更显眼**。这一点上「对齐 WebUI」没有可抄的视觉范式，只能按飞书自己的介质定（使用者要的正是「看得到具体行为」）。
 
 ### 1.5 已拍板的形态（2026-09-28）
 
@@ -88,7 +110,7 @@
 | `goal` | 标题 `🎯 目标推进`；正文 = `goalId` / `round` |
 | 未知 `kind` 或未知 `form` | 标题 `📥 上下文注入`；正文 = 原始字段（对齐 WebUI 的 opaque 兜底：来源不认识也必须能渲染） |
 
-**体量提醒（使用者已知情）**：一次 39 轮样本会产生 **55 张**注入卡（§1.4）。会连续刷屏的是三类例行快照——`agent-instructions`（每次 `read`/`write`/`edit` 触碰指令文件，样本 19 条）、`plugin`（14）、`skill-catalog`（8）。建议给这三类留一个「**同一回合内同类合并成一张、就地更新**」的开关，默认**关**（＝每条一张，与拍板一致），需要降噪时再打开；做成配置项而不是写死在逻辑里。
+**体量（已按 §1.4 更正）**：常态是**每个会话 3 条上下**（中位数）、长会话每轮 0.4–1.2 条，所以「每次注入一张卡」在常态下完全可承受；第一版说的「55 张淹没」来自一次把 `AGENTS.md` 改了 19 次的开发期会话，不代表常态。仍建议留一个「**同一回合内同类合并成一张、就地更新**」的开关（默认**关**＝每条一张，与拍板一致），用于高变动会话降噪；做成配置项而不是写死在逻辑里。
 
 **原先提的「两个例外」不再是例外**：`subagent-settled`（子代理跑完在唤醒父会话，回答「为什么会有这一轮」）与 `session-reference`（跨会话召回，改变答案的依据来源）本身就是注入，在「每条注入一张卡」下自然可见，不需要额外的 Turn Complete 变体。
 
@@ -115,7 +137,7 @@
 
 - 节点：`packages/client/ui-chat/src/client/conversation-nodes/compaction.ts`（自动压缩，`kind: 'compaction'`）+ `packages/client/ui-chat/src/client/conversation-nodes/command.ts`（手动 `/compact` 折进 `manual-compaction`）。
 - 渲染：`packages/client/ui-chat/src/client/chat/CompactionItem.tsx` —— 标题 `上下文已压缩`（手动时是 `compact`），右侧摘要 `已压缩 {items} 条历史记录（约 {tokens} tokens）`；**只有**当前窗口还留着摘要事件时按钮才可点，展开显示摘要 markdown；拿不到计数就退回命令的结算文本或 `压缩摘要不可用`。
-- 同样**不随显示级别折叠**（它不是过程组行）。
+- 与注入行同理：`compaction` **也不在** `TURN_PROCESS_INDEPENDENT_KINDS` 里 ⇒ 它是**过程组成员**，回合结束后会跟着整轮过程一起被折掉（机制与取证见 §1.4②）。
 
 ### 2.3 飞书侧现状
 
@@ -236,7 +258,7 @@
 
 ### 仍待拍板
 
-1. **注入卡要不要同时提供降噪开关**：默认「每次注入一张」（＝已拍板）；可选的「同一回合内同类合并成一张、就地更新」是否现在就做（§1.5 的体量：一次 39 轮样本 55 张）。
+1. **注入卡要不要同时提供降噪开关**：默认「每次注入一张」（＝已拍板）；可选的「同一回合内同类合并成一张、就地更新」是否现在就做（§1.5 的体量：常态中位数 3 条/会话，高变动会话可到几十条）。
 2. **档位是否引入**（§3.3）：① 档位作权威 + 4 个布尔降为 `custom`（推荐）；② 只做「档位 = 一键写 4 个布尔」的轻量预设（改动最小，但没有对齐折叠 / 推理预览两个新轴）；③ 先不做档位，只做 §1 / §2。
 3. **档位与 O20（步骤卡阶段）的先后**：档位里的 `liveProcessDetail` 这一轴正是 O20 方案 2 要接的实时流——O20 先做，或与档位同批。
 4. **折叠组件的探针**：实现压缩卡前先跑一次「不发出去」的 `cardkit.card.create` 探针（§2.4）；失败就走退路（不折叠直出）。
