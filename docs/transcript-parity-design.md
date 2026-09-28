@@ -1,6 +1,6 @@
 # 上下文注入、压缩摘要与显示级别：与 WebUI 的对齐调研
 
-> 状态：**调研完成，方案待拍板（2026-09-28）——尚未动代码**。
+> 状态：**调研完成；§1 注入与 §2 压缩已拍板，§3 显示档位待拍板（2026-09-28）——尚未动代码**。
 > 关联：[`src/feishu-streaming.ts`](../src/feishu-streaming.ts)（`session/event` fan-out 与步骤卡全部逻辑）、[`src/feishu-display.ts`](../src/feishu-display.ts)（`/display` 卡片）、[`src/config.ts`](../src/config.ts)（4 个显示开关）、[`docs/step-card-phases-design.md`](./step-card-phases-design.md)（O20，同一片代码、同一批信号）、[`docs/display-card-design.md`](./display-card-design.md)。
 > 台账：`TODO.md` 的 **O21**（注入与压缩完全不可见）、**O22**（显示级别不对齐）。
 > 依据的 DSH 版本：**0.2.0-rc.1**（`dsh-v0.2.0-rc.1` = `4878cdabd8`）。下文所有源码路径都相对 DSH 检出根。
@@ -9,8 +9,8 @@
 
 | # | 缺口 | DSH 侧事实 | WebUI 怎么演 | 飞书现状 | 建议修法 |
 |---|---|---|---|---|---|
-| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`），共 8 种来源 | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派 | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | 默认**折进 Turn Complete 卡**一行；`verbose` 才逐条成行（噪声实测见 §1.4） |
-| 2 | **压缩不可见**（自动压缩 + `/compact`） | `compaction/start` → `compaction/summary` → `compaction/end`（失败时 `end` 带 `error`），外加一条 replacement checkpoint | 「上下文已压缩 · 已折叠 N 条历史 · ~M tokens」+ 展开看摘要 | **完全没有订阅**（`compaction/*`、`command/*` 都没订阅） | 一张压缩卡：进行中 → 计数+摘要 → 收尾/失败原因 |
+| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`），共 8 种来源 | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派 | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **每次注入发一张独立卡片**，落在它发生的时刻（✅ 已拍板，见 §1.5） |
+| 2 | **压缩不可见**（自动压缩 + `/compact`） | `compaction/start` → `compaction/summary` → `compaction/end`（失败时 `end` 带 `error`），外加一条 replacement checkpoint | 「上下文已压缩 · 已折叠 N 条历史 · ~M tokens」+ 展开看摘要 | **完全没有订阅**（`compaction/*`、`command/*` 都没订阅） | 一张压缩卡：进行中 → **详情行在折叠区之上、摘要可折叠且 ≤200 字** → 收尾/失败原因（✅ 已拍板，见 §2.4） |
 | 3 | **显示级别不对齐** | WebUI 是**一个 4 档枚举 + 4 条策略轴** | 简洁 / 标准 / 详细 / 完全展开（默认「详细」） | **4 个互不相干的布尔**（思考 / 工具 / 参数 / 结果），轴的含意都不同 | 引入同名的 4 档 `transcriptView` 作权威档位，4 个布尔降为「自定义」档的细分 |
 
 三件事的**共同点**：都落在 `session/event` 这一个 handler 上，而且第 3 件决定了前两件的默认音量。建议顺序 **2 → 1 → 3**（压缩卡与注入各自独立可发；级别落地后回头把注入的档位接上）。
@@ -67,18 +67,30 @@
 
 ⇒ **「一条注入 = 一条消息」会让聊天消息量翻倍以上**。WebUI 能这么干是因为它是一个可滚动的转录流、折叠行只占一行且默认收起；飞书的消息是**持久气泡**，缩不回去。所以飞书侧必须默认聚合。
 
-### 1.5 对齐选项
+### 1.5 已拍板的形态（2026-09-28）
 
-| 方案 | 形态 | 优点 | 缺点 |
-|---|---|---|---|
-| **A（推荐）** | 默认**不发独立消息**：在 **Turn Complete 卡**上加一行「📥 本轮注入：AGENTS.md（已更新）· 技能目录 · …」；`verbose` 档才**逐条**发一行文本 | 零额外气泡；把 WebUI 的「折叠行」映射到飞书唯一可折叠的位置（回合汇总）；噪声随档位可调 | 注入不再出现在「发生的那一刻」，而是回合结束时汇总；跨轮才发生的注入（子代理结算）需要另议 |
-| B | 一张**「上下文」面板卡**（累积、只发新卡不更新，同 `feishu-jobs.ts` / `feishu-subagents.ts` 范式） | 会话内所有注入一处可查，像一张目录 | 55 行要分页；与「这一轮发生了什么」脱节；又是新卡种 |
-| C | 每条注入一张**可折叠面板卡**（Card JSON 2.0 的 `collapsible_panel`） | 最贴 WebUI | 本插件从未用过该组件，字段要真机验证；频次问题仍在（55 张卡） |
+**使用者决策：不要折进 Turn Complete 卡，改为「每次注入一张独立卡片」。** 原话：
 
-**两个必须单独看的例外**（无论选哪个方案）：
+> 「不要显示在 turn complete 卡片中，而是显示为一个单独的卡片。因为这是中间步骤，如果显示在 turn complete 卡片里，我只知道发生过这个事情，但它的具体行为就看不出来了。」
 
-- `subagent-settled`：它改变「为什么会有这一轮」——子代理跑完了在唤醒父会话。建议**至少**在 Turn Complete 的「触发原因」一行里点名（现有 O11 的 `⚡ 本回合由后台任务完成通知触发` 是同一位置，加一个子代理变体即可）。
-- `session-reference`（跨会话召回）：可以改变答案的依据来源，同样是「为什么会有这段内容」。建议进 Turn Complete 的注入行。
+⇒ 采纳的是方案 C 的**位置语义**（注入在自己发生的时刻占一条卡片，而不是被回合结束时的汇总吞掉），但**内容**不必用折叠面板（折叠能力留给压缩摘要，见 §2.4）：卡面直接给出「具体行为」——标题 + producer label + 该 `form` 的内容（超长截断）。
+
+卡片规格（草案；`user/message` 且 `source.kind !== 'user'` 时触发）：
+
+| `source.kind` | 卡面 |
+|---|---|
+| `agent-instructions` | 标题 `📥 上下文注入`；副标题 = `changes[].path`（如 `AGENTS.md`）+ 动作（`已载入` / `已更新` / `已新增` / `已移除`，对齐 WebUI 的 `message.context.instructions.*`）；正文 = 变更条目（`scope` / `digest`）与其对应内容，超长截断 |
+| `skill-catalog` / `plugin` | 标题同名；正文 = 条目清单（截断 + `…还有 N 条`，对齐 WebUI 的 `message.context.catalog.more`） |
+| `session-reference` | 标题 `🔗 跨会话召回`；正文 = `references[].label` |
+| `skill-invocation` | 标题 `📥 已载入技能`；正文 = skill 名 |
+| `agent-message` | 标题 `✉️ 会话间消息`；正文 = 来源会话 + 内容摘要 |
+| `subagent-settled` | 标题 `🤖 子代理已结算`；正文 = `summary` |
+| `goal` | 标题 `🎯 目标推进`；正文 = `goalId` / `round` |
+| 未知 `kind` 或未知 `form` | 标题 `📥 上下文注入`；正文 = 原始字段（对齐 WebUI 的 opaque 兜底：来源不认识也必须能渲染） |
+
+**体量提醒（使用者已知情）**：一次 39 轮样本会产生 **55 张**注入卡（§1.4）。会连续刷屏的是三类例行快照——`agent-instructions`（每次 `read`/`write`/`edit` 触碰指令文件，样本 19 条）、`plugin`（14）、`skill-catalog`（8）。建议给这三类留一个「**同一回合内同类合并成一张、就地更新**」的开关，默认**关**（＝每条一张，与拍板一致），需要降噪时再打开；做成配置项而不是写死在逻辑里。
+
+**原先提的「两个例外」不再是例外**：`subagent-settled`（子代理跑完在唤醒父会话，回答「为什么会有这一轮」）与 `session-reference`（跨会话召回，改变答案的依据来源）本身就是注入，在「每条注入一张卡」下自然可见，不需要额外的 Turn Complete 变体。
 
 ---
 
@@ -113,22 +125,37 @@
 2. `/compact`（DSH 自带的 `command-compact`，插件不再自己注册同名命令）也没有任何反馈；
 3. 更隐蔽的一条：checkpoint 也是 `user/message`。它落在 `src/feishu-streaming.ts:1469` 那个分支上，**目前不会误伤**（`sawTurnUserMessage` 只在 `source.kind === 'tool-jobs'` 时才被用来判定触发原因），但接线时**必须显式排除** `compact-checkpoint`，否则将来任何「第一条 user/message 就是触发原因」的推论都会被它污染（`packages/client/ui-chat/src/client/conversation-nodes/message.ts:39` 的 `isCompactionCheckpoint` 就是上游的同款排除）。
 
-### 2.4 对齐建议
+### 2.4 已拍板的形态（2026-09-28）
 
-一张压缩卡（**必须发**，这是结构事件，不是可选噪声）：
+使用者决策（原话：「压缩的摘要内容：设置为可折叠显示，字数上限按 200 字」「压缩的详情（例如压缩了多少轮对话、多少 token）：显示在折叠部分之上」「界面调整：不要那个发文按钮」）：
+
+```
+🗜️ 上下文已压缩                          ← 标题（手动 /compact 时用 /compact）
+已折叠 609 条历史记录 · 约 302k tokens    ← 详情行：在折叠区【之上】
+ ▸ 摘要                                  ← 可折叠区：最多 200 字
+```
 
 | 触发 | 卡片 | 颜色 |
 |---|---|---|
-| `compaction/start` | `🗜️ 正在压缩上下文…` + 触发者（自动 / `/compact`） | grey / violet |
-| `compaction/summary` | `🗜️ 上下文已压缩` · `已折叠 N 条历史记录 · 约 M tokens` · `provider/model` + 摘要正文 | green |
-| `compaction/end` | 有 `error` → 失败卡（`errorText()` 展开 cause 链，关键坑 40）；无 `error` → 收尾（计数已在上一步给出，只补「已生效」） | red / green |
+| `compaction/start` | `🗜️ 正在压缩上下文…` + 触发者（自动 / `/compact`） | grey |
+| `compaction/summary` | 详情行（`shadowedSeqs.length` 条历史 · `shadowedTokenCount` tokens · `provider/model`）+ 折叠区（摘要 ≤200 字） | green |
+| `compaction/end` | 有 `error` → 失败卡（`errorText()` 展开 cause 链，关键坑 40）并写明**没有产生摘要**；无 `error` → 收尾 | red / green |
 
-要点：
+**明确不做**：不提供「完整摘要另发文件」的按钮（使用者已否掉）；摘要超 200 字即截断，不做全文出口。
 
-- **摘要长度**：摘要可能上千字，卡片 JSON 有 ~30KB 上限（关键坑 42）。建议正文截断（如 1500 字）+ 需要全文时用 `feishu_send_file` 发一份 `.md`；这与 `TEXT_STEP_CAP` 的既有做法一致。
-- **写入纪律**：压缩卡走 `channel.sendStepCard` 同一套写入路径（关键坑 45：步骤卡自己的 send 不能过聊天排序屏障），并与在飞的步骤卡保持顺序；压缩发生在步骤之间，天然不会与某一步的更新交错，但要按坑 45 的「一卡一次写入在飞」执行。
-- **上下文水位**：`compaction/summary` 之后的下一个 `request/header` 就能拿到压缩后的 `lastInputTokens`，可以在完成卡上补一句「上下文 302k → 41k」，这是 WebUI 没有的增量信息（可选）。
-- **档位关系**：`compact` 档只发计数行（不发摘要正文）；`standard`/`detailed` 发计数 + 截断摘要；`verbose` 发全文。
+**⚠️ 折叠组件的可用性尚未核实——这是实现的第一步**：
+
+- 本插件**从未用过**任何折叠组件（`docs/feishu-capabilities.md` 把 `collapsible` 记为能力缺口，与 **O5「reasoning 代码块可折叠」** 是同一个组件）；组件 tag 在 Card JSON 1.0 / 2.0 里的名字（`collapsible` vs `collapsible_panel`）和字段名（`expanded` / `default_expanded` / `header` / `elements` …）**逐字段未核实**。
+- 本机**读不到飞书官方文档**：`open.feishu.cn` 解析到非公网地址，抓取工具以「解析到非公网 IP 地址」为由直接拒绝——与 `docs/display-card-design.md` 里 `checker` 那条「字段未逐字段核实」是同一个坑。
+- **验证手段（不动任何聊天）**：一次**不发出去的** `cardkit.card.create` 探针。关键坑 41 已证明「非法卡内容不抛错，而是 `code=200570` + 空 `card_id`」，所以拿到非空 `card_id` 就说明服务端至少接受了这份 JSON；拿不到就立刻换写法。
+- **退路**（探针失败时）：详情行 + 摘要前 200 字**不折叠**直出；或摘要单独一张卡。两条都不需要新组件。
+
+**其余要点**：
+
+- **写入纪律**：压缩卡走 `channel.sendStepCard` 同一套（关键坑 45：步骤卡自己的 send 不能过聊天排序屏障），一卡同时只允许一次写入在飞。压缩发生在**步骤之间**，天然不会与某一步的更新交错。
+- **失败形态**：`compaction/end` 是唯一带 `error` 的事件，且失败路径**没有** `summary`（§2.1）——「start 之后必然有 summary」的假设必须排除。
+- **上下文水位（可选）**：`compaction/summary` 之后的下一个 `request/header` 能拿到压缩后的 `lastInputTokens`，可在收尾时补一句「上下文 302k → 41k」。
+- **200 字**：与推理预览同一个预算（`REASONING_CAP = 200`，见 O8）；实现时写成命名常量，别散落魔数。
 
 ---
 
@@ -188,18 +215,28 @@
 ## 四、实施要点与纪律
 
 1. **一处 handler**：三件事都在 `src/feishu-streaming.ts` 的 `session/event` 分支里；注入走 `user/message`，压缩走 `compaction/*`。不要新开第二个 `ctx.on('session/event')` 监听器（现有的四个模块各自订阅是为了独立生命周期，这里不需要）。
-2. **写入纪律**：压缩卡必须走 `channel.sendStepCard` / `updateStepCard` 同一套（关键坑 45）；Turn Complete 的注入行沿用现有 footer 路径（它已经有 `deliverables` 行，加一行是最小改动）。
+2. **写入纪律**：压缩卡必须走 `channel.sendStepCard` / `updateStepCard` 同一套（关键坑 45）；注入卡走普通 `channel.send`（无按钮、不需要就地更新），但**必须落在正确的话题里**——按绑定的 root 坐标发，不按群推断（关键坑 25 / 31）。
 3. **排除清单**：接线 `user/message` 时显式跳过 `compact-checkpoint`（§2.3）与 `tool-jobs`（已有分支），避免污染「本轮触发原因」的判定。
-4. **只发不更新 / 只更新不发的选择**：压缩卡是一张**可更新**的卡（start → summary → end 三次写入，同一步骤卡的模式）；注入汇总只在 Turn Complete 卡上呈现，不新增卡种。
-5. **有界**：摘要、注入正文都要截断（卡片 ~30KB / 200 元素上限，关键坑 42）；超长走 `feishu_send_file` 或文本消息。
-6. **验证方式（真机）**：一轮里制造 ① 自动压缩（长会话）② `/compact` ③ 子代理结算 ④ 改一次 `AGENTS.md` 让指令增量触发，检查：压缩卡三次状态是否按序、摘要是否落地、卡片是否只更新不重发、`230020` 是否出现、journal 是否干净；注入行是否只在 Turn Complete 卡上出现一次。
+4. **发/更新策略**：压缩卡是一张**可更新**的卡（start → summary → end 三次写入，同一步骤卡的模式）；注入卡**只发不更新**（一次注入一张，内容在发出时就完整；没有按钮，因此不受关键坑 11「带按钮的卡就地更新 2–3 次后回调失效」的约束）。
+5. **有界**：摘要 200 字硬上限（§2.4）；注入正文按 `form` 各自截断并补 `…还有 N 条`；两者**都不再提供全文出口**（使用者已否掉发文按钮）。
+6. **验证方式（真机）**：一轮里制造 ① 自动压缩（长会话）② `/compact` ③ 子代理结算 ④ 改一次 `AGENTS.md` 让指令增量触发，检查：压缩卡三次状态是否按序、详情行与折叠区位置是否正确、折叠组件是否真的渲染、`230020` 是否出现、journal 是否干净；注入卡是否**每次注入各一张**且正文能看出具体行为（改了哪个文件 / 哪一条）。
 
 ---
 
-## 五、待拍板
+## 五、决策状态
 
-1. **注入的默认呈现**：方案 A（折进 Turn Complete 卡一行，`verbose` 才逐条成行，**推荐**）/ B（单独的「上下文」面板卡）/ C（每条一张可折叠卡）。
-2. **`subagent-settled` 与 `session-reference` 是否升级为独立可见行**（不受默认档位压制）。
-3. **压缩摘要的呈现**：截断多少字上卡；是否需要「完整摘要另发文件」的按钮。
-4. **档位是否引入**（§3.3）：档位作权威 + 布尔降为 `custom`（**推荐**）；或只做「档位 = 一键写 4 个布尔」的预设（改动最小，但没有对齐折叠/推理预览两个新轴）；或先只做 §1/§2、档位留到 O20 之后再定。
-5. **档位与 O20 的先后**：`liveProcessDetail` 轴要等 O20 的实时流才有内容 → 建议 O20 先落地（或至少同批）。
+### 已拍板（2026-09-28）
+
+| # | 决策 | 依据 |
+|---|---|---|
+| 1 | 注入**不折进 Turn Complete**，改为**每次注入一张独立卡片**，卡面要能看出具体行为 | §1.5 |
+| 2 | 压缩摘要**可折叠显示**，上限 **200 字** | §2.4 |
+| 3 | 压缩详情（折叠了几条历史 / 多少 token）放在**折叠区之上** | §2.4 |
+| 4 | **不做**「完整摘要另发文件」按钮；摘要超 200 字即截断 | §2.4 |
+
+### 仍待拍板
+
+1. **注入卡要不要同时提供降噪开关**：默认「每次注入一张」（＝已拍板）；可选的「同一回合内同类合并成一张、就地更新」是否现在就做（§1.5 的体量：一次 39 轮样本 55 张）。
+2. **档位是否引入**（§3.3）：① 档位作权威 + 4 个布尔降为 `custom`（推荐）；② 只做「档位 = 一键写 4 个布尔」的轻量预设（改动最小，但没有对齐折叠 / 推理预览两个新轴）；③ 先不做档位，只做 §1 / §2。
+3. **档位与 O20（步骤卡阶段）的先后**：档位里的 `liveProcessDetail` 这一轴正是 O20 方案 2 要接的实时流——O20 先做，或与档位同批。
+4. **折叠组件的探针**：实现压缩卡前先跑一次「不发出去」的 `cardkit.card.create` 探针（§2.4）；失败就走退路（不折叠直出）。
