@@ -79,10 +79,23 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 | 组件 | tag | 说明 | dsh-feishu 现状 | 潜在场景 |
 |---|---|---|---|---|
-| **可折叠** | `collapsible` | 折叠/展开内容块 | ❌ 未使用 | 🔥 长 reasoning、长工具输出 |
+| **可折叠面板** | `collapsible_panel` | 折叠/展开内容块 | ⚠️ **组件已验证可用、插件尚未使用**（2026-09-29 探针，见下） | 🔥 压缩摘要、长 reasoning、长工具输出 |
 | **标签页** | `tab` + `tab_content` | 多标签页切换 | ❌ 未使用 | 多 step 结果分页查看 |
 | 分割线 | `hr` | 水平分割线 | ✅ 已使用 | — |
 | 注释 | `note` | 底部注释（Card JSON 1.0） | ⚠️ 2.0 不支持 | 用 `markdown` + `text_size: 'notation'` 替代 |
+
+#### 2.3.1 折叠组件探针实测（2026-09-29）
+
+折叠组件本插件从未用过，且本机**读不到飞书官方文档**（`open.feishu.cn` 经 fake-ip 解析成非公网地址，抓取工具直接拒），所以 tag 与字段名只能实测。做法是**只建卡片实体、不发送**的 `cardkit.card.create` 探针（脚本 `~/.dsh/probe-collapsible-card.py`），并带一个**伪造 tag 的对照**来证明判据有区分力：
+
+| 用例 | 结果 |
+|---|---|
+| `collapsible_panel` + `expanded: false` + `header.title` + `elements` | `code=0`，拿到 `card_id` ✅ |
+| `collapsible_panel` + `default_expanded` | `code=0`（未知字段被容忍，据此判不出正确字段名） |
+| `collapsible`（1.0 名字） | `code=10002 ErrMsg: not support tag` ❌ |
+| 对照：伪造 tag `collapsible_bogus` | `code=10002 not support tag` ❌（对照有效 ⇒ 上面的成功有意义） |
+
+结论：**tag 必须写 `collapsible_panel`**；初始展开态的字段名（`expanded` vs `default_expanded`）用 create 分不出来，按 `expanded` 实现、真机再校（纯外观，不影响结构，也不会让卡片发不出去）。
 
 ### 2.4 交互回调
 
@@ -180,15 +193,15 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 
 按投入产出比排序（状态更新于 2026-09-08）：
 
-> **2026-09-23 复核**：P6 批次（插件详情页的连接/扫码三分贡献、后台任务卡、会话置顶、模型目录、清单本地化名与图标）**没有新增或移除任何飞书组件用法**——新增的卡仍然只用 `header` + `markdown`，详情页用的是 `button`（本节 P2 已标 ✅）。所以下表状态**未变**；唯一仍开着的组件类缺口是第一张表的 `collapsible`（reasoning 与长工具输出折叠）。
+> **2026-09-23 复核**：P6 批次（插件详情页的连接/扫码三分贡献、后台任务卡、会话置顶、模型目录、清单本地化名与图标）**没有新增或移除任何飞书组件用法**——新增的卡仍然只用 `header` + `markdown`，详情页用的是 `button`（本节 P2 已标 ✅）。所以下表状态**未变**；唯一仍开着的组件类缺口是折叠组件（reasoning 与长工具输出折叠）。**2026-09-29 更正**：该组件的 tag 不是 `collapsible`（那是 1.0 时代的名字，`cardkit.card.create` 直接回 `10002 not support tag`），而是 **`collapsible_panel`**——已用探针实测，详见 2.3 节的新增说明。
 
 ### P0 — 优先实现
 
 | 功能 | 组件 | 状态 | 说明 |
 |---|---|---|---|
 | `/model` 下拉选择 | `select_static` | ✅ 已实现 | `feishu-model-select.ts`：provider → model → reasoning 三步卡片 |
-| Reasoning 可折叠 | `collapsible` | 🔲 未实现 | 当前 reasoning 只展示 **200 字预览**（不展示完整思维链），text 超 3000 字已改为拆溢出续卡 |
-| 长工具输出可折叠 | `collapsible` | 🔲 未实现 | bash/read 等工具的长输出也适用 |
+| Reasoning 可折叠 | `collapsible_panel` | 🔲 未实现（组件已验证可用） | 当前 reasoning 只展示 **200 字预览**（不展示完整思维链），text 超 3000 字已改为拆溢出续卡 |
+| 长工具输出可折叠 | `collapsible_panel` | 🔲 未实现（组件已验证可用） | bash/read 等工具的长输出也适用 |
 
 ### P1 — 后续实现
 
@@ -218,6 +231,7 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 | 卡片大小 | 30KB | 单张卡片 JSON 不超过 30KB |
 | 组件数量 | 200 | 单张卡片最多 200 个组件 |
 | 卡片实体有效期 | 14 天 | `cardkit.v1.card.*` 只能操作 14 天内创建的卡片实体 |
+| 卡片实体只能发送一次 | — | 一个 `cardkit.card.create` 出来的实体只能被发出一次；要再发必须新建实体（与坑 11 同族）。接口说明原文：一个卡片实体，仅支持发送一次 |
 | Card JSON 2.0 客户端要求 | 飞书 ≥ 7.20 | 低版本客户端标题可正常显示，正文显示升级提示 |
 | 单个 markdown 元素内容 | ~10k 字符（隐式） | 超限可能返回 200 但静默截断，发送前应主动分段 |
 | 卡片标题色带重绘 | — | 部分客户端在卡片更新后不重绘 `header.template`（白底），属客户端渲染问题 |

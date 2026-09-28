@@ -229,12 +229,25 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 
 **明确不做**：不提供「完整摘要另发文件」的按钮（使用者已否掉）；摘要超 200 字即截断，不做全文出口。
 
-**⚠️ 折叠组件的可用性尚未核实——这是实现的第一步**：
+**✅ 折叠组件已探针验证（2026-09-29）——可以做**：
 
-- 本插件**从未用过**任何折叠组件（`docs/feishu-capabilities.md` 把 `collapsible` 记为能力缺口，与 **O5「reasoning 代码块可折叠」** 是同一个组件）；组件 tag 在 Card JSON 1.0 / 2.0 里的名字（`collapsible` vs `collapsible_panel`）和字段名（`expanded` / `default_expanded` / `header` / `elements` …）**逐字段未核实**。
-- 本机**读不到飞书官方文档**：`open.feishu.cn` 解析到非公网地址，抓取工具以「解析到非公网 IP 地址」为由直接拒绝——与 `docs/display-card-design.md` 里 `checker` 那条「字段未逐字段核实」是同一个坑。
-- **验证手段（不动任何聊天）**：一次**不发出去的** `cardkit.card.create` 探针。关键坑 41 已证明「非法卡内容不抛错，而是 `code=200570` + 空 `card_id`」，所以拿到非空 `card_id` 就说明服务端至少接受了这份 JSON；拿不到就立刻换写法。
-- **退路**（探针失败时）：详情行 + 摘要前 200 字**不折叠**直出；或摘要单独一张卡。两条都不需要新组件。
+用一次**只建实体、不发送**的 `cardkit.card.create` 探针（脚本留在 `~/.dsh/probe-collapsible-card.py`，凭据从 `.credentials.yaml` 读、不打印），并带一个**伪造 tag 的对照**来证明判据有区分力：
+
+| 用例 | 结果 |
+|---|---|
+| A `collapsible_panel` + `expanded: false` + `header.title` + `elements` | **`code=0`，拿到 `card_id`** ✅ |
+| B `collapsible_panel` + `default_expanded` | `code=0`（未知字段被容忍，**无法据此判定正确字段名**） |
+| C `collapsible`（Card JSON 1.0 时代的名字） | `code=10002 ErrMsg: not support tag` ❌ |
+| D **对照**：伪造 tag `collapsible_bogus` | `code=10002 not support tag` ❌（**对照有效**：tag 会被服务端校验，A 的成功因此有意义） |
+| E 对照：普通卡 | `code=0` |
+
+结论三条：
+
+1. **tag 用 `collapsible_panel`**（2.0 的名字）；`docs/feishu-capabilities.md` 里记的 `collapsible` 是**错的**（1.0 名字，CardKit 直接拒），已在该文件更正。
+2. **初始展开态的字段名仍未定**：`expanded` 与 `default_expanded` 都被接受，create 接口区分不出来——按 `expanded: false` 实现，真正的渲染效果留到压缩卡真机上线时看；若渲染成默认展开，改一个字段名即可（纯外观，不影响结构，也**不会**让卡片发不出去）。
+3. 顺带从 SDK 的接口说明里读到一条运维事实：**一个卡片实体只能发送一次、有效期 14 天**（`cardkit.card.create`）。现有「每次发卡都新建实体」的流程天然符合，但**长期存活、隔天还要更新的卡片**不能复用实体——这一点与关键坑 11 是同一族约束。
+
+**退路**（若真机发现折叠渲染有问题）：详情行 + 摘要前 200 字**不折叠**直出；或摘要单独一张卡。两条都不需要新组件。
 
 **其余要点**：
 
