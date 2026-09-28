@@ -135,6 +135,13 @@ export interface Translations {
   onboardingNewSessionLabel: string
   onboardingStart: string
 
+  // ---- Folded panels (card-fold.ts) ----
+  /**
+   * Append the "this is folded" hint to a panel header title. A function, not
+   * a string: CJK wants no space before the bracket and Latin wants one.
+   */
+  cardFoldTitle: (title: string) => string
+
   // ---- Streaming / per-step + turn complete (feishu-streaming.ts) ----
   stepReasoningHeader: string
   stepMessageHeader: string
@@ -571,6 +578,10 @@ export const zh = {
   onboardingNewSessionLabel: '开始会话',
   onboardingStart: '🚀 开始会话',
 
+  // The trailing arrow is the point of the whole hint: a collapsed panel must
+  // look collapsed, and no client draws anything for us that a reader notices.
+  cardFoldTitle: title => `${title}（▸ 已折叠 · 点击展开）`,
+
   stepReasoningHeader: '💬 **推理**',
   stepMessageHeader: '📝 **消息**',
   stepToolHeader: '🔧 **工具调用**',
@@ -956,6 +967,8 @@ export const en: Translations = {
   onboardingPresetLabel: id => id,
   onboardingNewSessionLabel: 'Start session',
   onboardingStart: '🚀 Start session',
+
+  cardFoldTitle: title => `${title} (▸ Collapsed · click to expand)`,
 
   stepReasoningHeader: '💬 **Reasoning**',
   stepMessageHeader: '📝 **Message**',

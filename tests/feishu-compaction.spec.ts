@@ -64,7 +64,12 @@ describe('renderCompactionCard', () => {
     // support tag`; only `collapsible_panel` is accepted (probe 2026-09-29).
     expect(panel.tag).toBe('collapsible_panel')
     expect(panel.expanded).toBe(false)
-    expect(panel.header.title.content).toContain(t.compactionSummaryLabel)
+    // Same visible-fold treatment as the reasoning panel: the header says it is
+    // folded and the block is bordered and tinted (card-fold.ts).
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(`**${t.compactionSummaryLabel}**`))
+    expect(panel.header.title.content).toContain('已折叠')
+    expect(panel.header.background_color).toBe('grey-100')
+    expect(panel.border).toEqual({ color: 'grey-300', corner_radius: '4px' })
     expect(panel.elements[0].content).toBe(`${'q'.repeat(COMPACTION_SUMMARY_CAP)}…`)
   })
 

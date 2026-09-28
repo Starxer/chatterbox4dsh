@@ -249,6 +249,17 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 
 **退路**（若真机发现折叠渲染有问题）：详情行 + 摘要前 200 字**不折叠**直出；或摘要单独一张卡。两条都不需要新组件。
 
+**2026-09-30 追加：折叠必须「看得出来」**（使用者反馈：「思考块看不出来是已经折叠的样子，不了解的人不知道这个东西已经折叠了」——压缩摘要同理）。
+
+这是收起态的结构性事实：面板收起时**只渲染 header**，而光秃秃的 header 就是一个「小标题」的样子；WebUI 的同类行有 chevron，飞书这张卡得自己造。两条一起上，因为一条靠我们说、一条靠客户端画：
+
+1. **文案**——header 标题结尾统一 `（▸ 已折叠 · 点击展开）`（英文 ` (▸ Collapsed · click to expand)`），i18n 函数 `cardFoldTitle(title)`（中文不要空格、英文要）。这是唯一客户端丢不掉的信号。
+2. **外观**——`border: {color:'grey-300', corner_radius:'4px'}` + `header.background_color: 'grey-100'`：有边框、有底色的 header 才像「一块可点的东西」。
+
+两处折叠（推理、压缩摘要）改走同一个 `foldedPanel()`（`src/card-fold.ts`），值只存在一处，不会再各自漂移。
+
+**取证口径（写进坑 48）**：`cardkit.card.create` **静默容忍未知字段**——往 `header` 里塞 `bogus_xyz` 照样 `code=0`，所以「建卡成功」**不能**证明字段存在，**只有「值被拒」才算**。按这个口径实测出来的字段约束：命名色 token only（hex/rgba 被 `11310` 拒；对象形式的 `background_color` 被 `10002 expected string` 拒）、`corner_radius` 只认 px（`4`/`50%`/`4pt` 被拒）、`header.padding` 只认 1 或 4 个 px 值（`4px 8px` 被拒）、`expanded` 只认布尔（字符串报 `bad variable formmat`）；`header.icon` 的 `standard_icon` **token 不校验**（乱写也过 ⇒ 不可用），`custom_icon` 要真上传的 `img_key`（伪造被 `200570` 拒）。完整表在 [`docs/feishu-capabilities.md`](./feishu-capabilities.md) §2.3.2，端到端校验（真实渲染产物直打 create）也在那里。
+
 **其余要点**：
 
 - **写入纪律**：压缩卡走 `channel.sendStepCard` 同一套（关键坑 45：步骤卡自己的 send 不能过聊天排序屏障），一卡同时只允许一次写入在飞。压缩发生在**步骤之间**，天然不会与某一步的更新交错。

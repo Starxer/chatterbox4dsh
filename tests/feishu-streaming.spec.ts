@@ -1851,7 +1851,13 @@ describe('display levels on the step card (O22/O5)', () => {
     expect(panel).toBeDefined()
     // Collapsed by default: the header is the summary, the chain is one tap away.
     expect(panel.expanded).toBe(false)
-    expect(panel.header.title.content).toBe(t.stepReasoningHeader)
+    // The fold must be visible: the header says so in words, and the panel is
+    // drawn as a bordered, tinted block so it reads as a control (see
+    // card-fold.ts — a bare header looks like a heading).
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.stepReasoningHeader))
+    expect(panel.header.title.content).toContain('已折叠')
+    expect(panel.header.background_color).toBe('grey-100')
+    expect(panel.border).toEqual({ color: 'grey-300', corner_radius: '4px' })
     // The body is a fenced block inside the panel, not a top-level markdown.
     expect(panel.elements[0].content).toContain('step one\nstep two')
     expect((card.body.elements as any[]).some(el => el.tag === 'markdown'

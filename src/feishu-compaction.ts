@@ -32,6 +32,7 @@
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { errorText } from './error-text.ts'
+import { foldedPanel } from './card-fold.ts'
 
 /** Longest summary body carried into the folded panel, in characters. */
 export const COMPACTION_SUMMARY_CAP = 200
@@ -153,19 +154,16 @@ export function renderCompactionCard(t: Translations, input: CompactionRenderInp
       elements.push({ tag: 'markdown', content: t.compactionNoSummary, text_size: 'notation' })
     } else {
       // A prune (or a summary event we could not read) has no body. Say so
-      // instead of showing an empty expander.
+      // instead of showing an empty expander. `foldedPanel` adds the chrome and
+      // the "已折叠 · 点击展开" hint: a folded summary nobody notices is a
+      // summary nobody reads.
       const body = input.facts?.summary
-      elements.push({
-        tag: 'collapsible_panel',
-        expanded: false,
-        header: { title: { tag: 'markdown', content: `**${t.compactionSummaryLabel}**` } },
-        elements: [{
-          tag: 'markdown',
-          content: body === undefined
-            ? t.compactionSummaryUnavailable
-            : body.length > COMPACTION_SUMMARY_CAP ? `${body.slice(0, COMPACTION_SUMMARY_CAP)}…` : body,
-        }],
-      })
+      elements.push(foldedPanel(t, `**${t.compactionSummaryLabel}**`, [{
+        tag: 'markdown',
+        content: body === undefined
+          ? t.compactionSummaryUnavailable
+          : body.length > COMPACTION_SUMMARY_CAP ? `${body.slice(0, COMPACTION_SUMMARY_CAP)}…` : body,
+      }]))
     }
   }
 

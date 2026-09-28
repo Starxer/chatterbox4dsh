@@ -79,7 +79,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 | 组件 | tag | 说明 | dsh-feishu 现状 | 潜在场景 |
 |---|---|---|---|---|
-| **可折叠面板** | `collapsible_panel` | 折叠/展开内容块 | ✅ **已用于真机**（2026-09-29：推理段与压缩摘要；探针见下） | 🔥 压缩摘要、长 reasoning、长工具输出 |
+| **可折叠面板** | `collapsible_panel` | 折叠/展开内容块 | ✅ **已用于真机**（2026-09-29：推理段与压缩摘要；2026-09-30：加边框+底色+「已折叠 · 点击展开」文案，收起态才看得出来；探针见下） | 🔥 压缩摘要、长 reasoning、长工具输出 |
 | **标签页** | `tab` + `tab_content` | 多标签页切换 | ❌ 未使用 | 多 step 结果分页查看 |
 | 分割线 | `hr` | 水平分割线 | ✅ 已使用 | — |
 | 注释 | `note` | 底部注释（Card JSON 1.0） | ⚠️ 2.0 不支持 | 用 `markdown` + `text_size: 'notation'` 替代 |
@@ -118,6 +118,40 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 ```
 
 ⇒ **推理折叠默认收起**（`expanded:false`）、**注入提示行在正文最前面且卡内没有注入正文**、档位是默认「详细」——三项一次读完。**仍未验证的一点**：真机上「初始到底是不是收起」——`expanded` 若被忽略就会默认展开；若真机看到的是展开，只改一个字段名（`default_expanded`）即可，不影响结构、也不会让卡片发不出去。
+
+#### 2.3.2 「折叠要看得出来」实测（2026-09-30）
+
+使用者反馈：**收起态的面板看不出来是折叠的**（"不了解的人不知道这个东西已经折叠了"）。原因是结构性的事实——收起时面板只渲染 `header`，而光秃秃的 header 长得就像一个小标题，飞书客户端不一定会画（或画得很淡）任何 chevron。WebUI 的同类行有 chevron，飞书这张卡必须自己想办法。
+
+修法是两条一起上：**文案**（`cardFoldTitle`，任何客户端都丢不掉）+ **外观**（`border` 与 `header.background_color`，让 header 像一块可点的东西）。外观字段能不能用，只能靠服务端校验来判定，而这里有一个**必须写下来的取证口径**：
+
+> `cardkit.card.create` **静默容忍未知字段**——在 `collapsible_panel` 的 `header` 里塞一个 `bogus_xyz` 照样 `code=0`。所以「建卡成功」**不能**证明字段存在；只有「某个**值**被拒」才是证据。
+
+`~/.dsh/probe-panel-affordance.py` 的逐个字段实测（手写卡片；对照组是「合法值 vs 明显非法的值」）：
+
+| 字段 | 通过 | 被拒（⇒ 字段确实存在且被校验） |
+|---|---|---|
+| `border.color` | 命名色 token：`grey` / `grey-100` / `grey-300` / `grey-500` / `blue` / `blue-300` / `neutral` | `#DEE0E3`、`rgba(0,0,0,0.05)` → `11310 collapsible panel border color is invalid` |
+| `header.background_color` | 同一套命名色 token（`grey-50`…`grey-300`、`blue`、`wathet`、`yellow`、`orange`、`red`、`carmine`、`violet`、`indigo`、`green`、`lime`、`neutral` 全部通过） | hex / `rgba` → `11310 … header background color is invalid`；**对象** `{light,dark}` → `10002 expected string for background_color` |
+| `border.corner_radius` | `4px` / `8px` / `0px` | `4`、`50%`、`4pt` → `10002 invalid corner radius` |
+| `header.padding` | `4px`，或四个值 `4px 8px 4px 8px` | `4px 8px`、`4`、`{top,…}` 对象 → `10002 invalid panel header padding` |
+| `padding`（面板级） | `4px`、`4px 8px`、`4px 8px 4px 8px` | `bogus` → `11310 padding invalid` |
+| `expanded` | `true` / `false` | 字符串 `"yes"` → `10002 bad variable formmat: yes` |
+| `header.icon` | `{tag:'standard_icon', token:…}`（**token 不校验**，乱写也过） | `{tag:'custom_icon', img_key:'img_v3_bogus'}` → `200570 card contains invalid image keys` |
+| `text_color` / `icon_position` / `vertical_align` | 乱值也过 ⇒ **判不出真伪，故不用** | — |
+
+⇒ 采用 `border: {color:'grey-300', corner_radius:'4px'}` + `header.background_color:'grey-100'`；`custom_icon` 需要真上传的 `img_key`（不能用标准图标冒充），标准图标 token 无从校验，**都不用**。
+
+**同日第三个探针（`~/.dsh/probe-real-fold-cards.py` + `.ts`，端到端）**：手写探针能过不代表**产物**能过，所以把 `renderStepCard` / `renderCompactionCard` 的**真实输出**（zh/en 各一张步骤卡、压缩卡的 summary 与 done 两态）直接打给 `cardkit.card.create`：
+
+| 用例 | 结果 |
+|---|---|
+| 步骤卡（zh，detailed，折叠推理面板 + 工具参数/结果 + 页脚） | `code=0` ✅ |
+| 步骤卡（en） | `code=0` ✅ |
+| 压缩卡（summary 态，详情行 + 折叠摘要） | `code=0` ✅ |
+| 压缩卡（done 态、无摘要） | `code=0` ✅ |
+
+四张卡的折叠元素都带上 `border={grey-300,4px}`、`header.background_color=grey-100`、标题结尾的 `（▸ 已折叠 · 点击展开）`——即**服务端接受的就是线上真正会发的那份 JSON**。
 
 ### 2.4 交互回调
 
@@ -222,7 +256,7 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 | 功能 | 组件 | 状态 | 说明 |
 |---|---|---|---|
 | `/model` 下拉选择 | `select_static` | ✅ 已实现 | `feishu-model-select.ts`：provider → model → reasoning 三步卡片 |
-| Reasoning 可折叠 | `collapsible_panel` | ✅ **已实现**（2026-09-29，O5） | 默认收起，头部带推理时长与思考 token 数；`detailed` 档正文 200 字、`verbose` 档给全文——折叠之后「只给开头」这条信息损失不再必要 |
+| Reasoning 可折叠 | `collapsible_panel` | ✅ **已实现**（2026-09-29，O5；2026-09-30 补「看得见」的外观） | 默认收起，头部带推理时长与思考 token 数；`detailed` 档正文 200 字、`verbose` 档给全文——折叠之后「只给开头」这条信息损失不再必要。收起态统一带 `border` + header 底色 + `（▸ 已折叠 · 点击展开）` 文案（`src/card-fold.ts`）：光秃秃的 header 没人看得出里面还有东西 |
 | 长工具输出可折叠 | `collapsible_panel` | 🔲 未实现（组件已可用于此处） | bash/read 等工具的长输出仍走**截断预览**（`detailed` 1500 字符 / `verbose` 6000 字符）；折叠它需要一个能记住展开状态的写入策略，单独一批做 |
 
 ### P1 — 后续实现

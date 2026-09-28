@@ -31,6 +31,7 @@ import {
   resolveDisplayPolicy, type DisplayPolicy, type TranscriptView,
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
+import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
 
 /** Minimal logger surface. */
@@ -2412,16 +2413,13 @@ export function renderStepCard(
         : reasoning.length > REASONING_HEAD_CAP
           ? `${reasoning.slice(0, REASONING_HEAD_CAP)}\n…(truncated)`
           : reasoning
-      elements.push({
-        tag: 'collapsible_panel',
-        // Collapsed by default: the header (with its duration and token count)
-        // is the summary, the chain is one tap away. Field name verified against
-        // the live API 2026-09-29 — `collapsible_panel` is the 2.0 tag and
-        // `collapsible` (the 1.0 name) is refused with `10002 not support tag`.
-        expanded: false,
-        header: { title: { tag: 'markdown', content: header } },
-        elements: [{ tag: 'markdown', content: `\`\`\`\`\`\n${body}\n\`\`\`\`\`` }],
-      })
+      // Collapsed by default: the header (with its duration and token count)
+      // is the summary, the chain is one tap away. `foldedPanel` gives every
+      // fold the same visible chrome and the "已折叠 · 点击展开" hint — without
+      // it a reader has no way to tell there is anything behind the header.
+      elements.push(foldedPanel(t, header, [
+        { tag: 'markdown', content: `\`\`\`\`\`\n${body}\n\`\`\`\`\`` },
+      ]))
     }
   }
 

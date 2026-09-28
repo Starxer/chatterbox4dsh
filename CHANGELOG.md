@@ -32,6 +32,34 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 修复：折叠面板现在一眼能看出「已折叠」（`src/card-fold.ts`（新）/ `src/feishu-streaming.ts` / `src/feishu-compaction.ts` / `src/i18n.ts`，2026-09-30）
+
+**问题**（使用者原话）：「思考块看不出来是已经折叠的样子。不了解的人不知道这个东西已经折叠了」——压缩卡的摘要面板同理。这是收起态的**结构性**事实：面板收起时只渲染 `header`，而光秃秃的 header 就是一个「小标题」的样子；WebUI 的同类行有 chevron，飞书这张卡什么都没有。
+
+**修法**（两条一起上：一条靠我们说，一条靠客户端画）：
+
+1. **文案**：面板 header 标题结尾统一加 `（▸ 已折叠 · 点击展开）`（英文 ` (▸ Collapsed · click to expand)`）——写成 i18n 函数 `cardFoldTitle(title)`，因为中文不要空格、英文要。这是**唯一客户端丢不掉**的信号。
+2. **外观**：面板加 `border: {color:'grey-300', corner_radius:'4px'}`，header 加 `background_color: 'grey-100'`——有边框、有底色的 header 才像「一块可点的东西」，而不是「一行标题」。
+
+推理面板与压缩摘要面板改走同一个 `foldedPanel()`（`src/card-fold.ts`），值只存在一处，不会再各自漂移。
+
+**取证口径（重要，已写进关键坑 48）**：`cardkit.card.create` **静默容忍未知字段**——往 `collapsible_panel.header` 里塞 `bogus_xyz` 照样 `code=0`。所以「建卡成功」**不能**证明字段存在，**只有「某个值被拒」才算**：
+
+| 字段 | 通过 | 被拒 |
+|---|---|---|
+| `border.color` | 命名色 token（`grey` / `grey-300` / `blue` / `neutral`） | `#DEE0E3`、`rgba(...)` → `11310 collapsible panel border color is invalid` |
+| `header.background_color` | 同一套命名色 token（`grey-50`…`grey-300`、`blue`、`yellow`…） | hex / rgba → `11310 … header background color is invalid`；**对象** `{light,dark}` → `10002 expected string for background_color` |
+| `border.corner_radius` | `4px` / `8px` / `0px` | `4`、`50%`、`4pt` → `10002 invalid corner radius` |
+| `header.padding` | `4px`，或四个值 `4px 8px 4px 8px` | `4px 8px`、`4`、对象 → `10002 invalid panel header padding` |
+| `expanded` | `true` / `false` | 字符串 → `10002 bad variable formmat` |
+| `header.icon` | `{tag:'standard_icon',…}`（**token 不校验**，乱写也过 ⇒ 不可用） | `{tag:'custom_icon', img_key:'img_v3_…伪造'}` → `200570 card contains invalid image keys` |
+
+端到端再校一遍：把**插件真实渲染出来的**产物——zh/en 各一张步骤卡（折叠推理 + 工具参数/结果 + 页脚）、压缩卡的 summary 与 done 两态——直接打给 `cardkit.card.create`，四张全部 `code=0`（脚本 `~/.dsh/probe-real-fold-cards.py`，渲染走插件的 `vite-node`）——防止「手写探针能过、产物不能过」。完整表与脚本清单见 [`docs/feishu-capabilities.md`](./docs/feishu-capabilities.md) §2.3.2。
+
+**验证**：`npm run typecheck` 0 error；**787 tests / 46 files 全绿**（新增 `tests/card-fold.spec.ts` 5 例，并把「色值只能是命名 token / 半径只能是 px」写进断言，防止以后有人手滑改成 hex）；`npm run build` 通过，`lib/index.js` 已重建（本批不动客户端，`client/client.js` 无 diff）。
+
+**English**: a folded panel must look folded. A collapsed `collapsible_panel` renders only its header, and a bare header reads as a section title — nothing suggests there is more behind it (the Web UI's equivalent row draws a chevron; this card had nothing). The fix is two-layered: the header title now always ends with `（▸ 已折叠 · 点击展开）` / ` (▸ Collapsed · click to expand)` via an i18n function (`cardFoldTitle`, because CJK takes no space and Latin does), and the panel is drawn as a bordered, tinted block (`border {grey-300, 4px}` + `header.background_color: grey-100`) so the header reads as a control. Both folds (reasoning and compaction summary) now share one `foldedPanel()` builder. The evidence rule matters here and is recorded as key pitfall 48: `cardkit.card.create` **silently tolerates unknown fields** (a `bogus_xyz` inside `header` still returns `code=0`), so a successful create proves nothing — only a *rejected value* does (named colour tokens only: hex/rgba are refused with `11310` and an object-valued `background_color` with `10002`; `corner_radius` is px-only; `header.padding` takes one or four px values). The plugin's real render output for four cards (zh/en step cards, compaction summary and done) was then fed straight to `cardkit.card.create` — all `code=0`. `npm run typecheck` clean, **787 tests across 46 files** green (5 new in `tests/card-fold.spec.ts`, which also pins the probed value constraints), `npm run build` rebuilt `lib/index.js` with no client diff.
+
 **上线与实测（2026-09-23，两次重启）**：
 
 - **上线**：`49df1ba`（L1+L2）+ `0b82880`（L3）于 18:36:14 重启生效（`MainPID` 4193368 → 384812）；`e914bc9`（`cardImages` 设置）于 20:10:45 重启生效（→ 529495）。两次都 `systemctl` active、journal 里**卡片相关的 error / `invalid image keys` / `message handling failed` 均为 0**；产物核对 `lib/index.js` 与 `client/client.js` 都含 `cardImages`。
@@ -70,7 +98,7 @@
 🗜️ 正在压缩上下文…            ← compaction/start，grey，写明触发方式（自动 / /compact）
 🗜️ 上下文已压缩                ← compaction/summary，green
 已折叠 609 条历史记录 · 约 302K tokens · provider/model   ← 详情行在折叠区【之上】
- ▸ 摘要                        ← collapsible_panel，expanded:false，正文上限 200 字
+ 摘要（▸ 已折叠 · 点击展开）      ← collapsible_panel，expanded:false，正文上限 200 字；灰底+边框（2026-09-30 追加）
 ⚠️ 上下文压缩失败 + 原因 + 「本次没有产生摘要」  ← compaction/end 带 error 时，red
 ```
 
