@@ -1774,3 +1774,52 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
     expect(removals).toContain('agent/assistant-stream')
   })
 })
+
+// ---------------------------------------------------------------------------
+// O20 follow-up: the awaiting card names the route. `request/context` only
+// fires when the route changes, so the durable `request/header` (whose config
+// carries provider/model, exactly what /model reads back) is the primary source.
+// ---------------------------------------------------------------------------
+
+describe('awaiting card route line (O20)', () => {
+  const channel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-1' })),
+    updateCard: vi.fn(async () => undefined),
+  })
+  const lastCardOf = (ch: StepChannel): any => {
+    const updates = (ch.updateCard as any).mock.calls
+    if (updates.length > 0) return updates.at(-1)![1]
+    return (ch.send as any).mock.calls.at(-1)![1].card
+  }
+
+  it('takes the route from request/header and shows it while awaiting', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(ch.send).toHaveBeenCalledTimes(1) })
+    // Only a header is emitted for this request — no request/context at all.
+    h.emit('request/header', { header: { config: { provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview' } }, reason: 'series' })
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(titleOf(lastCardOf(ch))).toContain(t.stepAwaitingTitle) })
+    expect(mdOf(lastCardOf(ch))).toContain(t.stepRouteLine('minimax-cn', 'MiniMax-M3.1-Flash-Preview'))
+    h.streaming.stop()
+  })
+
+  it('keeps the last known route across steps', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('request/header', { header: { config: { provider: 'deepseek-official', model: 'deepseek-flash' } }, reason: 'initial' })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(titleOf(lastCardOf(ch))).toContain(t.stepAwaitingTitle) })
+    expect(mdOf(lastCardOf(ch))).toContain('deepseek-flash')
+    // A second step whose request emitted no header still names the route.
+    h.emit('step/end', { turn: 1, step: 1 })
+    h.emit('step/start', { turn: 1, step: 2 })
+    h.emitStream({ type: 'start', attemptId: 'a2', revision: 2, turn: 1, step: 2 })
+    await vi.waitFor(() => { expect(mdOf(lastCardOf(ch))).toContain('deepseek-flash') })
+    h.streaming.stop()
+  })
+})

@@ -1554,6 +1554,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             else if (deliverables.length < DELIVERABLE_CAP) deliverables.push(entry)
           }
         }
+      } else if (event.type === 'request/header') {
+        // The route lives in the header's own config — the same field `/model`
+        // reads back when it shows a session's current selection. DSH appends
+        // this on initial / resume / change / new series, so it is the cheapest
+        // source that is still authoritative; `request/context` below covers a
+        // route change that ships without a header change.
+        const cfg = event.data?.header?.config as { provider?: unknown; model?: unknown } | undefined
+        const headerProvider = cfg?.provider
+        const headerModel = cfg?.model
+        if (typeof headerProvider === 'string' && headerProvider !== ''
+          && typeof headerModel === 'string' && headerModel !== '') {
+          state.requestRoute = { provider: headerProvider, model: headerModel }
+        }
       } else if (event.type === 'request/context') {
         const cw = event.data?.contextWindow as number | undefined
         // The route rides the same event (`request/context` is DSH's route
