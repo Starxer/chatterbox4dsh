@@ -153,6 +153,23 @@ export interface Translations {
   stepJobTriggerNote: string
   /** One-line body of that placeholder, telling the reader it updates in place. */
   stepPlaceholderBody: string
+  /**
+   * Title while the request is out but the model has not returned a token yet.
+   * The live assistant stream's `start` frame is what moves the card here.
+   */
+  stepAwaitingTitle: string
+  /** One-line body of the awaiting phase. */
+  stepAwaitingBody: string
+  /** Title once the FIRST reasoning delta arrives (the model really started thinking). */
+  stepThinkingTitle: string
+  /** One-line body of the thinking phase. */
+  stepThinkingBody: string
+  /** Title once the FIRST text delta arrives (the model started answering). */
+  stepReplyingTitle: string
+  /** One-line body of the replying phase (text is streaming, not on the card yet). */
+  stepReplyingBody: string
+  /** Route line shown while a request is in flight, e.g. `📡 provider / model`. */
+  stepRouteLine: (provider: string, model: string) => string
   /** Title of a step that ended without anything to show (the placeholder's terminal form). */
   stepEmptyTitle: string
   /** Body of that same terminal form. */
@@ -508,9 +525,16 @@ export const zh = {
   stepCardTitleDone: '工具完成',
   stepCardTitleCall: '工具调用',
   stepCardTitleReply: '回复',
-  stepPlaceholderTitle: '🧠 深度思考中…',
+  stepPlaceholderTitle: '⏳ 正在分析请求',
   stepJobTriggerNote: '⚡ 本回合由**后台任务完成通知**触发',
-  stepPlaceholderBody: '⏳ 模型正在思考，输出会就地更新在这张卡上',
+  stepPlaceholderBody: '请求还没发出，模型尚未收到这一轮的内容',
+  stepAwaitingTitle: '📡 已发出请求，等待输出…',
+  stepAwaitingBody: '模型还没返回首个 token，输出会就地更新在这张卡上',
+  stepThinkingTitle: '🧠 思考中…',
+  stepThinkingBody: '模型正在推理，输出会就地更新在这张卡上',
+  stepReplyingTitle: '✍️ 回复中',
+  stepReplyingBody: '模型正在写回复，完成后会就地显示在这张卡上',
+  stepRouteLine: (provider, model) => `📡 ${provider} / ${model}`,
   stepEmptyTitle: '本步无输出',
   stepEmptyBody: '（本步没有可显示的内容）',
   stepPosition: (turn, step) => `第 ${turn} 轮 · 第 ${step} 步`,
@@ -841,9 +865,16 @@ export const en: Translations = {
   stepCardTitleDone: 'Tool Done',
   stepCardTitleCall: 'Tool Call',
   stepCardTitleReply: 'Reply',
-  stepPlaceholderTitle: '🧠 Thinking…',
+  stepPlaceholderTitle: '⏳ Analyzing request',
   stepJobTriggerNote: '⚡ This turn was triggered by a **background-job notice**',
-  stepPlaceholderBody: '⏳ The model is thinking — output updates this card in place',
+  stepPlaceholderBody: 'The request has not been sent — the model has nothing from this turn yet',
+  stepAwaitingTitle: '📡 Request sent, awaiting output…',
+  stepAwaitingBody: 'No token yet — output updates this card in place',
+  stepThinkingTitle: '🧠 Thinking…',
+  stepThinkingBody: 'Reasoning — output updates this card in place',
+  stepReplyingTitle: '✍️ Replying',
+  stepReplyingBody: 'The model is writing — the reply lands on this card when it settles',
+  stepRouteLine: (provider, model) => `📡 ${provider} / ${model}`,
   stepEmptyTitle: 'Empty step',
   stepEmptyBody: '(nothing to show for this step)',
   stepPosition: (turn, step) => `Turn ${turn} · Step ${step}`,

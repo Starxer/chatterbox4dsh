@@ -342,7 +342,20 @@ function stepHarness(
     warmImages?: (card: any, scope: any) => void
   } = {},
 ) {
-  const listeners: Array<(session: any, event: any) => void> = []
+  // Listeners are keyed by EVENT NAME: the streaming module also subscribes to
+  // the transient `agent/assistant-stream` publication (O20), whose payload is
+  // not `(session, event)` and must not be fed to the session handlers.
+  const listeners = new Map<string, Array<(a: any, b?: any) => void>>()
+  const on = (name: string, handler: any): (() => void) => {
+    const list = listeners.get(name)
+    if (list === undefined) listeners.set(name, [handler])
+    else list.push(handler)
+    return () => {
+      const current = listeners.get(name)
+      const index = current?.indexOf(handler) ?? -1
+      if (current !== undefined && index >= 0) current.splice(index, 1)
+    }
+  }
   const bridge = {
     resolveChat: () => ({ chatId: 'oc_1', chatType: 'p2p' }),
     getSessionMeta: async () => ({ contextWindow: 4096, lastInputTokens: 12 }),
@@ -350,7 +363,7 @@ function stepHarness(
     clearIntermediateSent: vi.fn(),
   }
   const streaming = startFeishuStreaming({
-    ctx: { on: (_name: string, handler: any) => { listeners.push(handler); return () => undefined } } as any,
+    ctx: { on } as any,
     channel: channel as any,
     bridgeHolder: { current: bridge as any },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -359,9 +372,18 @@ function stepHarness(
     ...extra,
   })
   const emit = (type: string, data?: any): void => {
-    for (const handler of listeners) handler({ id: 's-1' }, { type, time: Date.now(), data })
+    for (const handler of listeners.get('session/event') ?? []) handler({ id: 's-1' }, { type, time: Date.now(), data })
   }
-  return { streaming, emit, bridge }
+  /**
+   * Publish one transient assistant-stream frame in its real shape: the payload
+   * carries the AGENT, which is how the listener learns which session it is for.
+   */
+  const emitStream = (frame: any, sessionId = 's-1'): void => {
+    for (const handler of listeners.get('agent/assistant-stream') ?? []) {
+      handler({ agent: { session: { id: sessionId } }, frame })
+    }
+  }
+  return { streaming, emit, emitStream, bridge }
 }
 
 const tick = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
@@ -1570,5 +1592,185 @@ describe('the step card must not wait on the ordering barrier it belongs to', ()
   it('keeps the delivery note when the newest text write landed', async () => {
     const h = await twoStepTurn(false)
     expect(h.bridge.clearIntermediateSent).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// O20: the card distinguishes "request not sent yet" from "model is thinking".
+// The live phase comes from the TRANSIENT `agent/assistant-stream` publication,
+// because no token delta is a durable session event any more.
+// ---------------------------------------------------------------------------
+
+/** Card title, which is where the phase is named. */
+function titleOf(card: any): string {
+  return card.header.title.content
+}
+
+describe('step card live phases (O20)', () => {
+  const build = (phase: any, route?: { provider: string; model: string }, text?: string): any => renderStepCard(
+    t, undefined, text, [], undefined, undefined, undefined, undefined, undefined, 1, 1,
+    {
+      ...(text === undefined ? { empty: 'thinking' as const } : {}),
+      phase,
+      ...(route === undefined ? {} : { route }),
+    },
+  )
+
+  it('names each phase instead of calling every wait "thinking"', () => {
+    expect(titleOf(build('none'))).toContain(t.stepPlaceholderTitle)
+    expect(titleOf(build('awaiting'))).toContain(t.stepAwaitingTitle)
+    expect(titleOf(build('thinking'))).toContain(t.stepThinkingTitle)
+    expect(titleOf(build('replying'))).toContain(t.stepReplyingTitle)
+    // The pre-request phase must not claim the model is reasoning.
+    expect(titleOf(build('none'))).not.toContain('思考')
+    expect(mdOf(build('none'))).toContain(t.stepPlaceholderBody)
+    expect(mdOf(build('awaiting'))).toContain(t.stepAwaitingBody)
+    expect(mdOf(build('thinking'))).toContain(t.stepThinkingBody)
+    expect(mdOf(build('replying'))).toContain(t.stepReplyingBody)
+  })
+
+  it('shows the route only while waiting for the first token', () => {
+    const route = { provider: 'deepseek-official', model: 'deepseek-flash' }
+    expect(mdOf(build('awaiting', route))).toContain(t.stepRouteLine(route.provider, route.model))
+    // Other phases have better things to say than the route.
+    expect(mdOf(build('thinking', route))).not.toContain(t.stepRouteLine(route.provider, route.model))
+    expect(mdOf(build('none', route))).not.toContain(t.stepRouteLine(route.provider, route.model))
+  })
+
+  it('ignores the phase once the card carries content', () => {
+    expect(titleOf(build('awaiting', undefined, '答案已到'))).toContain(t.stepCardTitleReply)
+    expect(titleOf(build('thinking', undefined, '答案已到'))).toContain(t.stepCardTitleReply)
+  })
+})
+
+describe('live phase wiring from agent/assistant-stream (O20)', () => {
+  const channel = (): StepChannel => ({
+    send: vi.fn(async () => ({ messageId: 'm-1' })),
+    updateCard: vi.fn(async () => undefined),
+  })
+  const lastCard = (ch: StepChannel): any => {
+    const updates = (ch.updateCard as any).mock.calls
+    if (updates.length > 0) return updates.at(-1)![1]
+    return (ch.send as any).mock.calls.at(-1)![1].card
+  }
+
+  it('walks placeholder → awaiting → thinking → replying on ONE card', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(ch.send).toHaveBeenCalledTimes(1) })
+    expect(titleOf(lastCard(ch))).toContain(t.stepPlaceholderTitle)
+
+    h.emit('request/context', { provider: 'deepseek-official', model: 'deepseek-flash', contextWindow: 4096 })
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepAwaitingTitle) })
+    expect(mdOf(lastCard(ch))).toContain('deepseek-flash')
+
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '让我想想' },
+    })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepThinkingTitle) })
+
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 3, index: 1, time: Date.now(),
+      chunk: { type: 'text-delta', text: '答案是' },
+    })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepReplyingTitle) })
+
+    // Every phase repainted the SAME card: the step never posted a second one.
+    expect(ch.send).toHaveBeenCalledTimes(1)
+    h.streaming.stop()
+  })
+
+  it('never walks backwards when a late reasoning delta follows text', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
+      chunk: { type: 'text-delta', text: '答案' },
+    })
+    await vi.waitFor(() => { expect(ch.send).toHaveBeenCalledTimes(1) })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepReplyingTitle) })
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 3, index: 1, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '迟到的推理' },
+    })
+    await tick(200)
+    expect(titleOf(lastCard(ch))).toContain(t.stepReplyingTitle)
+    h.streaming.stop()
+  })
+
+  it('falls back to the placeholder when the attempt was abandoned', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(ch.send).toHaveBeenCalledTimes(1) })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepAwaitingTitle) })
+
+    // DSH abandons the attempt and retries: the retry publishes its own start.
+    h.emitStream({ type: 'end', attemptId: 'a1', revision: 2, index: 3, outcome: { kind: 'abandoned' } })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepPlaceholderTitle) })
+    h.emitStream({ type: 'start', attemptId: 'a2', revision: 3, turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(titleOf(lastCard(ch))).toContain(t.stepAwaitingTitle) })
+    h.streaming.stop()
+  })
+
+  it('ignores frames for a session no chat is bound to', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    await vi.waitFor(() => { expect(ch.send).toHaveBeenCalledTimes(1) })
+    const before = (ch.updateCard as any).mock.calls.length
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 }, 's-other')
+    h.emitStream({ type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(), chunk: { type: 'text-delta', text: 'x' } }, 's-other')
+    await tick(200)
+    expect((ch.updateCard as any).mock.calls.length).toBe(before)
+    h.streaming.stop()
+  })
+
+  it('stops listening once the step ended', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    h.emit('turn/start', { turn: 1 })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('step/end', { turn: 1, step: 1 })
+    await tick(200)
+    const before = (ch.updateCard as any).mock.calls.length
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    h.emitStream({ type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(), chunk: { type: 'reasoning-delta', text: 'x' } })
+    await tick(200)
+    expect((ch.updateCard as any).mock.calls.length).toBe(before)
+    h.streaming.stop()
+  })
+
+  it('unsubscribes from the stream publication on stop', () => {
+    const ch = channel()
+    const listeners = new Map<string, Array<(a: any, b?: any) => void>>()
+    const removals: string[] = []
+    const streaming = startFeishuStreaming({
+      ctx: {
+        on: (name: string, handler: any) => {
+          const list = listeners.get(name)
+          if (list === undefined) listeners.set(name, [handler])
+          else list.push(handler)
+          return () => { removals.push(name) }
+        },
+      } as any,
+      channel: ch as any,
+      bridgeHolder: { current: { resolveChat: () => ({ chatId: 'oc_1', chatType: 'p2p' }) } as any },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    })
+    expect(listeners.get('agent/assistant-stream')).toHaveLength(1)
+    streaming.stop()
+    expect(removals).toContain('agent/assistant-stream')
   })
 })

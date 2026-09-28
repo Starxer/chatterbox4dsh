@@ -235,6 +235,37 @@ interface StepToolCall {
 }
 
 /** Per-session state for accumulating a step's content. */
+/**
+ * Narrow view of the transient assistant-stream publication. Declared locally
+ * rather than imported so a minor DSH release that widens the payload type
+ * cannot break this module's typecheck (the same reason the subagent roster
+ * declares its lifecycle events locally).
+ */
+interface AssistantStreamSource {
+  on(
+    name: 'agent/assistant-stream',
+    listener: (this: unknown, payload: unknown) => void,
+    options: { global: true },
+  ): () => void
+}
+
+/**
+ * Live phase of one model call, driven by the TRANSIENT
+ * `agent/assistant-stream` publication (O20).
+ *
+ * - `none` — only `step/start` has arrived: DSH has not dispatched a request
+ *   yet, so anything that says "thinking" here is a lie.
+ * - `awaiting` — the attempt's `start` frame landed: the request is out and the
+ *   provider has not returned a token.
+ * - `thinking` — the first `reasoning-delta` arrived; the model really started
+ *   to reason.
+ * - `replying` — the first `text-delta` arrived.
+ *
+ * Only a card with no visible content reads this (the placeholder), so a step
+ * whose content already landed is unaffected by late frames.
+ */
+type StepLivePhase = 'none' | 'awaiting' | 'thinking' | 'replying'
+
 interface SessionStepState {
   /**
    * The session this state belongs to. Kept on the state (not just passed
@@ -314,6 +345,17 @@ interface SessionStepState {
    * Feishu-side equivalent of the Web UI's "turn triggered by" attribution.
    */
   turnTriggeredByJob: boolean
+  /**
+   * Live phase of the current step's model call (see {@link StepLivePhase}).
+   * Reset at every step boundary; only the content-free placeholder renders it.
+   */
+  livePhase: StepLivePhase
+  /**
+   * Last route this session reported (`request/context`), shown on the awaiting
+   * card. Deliberately NOT cleared per step: DSH appends that event only when
+   * the route changes, so clearing it would blank the route on every later step.
+   */
+  requestRoute: { provider: string; model: string } | undefined
   // --- Turn-level aggregation ---
   turnStats: TurnStats | undefined
 }
@@ -356,6 +398,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         contextMeta: undefined,
         sawTurnUserMessage: false,
         turnTriggeredByJob: false,
+        livePhase: 'none',
+        requestRoute: undefined,
         turnStats: undefined,
       }
       sessionStates.set(sessionId, state)
@@ -390,6 +434,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.messageTime = 0
     state.completedTime = 0
     state.usage = undefined
+    // The live phase belongs to ONE model call, not to the session: a step that
+    // takes over must not inherit the previous call's phase.
+    state.livePhase = 'none'
   }
 
   /** Whether reasoning content is rendered on cards. */
@@ -490,6 +537,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         showToolResults: showToolResults?.() !== false,
         ...(emptyPhase !== undefined ? { empty: emptyPhase } : {}),
         ...(state.turnTriggeredByJob ? { triggeredByJob: true } : {}),
+        // The live phase only has meaning on the content-free form; passing it
+        // alongside content would let a stale phase name a settled card.
+        ...(emptyPhase === 'thinking' ? { phase: state.livePhase } : {}),
+        ...(state.requestRoute !== undefined ? { route: state.requestRoute } : {}),
       },
     )
   }
@@ -1505,13 +1556,27 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         }
       } else if (event.type === 'request/context') {
         const cw = event.data?.contextWindow as number | undefined
+        // The route rides the same event (`request/context` is DSH's route
+        // metadata) and is what the awaiting card names, so the reader can tell
+        // WHICH model the request went to without opening /model.
+        const provider = event.data?.provider
+        const model = event.data?.model
+        const routeKnown = typeof provider === 'string' && provider !== ''
+          && typeof model === 'string' && model !== ''
+        const routeChanged = routeKnown
+          && (state.requestRoute?.provider !== provider || state.requestRoute?.model !== model)
+        if (routeKnown) state.requestRoute = { provider, model }
         if (cw !== undefined && cw > 0) {
           state.contextMeta = {
             contextWindow: cw,
             lastInputTokens: state.contextMeta?.lastInputTokens ?? 0,
           }
-          if (state.stepCardSent) updateStepCard(state)
         }
+        // A context-window update always repainted (channel.ts relies on that
+        // update to put already-arrived text on the card). A route-only change
+        // repaints just the content-free card that is naming it.
+        const repaint = (cw !== undefined && cw > 0) || (routeChanged && stepIsEmpty(state))
+        if (state.stepCardSent && repaint) updateStepCard(state)
       } else if (event.type === 'turn/end') {
         const turnStats = state.turnStats
         if (turnStats !== undefined) {
@@ -1592,6 +1657,68 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
   const disposeListener = ctx.on('session/event', handleEvent)
 
+  /**
+   * Advance one step's live phase from the transient assistant stream (O20).
+   *
+   * This is the only live signal this module gets: no token delta is a durable
+   * session event any more (`assistant/chunk` was removed in 0.1.3), so the
+   * card used to sit on its `step/start` wording until the WHOLE message
+   * landed. Frames are `start → chunk… → end`, published per attempt:
+   *
+   * - `start` → `awaiting` (the request is out; nothing has come back yet);
+   * - first `reasoning-delta` → `thinking`;
+   * - first `text-delta` → `replying`;
+   * - `end` with `outcome.kind === 'abandoned'` → back to `none`, because DSH is
+   *   about to retry and the retry publishes its own `start`.
+   *
+   * Within one attempt the phase only moves FORWARD (a late reasoning delta
+   * must not undo `replying`), and it only repaints a card that still has no
+   * content, so a settled step is untouched. A `committed` end needs no action:
+   * the durable `assistant/message` that follows settles the card.
+   */
+  const handleAssistantStream = (rawPayload: unknown): void => {
+    try {
+      const payload = rawPayload as {
+        agent?: { session?: { id?: unknown } }
+        frame?: { type?: unknown; outcome?: { kind?: unknown }; chunk?: { type?: unknown } }
+      } | null | undefined
+      const sessionId = payload?.agent?.session?.id
+      const frame = payload?.frame
+      if (typeof sessionId !== 'string' || frame === null || frame === undefined) return
+      const bridge = bridgeHolder.current
+      if (bridge === undefined || bridge.resolveChat(sessionId) === undefined) return
+      const state = sessionStates.get(sessionId)
+      // No step open (yet): a frame for a step this module never saw has no card
+      // to name. `sessionStates` entries are only created by durable events.
+      if (state === undefined || state.stepEnded) return
+      if (frame.type === 'start') {
+        if (state.livePhase === 'awaiting') return
+        state.livePhase = 'awaiting'
+      } else if (frame.type === 'chunk') {
+        const wanted: StepLivePhase | undefined = frame.chunk?.type === 'reasoning-delta'
+          ? 'thinking'
+          : frame.chunk?.type === 'text-delta' ? 'replying' : undefined
+        if (wanted === undefined || state.livePhase === wanted || state.livePhase === 'replying') return
+        state.livePhase = wanted
+      } else if (frame.type === 'end') {
+        if (frame.outcome?.kind !== 'abandoned' || state.livePhase === 'none') return
+        state.livePhase = 'none'
+      } else {
+        return
+      }
+      // Only a content-free card shows the phase, and only once it exists: while
+      // the first send is still pending, that send rebuilds from state anyway.
+      if (state.stepCardSent && state.stepCardRef !== undefined && stepIsEmpty(state)) updateStepCard(state)
+    } catch (streamError: unknown) {
+      console.log(`dsh-feishu: assistant-stream handler error: ${streamError instanceof Error ? streamError.message : String(streamError)}`)
+    }
+  }
+  // `{ global: true }`: the publication is agent-scoped, so a scoped listener
+  // would only see agents under this plugin's own scope. Same shape the subagent
+  // roster subscribes with (see `feishu-subagents.ts`).
+  const disposeStream = (ctx as unknown as AssistantStreamSource)
+    .on('agent/assistant-stream', handleAssistantStream, { global: true })
+
   /** Consume accumulated reasoning for a session (used by channel.ts for the final reply card). */
   const consumeReasoning = (sessionId: string): string | undefined => {
     const state = sessionStates.get(sessionId)
@@ -1664,6 +1791,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   return {
     stop: () => {
       disposeListener()
+      disposeStream()
       for (const entry of pendingUpdates.values()) clearTimeout(entry.timer)
       pendingUpdates.clear()
       for (const timer of staleTimers) clearTimeout(timer)
@@ -1970,6 +2098,12 @@ export function deriveToolSummary(toolName: string, argsRaw: string): string {
  * `options.showToolArgs` / `options.showToolResults` only gate the per-tool
  * detail blocks; the tool section itself is omitted upstream by passing an
  * empty `tools` array when tool display is off.
+ *
+ * `options.phase` names which live phase a CONTENT-FREE card is in (O20): the
+ * request may not even be out yet (`step/start`), it may be out with nothing
+ * back (`awaiting`), the model may be reasoning (`thinking`), or writing
+ * (`replying`). It is ignored once the card has content — the settled titles
+ * (reply / tool states / empty step) own that case.
  */
 export function renderStepCard(
   t: Translations,
@@ -1983,7 +2117,15 @@ export function renderStepCard(
   reasoningMs?: number,
   turn?: number,
   step?: number,
-  options?: { showToolArgs?: boolean; showToolResults?: boolean; empty?: 'thinking' | 'done'; triggeredByJob?: boolean },
+  options?: {
+    showToolArgs?: boolean
+    showToolResults?: boolean
+    empty?: 'thinking' | 'done'
+    triggeredByJob?: boolean
+    phase?: StepLivePhase
+    /** Route of the request in flight, named on the awaiting card. */
+    route?: { provider: string; model: string }
+  },
 ): object {
   const elements: object[] = []
 
@@ -1996,16 +2138,32 @@ export function renderStepCard(
   }
 
   // A step with nothing to render still needs a body: name what the step is
-  // doing (thinking) or that it produced nothing, rather than leaving the card
-  // blank. `thinking` is the placeholder opened at `step/start`; `done` is its
-  // terminal form when the step ends without ever producing visible content.
+  // doing (by live phase) or that it produced nothing, rather than leaving the
+  // card blank. `thinking` is the placeholder opened at `step/start`; `done` is
+  // its terminal form when the step ends without ever producing visible content.
   const emptyPhase = options?.empty
+  const phase: StepLivePhase = options?.phase ?? 'none'
   if (emptyPhase !== undefined) {
     elements.push({
       tag: 'markdown',
-      content: emptyPhase === 'thinking' ? t.stepPlaceholderBody : t.stepEmptyBody,
+      content: emptyPhase === 'done'
+        ? t.stepEmptyBody
+        : phase === 'awaiting' ? t.stepAwaitingBody
+          : phase === 'thinking' ? t.stepThinkingBody
+            : phase === 'replying' ? t.stepReplyingBody
+              : t.stepPlaceholderBody,
       text_size: 'notation',
     })
+    // The route belongs to the wait: it answers "which model is this request
+    // sitting at" while there is nothing else on the card. Shown for `awaiting`
+    // only — once output exists, the card has more useful things to say.
+    if (emptyPhase === 'thinking' && phase === 'awaiting' && options?.route !== undefined) {
+      elements.push({
+        tag: 'markdown',
+        content: t.stepRouteLine(options.route.provider, options.route.model),
+        text_size: 'notation',
+      })
+    }
   }
 
   // Reasoning section (use 4 backticks to avoid collision with code blocks in reasoning).
@@ -2162,9 +2320,15 @@ export function renderStepCard(
   let title: string
   let template: string
   if (emptyPhase === 'thinking') {
-    // Placeholder: the step exists but has produced nothing yet.
-    title = t.stepPlaceholderTitle
-    template = 'violet'
+    // Placeholder: the step exists but has produced nothing yet. WHICH phase it
+    // is in decides the wording — `step/start` alone means DSH has not even
+    // dispatched the request, so only `awaiting` and later may claim the model
+    // is doing anything (O20).
+    title = phase === 'awaiting' ? t.stepAwaitingTitle
+      : phase === 'thinking' ? t.stepThinkingTitle
+        : phase === 'replying' ? t.stepReplyingTitle
+          : t.stepPlaceholderTitle
+    template = phase === 'replying' ? 'blue' : phase === 'awaiting' ? 'wathet' : 'violet'
   } else if (emptyPhase === 'done') {
     title = t.stepEmptyTitle
     template = 'grey'

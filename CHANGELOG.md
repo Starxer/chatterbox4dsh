@@ -41,7 +41,28 @@
   - **使用者目视确认**：卡片里直接显示了那张棋盘格图片。⇒ L3 从"相对路径 → 工作区解析 → 上传 → 内联渲染"整条链路成立，全程未调用 `feishu_send_file`。
 - **仍未真机触发过的路径**（如实记录）：L2 的"飞书仍拒收 → 剥净重试 → 回退 patch"——L1 已经覆盖了实测到的全部非法形态，重启后 0 次拒收，所以这三步目前只有单测（`tests/card-write.spec.ts` 的 12 例）覆盖，还没有活体样本。
 
+### 变更：步骤卡区分「请求还没发出 / 已发出等待 / 思考中 / 回复中」（O20 方案 2，`src/feishu-streaming.ts` / `src/i18n.ts`，2026-09-29）
+
+**问题**（使用者原话）：「卡片就是在模型输出首字之前的那个卡片，和模型开始思考的卡片要区分开来」。占位卡在 `step/start` 就发出，而那一刻 DSH **还没组装、更没发出**请求，标题却写着「🧠 深度思考中…」——该说「等待」的时候说「思考」；等模型真的开始思考时，插件手里**没有任何实时信号**（0.1.3 起 token 级增量不再是持久事件，`assistant/chunk` 已死，代码里那段是只累加不发卡的历史遗留），只能等整条消息落地后一次性写进同一张卡，标题此刻已经是「回复」——该说「思考」的时候又说了「回复」。
+
+**修法（方案 2：接实时流，只用来切阶段；内容仍等 `assistant/message`）**：
+
+1. **订阅瞬时发布 `agent/assistant-stream`**：注册 `{ global: true }`（它是 agent-scoped 的 `emit`，与子代理名册同一套写法），按 `payload.agent.session.id` 关联会话，并沿用既有的 `bridge.resolveChat` 门控——只服务已绑定飞书聊天的会话（关键坑 31）。帧序 `start → chunk… → end`，按 attempt 发布。
+2. **相位机（一次尝试内只前进）**：`start` → **`awaiting`**（请求已发出、还没拿到 token）；首个 `reasoning-delta` → **`thinking`**；首个 `text-delta` → **`replying`**；`end` 且 `outcome.kind === 'abandoned'`（重试 / 中断）→ 退回占位，等重试自己的 `start`。迟到的 reasoning delta **不会**把「回复中」改回「思考中」。
+3. **文案**：占位改成 `⏳ 正在分析请求 · 第 N 轮 · 第 M 步` + 「请求还没发出，模型尚未收到这一轮的内容」，把「深度思考」从这个阶段彻底拿掉；新增 `📡 已发出请求，等待输出…` / `🧠 思考中…` / `✍️ 回复中`（zh + en）。
+4. **等待阶段带 route**：`awaiting` 时在卡上补一行 `📡 provider / model`，取自持久的 `request/context`（路由变化时才有该事件，所以按会话记住、不按步清空），回答「这次请求发给了谁」。
+5. **只重绘没有内容的卡**：相位只在卡的「无内容」形态上生效——内容一旦落地，标题仍由既有规则（回复 / 工具进行中 / 工具完成 / 工具出错 / 本步无输出）决定，迟到的帧影响不到已结算的卡。
+6. **生命周期**：退订挂在 `stop()`；`step/end` 之后不再理会该步的帧；`step/start` / `turn/end` 复位相位。
+
+**写入纪律不变**：相位切换走既有的 `updateStepCard`（按卡防抖、一卡同时只允许一次写入在飞、只保留最新一版），每步最多多 2–3 次写入；卡仍是**一个 step 一张**（关键坑 12），相位切换**只更新不重发**。
+
+**验证**：typecheck 0 error；**729 tests / 42 files 全绿**，其中新增 **9 例**——4 例单元（四相位的标题与正文、route 只在等待阶段出现、有内容时相位被忽略）+ 5 例接线（一张卡走完 占位→等待→思考→回复、迟到推理不倒退、`abandoned` 退回后再 `start`、非绑定会话的帧被忽略、`step/end` 后与 `stop()` 不再响应）。测试替身同步改成**按事件名**登记监听器，避免把瞬时帧喂给持久事件的处理器。产物已重建（`lib/index.js`；`client/client.js` 逐字节未变）。
+
+**English**: the step card used to say "Thinking…" the moment `step/start` arrived — before DSH had even built the request — and then say "Reply" while the model was actually thinking, because no token delta is a durable session event any more (`assistant/chunk` was removed in 0.1.3). The card now carries a live phase fed by the transient `agent/assistant-stream` publication, subscribed `{ global: true }` and attributed through `payload.agent.session.id`, gated on a bound Feishu chat. Phase machine: the attempt's `start` frame means "request sent, awaiting output", the first reasoning delta means thinking, the first text delta means replying, and an `abandoned` end returns to the placeholder for the retry that follows; within one attempt the phase only moves forward. The pre-request placeholder is now "Analyzing request" plus "the request has not been sent", the awaiting card names the route from the durable `request/context`, and the phase only ever repaints a card that still has no content, so settled steps are untouched. Phases ride the existing debounced per-card update path with latest-wins coalescing, keep one card per step, and are unsubscribed on `stop()`. Typecheck clean, 729 tests across 42 files pass (9 new), artifacts rebuilt.
+
 ### 修复：最后一张步骤卡停在「深度思考中」——卡片发送自己等自己 60 秒（`src/feishu-streaming.ts` / `src/index.ts` / `src/card-write.ts`，2026-09-24）
+
+
 
 **现象**（使用者报告）：「刚才有个会话的最后卡片又卡在思考了，turn complete 卡片出来了以后那个卡片都没有最终更新」。journal 里这次留下了完整链条（19:30:27–19:31:28）：
 
