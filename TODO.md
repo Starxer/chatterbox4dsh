@@ -55,10 +55,11 @@
 | ~~X1~~ | ✅ **已完成（2026-09-23）** P6-5 | 设置页 = 配置，插件详情页 = 连接与扫码（见上方 P6-5） |
 | ~~X2~~ | ✅ **已完成（2026-09-23）** P6-6 | `icon.svg` + 双语 `locale/*.json`（见上方 P6-6） |
 | X3 | 🟡 **按收窄范围完成 3/5（2026-09-23）** P6-7 | ✅ `job-controller`（任务卡）、✅ 工作区 pin/unpin、✅ `modelCatalog()`；❌ `speech-to-text`（本机无语音供应商，无法端到端验证→本次不做）、❌ `readBytes`（原生 `Uint8Array`；纯内部重构、用户不可见→本次不做） |
-| X4 | **MiniMax M3 思考强度** | 修法已定（**纯 settings，插件与 DSH 都不用改**：`compat.forceAdaptiveThinking` + `reasoningEfforts`），**尚未执行** —— 等确认要不要用 M3 再说。真机验证要点见「问题追踪」 |
+| X4 | **MiniMax M3 思考强度** | ✅ **已执行（2026-09-28 复核确认在生效）**。修的正是「纯配置，插件与 DSH 都不用改」：`compat.forceAdaptiveThinking: true` + `reasoningEfforts: {off: disabled, high: high}`，落在**本部署的 profile 补丁**（`~/.dsh/profiles/web/cordis.patch.yml` 的 `llm-pi-ai` 段；0.1.7 升级后 `settings.yaml` 的这段已并入 profile 补丁）。2026-09-28 按 wire 复核：`thinking:{type:'disabled'}` → 200 且**无 thinking 块**；`thinking:{type:'adaptive'}+output_config:{effort:'high'}` → 200 且**有 thinking 块**。细节见「问题追踪」 |
 | X5 | **C5 代理环境** | 入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；**暂不处理** |
 | X6 | **V13 压缩阈值实测** | **不是待改项**。要长会话自然跑到 ~680k 才会出现 `compaction/start`，**至今未触发**；公式已在代码侧核对 |
 | X7 | 流式输出（CardKit `streaming_mode`） | ❌ **已取消**（2026-09-02 使用者决定）。下方技术方案仅作留档，**不要当待办** |
+| X8 | **MiniMax M3.1-Flash-Preview 上架** | ✅ **已加（2026-09-28，使用者要求）**。同一个 `llm-pi-ai` `minimax-cn` 路由，手写一条模型声明（pi-ai 0.85.1 自带的 `providers/data/minimax-cn.json` **没有**这个 id）：1M 上下文、`input: [text, image]`、`forceAdaptiveThinking`、**不声明 `off`**、五档 `low/medium/high/xhigh/max`。官方文档与逐条 wire 取证见「问题追踪」 |
 
 ### 开发卫生（非功能，但会咬人）
 
@@ -572,7 +573,49 @@ llm-pi-ai:
 
 **残留风险（需真机验一次，不要只看配置）**：pi-ai 的 adaptive 分支除了 `thinking:{type:'adaptive'}` 还会带一个 `output_config:{effort:<映射值>}`，而 MiniMax 文档只提 adaptive/disabled、没提这个字段。若 M3 对多出来的字段返回 400，就落到 pi-ai/宿主侧，超出 settings 能解决的范围（只能等上游或改源码）。**验证方式**：切 M3 + `/reasoning high` 跑一轮，看步骤卡是否出现 `💬 推理`、以及是否报错——只是"配置生效"不算验证。
 
-**状态**：原记录「✅ 已明确，无需修复」**已更正**为**可解**。settings 改动**尚未执行**（等确认是否需要切 M3 用再做）。
+**状态**：原记录「✅ 已明确，无需修复」**已更正**为**可解**，并且**已于 2026-09-28 复核确认在生效**：这段配置现在落在 `~/.dsh/profiles/web/cordis.patch.yml`（0.1.7 升级后 `settings.yaml` 的 `llm-pi-ai` 段并入 profile 补丁），内容与上面 YAML 一致。按 wire 复核：`disabled` → 200 且无 thinking 块；`adaptive + output_config.effort=high` → 200 且有 thinking 块（`output_config` 不报错，"残留风险"这一条**已排除**）。
+
+---
+
+### ✅ MiniMax M3.1-Flash-Preview 上架（2026-09-28，使用者要求；纯配置，插件与 DSH 零改动）
+
+**来源**：使用者「看看 minimax 官方文档，新增 m3.1 模型」。判据文档：[Anthropic SDK / Anthropic API 兼容页](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api)（`platform.minimax.io` / `platform.minimax.cn` 在本机 DNS 落在 `198.18/15` 假地址段、`web_fetch` 直接拒收；同一个文档站在 `platform.minimaxi.com` 有公网解析，curl 可达——**查 MiniMax 文档走 `.minimaxi.com` 这个域名**）。
+
+**官方口径（要记住的三条差异）**：
+
+- id 就是 **`MiniMax-M3.1-Flash-Preview`**（`-Preview` 别省）；**1,000,000** 上下文、原生多模态（text / image / video / tool_use / tool_result / thinking）；文档同时写明「**暂时仅通过 Token Plan 和 MiniMax Code 提供**」。
+- **thinking 关不掉**：省略 thinking → 开启，`{"type":"adaptive"}` → 开启，`{"type":"disabled"}` → **400**（原文：`model "MiniMax-M3.1-Flash-Preview" requires adaptive thinking; thinking.type="disabled" (including reasoning.effort=none) is not allowed (2013)`）。
+- 思考深度改走 **`output_config.effort`**：`low / medium / high / xhigh / max`，**省略即 `max`**（`none` 也 400）；思考 token 计入 `max_tokens`。对照 M3：省略 thinking → **关闭**、`adaptive` → 开启、`disabled` → 保持关闭 ⇒ **两代模型不能共用一份 `reasoningEfforts`**。
+
+**落点**：`~/.dsh/profiles/web/cordis.patch.yml` 的 `llm-pi-ai.providers.minimax-cn.models`，紧跟 M3（改前已 `cp` 备份；pi-ai 自带的 `providers/data/minimax-cn.json` 里**没有**这个 id，必须手写声明）：
+
+```yaml
+- id: MiniMax-M3.1-Flash-Preview
+  name: MiniMax-M3.1-Flash-Preview
+  contextWindow: 1000000
+  maxTokens: 128000              # 官方 Anthropic 页没给输出上限；与 M3 条目对齐
+  input: [text, image]           # DSH 的 MODALITIES 只有 text/image（video 不在 schema 里）
+  compat:
+    forceAdaptiveThinking: true  # → pi-ai 发 thinking:{type:'adaptive', display:'summarized'}
+  reasoningEfforts:
+    low: low
+    medium: medium
+    high: high
+    xhigh: xhigh
+    max: max
+```
+
+**为什么这里不能照抄 M3 的 `off: disabled`（最容易做错的一处）**：DSH 的 `resolveModelReasoning()` 把**未声明**的档位**钉成 `null`**（= 不支持、不进 `getSupportedThinkingLevels()`），而 pi-ai 发 disabled 的判据是 `thinkingLevelMap?.off !== null` ⇒ 只有 `null` 才保证**永远不发** `thinking:{type:'disabled'}`。写 `off: disabled` 会稳定吃 400（2013）；写空值 `off:` 则把语义押在"未声明 vs 声明为空"的细节上，不值得赌。结论：**M3.1 不提供 off，五档全开**，`invalid()` 的「至少一档非 off」也满足。
+
+**Wire 取证（2026-09-28，全部真机 HTTP；`minimaxi.com/anthropic` 与 `minimax.cn/anthropic` 都试了，均 200——没动路由的 baseURL，免得牵连 M2.7/M3）**：
+
+- `thinking:{type:'disabled'}` → **400 / 2013**（与文档逐字一致，反证 id 与路由都对）。
+- 五档逐打：`low / medium / high / xhigh / max` **全部 200**（`low` 那次没出 thinking 块，其余都出）。
+- **按 pi-ai 实际会发的形状**（`thinking:{type:'adaptive', display:'summarized'}` + `output_config:{effort:'high'}` + `stream:true`）打 SSE：`thinking_delta` → `signature_delta` → `text_delta` → `message_stop` 齐全 ⇒ 多出来的 `display` 字段**被接受**、thinking 签名正常回传（M3 侧同样复核了 disabled / adaptive 两条）。
+- `dsh --profile web --dump-config` 能看到新条目。
+- **配置解析预检（比 `--dump-config` 强，而且不需要重启）**：直接拿 DSH 自己的 `resolveRouteModels()`（`packages/llm/llm-pi-ai/src/catalog.ts`；Node 24 能直接跑 `.ts`）解析这份 route 请求 → `modelErrors: 0`，新模型解析成 `api: anthropic-messages`、`baseUrl: api.minimaxi.com/anthropic`、`input: [text, image]`、`reasoning: true`、`thinkingLevelMap: {off: null, minimal: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max'}`、`compat: {forceAdaptiveThinking: true}`，**`getSupportedThinkingLevels()` → `['low','medium','high','xhigh','max']`（没有 off）** ⇒ 插件侧下拉不会再出现 off，那条必然 400 的形状从"选不到"这一层就被堵住了。顺带确认「选默认档 = 不传 effort」时走的是 pi-ai 的 `thinkingEnabled: false` + `off === null` 分支 → **一个 thinking 参数都不发** → MiniMax 按自己的默认（thinking 开、effort max）跑，不会 400。
+
+**尚未做**：**插件侧真机验证**（重启后 `/model` → minimax-cn 应出现五项 effort 下拉；选 M3.1 + 任一档跑一轮，步骤卡应出现 `💬 推理` 且不报错）。配置生效 ≠ 端到端可用，这一步别省。
 
 ---
 
