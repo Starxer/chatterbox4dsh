@@ -5,7 +5,7 @@
  * header reads as a heading — nothing about it says "there is more behind
  * this", which is how a folded reasoning block or a folded compaction summary
  * becomes invisible to anyone who did not write the card. Two remedies, both
- * probed against the live card API on 2026-09-30 (`cardkit.v1.card.create`,
+ * probed against the live card API on 2026-09-29 (`cardkit.v1.card.create`,
  * the only card validator reachable from here — see
  * `docs/feishu-capabilities.md` §2.3.1):
  *

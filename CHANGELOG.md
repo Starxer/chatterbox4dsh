@@ -32,7 +32,7 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
-### 结论（无代码改动）：推理面板的 `· N tokens` 为什么永远不出现（2026-09-30）
+### 结论（无代码改动）：推理面板的 `· N tokens` 为什么永远不出现（2026-09-29）
 
 使用者问「思考块还是获取不了 token 数目吗」。答案是**拿不到，而且不是插件的 bug**，所以这一条**不改代码**（`renderStepCard` 里「有 `usage.reasoningTokens` 就显示」的分支保留，作为等上游的出口）。三环取证：
 
@@ -46,7 +46,7 @@
 
 **English**: no code change — the reasoning header's `· N tokens` can never appear, and it is not a plugin bug. (1) The provider does not report it: a raw call to the MiniMax Anthropic endpoint this deployment uses (the response really does carry `type:"thinking"` blocks) returns `usage` with only `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens`. (2) pi-ai fills `Usage.reasoning` only for its `openai-completions`, `openai-responses`, `google-vertex` and `google-generative-ai` APIs, not for `anthropic-messages`. (3) DSH's adapters do not map it either (`mapUsage()` in the pi-ai adapter, `updateUsage()` in the DeepSeek one), and a repository-wide grep finds **no producer** of `reasoningTokens` outside tests; 12 session logs from the last week contain zero occurrences. The branch therefore stays as a dormant "waiting on upstream" path. An estimated `≈ N tokens` was evaluated and rejected: calibration against the real API put the ratio at 2.5–4.3 chars/token (±40%), and MiniMax's thinking text is frequently English even for Chinese prompts. Rule of thumb recorded for next time: before displaying a usage field, grep for its producer.
 
-### 修复：折叠面板现在一眼能看出「已折叠」（`src/card-fold.ts`（新）/ `src/feishu-streaming.ts` / `src/feishu-compaction.ts` / `src/i18n.ts`，2026-09-30）
+### 修复：折叠面板现在一眼能看出「已折叠」（`src/card-fold.ts`（新）/ `src/feishu-streaming.ts` / `src/feishu-compaction.ts` / `src/i18n.ts`，2026-09-29）
 
 **问题**（使用者原话）：「思考块看不出来是已经折叠的样子。不了解的人不知道这个东西已经折叠了」——压缩卡的摘要面板同理。这是收起态的**结构性**事实：面板收起时只渲染 `header`，而光秃秃的 header 就是一个「小标题」的样子；WebUI 的同类行有 chevron，飞书这张卡什么都没有。
 
@@ -112,7 +112,7 @@
 🗜️ 正在压缩上下文…            ← compaction/start，grey，写明触发方式（自动 / /compact）
 🗜️ 上下文已压缩                ← compaction/summary，green
 已折叠 609 条历史记录 · 约 302K tokens · provider/model   ← 详情行在折叠区【之上】
- 摘要（▸ 已折叠 · 点击展开）      ← collapsible_panel，expanded:false，正文上限 200 字；灰底+边框（2026-09-30 追加）
+ 摘要（▸ 已折叠 · 点击展开）      ← collapsible_panel，expanded:false，正文上限 200 字；灰底+边框（2026-09-29 追加）
 ⚠️ 上下文压缩失败 + 原因 + 「本次没有产生摘要」  ← compaction/end 带 error 时，red
 ```
 
