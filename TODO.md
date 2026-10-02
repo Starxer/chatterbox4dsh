@@ -186,6 +186,22 @@
 
 ---
 
+## DSH 0.2.0-rc.2 适配（已评估并升级，2026-10-02）
+
+> 对比 `dsh-v0.2.0-rc.1...dsh-v0.2.0-rc.2`：**187 commits / 1022 个文件**、**同 tuple（0.2.0）**、`**/package.json` **无增无删**。完整执行记录见本机 `notes/upgrade-0.2.0-rc.2.md`（含逐符号/逐事件核查、三轨彩排、切换与实测）。
+
+- ✅ **rc.2 是桌面端/客户端为主的小版本，插件零必改**：插件 import 的 18 个包 + 客户端用的 5 个包导出**零删除**（仅新增）；用到的 30 个事件在 rc.2 树里逐个 `git grep` 全部存在。
+- ✅ **插件依赖范围有意不动**（`^0.2.0-rc.1` 同 tuple 覆盖 rc.2，semver 与运行时闸门都实测通过）——升到 `^0.2.0-rc.2` 反而会让**回滚到 rc.1 被闸门拒**。只把 `package-lock.json` / 物理依赖树刷新到 rc.2（`3d009d5`，零源码改动、产物逐字节一致），让本地 typecheck / 787 用例跑在真正运行的那版上。
+- ⚠️ **本跳唯二有源码改动的相关包**：① `user-questions` 新增**实验性异步问答**（`askTimed` / `TimedQuestionWait` / 新增 `./typert` `./remote` 导出），开关在 `tool-ask-user` 的 Cordis 行 `Config.mode`，**默认 `'legacy'`** ⇒ 本部署**行为不变**；② `llm-pi-ai` 把 pi-ai 升到 **0.87.1**，compat 闸门字段有增删（去掉 `deferredToolsMode`/`supportsToolReferences`，新增 `supportsMidConvo*` 等，新增 `mistral-conversations` 协议）——本部署补丁里 minimax 只用 `compat.forceAdaptiveThinking` + `reasoningEfforts` + `input`，**都不在被删字段里**（冷启动彩排已验证补丁整体解析通过）。
+- ✅ **先彩排后切换，三轨全绿**：A 宿主（rc.2 浅克隆构建，`--version` 0.2.0-rc.2）/ B 插件（`git archive` 全新装，38 个 `dsh-*` 解析到 rc.2，787 用例全绿）/ B+ 冷启动（真实补丁 + 隔离 `DSH_HOME` + appId 置假，`apply()` 与三个服务 available、**0 peer denial**）。
+- ✅ **正式切换一次跑通（4 分 09 秒）**：`TARGET_OK=1 PLUGIN_OK=1 ROLLED_BACK=0`；改动过的 320 个包目录 `lib/` 断言全过（坑 46 后置守卫）；journal `error|failed` 0、**peer denial 0**；session map 与停服前逐项一致（10/12/11/6）。
+- ✅ **升级后实测**：本会话（真实飞书对话）跑在 rc.2 上，步骤卡/工具/就地更新全部正常；服务端读回线上卡片（坑 48）确认结构正确；服务 `MainPID 776679`、`NRestarts=0`。
+- ⚠️ **如实记录一次与升级无关的瞬时网络抖动**：`20:11:21/26` 两次 `ECONNRESET`（到 `open.feishu.cn`），插件「重试一次」后 **20:11:28 成功送达**，此后 4 小时 **0 条 `sdk error`**、卡片持续正常 ⇒ 判为本机链路抖动，**不是 rc.2 回归**。
+- 🔲 **未单独验**：插件客户端半边在 rc.2 的页面表现（本跳 `client/client.js` 零改动；`/api/modules` 被浏览器信任栅栏挡成 401 未强绕）——可在浏览器打开设置页看「工作步骤展示」下拉确认。
+- 🔲 **待观察（继承上一跳）**：异步问答模式若将来启用，需重验飞书问答卡的「迟到答案」语义与双端弹卡竞态（坑 22）；`agent-loop` 失败步骤补记 pending `tool/result` 的行为仍在观察。
+
+---
+
 ## DSH 0.2.0-rc.1 适配（已评估并升级，2026-09-28）
 
 > 对比 `dsh-v0.1.7-rc.1...dsh-v0.2.0-rc.1`：**607 commits / 3838 个文件**（新增 9 个包目录、**0 个删除**）。完整执行记录见本机 `notes/upgrade-0.2.0-rc.1.md`。**这是第一次跨 semver tuple（0.1 → 0.2）的跳跃**，且发行说明从 `v0.1.7-rc.2` 累计 —— 实际吃了两段变更。

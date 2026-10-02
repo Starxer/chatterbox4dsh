@@ -32,6 +32,16 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### DSH 适配：0.2.0-rc.1 → 0.2.0-rc.2（2026-10-02，插件零必改）
+
+> 本跳 **187 commits / 1022 文件、同一 `0.2.0` tuple、零包增删**，是 rc.1 以来以**桌面端/客户端**为主的小版本。完整逐符号/逐事件核查、三轨彩排、切换与实测见本机 `notes/upgrade-0.2.0-rc.2.md`。
+
+- ✅ **插件零必改**：被 import 的 18 个宿主包 + 客户端 5 个包导出**零删除**，插件用到的 **30 个事件名逐个仍在**。
+- ✅ **依赖范围有意保持在 `^0.2.0-rc.1`**（同 tuple 覆盖 rc.2，semver 与运行时 peer 闸门都实测通过）；升到 `^0.2.0-rc.2` 反而会让**回滚到 rc.1 被闸门拒**。只把 `package-lock.json` 刷新到 rc.2（提交 `3d009d5`，零源码改动、产物逐字节一致），使本地 typecheck / **787 用例 / 46 文件**跑在真正运行的那版上。
+- ⚠️ 两个有源码改动的相关包：`user-questions` 新增**实验性异步问答**（`tool-ask-user` 行 `Config.mode` 默认 `'legacy'` ⇒ 本部署行为不变）；`llm-pi-ai` 升到 **pi-ai 0.87.1**（compat 字段有增删，本部署用到的 `forceAdaptiveThinking`/`reasoningEfforts` 均不受影响，冷启动彩排已验证补丁整体解析通过）。
+- ✅ **先彩排后切换、三轨全绿**（宿主构建 / 插件全新装 787 用例 / 真实补丁隔离 `DSH_HOME` 冷启动且 0 peer denial）；**正式切换一次跑通**：`TARGET_OK=1 PLUGIN_OK=1 ROLLED_BACK=0`，`NRestarts=0`，session map 与停服前逐项一致，journal 无 error、**peer denial 0**。
+- ⚠️ 如实记录一次**与升级无关的瞬时网络抖动**（`20:11` 两次到飞书的 `ECONNRESET`，插件重试后送达，此后 0 条 `sdk error`）——非 rc.2 回归。
+
 ### 结论（无代码改动）：推理面板的 `· N tokens` 为什么永远不出现（2026-09-29）
 
 使用者问「思考块还是获取不了 token 数目吗」。答案是**拿不到，而且不是插件的 bug**，所以这一条**不改代码**（`renderStepCard` 里「有 `usage.reasoningTokens` 就显示」的分支保留，作为等上游的出口）。三环取证：
