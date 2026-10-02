@@ -5,7 +5,7 @@
 
 ---
 
-## ⬜ 未完成清单（2026-09-23 逐条核实；2026-09-25 追加 O16–O19；2026-09-28 追加 O20–O22）
+## ⬜ 未完成清单（2026-09-23 逐条核实；2026-09-25 追加 O16–O19；2026-09-28 追加 O20–O22；2026-09-30 追加 **H4**）
 
 > **这是唯一的未完成台账。** 下面各历史章节里的「未动工 / 只剩一条」等字样可能已过期，**以本表为准**。
 > 核实方式：每条都在当期 `src/` 里 grep / 读代码确认过，不采信文档里的旧结论（旧结论正是本次要修的东西）。
@@ -71,6 +71,7 @@
 | H1 | `src/harness.ts.bak.20260902_172344` / `_215829` | 坑 3 要求「验证启动正常后**手动删** `.bak.*`」；这两份 2026-09-02 的临时备份**至今未删** |
 | H2 | 本机旧产物 | `~/.dsh/plugin-node-modules.pre-017`（168M）、`plugin-package-lock.json.pre-017`、8 个 `settings.yaml.bak.*`；确认没有回退需求后可删 |
 | H3 | 检出根 `lib/types/{index,invariant,startup}.js`（各 11 字节存根） | ⚠️ **别删**：`pnpm run clean` 不会碰它，但它已穿过两次完整构建；删了可能立刻回到 `Cannot find entry` 一类失败。见坑 32 与 `notes/upgrade-0.1.7-alpha.2.md` §6 |
+| H4 | **发版：让 WebUI 插件页能真正「一键装 / 升级」**（使用者 2026-09-30 要求记入 TODO；**等插件完善后再做**） | **包形态已经支持**：我们是可安装的 bundle（`package.json` 的 `dsh.bundle.patch` + `dsh.client`，npm 公开包，`publishConfig.access: public`，`npm pack` 的 tarball 里 `lib/index.js` / `client/client.js` / `cordis.patch.yml` 齐全），`plugin_manager list_bundles` 现在就把我们列为 `enabled=true / installed=true / removable=true` 的 bundle（row `lark-channel`）。**卡点在版本**：npm 上只有 `0.1.0` / `0.2.0`，`latest = 0.2.0` 发布于 **2026-09-08**，peer 范围是 **`^0.1.3-alpha.1`**；当前运行时的兼容闸门（`packages/boot/plugin-manager/src/plugin-compatibility.ts`：`semver.satisfies(runtime, range, {includePrerelease:true})`）实测——`^0.1.3-alpha.1` vs `0.2.0-rc.1` / `0.2.0-rc.2` 都是 **false**（该范围展开是 `>=0.1.3-alpha.1 <0.2.0-0`，rc 落在上界外），而 `^0.2.0-rc.1` vs rc.1 / rc.2 都是 **true**。⇒ 在 WebUI 里装线上包会被拒为 `incompatible-version`（界面给的出路只有 `dsh plugin allow-version` **逐版本豁免**，并明确警告可能崩溃/丢数据）；**就算豁免也没意义**——那个 0.2.0 早于 0.1.7「设置服务被替换、插件侧 4 处必改」。**要做的事**：① 升版本（仓库现在也是 `0.2.0`，与 npm 撞版，npm 不允许覆盖发布）；② `npm publish`（发布链路仍是手动的，坑 16 未配 trusted publisher / OIDC）；③ **发布前彩排**：把 `npm pack` 出来的 tarball 装进一个**干净 profile** 冷启动，验证「从 npm 安装进来的 bundle patch + client 半边」能起来（本机一直是 `link:` 安装，这条路径从未演练过）；④ README 补「WebUI 安装 + 首次连接配置」；⑤ 知情项：管理器把我们标成 `removable: true`，**误点卸载会直接摘掉飞书桥**。 |
 
 ---
 
