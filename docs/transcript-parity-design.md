@@ -1,16 +1,16 @@
 # 上下文注入、压缩摘要与显示级别：与 WebUI 的对齐调研
 
-> 状态：**调研完成；§1 注入与 §2 压缩已拍板，§3 显示档位待拍板（2026-09-28）——尚未动代码**。
-> 修订：2026-09-28 第二版按使用者质疑复核，**更正了 §1.1（来源是开放集合，不是 8 种）/ §1.2（注入行会被整轮折叠）/ §1.4（真实频次远低于第一版采信的单次开发期会话）**；同日第三版按使用者第二次提案把 §1.5 改为**插进所属 step 卡正文最前面**（原「独立卡片」决定作废），并新增 **§1.6 位置实测** 作为核验依据；同日第四版按使用者第三次决定收紧为**只显示一行提示、不渲染注入内容**（`form` 正文渲染与截断逻辑一并取消）。
-> 关联：[`src/feishu-streaming.ts`](../src/feishu-streaming.ts)（`session/event` fan-out 与步骤卡全部逻辑）、[`src/feishu-display.ts`](../src/feishu-display.ts)（`/display` 卡片）、[`src/config.ts`](../src/config.ts)（4 个显示开关）、[`docs/step-card-phases-design.md`](./step-card-phases-design.md)（O20，同一片代码、同一批信号）、[`docs/display-card-design.md`](./display-card-design.md)。
-> 台账：`TODO.md` 的 **O21**（注入与压缩完全不可见）、**O22**（显示级别不对齐）。
-> 依据的 DSH 版本：**0.2.0-rc.1**（`dsh-v0.2.0-rc.1` = `4878cdabd8`）。下文所有源码路径都相对 DSH 检出根。
+> 状态：**三件事都已实现并上线**（2026-09-29 收尾；同日追加「折叠必须看得出来」的可见性修复；2026-10-02 依据 DSH 版本刷新基线）。实现落点：[`src/injection-notice.ts`](../src/injection-notice.ts)、[`src/feishu-compaction.ts`](../src/feishu-compaction.ts)、[`src/display-level.ts`](../src/display-level.ts) + [`src/feishu-streaming.ts`](../src/feishu-streaming.ts)、[`src/card-fold.ts`](../src/card-fold.ts)。下文保留调研原文（结论、取证，以及当时被推翻的数字）；**「建议」「待拍板」是当时的记录，不是现状**。
+> 修订：2026-09-28 第二版按使用者质疑复核，**更正了 §1.1（来源是开放集合，不是 8 种）/ §1.2（注入行会被整轮折叠）/ §1.4（真实频次远低于第一版采信的单次开发期会话）**；同日第三版按使用者第二次提案把 §1.5 改为**插进所属 step 卡正文最前面**（原「独立卡片」决定作废），并新增 **§1.6 位置实测** 作为核验依据；同日第四版按使用者第三次决定收紧为**只显示一行提示、不渲染注入内容**（`form` 正文渲染与截断逻辑一并取消）。2026-09-29：§2.4 与 §3.3 的形态落地（压缩卡、4 档显示、思考折叠面板），并按真机读回把「折叠态要看得出来」定为硬要求（边框 + 底色 + 标题提示）。
+> 关联：[`src/feishu-streaming.ts`](../src/feishu-streaming.ts)（`session/event` fan-out 与步骤卡全部逻辑）、[`src/feishu-display.ts`](../src/feishu-display.ts)（`/display` 卡片）、[`src/display-level.ts`](../src/display-level.ts)（4 档与策略轴）、[`src/injection-notice.ts`](../src/injection-notice.ts)、[`src/feishu-compaction.ts`](../src/feishu-compaction.ts)、[`src/config.ts`](../src/config.ts)（档位 + 4 个显示开关）、[`docs/step-card-phases-design.md`](./step-card-phases-design.md)（O20，同一片代码、同一批信号）、[`docs/display-card-design.md`](./display-card-design.md)。
+> 台账：`TODO.md` 的 **O21**（注入与压缩完全不可见）、**O22**（显示级别不对齐）——均已收口。
+> 依据的 DSH 版本：**0.2.0-rc.2**（`dsh-v0.2.0-rc.2` = `639ed01539`，2026-10-02 复核）。本文件最初以 `0.2.0-rc.1`（`4878cdabd8`）为基线；两版之间 **`packages/llm/llm/src/message.ts` 零改动**（`MessageSourceMap` 仍在第 110 行），生产代码里的扩展者从 28 个文件涨到 29 个（rc.2 新增 `user-questions` 的 `user-question-reply`，见 §1.1）。下文所有源码路径都相对 DSH 检出根。
 
 ## 零、结论摘要
 
 | # | 缺口 | DSH 侧事实 | WebUI 怎么演 | 飞书现状 | 建议修法 |
 |---|---|---|---|---|---|
-| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`）；来源是**开放集合**（17+ 个声明点，实测出现过 12 种） | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派；**但会被整轮折叠吃掉**（§1.4②） | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **插进「声明它的那个 step」卡片正文最前面，且只显示一行提示、不渲染注入内容**（✅ 见 §1.5；位置实测 §1.6） |
+| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`）；来源是**开放集合**（rc.2 复核 29 个声明点，实测出现过 12 种） | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派；**但会被整轮折叠吃掉**（§1.4②） | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **插进「声明它的那个 step」卡片正文最前面，且只显示一行提示、不渲染注入内容**（✅ 已实现，见 §1.5；位置实测 §1.6） |
 | 2 | **压缩不可见**（自动压缩 + `/compact`） | `compaction/start` → `compaction/summary` → `compaction/end`（失败时 `end` 带 `error`），外加一条 replacement checkpoint | 「上下文已压缩 · 已折叠 N 条历史 · ~M tokens」+ 展开看摘要 | **完全没有订阅**（`compaction/*`、`command/*` 都没订阅） | 一张压缩卡：进行中 → **详情行在折叠区之上、摘要可折叠且 ≤200 字** → 收尾/失败原因（✅ 已拍板，见 §2.4） |
 | 3 | **显示级别不对齐** | WebUI 是**一个 4 档枚举 + 4 条策略轴** | 简洁 / 标准 / 详细 / 完全展开（默认「详细」） | **4 个互不相干的布尔**（思考 / 工具 / 参数 / 结果），轴的含意都不同 | 引入同名的 4 档 `transcriptView` 作权威档位，4 个布尔降为「自定义」档的细分 |
 
@@ -24,7 +24,7 @@
 
 `@deepseek-ai/dsh-agent-instructions`（`packages/context/agent-instructions/`）把工作区指令文件（`AGENTS.md` 这一族）作为**上下文消息**写进会话；同族还有技能目录、插件清单、跨会话召回、子代理结算通知等。它们的持久形态**统一是 `user/message`**，靠 `data.source.kind` 区分。
 
-**这不是一份固定清单**：`MessageSourceMap`（`packages/llm/llm/src/message.ts:110`）是 merge-extensible 接口，任何插件都能 `declare module` 往里加一种——0.2.0-rc.1 里有 **17 个真实声明点**。所以渲染**必须按未知 kind 兜底**，不能写死一张表。本次全量会话统计里实际出现过的：
+**这不是一份固定清单**：`MessageSourceMap`（`packages/llm/llm/src/message.ts:110`）是 merge-extensible 接口，任何插件都能 `declare module` 往里加一种——0.2.0-rc.1 里有 **17 个真实声明点**，0.2.0-rc.2 复核时按「生产代码里 `interface MessageSourceMap` 的声明文件数」计是 **29 个**（rc.1 是 28 个，新增的就是下面那行 `user-question-reply`；两个数字口径不同，只说明一件事：**它在持续增长**）。所以渲染**必须按未知 kind 兜底**，不能写死一张表。本次全量会话统计里实际出现过的：
 
 | `source.kind` | `form` | 何时出现 | 有价值的字段 |
 |---|---|---|---|
@@ -40,6 +40,7 @@
 | `tool-jobs` | — | 后台任务完成通知（**插件已识别**，见 O11） | 任务 id / 结果 |
 | `goal` | — | 目标轮次推进 | `goalId`、`revision`、`round` |
 | **`compact-checkpoint`** | — | 压缩落地时的替换型 checkpoint | **必须排除**，见 §2.3 |
+| `user-question-reply` | — | **0.2.0-rc.2 新增**：`dsh-user-questions` 把「已关闭的问题面板之后的迟到答案」整批 steer 进 agent（`packages/interaction/user-questions/src/types.ts`） | `callId`、`outcome` —— 只在 `tool-ask-user` 的 `Config.mode` 选 `timed` 时才会出现，本部署仍是默认 `legacy`，**所以真机上从未见过** |
 | 其余（`time-context`、`tmux-context`、`schedule`、`repeat-tool-reminder`、`team-message`、`hooks-*`、`cordis-host-runner`…） | 多为 `notice` / 无 | 各自插件决定 | — |
 
 另有一族 `developer/message`（`packages/session/session-format-v3-to-v4/src/developer.ts`）走同一套展示，插件同样没订阅。
@@ -370,12 +371,14 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 | 2 | **推理折叠（O5）** | `renderStepCard` 的推理段改成 `collapsible_panel`（`expanded:false`），头部保留耗时/tokens | 4 例渲染 + 接线 1 例；组件真机探针见 §2.4 |
 | 3 | **压缩卡（O21②）** | `src/feishu-compaction.ts`（新）+ `compaction/*` 三个分支 | 7 例渲染 + 8 例控制器（顺序 / 序列 / 话题 / 文本兜底 / stop） |
 | 4 | **注入提示行（O21①）** | `src/injection-notice.ts`（新）+ `user/message` 分支 + `step/start` 的花名册搬运 | 11 例（**用真机日志里的真实 `source` 载荷**）+ 3 例接线（含「先于 step/start 到达」的缓冲） |
+| 5 | **折叠态要「看得出来」**（同日追加） | `src/card-fold.ts`（新）统一 chrome：边框 + header 底色 + 标题结尾「（▸ 已折叠 · 点击展开）」，思考面板与压缩摘要共用；`src/i18n.ts` 的 `cardFoldTitle` 出中英两版 | 5 例（把命名色 token / px-only 约束钉住，防止回退成 hex）+ 真实渲染产物探针 `probe-real-fold-cards.py` 端到端 `code=0` |
 
 ### 仍待拍板
 
 1. **注入提示行还能再压到什么程度**：要不要连 `<路径>` / `<skill 名>` 这类元数据、以及 `N 条` 计数也去掉，只留「📥 注入上下文」（§1.5 末尾）。**现状**：保留元数据，未知 kind 只报种类。
 2. **`compact` 档要不要真的合并卡片**（§3.4 偏离 2）：现在只缩内容不合并；若使用者要「一轮一张卡」，那是一项独立的卡片生命周期改造。
 3. ~~折叠面板的初始展开态字段名~~：**已真机确认（2026-09-29）**——上线后读回线上卡片（`card_msg_content_type=user_card_content`）得到 `collapsible_panel` + `expanded=false`，即 `expanded` 生效、默认收起。
+4. **rc.2 的 `user-question-reply`（2026-10-02 记）**：DSH 0.2.0-rc.2 给 `MessageSourceMap` 加了这个新的持久注入 kind —— `tool-ask-user` 的 `Config.mode` 选 `timed` 时，「问题面板已关闭之后迟到的答案」会整批 steer 进 agent。**本部署仍是默认 `legacy`，所以它从未出现在真机会话里**。要定的两件事：① 提示行给它专门的中英文案（否则只会走未知 kind 兜底、显示 `📥 user-question-reply`）；② 「答案迟到」这件事要不要在**问题卡**那一侧也留痕（现在迟到答案只在注入行里看得见，问题卡本身不知道它已过期）。切 `timed` 之前先定，别等线上出现看不懂的一行。
 
 ### 已被实现推翻的旧结论
 

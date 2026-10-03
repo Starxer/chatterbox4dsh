@@ -38,8 +38,11 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | 能力 | 说明 |
 |---|---|
 | 单聊 / 群聊 / 话题群 | 单聊和群聊按聊天复用 Session；话题群按线程独立 Session |
-| 统一 per-step 卡片 | 每个 agent step 一张卡片，包含推理、文本、工具调用、结果预览；标题带「第 N 轮 · 第 M 步」，reasoning 标题带思考耗时与思考 token，footer 两行（`⏱ 时长 · 📥 本步新输入 → 📤 输出` / `🚀 tok/s · 📊 上下文占用/窗口`）。**📥 只算本步真正处理的输入**（未缓存 + 缓存写入，命中读取不算），有命中时附带 `♻️ NN%`；上下文总量只出现在 📊 一处，避免与 📥 重复。快步骤（思考→工具调用→结果落在 150ms 内）只发**一张**卡。**思考期占位**：`step/start`（模型请求发出前）就发出「🧠 深度思考中…」卡，并按 5s 刷新已用时；reasoning / 工具调用 / 结果全部在**同一张卡**上就地更新。某步最终没有任何可显示内容时，占位卡改写为「本步无输出」，不会一直停在思考中 |
+| 统一 per-step 卡片 | 每个 agent step 一张卡片，包含推理、文本、工具调用、结果预览；标题带「第 N 轮 · 第 M 步」，reasoning 标题带**思考耗时**（思考 token 数上游取不到，理由见下方「思考过程与上下文压缩」一行），footer 两行（`⏱ 时长 · 📥 本步新输入 → 📤 输出` / `🚀 tok/s · 📊 上下文占用/窗口`）。**📥 只算本步真正处理的输入**（未缓存 + 缓存写入，命中读取不算），有命中时附带 `♻️ NN%`；上下文总量只出现在 📊 一处，避免与 📥 重复。快步骤（思考→工具调用→结果落在 150ms 内）只发**一张**卡。**思考期占位**：`step/start`（模型请求发出前）就发出「🧠 深度思考中…」卡，并按 5s 刷新已用时；reasoning / 工具调用 / 结果全部在**同一张卡**上就地更新。某步最终没有任何可显示内容时，占位卡改写为「本步无输出」，不会一直停在思考中 |
 | 工具调用展示 | 工具名内联代码 + args（独立 fenced 代码块防溢出）+ 结果预览（terminal/web/search/read/diff），原地更新 wathet→green/red |
+| 工作展示级别 | 与 DSH Web UI 同一套 **4 档**：`compact` / `standard` / `detailed` / `verbose`（`/display` 直接切档；Web UI 设置页与飞书写的是同一份配置）。`compact` 只留一行状态与工具计数；`standard` 每个工具一行摘要；`detailed`（**默认**）再加参数与结果预览，并把思考过程**折叠**；`verbose` 全部展开且不截断。**原来那 4 个布尔开关仍然有效，但只能"减"、不能"加"**（与档位按 AND 合成），所以升级不会让已关掉的内容自己回来。档位**只改一张卡写多少字，不改发几张卡**（一个 step 永远一张卡）；Web UI 的"合并整轮"在飞书没有对应物 |
+| 思考过程与上下文压缩 | 思考过程是**可折叠面板**：收起态带边框、底色与「（▸ 已折叠 · 点击展开）」，**一眼看得出里面还有东西**。压缩发生时发**一张可就地更新的压缩卡** —— `🗜️ 正在压缩…` + 触发原因 → 折叠条数 / token / 路由 → 摘要（折叠，正文 ≤200 字）→ 收尾转绿或带失败原因转红。**思考 token 数取不到**（DSH 的 `usage.reasoningTokens` 没有任何生产者，上游接口把 thinking 折进 `output_tokens`），所以标题只显示耗时，**不做估算** |
+| 上下文注入提示行 | DSH 往运行中会话注入的上下文（工作区指令、技能目录、跨会话召回、子代理结算、会话间消息、目标更新…）在**声明它的那张 step 卡正文最前面**显示**一行提示**（`📥 注入上下文` / `🤖 子代理已结算` …），**不渲染注入内容本身**；没见过的来源 kind 也只报名字，绝不把任意文本贴到卡上 |
 | 正文媒体内联 | 模型在回答里引用工作区媒体时，卡片把它们**直接内联渲染**（对齐 DSH Web UI「工作区路径可直接打开」，而飞书点不开本地路径）：`![图](runs/a.png)` / `[图](runs/a.png)` → 上传成 `img_v3_…` 显示；`[片段](runs/a.mp4)` → 可播放的卡片 **video 元素**（QuickTime 先 `-c copy` 转封装、`ffmpeg` 抽封面、`ffprobe` 取时长）；`[语音](runs/a.opus)` → 内联 **`<audio>` 播放器**（只认 Opus，wav/mp3/m4a/flac 有 `ffmpeg` 时自动转码）。范围收窄：只认带 `()` 目标的 Markdown 引用、只认 `realpath` 后仍在工作区内的文件（`any` 可放宽）、图片 ≤10MB、音视频 ≤30MB、单卡 ≤12 图 + 12 音视频、上传与 ffmpeg 全部有界（有界并发 3 路，且趁模型还在打字就**预热上传**）；任何失败都退回可读文字，**卡片绝不会因媒体被拒收**。PDF / Office / 压缩包等**没有**卡片组件，仍走原生文件气泡 |
 | Turn Complete 卡片 | turn 结束后展示总时长/LLM 时间/工具时间、TTFT/吞吐量、token/缓存命中率，footer 另显示 **Enter while busy**；吞吐量口径与 DSH Web UI `deriveTurnMetrics` 对齐（首 token 判定含 tool-call delta，token 与 decode 时间同批配对）。模型用 DSH `present` 工具声明的**交付物**列在**卡片最前面**（`📦 交付物`，路径 + 描述，之后用分隔线接指标）：**只列清单、不推送文件**，需要时让模型发即可 |
 | 会话管理面板 | `/session`：交互式卡片下拉选会话 + 切换/detach/归档/fork/改名/**置顶/取消置顶**/列表/刷新；已置顶的会话在下拉与 `/session list` 表格里带 `📌` 标记；`/session N` 快速切换 |
@@ -62,8 +65,11 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | Capability | Description |
 |---|---|
 | DM / group / topic group | DMs and groups reuse one Session per chat; a topic group gives each thread its own Session |
-| Unified per-step card | One card per agent step with reasoning, text, tool calls and result previews; the title carries "turn N · step M", the reasoning header shows thinking time and thinking tokens, and the footer is two lines (`⏱ duration · 📥 new input → 📤 output` / `🚀 tok/s · 📊 context used / window`). **📥 counts only what this step actually processed** (uncached + cache writes, never cache reads) and appends `♻️ NN%` when there was a hit; the full context size appears exactly once, in 📊. A fast step (thinking → tool call → result inside 150 ms) sends only **one** card. **Thinking placeholder**: the card is posted at `step/start` (before the model request goes out) as "🧠 Thinking…" and refreshes its elapsed time every 5 s; reasoning, tool calls and results all update that same card in place. A step that ends with nothing to show is folded into "Empty step" instead of sitting on "thinking" forever |
+| Unified per-step card | One card per agent step with reasoning, text, tool calls and result previews; the title carries "turn N · step M", the reasoning header shows thinking time (thinking-token counts are not available upstream — see "Reasoning & context compaction" below), and the footer is two lines (`⏱ duration · 📥 new input → 📤 output` / `🚀 tok/s · 📊 context used / window`). **📥 counts only what this step actually processed** (uncached + cache writes, never cache reads) and appends `♻️ NN%` when there was a hit; the full context size appears exactly once, in 📊. A fast step (thinking → tool call → result inside 150 ms) sends only **one** card. **Thinking placeholder**: the card is posted at `step/start` (before the model request goes out) as "🧠 Thinking…" and refreshes its elapsed time every 5 s; reasoning, tool calls and results all update that same card in place. A step that ends with nothing to show is folded into "Empty step" instead of sitting on "thinking" forever |
 | Tool call display | Tool name in inline code + args (its own fenced block to avoid overflow) + result preview (terminal/web/search/read/diff), updated in place wathet→green/red |
+| Work-detail level | The same **four levels** as the DSH Web UI: `compact` / `standard` / `detailed` / `verbose` (switched with `/display`; the Web UI settings panel and Feishu write the same config). `compact` keeps a status line and a tool count; `standard` adds one summary line per call; `detailed` (**default**) adds arguments and result previews and folds the reasoning away; `verbose` shows everything untruncated. **The four original boolean switches still work, but they can only subtract** (ANDed with the level), so an upgrade never brings back something a deployment had turned off. A level changes **how much a card says, never how many cards are sent** (one step is always one card); the Web UI's "collapse a whole turn" has no equivalent here |
+| Reasoning & context compaction | Reasoning is a **folded panel**: the collapsed state carries a border, a tinted header and a "（▸ Collapsed · click to expand）" hint, so it is obvious there is more inside. When a compaction runs, **one updatable compaction card** goes out — `🗜️ Compacting…` plus the trigger, then the folded item count / tokens / route, then the summary (folded, ≤200 characters), repainted green when done or red with the failure reason. **Thinking-token counts are not obtainable** (nothing in DSH produces `usage.reasoningTokens`, and the upstream API folds thinking into `output_tokens`), so the header shows the duration only and **no estimate is faked** |
+| Context-injection notice | Context DSH injects into a running session (workspace instructions, skill catalog, cross-session recall, subagent settlement, messages from other sessions, goal updates, …) appears as **one notice line at the very top of the step card that declared it** (`📥 Context injected` / `🤖 Subagent settled` …); the injected content itself is **never rendered**. An unseen source kind is reported by name only, never pasted onto a card |
 | Media inlined from card text | When the model references workspace media, the card renders it **inline** (matching the DSH Web UI, where a workspace path can simply be opened — something Feishu cannot do): `![img](runs/a.png)` / `[img](runs/a.png)` is uploaded and shown as `img_v3_…`; `[clip](runs/a.mp4)` becomes a playable card **video element** (QuickTime is remuxed with `-c copy`, `ffmpeg` extracts a cover, `ffprobe` measures the duration); `[voice](runs/a.opus)` becomes an inline **`<audio>` player** (Opus only; wav/mp3/m4a/flac are transcoded when `ffmpeg` is available). Scope stays narrow: only Markdown references carrying a `()` destination, only files whose `realpath` is still inside the session workspace (`any` relaxes that), images ≤10 MB, audio/video ≤30 MB, at most 12 images and 12 audio/video items per card, every upload/ffmpeg run is bounded, uploads run three at a time, and they are **warmed** while the model is still typing. Anything that fails degrades to readable text — **a card is never rejected over media**. PDF / Office / archives have **no** card component at all and still travel as native file messages |
 | Turn Complete card | After a turn: total / LLM / tool time, TTFT, throughput, tokens, cache hit rate, plus **Enter while busy** in the footer. Throughput matches the DSH Web UI's `deriveTurnMetrics` (first-token detection includes tool-call deltas; tokens and decode time are paired). Files the model declared through DSH's `present` tool lead the card (`📦 Deliverables`, path + description, followed by a divider before the metrics): **listed only, never pushed** — ask for one when you want it |
 | Session panel | `/session`: an interactive card with a session dropdown plus switch / detach / archive / fork / rename / **pin / unpin** / list / refresh; pinned sessions carry a `📌` mark in the dropdown and in `/session list`; `/session N` switches by index |
@@ -89,9 +95,9 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 ```
 
-> **要求 DSH `0.1.5-alpha.1` 或更高（同一 `0.1.5` 预发布线）**。DSH 仍处于 pre-release，预发布版本之间 API 可能变动；插件的 `@deepseek-ai/dsh-*` 依赖范围会随 DSH 预发布版本同步升级，升级 DSH 后请一并升级本插件。
+> **要求 DSH `0.2.0-rc.1` 或更高（同一 `0.2.0` 预发布线，已在 `0.2.0-rc.2` 上实测）**。DSH 仍处于 pre-release，预发布版本之间 API 可能变动。DSH 0.1.7 起会对插件的 `@deepseek-ai/dsh-*` peer 范围做**版本闸门**（不满足就静默跳过加载），所以**跨预发布线升级时请一并升级本插件**；同一 `0.2.0` 线内升到 `rc.2` 无需改动。
 >
-> **Requires DSH `0.1.5-alpha.1` or newer on the same `0.1.5` prerelease line.** DSH is still pre-release and its API may change between prereleases; the plugin bumps its `@deepseek-ai/dsh-*` ranges in lockstep, so upgrade both together.
+> **Requires DSH `0.2.0-rc.1` or newer on the same `0.2.0` prerelease line (verified on `0.2.0-rc.2`).** DSH is still pre-release and its API may change between prereleases. Since DSH 0.1.7 a plugin's `@deepseek-ai/dsh-*` peer ranges are **gated by version** (a mismatch is silently skipped at load), so upgrade this plugin together with DSH when you cross prerelease lines; moving to `rc.2` inside the `0.2.0` line needs no change.
 
 **中文**：插件提供两个页面——**配置**（App ID / App Secret / 访问策略 / 卡片显示）在 DSH **Settings** → 飞书与 Lark；**连接状态与扫码一键配置**在 **Plugins** → 飞书与 Lark 详情页。扫码是推荐路径，也可以手动创建应用。详见 [docs/feishu-setup.md](docs/feishu-setup.md)。
 
@@ -132,7 +138,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/session [N\|list]` | 无参：交互式会话管理面板；`list`：表格；`N`：按下标快速切换 |
 | `/status` | 展示会话状态（token/TTFT/吞吐量/缓存命中率/权限模式/Enter while busy 等） |
 | `/reasoning [off\|low\|high\|max]` | 设置推理强度（`show on\|off` 切换思考过程显示） |
-| `/display [reasoning\|tools\|args\|results] [on\|off]` | 查看/切换卡片显示开关（思考过程 / 工具调用 / 参数 / 结果）。**无参时发交互卡片**，点按钮即可切换。**全局开关**：一个部署一份，所有会话/群共用 |
+| `/display [compact\|standard\|detailed\|verbose]` \| `/display [reasoning\|tools\|args\|results] [on\|off]` | 切工作展示**档位**（`compact` 简洁 / `standard` 标准 / `detailed` 详细 / `verbose` 完全展开，与 Web UI 同名同义），或查看/切换那 4 个显示开关（思考过程 / 工具调用 / 参数 / 结果）——**开关只能"减"不能"加"**。**无参时发交互卡片**，点按钮即可切换。**全局配置**：一个部署一份，所有会话/群共用（与 Web UI 设置页同一份字段） |
 | `/stop` | 中止当前轮次并丢弃排队消息（不再进入下一 turn） |
 | `/steer <内容>` | agent 运行中，把一条消息注入当前 turn；**空闲时自动回退为发新消息** |
 | `/queue <内容>` | /steer 的共轭：强制把消息排队为新轮（即使处于 steer 模式）；空闲时回退为发新消息 |
@@ -150,7 +156,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/session [N\|list]` | No args: interactive session panel; `list`: table; `N`: switch by index |
 | `/status` | Session status (tokens / TTFT / throughput / cache hit rate / permission mode / Enter while busy) |
 | `/reasoning [off\|low\|high\|max]` | Set the reasoning effort (`show on\|off` toggles reasoning display) |
-| `/display [reasoning\|tools\|args\|results] [on\|off]` | View / toggle the card display switches (reasoning / tool calls / arguments / results). With no argument it posts an **interactive card** — just tap a switch. **Global switches**: one set per deployment, shared by every session and chat |
+| `/display [compact\|standard\|detailed\|verbose]` \| `/display [reasoning\|tools\|args\|results] [on\|off]` | Switch the work-detail **level** (`compact` / `standard` / `detailed` / `verbose` — the Web UI's own names and meanings), or view / toggle the four display switches (reasoning / tool calls / arguments / results) — the switches can only **subtract** from the level. With no argument it posts an **interactive card** — just tap a switch. **Global config**: one set per deployment, shared by every session and chat (the same fields the Web UI settings panel writes) |
 | `/stop` | Abort the current turn and drop queued messages (they no longer run as the next turn) |
 | `/steer <text>` | While the agent runs, inject a message into the current turn; **falls back to a new message when idle** |
 | `/queue <text>` | The counterpart of `/steer`: force the message to queue as a new turn (even in steer mode); falls back to a new message when idle |
@@ -159,9 +165,9 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/approve` `/deny` `/approvals` | Handle tool approvals |
 | `/help` | A card listing every command (grouped: chatterbox4dsh plugin / DSH built-in) |
 
-> **关于会话压缩 / On compaction**：`compact` 命令由 **DSH 内置**提供（`@deepseek-ai/dsh-command-compact`，注册 `/compact` 并调用官方压缩），本插件**不注册** `compact` 命令（避免与 DSH 内置同名冲突）。当某个会话历史过大时，用 DSH 内置的 `/compact` 压缩其上下文，或将会话归档/另开新会话。DSH 压缩只改写「进入模型上下文的部分」，会话的完整事件日志不会被删除。
+> **关于会话压缩 / On compaction**：`compact` 命令由 **DSH 内置**提供（`@deepseek-ai/dsh-command-compact`，注册 `/compact` 并调用官方压缩），本插件**不注册** `compact` 命令（避免与 DSH 内置同名冲突）。当某个会话历史过大时，用 DSH 内置的 `/compact` 压缩其上下文，或将会话归档/另开新会话。DSH 压缩只改写「进入模型上下文的一部分」，会话的完整事件日志不会被删除。**无论压缩是自动触发还是你手动 `/compact`，飞书侧都会收到一张压缩卡**（进行中 → 折叠条数/token/路由 → 折叠摘要 → 收尾或失败原因），就地更新，不是新卡。
 >
-> The `compact` command is provided by **DSH itself** (`@deepseek-ai/dsh-command-compact`, registered as `/compact`). This plugin deliberately **does not** register `compact` (a same-name conflict with the built-in would fail at boot). When a session's history grows too large, use the built-in `/compact` to compact its context, or archive the session / start a new one. DSH compaction only rewrites the part that enters the model context; the full event log is never deleted.
+> The `compact` command is provided by **DSH itself** (`@deepseek-ai/dsh-command-compact`, registered as `/compact`). This plugin deliberately **does not** register `compact` (a same-name conflict with the built-in would fail at boot). When a session's history grows too large, use the built-in `/compact` to compact its context, or archive the session / start a new one. DSH compaction only rewrites the part that enters the model context; the full event log is never deleted. **Whether the compaction was automatic or your own `/compact`, Feishu gets one compaction card** (in progress → folded item count / tokens / route → folded summary → done or failed), updated in place rather than re-sent.
 
 > **运行中发消息的行为（`/busy`）**：`queue`（排队发送，等待当前轮结束后作为新轮运行）或 `steer`（插话发送，注入当前轮立即响应，persist）。`/status` 的 **Enter while busy** 行显示当前值。一次性插话用 `/steer <内容>`；一次性排队用 `/queue <内容>`。**agent 空闲时**，`/steer`、`/queue` 都会自动回退为「作为新消息发送」而不是报错。运行中发普通消息时会**立即回一条纯文本提示**（steer：已插入当前轮；queue：已排队，本轮结束后执行）——提示是文本消息而非卡片；steer 注入的消息由当前轮的回复卡统一回答，**不会再单独回一张卡**。`/stop` 会中止当前轮并**丢弃排队/等待中的消息**（不再自动进入下一 turn）。
 >
@@ -181,7 +187,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
     dmMode: open                 # open / allowlist / disabled
     workspace: /path/to/project  # 默认工作区 · default workspace
     agentPreset: coding          # 默认 agent preset · default agent preset
-    showReasoning: true          # 卡片显示：思考过程 · card display: reasoning
+    transcriptView: detailed      # 工作展示档位：compact / standard / detailed / verbose（与 Web UI 同名）· work-detail level, same names as the Web UI
+    showReasoning: true          # 卡片显示：思考过程（只能在档位基础上"减"）· card display: reasoning (can only subtract from the level)
     showToolCalls: true          # 卡片显示：工具调用 · card display: tool calls
     showToolArgs: true           # 卡片显示：工具参数 · card display: tool args
     showToolResults: true        # 卡片显示：工具结果 · card display: tool results
@@ -208,7 +215,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `workspace` | 第一个注册的 Workspace | Agent 工作目录 |
 | `agentPreset` | Harness 默认 Preset | Agent preset |
 | `reactEmoji` | `THUMBSUP` | 收到消息时的表情回应（空字符串关闭） |
-| `showReasoning` | `true` | 步骤卡是否展示模型思考过程（200 字预览） |
+| `transcriptView` | `detailed` | 工作展示**档位**（与 DSH Web UI 同名同义）：`compact` 只留一行状态与工具计数 / `standard` 每个工具一行摘要 / `detailed` 加参数与结果预览、思考过程折叠 / `verbose` 全部展开且不截断。下面的 4 个开关**只能"减"不能"加"**。档位只改一张卡写多少字，不改发几张卡 |
+| `showReasoning` | `true` | 步骤卡是否展示模型思考过程（在所选档位允许的范围内：预览 / 折叠全文 / 不显示） |
 | `showToolCalls` | `true` | 是否展示工具调用；关闭后只有工具的步骤不再发卡 |
 | `showToolArgs` | `true` | 是否展示工具调用的参数块（需 `showToolCalls`） |
 | `showToolResults` | `true` | 是否展示工具结果预览（需 `showToolCalls`） |
@@ -234,7 +242,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `workspace` | First registered workspace | Agent working directory |
 | `agentPreset` | Harness default preset | Agent preset |
 | `reactEmoji` | `THUMBSUP` | Reaction added on incoming messages (empty string disables it) |
-| `showReasoning` | `true` | Show the model reasoning preview on step cards (200-char window) |
+| `transcriptView` | `detailed` | Work-detail **level**, named and meant exactly as in the DSH Web UI: `compact` keeps a status line and a tool count / `standard` adds one summary line per call / `detailed` adds arguments and result previews and folds the reasoning away / `verbose` shows everything untruncated. The four switches below can only **subtract** from it. A level changes how much one card says, never how many cards are sent |
+| `showReasoning` | `true` | Show the model reasoning on step cards (within what the level allows: one preview line / a folded panel / nothing) |
 | `showToolCalls` | `true` | Show tool calls; when off, tool-only steps post no card |
 | `showToolArgs` | `true` | Show each tool call's argument block (requires `showToolCalls`) |
 | `showToolResults` | `true` | Show each tool call's result preview (requires `showToolCalls`) |
