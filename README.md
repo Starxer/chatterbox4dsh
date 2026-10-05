@@ -103,6 +103,24 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 
 **English**: The plugin adds two pages — **configuration** (App ID / App Secret / access policy / card display) lives in DSH **Settings** → Feishu & Lark, while **connection status and the QR-code one-click setup** live on the **Plugins** → Feishu & Lark detail page. Scanning is the recommended path; you can also create the app manually. See [docs/feishu-setup.md](docs/feishu-setup.md).
 
+## 平台支持 / Platform support
+
+**中文**
+
+- **构造上跨平台**：插件本体是纯 JavaScript —— **没有原生模块、没有 `process.platform` 分支、没有硬编码的平台路径**，也不启动额外进程（卡片媒体用的 ffmpeg / ffprobe 除外，见下）。
+- **平台覆盖面来自 DSH 本体**：DSH 自带 Linux / macOS / Windows（x64 / arm64）的原生模块，所以三个平台都能装上 DSH 与本插件。
+- ⚠️ **实测只有 Linux**：本插件的完整链路（真机卡片渲染、媒体转码、宿主联调）**只在 Linux x64 上跑过**，macOS 与 Windows **未验证**。上游自己也写明「Windows 特有行为仍需在原生 Windows 上验证」。请把它当成「装得上、跑得动」而不是「三平台都验证过」。
+- **可选外部依赖 ffmpeg**：视频封面与非 Opus 音频的转码需要 `ffmpeg` / `ffprobe` 在 `PATH` 上。**缺失不影响使用** —— 媒体引用退化成路径文字，只是没有封面和音频播放器。
+- **Windows 上的一个已知退化**：判断媒体是否在工作区内用的是路径前缀比较，Windows 的大小写不敏感与 8.3 短名可能让**工作区内**的媒体判成区外、只留路径文字。**失败方向是安全的**（不会把工作区外的文件发出去）。
+
+**English**
+
+- **Cross-platform by construction**: the plugin is pure JavaScript — **no native modules, no `process.platform` branches, no hardcoded platform paths** — and it starts no extra process (ffmpeg / ffprobe for card media being the one exception, below).
+- **The platform coverage comes from DSH itself**: DSH ships native modules for Linux / macOS / Windows (x64 / arm64), so it and this plugin install on all three.
+- ⚠️ **Verified on Linux only**: the full path (real Feishu card rendering, media transcoding, host integration) **has only ever run on Linux x64**; macOS and Windows are **unverified**, and upstream itself notes that Windows-specific behaviour still needs native Windows validation. Read this as "it installs and it runs", not "three platforms verified".
+- **Optional external dependency, ffmpeg**: video cover frames and non-Opus audio transcoding need `ffmpeg` / `ffprobe` on `PATH`. **Missing ffmpeg costs nothing else** — media references degrade to their path text, just without a cover or an audio player.
+- **One known Windows degradation**: the "is this inside the workspace?" test is a path prefix comparison, so Windows' case-insensitive paths and 8.3 short names can make media that *is* inside the workspace read as outside, leaving path text. **It fails in the safe direction** — nothing outside the workspace is ever published.
+
 ## 快速开始 / Quick start
 
 **中文**
