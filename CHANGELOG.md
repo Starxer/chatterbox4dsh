@@ -56,6 +56,19 @@
 
 **English**: a read-only cross-platform audit, prompted by the question of whether this plugin is cross-platform. `src/` contains **zero** `process.platform` branches, no POSIX-only calls, no hardcoded platform paths, and all four runtime dependencies are pure JavaScript with no `os`/`cpu`/`engines` constraints (the 76 platform-constrained packages in the tree are all `optional` build-time entries npm picks per platform). Windows awareness was already in the code rather than inferred: `pwsh` and `bash` normalize to the same summary variant, `~` expansion accepts both separators, and the vitest config resolves paths with `fileURLToPath(new URL(...))`. But "compatible by construction" is not "verified": the full path has only ever run on Linux x64, and the new README **Platform support** section now says so in both languages, also recording that ffmpeg is an *optional* external dependency. Two findings became TODOs — the chat→session binding path is hand-assembled instead of asking the host's `dshHomePath` service (not a bug today, since the resolution currently matches upstream, but a silent-divergence risk), and the fact that no non-Linux platform has been verified at all. No `src/` or `client/` code changed, so nothing was rebuilt and dsh was not restarted.
 
+### 文档：`present` 交付缺口入档（2026-10-06，零代码改动）
+
+有人问「present 工具，是不是我们插件没实现兼容」，于是把这条从头核了一遍。结论是**部分兼容，而且缺口恰好落在 `present` 真正被用的那一类文件上**（记入 TODO O25 + 关键坑 52，**没有改任何 `src/`，不需要 build / 重启**）：
+
+- ✅ **事件层是接了的**：订阅 `deliverables/presented`，按 path 去重收集（单轮上限 16），渲染成 Turn Complete 卡第一个元素 `📦 交付文件（N）`（≤6 条 + 「另 N 个」）。
+- ✅ **媒体类交付真能到用户手里**：`png` / `mp4` / `ogg` 的条目走既有 hydrator 真上传、在卡内内联。
+- ❌ **文档类交付只落到一行点不动的纯文本**：`docx` / `xlsx` / `pdf` / `zip` / `md` / `csv` / `ts` 会被 `linkFallback()` 降级成 `描述 · \`path\``。根因是卡片能力边界（卡片没有文件/附件组件，只能走原生文件消息），**不是渲染 bug**。
+- ❌ **提示词层我们零干预，模型被误导**：WebUI 的 `ui-deliverables` 在 host 半注册了一条**全局** system prompt（「Each presented file adds a card below the reply, with preview and native-open actions」），**不区分客户端**，飞书会话同样收到；而飞书既没有 `native-open`（那是 WebUI 的宿主桌面路由）也没有文档预览 ⇒ 模型以为已经交付了。
+- 📊 **真机数据（3 个飞书会话 / 444 轮）**：`present` 调用 **13 次**，其中**只有 1 次**真正送达（那一轮模型自己额外调了 `feishu_send_file`）；13 次全是非媒体（`.md`/`.sh`/`.csv`/`.tsx`/`.ts`），媒体 **0 次**。
+- 🧭 **三个候选修法（当时建议「卡片加『发送文件』按钮 + 给飞书会话注入一段说明」，两者都没做）**：卡片按钮（路径须校验「本会话本轮声明过 + 在工作区内」）、收到事件后自动推送（有重复/刷屏与排序风险）、或只注入一段提示让模型改用 `feishu_send_file`。
+
+**English**: a documentation-only record of the `present` (deliverables) compatibility review, prompted by the question of whether the plugin is compatible with DSH's `present` tool. The event is consumed and rendered on the Turn Complete card, and media deliverables (image/video/audio) are genuinely uploaded and inlined; but every non-media deliverable — the exact file types `present` is actually used for — degrades to an inert `description · \`path\`` text line, because Feishu cards have no attachment component. Worse, the WebUI's `ui-deliverables` host half registers a **global** system-prompt section promising "a card below the reply, with preview and native-open actions", which reaches Feishu sessions too and is not corrected anywhere in this plugin. A scan of three Feishu sessions (444 turns) found 13 `present` calls, exactly one of which reached the user (that turn also called `feishu_send_file` explicitly), and all 13 were non-media. Three candidate fixes were identified; the operator chose to record the finding for now. Recorded as TODO O25 and pitfall 52; no `src/` or `client/` code changed.
+
 ### DSH 适配：0.2.0-rc.1 → 0.2.0-rc.2（2026-10-02，插件零必改）
 
 > 本跳 **187 commits / 1022 文件、同一 `0.2.0` tuple、零包增删**，是 rc.1 以来以**桌面端/客户端**为主的小版本。完整逐符号/逐事件核查、三轨彩排、切换与实测见本机 `notes/upgrade-0.2.0-rc.2.md`。
