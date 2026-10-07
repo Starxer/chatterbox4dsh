@@ -19,7 +19,7 @@ import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DELIVER_DOC_MAX_MB, 
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
-import { startChannel, type SlashCommandHandler } from './channel.ts'
+import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './channel.ts'
 import { LarkRuntime } from './runtime.ts'
 import { renderTerminalQr } from './provision.ts'
 import { ProvisionManager } from './provision-manager.ts'
@@ -32,6 +32,8 @@ import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuSubagents } from './feishu-subagents.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
+import { installFeishuSurfacePrompt } from './feishu-surface.ts'
+import { startFeishuExternalTurns } from './feishu-external-turns.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
@@ -204,6 +206,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopQuestions: () => void = () => undefined
   let stopApprovals: () => void = () => undefined
   let stopStreaming: () => void = () => undefined
+  let stopExternalTurns: () => void = () => undefined
+  let stopSurface: () => void = () => undefined
   let consumeReasoning: (sessionId: string) => string | undefined = () => undefined
   let consumeLastStepHadContent: (sessionId: string) => boolean = () => false
   let flushed: (sessionId: string) => Promise<TurnStats | undefined> = () => Promise.resolve(undefined)
@@ -358,6 +362,25 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     const ch = channelHolder.current
     if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
     return ch.send(to, input, opts) as Promise<{ messageId?: string }>
+  }
+  /**
+   * Reply/footer metadata for one chat. Shared by the reply card `channel.ts`
+   * posts for a Feishu-started turn and the completion card this plugin posts
+   * for a turn started elsewhere, so both show the same workspace/model facts.
+   */
+  const replyCardMeta = async (coords: ConversationMessage): Promise<ReplyCardMeta> => {
+    const bridge = bridgeHolder.current
+    if (bridge === undefined) return {}
+    const meta = await bridge.getSessionMeta(coords)
+    return {
+      workspace: meta.workspace,
+      agentPreset: meta.agentPreset,
+      model: meta.model,
+      reasoningEffort: meta.reasoningEffort,
+      contextWindow: meta.contextWindow,
+      lastInputTokens: meta.lastInputTokens,
+      busyMode: bridge.busyMode(coords) ?? 'queue',
+    }
   }
   const cardChannel = {
     // Every method below is bounded. The SDK's HTTP client has no request
@@ -632,18 +655,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         { current: currentLocale, set: setPluginLocale },
         permissionPresets, cardTopics),
         attachments,
-        async (coords) => {
-          const meta = await bridge.getSessionMeta(coords as ConversationMessage)
-          return {
-            workspace: meta.workspace,
-            agentPreset: meta.agentPreset,
-            model: meta.model,
-            reasoningEffort: meta.reasoningEffort,
-            contextWindow: meta.contextWindow,
-            lastInputTokens: meta.lastInputTokens,
-            busyMode: bridgeHolder.current?.busyMode(coords as ConversationMessage) ?? 'queue',
-          }
-        },
+        replyCardMeta,
         undefined,  // consumeReasoning (unused; bridge handles intermediate tracking)
         undefined,  // consumeLastStepHadContent (unused)
         flushed,
@@ -898,6 +910,30 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       warmImages: cardImages.warm,
     })
     stopStreaming = streamingResult.stop
+    // The Feishu surface sentence (same shape as the Web bundle's
+    // `app:web-surface`): one prompt section whose provider contributes nothing
+    // for a session that is not bound to a Feishu chat.
+    stopSurface = installFeishuSurfacePrompt(ctx, {
+      isBound: sessionId => bridgeHolder.current?.resolveChat(sessionId) !== undefined,
+      enabled: () => currentSettings().surfaceContext ?? true,
+    })
+    // Turns the user starts outside Feishu (Web GUI, background-job wake-up,
+    // schedule) rendered from the same native events every other DSH surface
+    // uses: the user message is echoed and the turn is completed with the same
+    // card and the same `present` delivery as a Feishu-started turn.
+    const externalTurns = startFeishuExternalTurns({
+      ctx,
+      channel: cardChannel,
+      bridgeHolder,
+      logger: ctx.logger('dsh-feishu'),
+      getTranslations: () => translationsFor(currentLocale().id),
+      flushed,
+      sessionMeta: replyCardMeta,
+      ...(deliverHandle === undefined ? {} : { deliver: deliverHandle }),
+      noteCardTopic: (messageId, topic) => cardTopics.note(messageId, topic),
+      enabled: () => currentSettings().mirrorExternalTurns ?? true,
+    })
+    stopExternalTurns = externalTurns.stop
     consumeReasoning = streamingResult.consumeReasoning
     consumeLastStepHadContent = streamingResult.consumeLastStepHadContent
     flushed = streamingResult.flushed
@@ -1134,6 +1170,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopJobs()
     stopSubagents()
     stopStreaming()
+    stopExternalTurns()
+    stopSurface()
     cardImages.dispose()
     stopSendFileTool()
     stopReceiveFileTool()
@@ -1144,7 +1182,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     sessionHandle?.stop()
     deliverHandle?.dispose()
     stopNewSessionConfirmer?.()
-  }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
+  }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + external turns + surface prompt + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
 
   let lastPrintedQrUrl: string | undefined
   const provisionManager = new ProvisionManager({

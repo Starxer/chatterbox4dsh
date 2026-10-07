@@ -50,6 +50,7 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | 斜杠命令 | `/model` `/new` `/session` `/status` `/stop` `/steer` `/queue` `/busy` `/permission` `/reasoning` `/display` `/approve` `/deny` `/help` 等 |
 | 审批 | 与 DSH Web UI 共享同一份 pending 审批状态；审批卡片 **允许在上 / 拒绝在下**，显示原因，**中英双语随 `/lang`**（术语对齐 WebUI：等待审批 / 允许一次 / 拒绝）；本轮中止时卡片自动作废去按钮 |
 | `ask_user_question` 卡片 | 问题卡片，按 DSH Web UI 的口径渲染：选项带**描述**（上游 `AskUserQuestionOption.description` 一直都在，此前没读），**不设自造选项数上限**（旧的 `slice(0, 6)` 已删）。**单选题的每个选项是整行可点的一行**（与工作区选择面板、交付清单同款，**没有任何选项按钮**）——点一下只**冻结该卡**并弹出**确认卡**（`📋 确认提交`：「✅ 确认提交」/「↩️ 返回」），因为整行点击的命中面积大、点错就把答案写错了；**确认** → 结果**另发一张新卡**、原卡变灰「已提交」；**返回** → 原卡变灰「已作废」并**另发一张新的问题卡**（飞书客户端会「消费掉」被点过的可点行，同一张卡不能再点，所以必须发新卡，旧卡上的点击一律忽略）。**多选题**是 `form` + **每个选项一个 `checker` 复选框**（标签与描述就写在复选框上，正文不再重复列一遍）+ 一次「✅ 提交」**带回全部勾选**，中途不重绘卡片。自定义回答 / 跳过照旧（现已随 `/lang` 走中英双语）；一次多问时**顺序迭代**、整批返回答案 |
+| 其它入口的回合 | 一个会话可以同时被**飞书**和 **Web GUI** 驱动。你从 Web GUI 发起（或后台任务/定时任务唤醒）的回合，飞书这边**照样完整**：你的消息以 `💬 Web GUI：…` 纯文本回显进原话题（附件一期只写「N 张图片 / N 个文件」），回合结束再补发**同一张 Turn Complete 卡**并走**同一条交付管线**（媒体内联 / 文档自动发 / 其余可点行 → 确认卡），卡上第一行标注「本回合不是从飞书消息发起的」。归因靠插件自己 mint 的 `requestId`（DSH 把它原样写进消息的 `source.rpcId`）+ 直连投递的一次性标记；**飞书发起的回合仍由原路径独占**，一个回合不会出现两张收尾卡。开关 `mirrorExternalTurns`（默认开） |
 | 图片 / 文件接收 | 图片按**真实字节判型**（PNG/JPEG/WebP/GIF）经 attachment store 落盘；文件、**用户发来的视频与语音**同样下载到 **DSH 原生附件库**（`~/.dsh/attachments/v1/files/…`）并附 `fileHostPath` 给 agent 读取 |
 | agent 主动发文件 | `feishu_send_file` 模型工具：agent 可把工作区文件推送到当前飞书聊天（≤30MB）。**图片内联预览**、**MP4/MOV（H.264/HEVC/MPEG-4）发成可播放的视频气泡**（有 `ffmpeg` 时附带抽帧封面）、**Ogg/Opus 发成语音气泡**；其余（含放不出来的容器/codec）仍作为文件 |
 | agent 接收文件 | `feishu_receive_file` 模型工具：agent 按需/兜底直接下载入站飞书文件（含视频/语音）到 **DSH 原生附件库**，返回 `fileHostPath` |
@@ -77,6 +78,7 @@ Bridges DeepSeek Harness agents into Feishu/Lark chat and narrates **every agent
 | Slash commands | `/model`, `/new`, `/session`, `/status`, `/stop`, `/steer`, `/queue`, `/busy`, `/permission`, `/reasoning`, `/display`, `/approve`, `/deny`, `/help` and more |
 | Approvals | Shares the same pending approvals as the DSH Web UI; the card puts **Approve on top / Reject below** and shows the `Reason:` |
 | `ask_user_question` card | Question cards rendered the way the DSH Web UI renders them: options carry their **descriptions** (upstream has always sent `AskUserQuestionOption.description`; it simply was not read) and there is **no self-invented option cap** (the old `slice(0, 6)` is gone). A single-select option is a **full-width tappable row** (the same component as the workspace picker and the deliverable list — **no option buttons at all**); one tap only **freezes that card** and posts a **confirmation card** (`📋 Confirm` with Submit / Back), because a wide hit area makes a mis-tap write the wrong answer: **Submit** posts the **result as a new card** and greys the old one, **Back** greys it as superseded and **posts a fresh question card** (the Feishu client consumes a tapped row, so the same card can never be tapped again — a re-send is mandatory and taps on a superseded card are ignored). A **multi-select** question is a `form` with **one `checker` checkbox per option** (label and description on the checkbox itself, never repeated in the body) plus a single Submit that **carries every check at once**, with no card re-render in between. Free-form answer / Skip are unchanged (and now follow `/lang`); multiple questions are still asked **one at a time** and returned as one batch |
+| Turns started elsewhere | One session can be driven from **Feishu** and from the **Web GUI**. A turn you start in the Web GUI (or that a background job / schedule wakes) is now complete on the Feishu side too: your message is echoed as `💬 Web GUI: …` plain text into the same topic (phase one names attachments — "N images / N files" — instead of uploading them), and when the turn ends the plugin posts the **same Turn Complete card** through the **same delivery pipeline** (media inlined, documents auto-sent, other files as tappable rows → confirmation), with a first line saying the turn did not start from a Feishu message. Attribution uses the `requestId` this plugin mints (DSH writes it verbatim into the message's `source.rpcId`) plus a one-shot marker for direct dispatches; a Feishu-started turn stays owned by the reply path, so no turn can produce two footers. Setting: `mirrorExternalTurns` (on by default) |
 | Image / file intake | Images are typed from their **real bytes** (PNG/JPEG/WebP/GIF) and stored via the attachment store; files — **and videos/voice notes the user sent** — are downloaded into the **native DSH attachment store** (`~/.dsh/attachments/v1/files/…`) and exposed to the agent as `fileHostPath` |
 | Agent sends files | The `feishu_send_file` model tool pushes a workspace file into the current Feishu chat (≤30 MB). **Images preview inline**, **MP4/MOV (H.264/HEVC/MPEG-4) is sent as a playable video bubble** (with an ffmpeg-extracted cover when ffmpeg is available), and **Ogg/Opus as a voice bubble**; everything else — including a container/codec Feishu cannot play — stays a file |
 | Agent receives files | The `feishu_receive_file` model tool downloads an inbound Feishu file (video and voice included) into the **native DSH attachment store** on demand and returns its `fileHostPath` |
@@ -217,6 +219,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
     cardVideoMaxMb: 15           # 1–30 —— 视频内联大小上限 · largest video to inline
     cardAudioMaxMb: 15           # 1–30 —— 音频内联大小上限 · largest audio to inline
     deliverDocMaxMb: 30          # 1–30 —— 文档自动投递大小上限 · largest document to auto-send
+    surfaceContext: true         # 告诉模型用户在飞书（仅绑定飞书的会话；与 Web bundle 的 surfaceContext 同义）· tell the model the user is on Feishu
+    mirrorExternalTurns: true    # 把 Web GUI / 后台任务发起的回合也镜像到飞书（回显 + 收尾卡 + 交付）· mirror turns started outside Feishu
 ```
 
 **中文**
@@ -246,6 +250,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `cardVideoMaxMb` | `15` | **视频**自动内联的大小上限（MB），范围 1–30（飞书文件接口硬上限 30MB）。数字越大，卡片等上传的时间越长 |
 | `cardAudioMaxMb` | `15` | **音频**自动内联的大小上限（MB），范围 1–30。非 Opus 的音频还要先转码，另受 ffmpeg 是否可用影响 |
 | `deliverDocMaxMb` | `30` | `present` 声明的**文档**（pdf/doc/docx/ppt/pptx/xls/xlsx）自动发成飞书文件消息的大小上限（MB），范围 1–30；单轮最多自动发 8 个。更大的文档、超出的文档、以及所有其他文件都变成交付清单里**可点的一行**：点一下弹确认卡，确认后才发送 |
+| `surfaceContext` | `true` | 给**绑定到飞书**的会话加一句系统提示词：用户在飞书聊天里、打不开本地路径、`present` 落在回合末的交付卡上（形状与 Web bundle 的 `surfaceContext` 相同；未绑定飞书的会话完全不受影响） |
+| `mirrorExternalTurns` | `true` | 把**外部入口**发起的回合（Web GUI / 后台任务唤醒 / 定时任务）也镜像到绑定飞书聊天：回显用户消息、补发 Turn Complete 卡并投递 `present` 交付物 |
 
 **English**
 
@@ -274,6 +280,8 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `cardVideoMaxMb` | `15` | Largest **video** (MB) to inline automatically, 1-30 (Feishu's file API caps at 30 MB). A bigger number only costs wait: the upload runs on the card-write path |
 | `cardAudioMaxMb` | `15` | Largest **audio** (MB) to inline automatically, 1-30. Non-Opus audio is transcoded first, so ffmpeg has to be available |
 | `deliverDocMaxMb` | `30` | Largest **document** (pdf/doc/docx/ppt/pptx/xls/xlsx) declared through `present` (MB) that is pushed as a Feishu file message by itself, 1-30; at most 8 documents go out per turn. Larger or extra documents — and every other file — become a tappable row on the delivery list: one tap opens a confirmation, and only that sends |
+| `surfaceContext` | `true` | Add one system-prompt sentence to **Feishu-bound** sessions: the user is in a Feishu chat, cannot open local paths, and `present` surfaces on the end-of-turn delivery card (same shape as the Web bundle's `surfaceContext`; sessions not bound to Feishu are untouched) |
+| `mirrorExternalTurns` | `true` | Mirror turns started through another surface (Web GUI, background-job wake-up, schedule) into the bound Feishu chat: echo the user message, post the Turn Complete card and deliver `present` files |
 
 ---
 

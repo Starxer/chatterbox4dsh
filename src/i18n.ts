@@ -237,6 +237,14 @@ export interface Translations {
   turnCompleteTitle: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
+  /** Footnote on a Turn Complete card for a turn that did not start from a Feishu message. */
+  turnCompleteExternalTurn: string
+  /** Prefix of a user message mirrored from the Web GUI. */
+  externalMessageFromWebGui: string
+  /** Prefix of a user message mirrored from another non-Feishu surface. */
+  externalMessageFromOther: string
+  /** Attachment summary appended to a mirrored message (phase one does not upload them). */
+  externalMessageAttachments: (images: number, files: number) => string
   enterWhileBusy: string
   /** Plain-text notice sent when a busy-mode message is injected into the running turn. */
   busySteeredNotice: string
@@ -693,6 +701,15 @@ export const zh = {
   turnCompleteTitle: '✅ Turn 已完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
+  turnCompleteExternalTurn: '💬 本回合不是从飞书消息发起的（Web GUI / 后台任务），过程与交付一并同步到这里',
+  externalMessageFromWebGui: '💬 Web GUI：',
+  externalMessageFromOther: '💬 其它入口：',
+  externalMessageAttachments: (images, files) => {
+    const parts: string[] = []
+    if (images > 0) parts.push(`${images} 张图片`)
+    if (files > 0) parts.push(`${files} 个文件`)
+    return `（附件：${parts.join('、')}，未镜像到飞书）`
+  },
   enterWhileBusy: '忙碌时进入',
   busySteeredNotice: '🎯 已插入当前运行轮，模型会在下一步看到这条消息。',
   busyQueuedNotice: '📥 已排队，当前轮结束后会自动执行这条消息（排队期间可用 /stop 丢弃）。',
@@ -1118,6 +1135,15 @@ export const en: Translations = {
   turnCompleteTitle: '✅ Turn complete',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
+  turnCompleteExternalTurn: '💬 This turn did not start from a Feishu message (Web GUI / background job); its process and deliverables are mirrored here',
+  externalMessageFromWebGui: '💬 Web GUI: ',
+  externalMessageFromOther: '💬 Another surface: ',
+  externalMessageAttachments: (images, files) => {
+    const parts: string[] = []
+    if (images > 0) parts.push(`${images} image${images === 1 ? '' : 's'}`)
+    if (files > 0) parts.push(`${files} file${files === 1 ? '' : 's'}`)
+    return `(attachments: ${parts.join(', ')} — not mirrored into Feishu)`
+  },
   enterWhileBusy: 'Enter while busy',
   busySteeredNotice: '🎯 Injected into the running turn — the model will see it on the next step.',
   busyQueuedNotice: '📥 Queued — it will run after the current turn finishes (send /stop while waiting to discard it).',

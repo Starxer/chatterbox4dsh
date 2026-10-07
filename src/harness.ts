@@ -8,6 +8,7 @@ import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './con
 import type { ConversationMessage } from './conversation.ts'
 import type { DomainName } from './config.ts'
 import { TurnFailureError, displayFailure } from './turn-failure.ts'
+import { noteDirectFeishuDispatch, noteFeishuPrompt } from './feishu-turn-origin.ts'
 
 /** Events read from a cold session log when recovering its recorded preset.
  *  `agent-preset/selected` can only be appended while the session is blank, so
@@ -393,6 +394,9 @@ export class HarnessConversationService {
     // text instead.
     if (runBusyMode === 'steer' && running) {
       if (!(await this.dispatchPrompt(agent, 'steer', content))) {
+        // Direct injection carries no `rpcId`; remember the dispatch so the
+        // matching message event is still attributed to Feishu.
+        noteDirectFeishuDispatch(String(agent.session.id))
         agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
       }
       opts?.onBusy?.('steer')
@@ -410,6 +414,7 @@ export class HarnessConversationService {
     }
     const firstSeq = agent.session.seq
     if (!(await this.dispatchPrompt(agent, 'queue', content))) {
+      noteDirectFeishuDispatch(String(agent.session.id))
       agent.followup(createUserMessage({
         content,
         source: { kind: 'user' },
@@ -565,8 +570,15 @@ export class HarnessConversationService {
     // (`signal.throwIfAborted()` in the adapter), so the signal must be real —
     // passing `undefined` crashed with "...reading 'throwIfAborted')".
     const controller = new AbortController()
+    const requestId = randomUUID()
+    // Remember the id BEFORE dispatching: the session controller writes it
+    // verbatim into the message's `source.rpcId`, which is how
+    // `feishu-turn-origin.ts` recognises the message as one this plugin
+    // dispatched on Feishu's behalf. A failed dispatch only leaves an unused
+    // record that expires.
+    noteFeishuPrompt(String(agent.session.id), requestId)
     await this.deps.sessionController.prompt(
-      { sessionId: agent.session.id, requestId: randomUUID(), mode, content },
+      { sessionId: agent.session.id, requestId, mode, content },
       controller.signal,
     )
     return true
@@ -653,6 +665,7 @@ export class HarnessConversationService {
     for (const attachment of (message.imageBlocks ?? [])) content.push({ type: 'image', attachment })
     for (const file of (message.fileBlocks ?? [])) content.push({ type: 'file', attachment: file.attachment })
     if (!(await this.dispatchPrompt(agent, 'steer', content))) {
+      noteDirectFeishuDispatch(String(agent.session.id))
       ;(agent as unknown as AgentLike).steer(createUserMessage({
         content,
         source: { kind: 'user' },

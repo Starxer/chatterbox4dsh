@@ -79,6 +79,14 @@ export interface Config {
    * Feishu's own file ceiling, so a larger value could never take effect.
    */
   deliverDocMaxMb?: number
+  /**
+   * Append one sentence to the system prompt of a Feishu-bound session saying
+   * where the user is (same idea as the Web bundle's `surfaceContext`). Sessions
+   * not bound to Feishu get nothing.
+   */
+  surfaceContext?: boolean
+  /** Mirror turns started outside Feishu into the bound chat (echo + completion + delivery). */
+  mirrorExternalTurns?: boolean
 }
 
 /**
@@ -209,6 +217,13 @@ export interface SettingsConfig extends Required<Pick<Config,
   cardAudioMaxMb?: number
   /** Largest document (MB) `present` may deliver without asking. */
   deliverDocMaxMb?: number
+  /**
+   * Announce this Feishu chat as the surface the model is talking to (one
+   * system-prompt sentence; sessions not bound to Feishu are untouched).
+   */
+  surfaceContext?: boolean
+  /** Mirror turns started outside Feishu into the bound chat (echo + Turn Complete + delivery). */
+  mirrorExternalTurns?: boolean
 }
 
 export interface RuntimeConfig extends Omit<SettingsConfig, 'appSecretRef'> {
@@ -250,6 +265,8 @@ export const ConfigSchema = z.object({
   cardVideoMaxMb: z.number().min(CARD_MEDIA_MAX_MB.video.min).max(CARD_MEDIA_MAX_MB.video.max).default(CARD_MEDIA_MAX_MB.video.default).volatile().description('Largest video (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
   cardAudioMaxMb: z.number().min(CARD_MEDIA_MAX_MB.audio.min).max(CARD_MEDIA_MAX_MB.audio.max).default(CARD_MEDIA_MAX_MB.audio.default).volatile().description('Largest audio (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
   deliverDocMaxMb: z.number().min(DELIVER_DOC_MAX_MB.min).max(DELIVER_DOC_MAX_MB.max).default(DELIVER_DOC_MAX_MB.default).volatile().description('Largest document (pdf/doc/docx/ppt/pptx/xls/xlsx) the present tool may send as a file without asking. Larger documents and every other file become click-to-send rows with a confirmation. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
+  surfaceContext: z.boolean().default(true).volatile().description('Tell the model which surface the user is on: a session bridged to Feishu gets one system-prompt sentence (the user reads Feishu cards and cannot open local paths; present surfaces on the end-of-turn delivery card). The same idea as the Web bundle\'s surfaceContext switch; sessions not bridged to Feishu are unchanged.'),
+  mirrorExternalTurns: z.boolean().default(true).volatile().description('Mirror turns the user starts outside Feishu (Web GUI, background-job wake-up, schedule) into the bound Feishu chat: their user messages are echoed and their Turn Complete card plus present delivery are posted, exactly like a turn started from a Feishu message.'),
 })
 
 export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
@@ -286,6 +303,8 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     cardVideoMaxMb: clampCardMediaMaxMb('video', readField(config.cardVideoMaxMb)),
     cardAudioMaxMb: clampCardMediaMaxMb('audio', readField(config.cardAudioMaxMb)),
     deliverDocMaxMb: clampDeliverDocMaxMb(readField(config.deliverDocMaxMb)),
+    surfaceContext: readField(config.surfaceContext) ?? true,
+    mirrorExternalTurns: readField(config.mirrorExternalTurns) ?? true,
     ...(appSecret === undefined ? {} : { appSecret }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),

@@ -895,8 +895,17 @@ export function renderFooterCard(
   meta?: ReplyCardMeta,
   turnStats?: TurnStats,
   deliverRows?: readonly DeliverRow[],
+  /**
+   * Set for a turn that did NOT start from a Feishu message (Web GUI, background
+   * job, schedule): the card gets a first line saying so, because nothing else
+   * in the chat announced that turn (see `feishu-external-turns.ts`).
+   */
+  externalTurn = false,
 ): object | undefined {
   const elements: object[] = []
+  if (externalTurn) {
+    elements.push({ tag: 'markdown', content: t.turnCompleteExternalTurn, text_size: 'notation' })
+  }
 
   // Deliverables lead the card: they are the one part the user may want to act
   // on, so they must not sit underneath the metrics. A divider separates them
