@@ -67,13 +67,26 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 |---|---|---|---|---|
 | **按钮** | `button` | 点击按钮，触发 `cardAction` | ✅ 审批卡片 | 通用操作 |
 | **单选下拉** | `select_static` | 下拉单选，选项列表 | ✅ `/session` 会话选择 | `/model` 选模型、选 workspace、选 preset |
-| **多选下拉** | `multi_select_static` | 下拉多选 | ❌ 未使用 | 批量操作选项 |
-| **复选组** | `checker` | 勾选组（Card JSON 2.0 有官方文档，本插件未用过） | ❌ 未使用 | `/display` 交互卡片的一次性多开关提交（见 [`display-card-design.md`](./display-card-design.md)） |
+| **多选下拉** | `multi_select_static` | 下拉多选（`options` 字段） | ❌ 未使用 | 批量操作选项（若要把勾选组换成下拉，可改用它） |
+| **复选框** | `checker` | **单个复选框**（`text` + `checked`；**没有 `options` 字段**，见 2.2.1） | ✅ **多选题卡片**（2026-10-07：每个选项一个 `checker` + 一次「提交」） | 一次性提交多开关（`/display` 的备选方案，见 [`display-card-design.md`](./display-card-design.md)） |
 | **日期选择** | `date_picker` | 日期选择器 | ❌ 未使用 | — |
 | **时间选择** | `time_picker` | 时间选择器 | ❌ 未使用 | — |
 | **人员选择** | `select_person` | 选择人员 | ❌ 未使用 | 多人协作 |
 | **文本输入** | `input` | 文本输入框 | ✅ 问题卡片自定义回答、会话改名卡、新建工作区 | 带占位符的输入（替代部分斜杠命令） |
 | **溢出菜单** | `overflow` | 更多操作菜单 | ❌ 未使用 | 查看上下文/清空/导出 |
+
+#### 2.2.1 `checker` 实测：它是**单个复选框**，字段名只能靠「真发一次」判定（2026-10-07）
+
+多选题（`TODO.md` O24）要在飞书侧表达「勾选多项后一次提交」，候选控件是 `checker` 与 `multi_select_static`。`cardkit.card.create` 对两者都回 `code=0`，而伪造 tag `checker_bogus` 被拒（`10002 not support tag`）⇒ **tag 确实存在且被服务端校验**；但**字段名判不出来**（同 §2.3.2 的口径：create 静默容忍未知字段）。
+
+**判字段的另一个办法（本次发现，比 create 强得多）**：走真正的发送路径 `im.v1.message.create`。它**严格校验**卡片 JSON，而且**被拒的卡根本不会发出去**（聊天里不留痕迹）⇒「真发一次」就是一个**免费的字段探针**：
+
+| 尝试 | 结果 |
+|---|---|
+| `checker` + `options:[{value,text,checked}]` | `230099` / ext `200621`：**`unknown property, property: options, path: … (tag: checker)`** ⇒ `checker` **没有** `options` 字段 |
+| `checker` + `text` + `checked`（一个选项一个 checker，各自 `name`） | **发送成功** ⇒ 这才是它的形状 |
+
+**结论**：`checker` 是**单个复选框**（`text` + `checked`），**多选 = 每个选项一个 `checker` 元素**（`name` 各异）；提交时 `form_value` 是 **`{name: true/false}`**——真机点击三个复选框读回 `{"c1":true,"c2":true,"c3":true}`。**一次提交带回全部勾选**，过程中完全没有卡片重绘，天然避开「带按钮的卡改 2–3 次后回调失效」（关键坑 11）。探针脚本：`~/.dsh/probe-checker-card.py`（带 `--send` 时真发一张到绑定聊天）。
 
 ### 2.3 容器/布局组件（Container）
 
@@ -265,6 +278,7 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 |---|---|---|---|
 | `present` 交付清单可点行 + 确认卡 | `interactive_container` / `button` | ✅ **已实现**（2026-10-07，TODO O25） | Turn Complete 卡的交付清单里，「其他文件」与超限文档是整行可点的 `interactive_container`（回调只带不透明 token，**不带路径**）→ 弹确认卡 → `button`「📤 发送」才真正投递；媒体仍走 hydrator 卡内内联，文档白名单自动发原生文件消息。整张 Turn Complete 卡**只发不改**，所以不受「带按钮的卡就地更新 2–3 次后回调失效」限制 |
 | `/new` 工作区选择 | `interactive_container` | ✅ 已实现 | 最终用可点击整行（非 `select_static`），另含目录浏览器 |
+| `ask_user_question` 单选题选项 | `interactive_container` | ✅ **已实现**（2026-10-07，TODO O24） | 每个选项是**整行可点**（与工作区选择面板、交付清单同款：`width:fill` + `has_border:false` + `padding:4px 12px`），点选一行会**立刻把问题卡冻结成无交互灰卡**（`⏳ 已选择 …`）并**弹出确认卡**；确认 → **结果另发一张新卡**、原卡变灰「已提交」；返回 → 原卡变灰「已作废」+ 新发一张可交互的问题卡（两条出口终态一致）。（`📋 确认提交`：「✅ 确认提交」/「↩️ 返回」）——整行命中面积大，防误触；确认后问题卡与确认卡各写一次。⚠️ **该组件有个实测到的客户端行为**：一张卡上的可点行**被点过一次后，这张卡后续的行点击不再投递回调**（同一张卡的普通 `button` 不受影响）⇒ 「返回」必须**重发一张新问题卡**并把旧卡作废，且回调要按 `messageId` 认当前卡（否则旧卡还能再开确认卡）。选项的标签与描述都写在行内（描述用 `text_size: notation` 的下行），**没有任何选项按钮**。**多选题不用可点行**：每次勾选都重绘会撞「带按钮的卡就地更新 2–3 次后回调失效」（坑 11），改用 `checker` 复选框 + 一次提交；**复选框自己带标签 + 描述**（`checker.text` 的 `lark_md`：加粗标签 + 换行描述），正文不再重复列一遍选项 |
 | Step 卡片多列布局 | `column_set` | ⚠️ 部分 | `column_set` 已用于按钮行 / 目录浏览器布局；step 卡本身仍单列 |
 | 溢出菜单 | `overflow` | 🔲 未实现 | 卡片右上角「更多操作」：查看 status/清空上下文/导出 |
 | `/status` 卡片增强 | `table` | 🔲 未实现 | 目前用 markdown 表格，未用 `table` 组件 |

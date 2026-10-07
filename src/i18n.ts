@@ -469,6 +469,27 @@ export interface Translations {
   questionCustomPlaceholder: string
   questionSubmitCustom: string
   questionSkipButton: string
+  /** Hint above a multi-select question's checkboxes. */
+  questionMultiHint: string
+  /** Submit button of a multi-select question (one submission for all checks). */
+  questionSubmitButton: string
+  /** Hint above a single-select question's clickable option rows. */
+  questionTapHint: string
+  /** Confirmation card shown after a clickable single-select row is tapped. */
+  questionConfirmTitle: string
+  questionConfirmBody: (label: string) => string
+  questionConfirmNote: string
+  questionConfirmSend: string
+  questionConfirmBack: string
+  questionConfirmBacked: string
+  questionConfirmDone: (labels: string) => string
+  /** Stand-in card left behind when a spent question card is re-sent fresh. */
+  questionCardRetiredTitle: string
+  questionCardRetired: string
+  /** The question card while it waits on the confirmation card. */
+  questionFrozen: (label: string) => string
+  /** Stand-in card left behind when the result was posted as a new card. */
+  questionCardSubmitted: string
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: string
   jobPanelSummary: (running: number, total: number) => string
@@ -882,6 +903,20 @@ export const zh = {
   questionCustomPlaceholder: '在此输入...',
   questionSubmitCustom: '✏️ 提交自定义回答',
   questionSkipButton: '⏭️ 跳过本题',
+  questionMultiHint: '可勾选多个，选好后按「提交」：',
+  questionSubmitButton: '✅ 提交',
+  questionTapHint: '点下面任意一项即可作答：',
+  questionConfirmTitle: '📋 确认提交',
+  questionConfirmBody: label => `确认把 ${label} 作为本题答案提交？`,
+  questionConfirmNote: '点错了就按「返回」——问题卡片仍然可以继续选别的。',
+  questionConfirmSend: '✅ 确认提交',
+  questionConfirmBack: '↩️ 返回',
+  questionConfirmBacked: '已返回。问题卡片仍然可以作答。',
+  questionConfirmDone: labels => `✅ 已提交：${labels}`,
+  questionCardRetiredTitle: '已作废',
+  questionCardRetired: '这张卡片已用过一次，飞书不再投递它上面的选项点击。**请使用下方新发的同一张问题卡继续作答。**',
+  questionFrozen: label => `⏳ 已选择 ${label}，请在下方确认卡上确认或返回。`,
+  questionCardSubmitted: '本题**已提交**，结果见下方新发的卡片。',
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: '🧩 后台任务',
   jobPanelSummary: (running, total) => `运行中 ${running} · 共 ${total} 个`,
@@ -1294,6 +1329,20 @@ export const en: Translations = {
   questionCustomPlaceholder: 'Type here…',
   questionSubmitCustom: '✏️ Submit custom answer',
   questionSkipButton: '⏭️ Skip this question',
+  questionMultiHint: 'Select one or more, then press Submit:',
+  questionSubmitButton: '✅ Submit',
+  questionTapHint: 'Tap an option to answer:',
+  questionConfirmTitle: '📋 Confirm answer',
+  questionConfirmBody: label => `Submit ${label} as the answer to this question?`,
+  questionConfirmNote: 'Tapped by mistake? Press Back — the question card stays open.',
+  questionConfirmSend: '✅ Submit answer',
+  questionConfirmBack: '↩️ Back',
+  questionConfirmBacked: 'Back — the question card is still open.',
+  questionConfirmDone: labels => `✅ Submitted: ${labels}`,
+  questionCardRetiredTitle: 'Superseded',
+  questionCardRetired: 'This card already delivered one tap, so Feishu no longer reports taps on its option rows. **Please answer on the fresh copy of the question below.**',
+  questionFrozen: label => `⏳ Selected ${label} — use the confirmation card below to submit or go back.`,
+  questionCardSubmitted: 'This question was **submitted** — the result is in the new card below.',
 
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: '🧩 Background jobs',

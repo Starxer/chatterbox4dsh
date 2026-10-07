@@ -54,6 +54,12 @@ interface PendingCard {
   resolve: (answer: AskUserQuestionAnswer | undefined) => void
   /** Message ID of the sent card, used to update it after selection. */
   cardMessageId?: string
+  /** Where the question card was posted, so follow-up cards land in the same
+   *  topic without ever inferring it from the group (hard rule 3 / pitfall 31). */
+  chat: ConversationMessage
+  /** Single-select row tap awaiting a confirmation card (one open at a time).
+   *  `| undefined` is explicit because `exactOptionalPropertyTypes` is on. */
+  confirm?: { label: string; messageId?: string; sending?: boolean } | undefined
 }
 
 /**
@@ -122,10 +128,87 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     }
   }
 
+  /** Update a card, logging (never throwing) when the patch fails. */
+  const updateCardQuiet = async (messageId: string, card: object): Promise<void> => {
+    await channel.updateCard(messageId, card).catch((error: unknown) => {
+      logger.warn(`dsh-feishu: failed to update question card: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /** Post a card into the same chat/topic the question card went to. */
+  const postInChat = async (chat: ConversationMessage, card: object): Promise<string | undefined> => {
+    const result = await channel.send(chat.chatId, { card }, chat.threadId !== undefined
+      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
+      : {})
+    return (result as { messageId?: string })?.messageId
+  }
+
+  /**
+   * Finish a single-select answer: mark the question card settled, close the
+   * confirmation card, and resolve the pending promise. Each card is written at
+   * most once here (pitfall 11).
+   */
+  const submitAnswer = async (pending: PendingCard, labels: readonly string[]): Promise<void> => {
+    const t = getTranslations()
+    const questionCardId = pending.cardMessageId
+    // The result is posted as a NEW card and the (frozen) question card turns
+    // into a grey pointer to it — the same shape as "Back", so the end state of
+    // either branch is identical (operator's 2026-10-07 decision).
+    let posted: string | undefined
+    try {
+      posted = await postInChat(pending.chat, renderSettledQuestionCard(pending.question, labels, t))
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: failed to post the answer result card: ${reason}`)
+    }
+    if (questionCardId !== undefined) {
+      // Without the new card the result has to live somewhere: fall back to
+      // writing it into the question card itself.
+      await updateCardQuiet(questionCardId, posted === undefined
+        ? renderSettledQuestionCard(pending.question, labels, t)
+        : renderSubmittedQuestionCard(t))
+    }
+    const confirmId = pending.confirm?.messageId
+    pending.confirm = undefined
+    if (confirmId !== undefined) await updateCardQuiet(confirmId, renderConfirmDoneCard(labels, t))
+    pending.resolve(settlePending(pending, labels, undefined))
+  }
+
+  /**
+   * A card that already delivered one tap may stop sending callbacks for its
+   * clickable rows (the client keeps the tapped row "consumed"; its plain
+   * buttons still work — measured 2026-10-07 15:37–15:38: the row tap after
+   * Back never reached the plugin, while Skip on the same card did). So a spent
+   * question card is replaced instead of patched: every re-pick happens on a
+   * freshly sent card, and callbacks from any other card are ignored.
+   */
+  const isCurrentQuestionCard = (pending: PendingCard, messageId: string | undefined): boolean =>
+    messageId === undefined || pending.cardMessageId === undefined || messageId === pending.cardMessageId
+
+  const isCurrentConfirmCard = (pending: PendingCard, messageId: string | undefined): boolean =>
+    messageId === undefined || pending.confirm?.messageId === undefined || messageId === pending.confirm.messageId
+
+  /** Post a fresh, fully interactive question card for the same pending question. */
+  const reopenQuestionCard = async (pending: PendingCard): Promise<string | undefined> => {
+    const options = pending.question.options ?? []
+    const card = renderQuestionCard(
+      pending.question,
+      options,
+      pending.pendingId,
+      getTranslations(),
+      pending.question.multiSelect === true && options.length > 0,
+    )
+    return postInChat(pending.chat, card)
+  }
+
+  /** The message id of the confirmation card the tap came from. */
+  const confirmMessageId = (pending: PendingCard, evt: CardActionLike): string | undefined =>
+    evt.messageId ?? pending.confirm?.messageId
+
   const onCardAction = async (evt: CardActionLike): Promise<void> => {
     const action = evt.action
     let raw = action?.value
-    let parsed: { pendingId?: unknown; questionId?: unknown; selected?: unknown; custom?: unknown; type?: unknown }
+    let parsed: { pendingId?: unknown; questionId?: unknown; selected?: unknown; custom?: unknown; type?: unknown; probe?: unknown }
     if (typeof raw === 'string') {
       try {
         let result = JSON.parse(raw)
@@ -139,13 +222,46 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     } else {
       return
     }
+    const formValue = (evt.raw?.action?.form_value ?? {}) as Record<string, unknown>
+    if (typeof parsed.probe === 'string') {
+      // Probe cards (see `~/.dsh/probe-checker-card.py`) carry no pendingId.
+      // Logging the raw form_value is the only way to learn a control's
+      // submission shape: `cardkit.card.create` validates tags but not fields.
+      console.log(`dsh-feishu: [q] probe=${parsed.probe} form_value=${JSON.stringify(formValue)}`)
+      return
+    }
     const pendingId = typeof parsed.pendingId === 'string' ? parsed.pendingId : ''
     const questionId = typeof parsed.questionId === 'string' ? parsed.questionId : ''
     if (pendingId === '' || questionId === '') return
     const pending = pendingCards.get(pendingId)
     if (pending === undefined) return
 
-    const formValue = (evt.raw?.action?.form_value ?? {}) as Record<string, unknown>
+    // Confirmations come from the confirmation card; everything else comes from
+    // the current question card. Taps on a retired card are ignored.
+    const fromConfirmCard = parsed.type === 'answer-confirm' || parsed.type === 'answer-back'
+    if (fromConfirmCard) {
+      if (!isCurrentConfirmCard(pending, evt.messageId)) return
+    } else if (!isCurrentQuestionCard(pending, evt.messageId)) {
+      return
+    }
+
+    if (parsed.type === 'multi-submit') {
+      // One submission for every checked box (`checker` elements in a form).
+      console.log(`dsh-feishu: [q] multi-submit form_value=${JSON.stringify(formValue)}`)
+      const selected = readMultiSelection(formValue, pending.question.options ?? [])
+      if (selected.length === 0) {
+        console.log('dsh-feishu: [q] multi-submit with nothing checked')
+        return
+      }
+      if (pending.cardMessageId !== undefined) {
+        const settledCard = renderSettledQuestionCard(pending.question, selected, getTranslations())
+        await channel.updateCard(pending.cardMessageId, settledCard).catch((error: unknown) => {
+          logger.warn(`dsh-feishu: failed to update question card: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      }
+      pending.resolve(settlePending(pending, selected, undefined))
+      return
+    }
 
     if (parsed.type === 'skip') {
       const answer = settlePending(pending, [], undefined)
@@ -156,6 +272,82 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
         })
       }
       pending.resolve(answer)
+      return
+    }
+
+    if (parsed.type === 'answer-open') {
+      // A clickable row answers on the first tap, so a mis-tap must be
+      // recoverable: show what would be submitted and let the user confirm.
+      const picked = Array.isArray(parsed.selected)
+        ? parsed.selected.filter((item: unknown): item is string => typeof item === 'string')
+        : []
+      const label = picked[0]
+      if (label === undefined) return
+      const option = (pending.question.options ?? []).find(candidate => candidate.label === label)
+      if (option === undefined) return
+      if (pending.confirm !== undefined && pending.confirm.label === label) return
+      const previous = pending.confirm
+      pending.confirm = { label, sending: true }
+      if (previous?.messageId !== undefined) {
+        await updateCardQuiet(previous.messageId, renderConfirmBackCard(getTranslations()))
+      }
+      try {
+        const t = getTranslations()
+        const messageId = await postInChat(pending.chat, renderConfirmAnswerCard(pending.question, option, pendingId, t))
+        if (pending.confirm?.label === label) {
+          pending.confirm = { label, ...(messageId !== undefined ? { messageId } : {}) }
+        }
+        // Freeze the question card: a spent card keeps looking answerable, and
+        // the client silently swallows any further row tap on it.
+        if (pending.cardMessageId !== undefined) {
+          await updateCardQuiet(pending.cardMessageId, renderFrozenQuestionCard(pending.question, option, t))
+        }
+      } catch (error: unknown) {
+        // No confirmation card means the tap would be a dead end; answer
+        // straight away instead (the behaviour before confirmations existed).
+        const reason = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: failed to post the answer confirmation card, submitting directly: ${reason}`)
+        pending.confirm = undefined
+        await submitAnswer(pending, [label])
+      }
+      return
+    }
+
+    if (parsed.type === 'answer-confirm') {
+      const picked = Array.isArray(parsed.selected)
+        ? parsed.selected.filter((item: unknown): item is string => typeof item === 'string')
+        : []
+      if (picked.length === 0) return
+      await submitAnswer(pending, picked)
+      return
+    }
+
+    if (parsed.type === 'answer-back') {
+      // The spent question card can no longer deliver row taps, so "Back" hands
+      // the user a NEW question card and retires the old one as a grey notice
+      // (pitfall 11's rule: one step, one card).
+      const t = getTranslations()
+      const spentMessageId = pending.cardMessageId
+      const confirmId = confirmMessageId(pending, evt)
+      let reopened: string | undefined
+      try {
+        reopened = await reopenQuestionCard(pending)
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: failed to reopen the question card after Back: ${reason}`)
+      }
+      if (reopened === undefined) {
+        // Nothing to pick on: keep the confirmation card actionable so the
+        // tapped answer is still reachable.
+        logger.warn('dsh-feishu: question card could not be reopened; keeping the confirmation card open')
+        return
+      }
+      pending.cardMessageId = reopened
+      pending.confirm = undefined
+      if (confirmId !== undefined) await updateCardQuiet(confirmId, renderConfirmBackCard(t))
+      if (spentMessageId !== undefined && spentMessageId !== reopened) {
+        await updateCardQuiet(spentMessageId, renderRetiredQuestionCard(t))
+      }
       return
     }
 
@@ -353,7 +545,6 @@ async function presentOneQuestion(
 ): Promise<AskUserQuestionAnswerItem | undefined> {
   const pendingId = `feishu-q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const options = question.options ?? []
-  const card = renderQuestionCard(question, options, pendingId, t ?? translationsFor('zh'))
   // The cardAction -> deferred bridge carries the whole `{ answers: [item] }`
   // settle value; extract the single item here so the batch loop can accumulate.
   const deferred = new Promise<AskUserQuestionAnswerItem | undefined>((resolve) => {
@@ -362,6 +553,7 @@ async function presentOneQuestion(
       question,
       sessionId: '',
       abortController,
+      chat,
       resolve: (answer) => resolve(answer?.answers?.[0]),
     }
     pendingCards.set(pendingId, pending)
@@ -374,6 +566,15 @@ async function presentOneQuestion(
     if (pending === undefined) return
     pendingCards.delete(pendingId)
     pending.resolve(undefined)
+    const confirmId = pending.confirm?.messageId
+    pending.confirm = undefined
+    if (confirmId !== undefined && cancelCard !== undefined) {
+      // An open confirmation card answers a question that is now settled or
+      // superseded — it must not stay looking actionable.
+      void channel.updateCard(confirmId, cancelCard(question)).catch((error: unknown) => {
+        logger?.warn(`dsh-feishu: failed to retire cancelled confirmation card: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
     if (pending.cardMessageId !== undefined && cancelCard !== undefined) {
       void channel.updateCard(pending.cardMessageId, cancelCard(question)).catch((error: unknown) => {
         logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
@@ -382,9 +583,10 @@ async function presentOneQuestion(
   }
   if (abortController.signal.aborted) onCancel()
   else abortController.signal.addEventListener('abort', onCancel, { once: true })
-  try {
+  const translations = t ?? translationsFor('zh')
+  const sendQuestionCard = async (payload: object): Promise<void> => {
     console.log(`dsh-feishu: [q] sending card to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
-    const result = await channel.send(chat.chatId, { card }, chat.threadId !== undefined
+    const result = await channel.send(chat.chatId, { card: payload }, chat.threadId !== undefined
       ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
       : {})
     const mid = (result as { messageId?: string })?.messageId
@@ -399,17 +601,141 @@ async function presentOneQuestion(
         logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
+  }
+  const wantsMulti = question.multiSelect === true && options.length > 0
+  let card = renderQuestionCard(question, options, pendingId, translations, wantsMulti)
+  try {
+    await sendQuestionCard(card)
   } catch (error: unknown) {
-    console.log(`dsh-feishu: [q] card send failed: ${error instanceof Error ? error.message : String(error)}`)
-    logger?.warn(`dsh-feishu: [q] card send failed: ${error instanceof Error ? error.message : String(error)}`)
-    pendingCards.delete(pendingId)
-    return undefined
+    const reason = error instanceof Error ? error.message : String(error)
+    if (!wantsMulti || abortController.signal.aborted) {
+      console.log(`dsh-feishu: [q] card send failed: ${reason}`)
+      logger?.warn(`dsh-feishu: [q] card send failed: ${reason}`)
+      pendingCards.delete(pendingId)
+      return undefined
+    }
+    // A tenant/client that rejects the `checker` control must not cost the user
+    // the question at all: retry once as a single-pick card (index buttons).
+    logger?.warn(`dsh-feishu: [q] multi-select card rejected, retrying as single-pick: ${reason}`)
+    card = renderQuestionCard(question, options, pendingId, translations, false)
+    try {
+      await sendQuestionCard(card)
+    } catch (retryError: unknown) {
+      const retryReason = retryError instanceof Error ? retryError.message : String(retryError)
+      console.log(`dsh-feishu: [q] card send failed: ${retryReason}`)
+      logger?.warn(`dsh-feishu: [q] card send failed: ${retryReason}`)
+      pendingCards.delete(pendingId)
+      return undefined
+    }
   }
   try {
     return await deferred
   } finally {
     abortController.signal.removeEventListener('abort', onCancel)
   }
+}
+
+/**
+ * Form field names of the multi-select controls. Feishu's `checker` is a
+ * SINGLE checkbox (`text` + `checked`, and **no `options` field** — sending one
+ * is rejected by `im.v1.message.create` with `200621 unknown property`), so a
+ * multi-select question renders one checker per option, named `opt_<index>`.
+ * `MULTI_SELECT_FIELD` covers a list-shaped control (`multi_select_static`)
+ * should this ever be switched over.
+ */
+const MULTI_SELECT_PREFIX = 'opt_'
+const MULTI_SELECT_FIELD = 'selections'
+
+/** Truthy values a checkbox may report, across Feishu payload shapes. */
+function isChecked(value: unknown): boolean {
+  if (value === true || value === 1) return true
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase()
+    return text !== '' && text !== 'false' && text !== '0' && text !== 'off'
+  }
+  return false
+}
+
+/**
+ * Map a multi-select form submission back to option labels: either a list under
+ * `selections`, or one `opt_<index>` checkbox per option (the shape Feishu
+ * posts for `checker` elements).
+ */
+function readMultiSelection(
+  formValue: Record<string, unknown>,
+  options: readonly AskUserQuestionOption[],
+): string[] {
+  const listed = readFormSelections(formValue[MULTI_SELECT_FIELD])
+  if (listed.length > 0) return listed
+  const picked: string[] = []
+  options.forEach((option, index) => {
+    // Accept the index key and the label key: the exact name is confirmed by
+    // the `[q] multi-submit` log line on the first live submission.
+    if (isChecked(formValue[`${MULTI_SELECT_PREFIX}${index}`]) || isChecked(formValue[option.label])) {
+      picked.push(option.label)
+    }
+  })
+  return picked
+}
+
+/** Collapse a model-authored description to one line (they may contain newlines). */
+function inlineText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Numbered option list shared by the question card body and the settled card.
+ * Upstream (and the WebUI) render `index + label + description`; Feishu collapses
+ * leading whitespace, so the description rides on the same line after a `·`.
+ */
+function optionLines(
+  options: readonly AskUserQuestionOption[],
+  marks?: ReadonlySet<string>,
+  selectedSuffix?: string,
+): string[] {
+  return options.map((option, index) => {
+    const picked = marks?.has(option.label) === true
+    const prefix = marks === undefined ? '' : picked ? '✅ ' : '⬜ '
+    const description = option.description !== undefined && option.description !== ''
+      ? ` · ${inlineText(option.description)}`
+      : ''
+    const suffix = picked && selectedSuffix !== undefined && selectedSuffix !== ''
+      ? ` — *${selectedSuffix}*`
+      : ''
+    return `${index + 1}. ${prefix}**${option.label}**${description}${suffix}`
+  })
+}
+
+/**
+ * Read a multi-value form field. Feishu hands form values back as an array, a
+ * JSON string or a plain string depending on the control, so accept all three
+ * instead of losing a `checker` submission to a shape we guessed wrong.
+ */
+function readFormSelections(value: unknown): string[] {
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (text === '') return []
+    if (text.startsWith('[')) {
+      try {
+        const parsed: unknown = JSON.parse(text)
+        if (Array.isArray(parsed)) {
+          return parsed.filter((item): item is string => typeof item === 'string')
+        }
+      } catch {
+        // Not JSON after all — fall through and treat it as one label.
+      }
+    }
+    return [text]
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string')
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return readFormSelections(record.selected ?? record.value ?? record.checked)
+  }
+  return []
 }
 
 /**
@@ -438,13 +764,7 @@ function renderSettledQuestionCard(
     // Check if the answer is a custom text (prefixed with ✏️) or skip (prefixed with ⏭️).
     const customAnswer = selected.find(s => s.startsWith('✏️ '))
     const skipped = selected.some(s => s.startsWith('⏭️ '))
-    for (const option of options) {
-      if (selectedSet.has(option.label)) {
-        mdParts.push(`✅ **${option.label}** — *${t.questionSelectedSuffix}*`)
-      } else {
-        mdParts.push(`⬜ ${option.label}`)
-      }
-    }
+    mdParts.push(...optionLines(options, selectedSet, t.questionSelectedSuffix))
     if (customAnswer !== undefined) {
       mdParts.push(`\n✅ **${t.questionCustomAnswerLabel}** ${customAnswer.slice(3)}`)
     } else if (skipped) {
@@ -474,6 +794,108 @@ function renderSettledQuestionCard(
 }
 
 /**
+ * Confirmation card for a single-select row tap. A clickable row answers on the
+ * first tap, so a mis-tap has to be recoverable BEFORE the answer leaves the
+ * chat: this card shows exactly what would be submitted, and only its
+ * `answer-confirm` callback settles the question. It carries buttons, so it is
+ * written at most once — a different pick gets a NEW card and the previous one
+ * is retired as a no-button card (pitfall 11).
+ */
+function renderConfirmAnswerCard(
+  question: AskUserQuestionItem,
+  option: AskUserQuestionOption,
+  pendingId: string,
+  t: Translations,
+): object {
+  const elements: object[] = [{ tag: 'markdown', content: t.questionConfirmBody(`**${option.label}**`) }]
+  if (option.description !== undefined && option.description !== '') {
+    elements.push({ tag: 'markdown', content: inlineText(option.description), text_size: 'notation' })
+  }
+  elements.push({ tag: 'markdown', content: t.questionConfirmNote, text_size: 'notation' })
+  elements.push({ tag: 'hr' })
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.questionConfirmSend },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, selected: [option.label], type: 'answer-confirm' } }],
+  })
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: t.questionConfirmBack },
+    type: 'default',
+    behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, type: 'answer-back' } }],
+  })
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionConfirmTitle }, template: 'orange' },
+    body: { elements },
+  }
+}
+
+/**
+ * The question card once a row has been tapped and its answer is waiting on the
+ * confirmation card: the rows are gone, so the card cannot take another pick
+ * (which the client would swallow anyway) and the user can see the tap landed.
+ */
+function renderFrozenQuestionCard(question: AskUserQuestionItem, option: AskUserQuestionOption, t: Translations): object {
+  const elements: object[] = [{ tag: 'markdown', content: t.questionFrozen(`**${option.label}**`) }]
+  if (option.description !== undefined && option.description !== '') {
+    elements.push({ tag: 'markdown', content: inlineText(option.description), text_size: 'notation' })
+  }
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: question.header ?? t.questionDefaultTitle }, template: 'grey' },
+    body: { elements },
+  }
+}
+
+/**
+ * The grey notice left where a spent question card was: the client stops
+ * delivering row taps from a card that already took one, so the live question
+ * is re-sent as a new message and this one says where to look.
+ */
+function renderRetiredQuestionCard(t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionCardRetiredTitle }, template: 'grey' },
+    body: { elements: [{ tag: 'markdown', content: t.questionCardRetired }] },
+  }
+}
+
+/** Grey notice left where the question card was once its answer was submitted. */
+function renderSubmittedQuestionCard(t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionCardRetiredTitle }, template: 'grey' },
+    body: { elements: [{ tag: 'markdown', content: t.questionCardSubmitted }] },
+  }
+}
+
+/** A retired confirmation card (the pick was replaced, or the user pressed Back). */
+function renderConfirmBackCard(t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionConfirmTitle }, template: 'grey' },
+    body: { elements: [{ tag: 'markdown', content: t.questionConfirmBacked }] },
+  }
+}
+
+/** A confirmation card whose answer was submitted (no buttons left). */
+function renderConfirmDoneCard(labels: readonly string[], t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionConfirmTitle }, template: 'turquoise' },
+    body: { elements: [{ tag: 'markdown', content: t.questionConfirmDone(labels.join('、')) }] },
+  }
+}
+
+/**
  * Build a Feishu interactive-card payload for a single question. The schema
  * follows the v2 card template (`config/schema`): `header.title`, `body`
  * blocks (markdown + actions), `config`: { wide_screen_mode: true }.
@@ -483,6 +905,7 @@ function renderQuestionCard(
   options: readonly AskUserQuestionOption[],
   pendingId: string,
   t: Translations,
+  multiSelect = question.multiSelect === true,
 ): object {
   const mdParts: string[] = []
   if (question.header !== undefined && question.header !== '') {
@@ -493,41 +916,84 @@ function renderQuestionCard(
     mdParts.push(question.detail)
   }
   const body: object[] = [{ tag: 'markdown', content: mdParts.join('\n') }]
-  const multiSelect = question.multiSelect === true
-  // Option buttons go directly in body.elements (outside the form).
-  // They trigger card action independently without form submission.
-  // In Card JSON 2.0, buttons use behaviors instead of value.
-  if (options.length > 0) {
-    for (const option of options.slice(0, 6)) {
+  if (multiSelect && options.length > 0) {
+    // Multi-select: the checkboxes ARE the option list — each carries its own
+    // `1. **label**` plus the description on the next line, so the card no
+    // longer spells the same options out twice (operator feedback 2026-10-07).
+    // `checker.text` accepts `lark_md` (verified against the send validator).
+    body.push({ tag: 'markdown', content: t.questionMultiHint })
+  } else if (options.length > 0) {
+    // Single-select: each option IS the pick target, a whole clickable row —
+    // the same `interactive_container` shape the workspace picker and the
+    // delivery list use, so one tap answers (no index→label mapping, no
+    // button row). Text lives in the row, so the body needs no option list.
+    body.push({ tag: 'markdown', content: t.questionTapHint, text_size: 'notation' })
+    options.forEach((option, index) => {
+      const lines: object[] = [{ tag: 'markdown', content: `${index + 1}. **${option.label}**` }]
+      if (option.description !== undefined && option.description !== '') {
+        lines.push({ tag: 'markdown', content: inlineText(option.description), text_size: 'notation' })
+      }
       body.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: option.label },
-        type: multiSelect ? 'default' : 'primary',
-        behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, selected: [option.label] } }],
+        tag: 'interactive_container',
+        width: 'fill',
+        has_border: false,
+        padding: '4px 12px 4px 12px',
+        behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, selected: [option.label], type: 'answer-open' } }],
+        elements: lines,
       })
-    }
+    })
+  }
+  if (multiSelect && options.length > 0) {
+    // One `checker` + one submit: the client collects every check locally and
+    // the callback arrives ONCE, so this card is never written twice — the fix
+    // for pitfall 11 (a card with buttons stops delivering callbacks after 2-3
+    // in-place updates) and the only way to express multi-select at all.
+    body.push({
+      tag: 'form',
+      name: `answer_form_${pendingId}`,
+      elements: [
+        // One `checker` per option (Feishu's checker is a single checkbox),
+        // each carrying its label AND its description.
+        ...options.map((option, index) => ({
+          tag: 'checker',
+          name: `${MULTI_SELECT_PREFIX}${index}`,
+          text: {
+            tag: 'lark_md',
+            content: option.description !== undefined && option.description !== ''
+              ? `${index + 1}. **${option.label}**\n${inlineText(option.description)}`
+              : `${index + 1}. **${option.label}**`,
+          },
+          checked: false,
+        })),
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: t.questionSubmitButton },
+          type: 'primary',
+          name: 'submit_multi',
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, type: 'multi-submit' } }],
+        },
+      ],
+    })
   }
   // Custom input section: form container with input + submit button.
   // The form collects custom_text from the input when submit is clicked.
   // Form buttons use form_action_type + name instead of behaviors.
   body.push({ tag: 'hr' })
-  const hint = options.length > 0
-    ? '以上选项都不满意？在下方输入你的自定义回答：'
-    : '请输入你的回答：'
   body.push({
     tag: 'form',
     name: `custom_form_${pendingId}`,
     elements: [
-      { tag: 'markdown', content: hint },
+      { tag: 'markdown', content: t.questionCustomHint(options.length > 0) },
       {
         tag: 'input',
         name: 'custom_text',
-        placeholder: { tag: 'plain_text', content: '在此输入...' },
+        placeholder: { tag: 'plain_text', content: t.questionCustomPlaceholder },
         max_length: 500,
       },
       {
         tag: 'button',
-        text: { tag: 'plain_text', content: '✏️ 提交自定义回答' },
+        text: { tag: 'plain_text', content: t.questionSubmitCustom },
         type: 'primary',
         name: 'submit_custom',
         form_action_type: 'submit',
@@ -538,7 +1004,7 @@ function renderQuestionCard(
   // Skip button at the bottom.
   body.push({
     tag: 'button',
-    text: { tag: 'plain_text', content: '⏭️ 跳过本题' },
+    text: { tag: 'plain_text', content: t.questionSkipButton },
     type: 'default',
     behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, selected: [], type: 'skip' } }],
   })
