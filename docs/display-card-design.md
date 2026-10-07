@@ -56,6 +56,12 @@
   - 交互语义从「点开关」变成「勾选 + 保存」，多一步；
   - 本机无法直接抓取飞书文档（`open.feishu.cn` 解析到非公网地址），`checker` 的字段名（`checked` / `options` / `initial_selected`？）**尚未逐字段核实**，实现前要用一张试验卡确认。
 
+### 方案 B 的「待验证」项已在 2026-10-07 结清
+
+`checker` 的字段与提交形状后来用**真发一次的字段探针**核实完毕（真正的发送路径 `im.v1.message.create` **严格校验**、且被拒的卡根本不会发出去 —— 即关键坑 54，比 `cardkit.card.create` 强得多，后者静默容忍未知字段）：`checker` 是**单个复选框**（`text` + `checked`），**没有 `options` 字段**（塞 `options` 会被 `200621 unknown property` 拒收），所以**多选 = 每个选项一个 `checker`**（`name` 各异），真机勾选三项提交读回 `form_value = {"c1":true,"c2":true,"c3":true}`。
+
+问题卡片的多选题已经按这个形态落地并真机验证（见 [`feishu-capabilities.md` §2.2.1](./feishu-capabilities.md) 与 `TODO.md` O24）。⇒ 方案 B 现在**只剩交互取舍**（比「点开关」多一步「保存」；且 `checker` 的语义是「开/关」而不是「多选」），**技术风险已归零**。`/display` 本轮仍按方案 A 实现（见 §六），暂时不换。
+
 ### 方案 C：就地更新（busy / permission 风格）
 
 - 代码最少，但见约束 1：4 个开关连点会失效。**不推荐**，除非接受「按钮死了就重新 `/display`」。
