@@ -896,15 +896,17 @@ export function renderFooterCard(
   turnStats?: TurnStats,
   deliverRows?: readonly DeliverRow[],
   /**
-   * Set for a turn that did NOT start from a Feishu message (Web GUI, background
-   * job, schedule): the card gets a first line saying so, because nothing else
-   * in the chat announced that turn (see `feishu-external-turns.ts`).
+   * What started a turn that did NOT come from a Feishu message — the other
+   * human surface, or the family of automation DSH woke the agent with. Set,
+   * the card leads with a line naming it, because nothing else in the chat
+   * announced that turn (see `feishu-external-turns.ts`). Omitted for a
+   * Feishu-started turn.
    */
-  externalTurn = false,
+  externalSource?: string,
 ): object | undefined {
   const elements: object[] = []
-  if (externalTurn) {
-    elements.push({ tag: 'markdown', content: t.turnCompleteExternalTurn, text_size: 'notation' })
+  if (externalSource !== undefined) {
+    elements.push({ tag: 'markdown', content: t.turnCompleteExternalTurn(externalSource), text_size: 'notation' })
   }
 
   // Deliverables lead the card: they are the one part the user may want to act

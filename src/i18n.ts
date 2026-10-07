@@ -158,7 +158,17 @@ export interface Translations {
   /** Title of the placeholder card posted the moment a step starts, before any output exists. */
   stepPlaceholderTitle: string
   /** Marks a step card belonging to a turn a background-job notice opened. */
-  stepJobTriggerNote: string
+  /**
+   * Attribution line on a step card of a turn no human message opened: the
+   * family of non-human message DSH let begin it (see `autoTurnTrigger`).
+   */
+  stepAutoTriggerNote: (trigger: string) => string
+  /** Localized name of one non-human turn-trigger family (the Web UI's wording). */
+  autoTurnTriggerName: (kind: string) => string
+  /** Label of the browser surface, used when a turn came from the Web GUI. */
+  surfaceLabelWebGui: string
+  /** Label of any other non-Feishu surface. */
+  surfaceLabelOther: string
   /** One-line body of that placeholder, telling the reader it updates in place. */
   stepPlaceholderBody: string
   /**
@@ -237,8 +247,11 @@ export interface Translations {
   turnCompleteTitle: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
-  /** Footnote on a Turn Complete card for a turn that did not start from a Feishu message. */
-  turnCompleteExternalTurn: string
+  /**
+   * Footnote on a Turn Complete card for a turn that did not start from a Feishu
+   * message, naming what it came from instead.
+   */
+  turnCompleteExternalTurn: (source: string) => string
   /** Prefix of a user message mirrored from the Web GUI. */
   externalMessageFromWebGui: string
   /** Prefix of a user message mirrored from another non-Feishu surface. */
@@ -649,7 +662,25 @@ export const zh = {
   stepCardTitleCall: '工具调用',
   stepCardTitleReply: '回复',
   stepPlaceholderTitle: '⏳ 正在分析请求',
-  stepJobTriggerNote: '⚡ 本回合由**后台任务完成通知**触发',
+  stepAutoTriggerNote: trigger => `⚡ 本回合由**${trigger}**自动触发`,
+  autoTurnTriggerName: kind => {
+    switch (kind) {
+      case 'job': return '后台任务状态更新'
+      case 'schedule': return '自动化任务'
+      case 'subagent': return '子任务状态更新'
+      case 'agent': return '收到任务消息'
+      case 'team': return '收到团队消息'
+      case 'goal': return '继续执行目标'
+      case 'github': return '收到 GitHub 事件'
+      case 'webhook': return '收到外部事件'
+      case 'plugin': return '插件状态更新'
+      case 'request': return '收到执行请求'
+      // An unseen producer is named, never quoted (关键坑 50).
+      default: return kind
+    }
+  },
+  surfaceLabelWebGui: 'Web GUI',
+  surfaceLabelOther: '其它入口',
   stepPlaceholderBody: '请求还没发出，模型尚未收到这一轮的内容',
   stepAwaitingTitle: '📡 已发出请求，等待输出…',
   stepAwaitingBody: '模型还没返回首个 token，输出会就地更新在这张卡上',
@@ -701,7 +732,7 @@ export const zh = {
   turnCompleteTitle: '✅ Turn 已完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
-  turnCompleteExternalTurn: '💬 本回合不是从飞书消息发起的（Web GUI / 后台任务），过程与交付一并同步到这里',
+  turnCompleteExternalTurn: source => `💬 本回合的来源是**${source}**（不是飞书这边发的消息），过程与交付一并同步到这里`,
   externalMessageFromWebGui: '💬 Web GUI：',
   externalMessageFromOther: '💬 其它入口：',
   externalMessageAttachments: (images, files) => {
@@ -1082,7 +1113,25 @@ export const en: Translations = {
   stepCardTitleCall: 'Tool Call',
   stepCardTitleReply: 'Reply',
   stepPlaceholderTitle: '⏳ Analyzing request',
-  stepJobTriggerNote: '⚡ This turn was triggered by a **background-job notice**',
+  stepAutoTriggerNote: trigger => `⚡ This turn was started automatically: **${trigger}**`,
+  autoTurnTriggerName: kind => {
+    switch (kind) {
+      case 'job': return 'Background task updated'
+      case 'schedule': return 'Automation task'
+      case 'subagent': return 'Subtask status updated'
+      case 'agent': return 'Task message received'
+      case 'team': return 'Team message received'
+      case 'goal': return 'Continuing goal'
+      case 'github': return 'GitHub event received'
+      case 'webhook': return 'External event received'
+      case 'plugin': return 'Plugin status updated'
+      case 'request': return 'Execution requested'
+      // An unseen producer is named, never quoted (key pitfall 50).
+      default: return kind
+    }
+  },
+  surfaceLabelWebGui: 'Web GUI',
+  surfaceLabelOther: 'another surface',
   stepPlaceholderBody: 'The request has not been sent — the model has nothing from this turn yet',
   stepAwaitingTitle: '📡 Request sent, awaiting output…',
   stepAwaitingBody: 'No token yet — output updates this card in place',
@@ -1135,7 +1184,7 @@ export const en: Translations = {
   turnCompleteTitle: '✅ Turn complete',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
-  turnCompleteExternalTurn: '💬 This turn did not start from a Feishu message (Web GUI / background job); its process and deliverables are mirrored here',
+  turnCompleteExternalTurn: source => `💬 This turn came from **${source}**, not from a Feishu message; its process and deliverables are mirrored here`,
   externalMessageFromWebGui: '💬 Web GUI: ',
   externalMessageFromOther: '💬 Another surface: ',
   externalMessageAttachments: (images, files) => {

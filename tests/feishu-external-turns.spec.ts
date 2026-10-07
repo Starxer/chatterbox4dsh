@@ -161,7 +161,7 @@ describe('mirroring user messages from another surface', () => {
 })
 
 describe('completing a turn that did not start on Feishu', () => {
-  it('posts the Turn Complete card and runs the delivery, marked as external', async () => {
+  it('posts the Turn Complete card and runs the delivery, naming the surface', async () => {
     const h = buildHarness({ withDeliver: true, planRows: true })
     h.fire({ type: 'user/message', data: { content: [{ type: 'text', text: 'from the browser' }], source: { kind: 'user', rpcId: 'web-9', clientTimeZone: 'UTC' } } })
     await flush()
@@ -172,11 +172,36 @@ describe('completing a turn that did not start on Feishu', () => {
     const card = h.sent.at(-1)
     expect(card?.input.card).toBeDefined()
     const elements = (card?.input.card as { body?: { elements?: Array<{ content?: string }> } })?.body?.elements ?? []
-    expect(elements.some(element => element.content === t.turnCompleteExternalTurn)).toBe(true)
+    expect(elements.some(element => element.content === t.turnCompleteExternalTurn(t.surfaceLabelWebGui))).toBe(true)
     expect(h.plan).toHaveBeenCalledTimes(1)
     expect(h.plan.mock.calls[0]?.[0]).toMatchObject({ sessionId: SESSION, chatId: 'oc_test', topic: { threadId: 'omt_1', rootId: 'om_root' } })
     expect(h.autoSend).toHaveBeenCalledTimes(1)
     expect(h.topics.map(entry => entry.messageId)).toEqual(['om_1'])
+    h.stop()
+  })
+
+  it('names the automation that woke the turn', async () => {
+    const h = buildHarness()
+    // No human message at all: the schedule notice is what opened the turn.
+    h.fire({ type: 'user/message', data: { content: [{ type: 'text', text: '自动化任务' }], source: { kind: 'schedule' } } })
+    await flush()
+    h.sent.length = 0
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    const elements = (h.sent.at(-1)?.input.card as { body?: { elements?: Array<{ content?: string }> } })?.body?.elements ?? []
+    expect(elements.some(element => element.content === t.turnCompleteExternalTurn(t.autoTurnTriggerName('schedule')))).toBe(true)
+    h.stop()
+  })
+
+  it('falls back to the generic family for an unnamed non-human source', async () => {
+    const h = buildHarness()
+    h.fire({ type: 'user/message', data: { content: [{ type: 'text', text: 'something' }], source: { kind: 'some-future-producer' } } })
+    await flush()
+    h.sent.length = 0
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    const elements = (h.sent.at(-1)?.input.card as { body?: { elements?: Array<{ content?: string }> } })?.body?.elements ?? []
+    expect(elements.some(element => element.content === t.turnCompleteExternalTurn(t.autoTurnTriggerName('request')))).toBe(true)
     h.stop()
   })
 
@@ -192,7 +217,7 @@ describe('completing a turn that did not start on Feishu', () => {
     h.stop()
   })
 
-  it('completes a turn no user message opened (background job wake-up)', async () => {
+  it('completes a turn whose trigger family is unknown', async () => {
     const h = buildHarness()
     h.fire({ type: 'turn/start', data: { turn: 2 } })
     h.fire({ type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })

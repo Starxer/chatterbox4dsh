@@ -34,7 +34,7 @@ import { renderFooterCard } from './channel.ts'
 import type { DeliverChat, DeliverPlan, DeliverPlanInput } from './feishu-deliver.ts'
 import { hasDeliverables } from './feishu-deliver.ts'
 import type { Translations } from './i18n.ts'
-import { beginTurn, noteUserMessage, turnOrigin, type UserMessageOrigin } from './feishu-turn-origin.ts'
+import { beginTurn, noteUserMessage, turnOrigin, turnSurface, turnTrigger, type UserMessageOrigin } from './feishu-turn-origin.ts'
 
 /** Minimal logger surface; matches ctx.logger's call style. */
 export interface ExternalTurnsLogger {
@@ -176,7 +176,14 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
           deps.logger.warn(`dsh-feishu: deliverable planning failed: ${error instanceof Error ? error.message : String(error)}`)
           return undefined
         })
-    const card = renderFooterCard(t, meta, turnStats, plan?.rows, true)
+    // Name what opened the turn: another human surface, or the family of
+    // automation DSH woke the agent with (the Web UI's own names — a settled
+    // job, a schedule, a subagent, a team message, a webhook, a goal round, a
+    // plugin). A turn with no message at all still gets the generic family.
+    const source = turnOrigin(sessionId) === 'external'
+      ? (turnSurface(sessionId) === 'web' ? t.surfaceLabelWebGui : t.surfaceLabelOther)
+      : t.autoTurnTriggerName(turnTrigger(sessionId) ?? 'request')
+    const card = renderFooterCard(t, meta, turnStats, plan?.rows, source)
     try {
       if (card !== undefined) {
         const sent = await deps.channel.send(chat.chatId, { card }, replyOpts(chat))

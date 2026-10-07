@@ -35,6 +35,91 @@ export type UserMessageOrigin = 'feishu' | 'external-web' | 'external-other' | '
 /** Which surface opened the turn currently running in a session. */
 export type TurnOrigin = 'feishu' | 'external'
 
+/**
+ * Families of NON-HUMAN messages DSH lets begin a Turn.
+ *
+ * The list is the DSH Web UI's own switch (`ui-chat/src/client/chat/turn-trigger.ts`),
+ * so the chat and the GUI name the same event the same way: `tool-jobs` (background
+ * job settled), `schedule` (an automation / timed reminder), `subagent-settled`,
+ * `agent-message`, `team-message`, `goal`, `webhook` (with a GitHub flavour),
+ * `cordis-host-runner` (a plugin), and `request` as the generic fallback for any
+ * other non-human source. The host-side wakers are the `followup()` call sites:
+ * `jobs/tool-jobs`, `schedule/schedule/src/runtime.ts`, `subagent/subagent`,
+ * `webhook/webhook/src/session.ts` and `goal/goal-round-driver`.
+ */
+export type AutoTurnTrigger =
+  | 'job'
+  | 'schedule'
+  | 'subagent'
+  | 'agent'
+  | 'team'
+  | 'goal'
+  | 'webhook'
+  | 'github'
+  | 'plugin'
+  | 'request'
+
+/**
+ * Classify one message source into a trigger family.
+ * @param source - a `user/message` source.
+ * @returns the family, or `undefined` for a human message (`kind: 'user'`).
+ */
+export function autoTurnTrigger(source: { kind?: unknown; provider?: unknown } | undefined): AutoTurnTrigger | undefined {
+  const kind = source?.kind
+  if (typeof kind !== 'string' || kind === 'user') return undefined
+  switch (kind) {
+    case 'tool-jobs': return 'job'
+    case 'schedule': return 'schedule'
+    case 'subagent-settled': return 'subagent'
+    case 'agent-message': return 'agent'
+    case 'team-message': return 'team'
+    case 'goal': return 'goal'
+    case 'webhook': return source?.provider === 'github' ? 'github' : 'webhook'
+    case 'cordis-host-runner': return 'plugin'
+    default:
+      // Any other non-human source still woke the turn: name the family the way
+      // the Web UI does, without pretending to know which producer it was.
+      return 'request'
+  }
+}
+
+/** Per-turn trigger attribution, folded from the messages the turn claimed. */
+export interface TurnTriggerState {
+  /** Family that opened the turn, once one is known. */
+  trigger?: AutoTurnTrigger | undefined
+  /** Whether a human message was claimed in this turn. */
+  sawHuman: boolean
+}
+
+/**
+ * Fold one message into a turn's trigger attribution.
+ *
+ * Two rules, both mirroring the Web UI: a human message owns the turn (so a
+ * notice claimed later in the same turn is NOT its trigger), and a named family
+ * is preferred over the generic `request` — a fresh session's first turn claims
+ * its instruction injections before the notice that actually woke it.
+ *
+ * @param state - attribution so far.
+ * @param source - the message's source.
+ * @returns the next attribution (the same object when nothing changed).
+ */
+export function foldTurnTrigger(
+  state: TurnTriggerState,
+  source: { kind?: unknown; provider?: unknown } | undefined,
+): TurnTriggerState {
+  if (source?.kind === 'user') {
+    if (state.sawHuman && state.trigger !== 'request') return state
+    return { trigger: state.trigger === 'request' ? undefined : state.trigger, sawHuman: true }
+  }
+  if (state.sawHuman) return state
+  const trigger = autoTurnTrigger(source)
+  if (trigger === undefined) return state
+  if (state.trigger === undefined || (state.trigger === 'request' && trigger !== 'request')) {
+    return { ...state, trigger }
+  }
+  return state
+}
+
 /** How long a request id this plugin minted is remembered (a turn is far shorter). */
 const PROMPT_TTL_MS = 30 * 60_000
 /** Hard cap on remembered request ids, so a long-lived process cannot grow. */
@@ -51,8 +136,16 @@ interface MintedPrompt {
 const minted = new Map<string, MintedPrompt>()
 /** Session → when this plugin pushed a message that bypasses `sessionController`. */
 const directPending = new Map<string, number>()
-/** Session → which surface opened the turn that is running now. */
-const turnOrigins = new Map<string, TurnOrigin>()
+/** Session → the facts of the turn that is running now. */
+interface TurnFacts {
+  /** Set by the turn's first human message. */
+  origin?: TurnOrigin
+  /** Which surface that message came from. */
+  surface?: 'web' | 'other'
+  /** Attribution folded from the turn's non-human messages. */
+  trigger: TurnTriggerState
+}
+const turnOrigins = new Map<string, TurnFacts>()
 
 function prune(now: number): void {
   for (const [id, record] of minted) {
@@ -102,6 +195,16 @@ export function beginTurn(sessionId: string): void {
   turnOrigins.delete(sessionId)
 }
 
+/** The facts of the running turn, creating the (empty) entry on first use. */
+function factsOf(sessionId: string): TurnFacts {
+  let facts = turnOrigins.get(sessionId)
+  if (facts === undefined) {
+    facts = { trigger: { sawHuman: false } }
+    turnOrigins.set(sessionId, facts)
+  }
+  return facts
+}
+
 /**
  * Classify one `user/message` event and, when it is the turn's first, record
  * which surface opened the turn.
@@ -118,7 +221,13 @@ export function noteUserMessage(
   options: { hasAttachment?: boolean } = {},
   now: number = Date.now(),
 ): UserMessageOrigin {
-  if (source === undefined || source.kind !== 'user') return 'host'
+  const facts = factsOf(sessionId)
+  if (source === undefined || source.kind !== 'user') {
+    // A non-human message: fold it into the turn's attribution. This is what
+    // labels an automatically started turn (see `autoTurnTrigger`).
+    facts.trigger = foldTurnTrigger(facts.trigger, source as { kind?: unknown; provider?: unknown })
+    return 'host'
+  }
   prune(now)
   const rpcId = typeof source.rpcId === 'string' ? source.rpcId : undefined
   let fromFeishu = rpcId !== undefined && minted.get(rpcId)?.sessionId === sessionId
@@ -129,13 +238,14 @@ export function noteUserMessage(
       fromFeishu = true
     }
   }
-  if (turnOrigins.get(sessionId) === undefined) {
-    turnOrigins.set(sessionId, fromFeishu ? 'feishu' : 'external')
+  const web = typeof source.clientTimeZone === 'string' && source.clientTimeZone !== ''
+  if (facts.origin === undefined) {
+    facts.origin = fromFeishu ? 'feishu' : 'external'
+    if (!fromFeishu) facts.surface = web ? 'web' : 'other'
   }
+  facts.trigger = foldTurnTrigger(facts.trigger, source)
   if (fromFeishu) return 'feishu'
-  return typeof source.clientTimeZone === 'string' && source.clientTimeZone !== ''
-    ? 'external-web'
-    : 'external-other'
+  return web ? 'external-web' : 'external-other'
 }
 
 /**
@@ -145,7 +255,24 @@ export function noteUserMessage(
  *   (a background-job wake-up or a schedule), which this plugin still completes.
  */
 export function turnOrigin(sessionId: string): TurnOrigin | undefined {
-  return turnOrigins.get(sessionId)
+  return turnOrigins.get(sessionId)?.origin
+}
+
+/**
+ * Which surface a human message came from, when the turn has one.
+ * @param sessionId - session to read.
+ * @returns `web` (the browser sets `clientTimeZone`) or `other`.
+ */
+export function turnSurface(sessionId: string): 'web' | 'other' | undefined {
+  return turnOrigins.get(sessionId)?.surface
+}
+
+/**
+ * The family of non-human message that opened the running turn, if any.
+ * @param sessionId - session to read.
+ */
+export function turnTrigger(sessionId: string): AutoTurnTrigger | undefined {
+  return turnOrigins.get(sessionId)?.trigger.trigger
 }
 
 /** Drop every table. Tests call it so one case cannot leak into the next. */

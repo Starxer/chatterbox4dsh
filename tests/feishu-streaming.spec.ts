@@ -1109,6 +1109,18 @@ describe('background-job turn trigger', () => {
     source: { kind: 'user' },
   })
 
+  /** A timed reminder / automation waking an idle owner (schedule runtime). */
+  const scheduleNotice = (): { content: Array<{ type: string; text: string }>; source: { kind: string } } => ({
+    content: [{ type: 'text', text: '自动化任务：检查构建' }],
+    source: { kind: 'schedule' },
+  })
+
+  /** A subagent settlement notice delivered to its parent. */
+  const subagentNotice = (): { content: Array<{ type: string; text: string }>; source: { kind: string } } => ({
+    content: [{ type: 'text', text: 'child session finished' }],
+    source: { kind: 'subagent-settled' },
+  })
+
   /** The newest card rendered for this step: the last update, else the last send. */
   const lastCard = (channel: StepChannel): any => {
     const updates = (channel.updateCard as any).mock.calls
@@ -1125,10 +1137,10 @@ describe('background-job turn trigger', () => {
     // placeholder to be on screen first (the real ordering is milliseconds
     // later; a notice landing inside the send window is absorbed by the send).
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
-    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
 
     h.emit('user/message', jobNotice())
-    await vi.waitFor(() => { expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote) })
+    await vi.waitFor(() => { expect(mdOf(lastCard(channel))).toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job'))) })
     // One card per step: the placeholder was updated, never re-posted.
     expect(channel.send).toHaveBeenCalledTimes(1)
     h.streaming.stop()
@@ -1145,7 +1157,7 @@ describe('background-job turn trigger', () => {
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '干活' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
-    expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
     expect(mdOf(lastCard(channel))).toContain('干活')
     h.streaming.stop()
   })
@@ -1159,7 +1171,7 @@ describe('background-job turn trigger', () => {
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '你好' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
-    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
     h.streaming.stop()
   })
 
@@ -1172,7 +1184,7 @@ describe('background-job turn trigger', () => {
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '第一步' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
-    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
 
     // Step 2 of the same turn claims the notice: the human still owns the turn.
     h.emit('step/start', { turn: 1, step: 2 })
@@ -1180,7 +1192,56 @@ describe('background-job turn trigger', () => {
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '继续' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(2) })
-    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
+    h.streaming.stop()
+  })
+
+  it('names the automation that opened the turn, not just "a background job"', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 9 })
+    h.emit('step/start', { turn: 9, step: 1 })
+    h.emit('user/message', scheduleNotice())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '开始检查' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    const card = mdOf(lastCard(channel))
+    expect(card).toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('schedule')))
+    expect(card).not.toContain(t.autoTurnTriggerName('job'))
+    h.streaming.stop()
+  })
+
+  it('names a subagent settlement, and prefers it over the generic family', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 10 })
+    h.emit('step/start', { turn: 10, step: 1 })
+    // A fresh session's first turn claims its instruction injections before the
+    // notice that actually woke it: the generic family must lose to the named one.
+    h.emit('user/message', { content: [{ type: 'text', text: 'AGENTS.md' }], source: { kind: 'agent-instructions' } })
+    h.emit('user/message', subagentNotice())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '汇总' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    const card = mdOf(lastCard(channel))
+    expect(card).toContain(t.autoTurnTriggerName('subagent'))
+    expect(card).not.toContain(t.autoTurnTriggerName('request'))
+    h.streaming.stop()
+  })
+
+  it('drops the generic family once a human message claims the turn', async () => {
+    const channel = plainChannel()
+    const h = stepHarness(channel)
+    h.emit('turn/start', { turn: 11 })
+    h.emit('step/start', { turn: 11, step: 1 })
+    // Instruction injection first (generic), then the human who actually asked:
+    // the turn is the human's, so no attribution line may survive.
+    h.emit('user/message', { content: [{ type: 'text', text: 'AGENTS.md' }], source: { kind: 'agent-instructions' } })
+    h.emit('user/message', humanMessage())
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '你好' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('request')))
     h.streaming.stop()
   })
 
@@ -1193,14 +1254,14 @@ describe('background-job turn trigger', () => {
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'a' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(1) })
-    expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
 
     // Step 2 of the same turn: the attribution is turn-level, so it repeats.
     h.emit('step/start', { turn: 7, step: 2 })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'b' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(2) })
-    expect(mdOf(lastCard(channel))).toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
 
     // The next turn belongs to its own trigger.
     h.emit('turn/end', { turn: 7, reason: { kind: 'completed' } })
@@ -1210,7 +1271,7 @@ describe('background-job turn trigger', () => {
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'c' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(channel.send).toHaveBeenCalledTimes(3) })
-    expect(mdOf(lastCard(channel))).not.toContain(t.stepJobTriggerNote)
+    expect(mdOf(lastCard(channel))).not.toContain(t.stepAutoTriggerNote(t.autoTurnTriggerName('job')))
     h.streaming.stop()
   })
 })

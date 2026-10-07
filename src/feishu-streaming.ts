@@ -17,6 +17,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { HarnessConversationService } from './harness.ts'
+import { autoTurnTrigger, foldTurnTrigger, type AutoTurnTrigger, type TurnTriggerState } from './feishu-turn-origin.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
@@ -354,19 +355,15 @@ interface SessionStepState {
   /** Context window info for the current session (fetched once per turn). */
   contextMeta: { contextWindow: number; lastInputTokens: number } | undefined
   /**
-   * Whether the FIRST `user/message` of the current turn has been seen. The
-   * message that opens a turn is appended right after that turn's first
-   * `step/start`, so "first message of the turn" is what separates a turn the
-   * notice OPENED from a notice injected into a running turn.
+   * The Feishu-side equivalent of the Web UI's "turn triggered by"
+   * attribution: DSH wakes an idle owner with `followup(notice)` (the notice is
+   * the turn's trigger) and injects into a busy one instead, so the trigger is
+   * decided from which messages the turn claimed (see `foldTurnTrigger`).
    */
-  sawTurnUserMessage: boolean
-  /**
-   * Whether a background-job completion notice opened the current turn. DSH
-   * wakes an idle owner with `owner.followup(notice)` (the notice is the
-   * turn's trigger) and injects into a busy one instead, so this is the
-   * Feishu-side equivalent of the Web UI's "turn triggered by" attribution.
-   */
-  turnTriggeredByJob: boolean
+  /** Family of non-human message that opened this turn, if any. */
+  turnTrigger?: AutoTurnTrigger | undefined
+  /** Whether a human message was claimed in this turn. */
+  sawHumanMessage: boolean
   /**
    * Live phase of the current step's model call (see {@link StepLivePhase}).
    * Reset at every step boundary; only the content-free placeholder renders it.
@@ -441,8 +438,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         usage: undefined,
         contextMeta: undefined,
         injections: [],
-        sawTurnUserMessage: false,
-        turnTriggeredByJob: false,
+        sawHumanMessage: false,
+        turnTrigger: undefined,
         livePhase: 'none',
         requestRoute: undefined,
         turnStats: undefined,
@@ -560,6 +557,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
   /** Build the unified card content for the current step state. */
   const buildStepCard = (state: SessionStepState): object => {
+    // Attribution of an automatically started turn, named the way the Web UI
+    // names it. Absent on a turn a human message opened.
+    const turnTriggerNote = state.turnTrigger === undefined
+      ? undefined
+      : (getTranslations?.() ?? translationsFor('zh')).autoTurnTriggerName(state.turnTrigger)
     // Nothing to render yet (thinking placeholder) or ever (terminal empty
     // step): the card says so instead of showing a body with no content.
     const emptyPhase: 'thinking' | 'done' | undefined = stepHasVisibleContent(state)
@@ -606,7 +608,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // settings page.
         display: displayPolicy(),
         ...(state.injections.length > 0 ? { injections: state.injections } : {}),
-        ...(state.turnTriggeredByJob ? { triggeredByJob: true } : {}),
+        ...(turnTriggerNote === undefined ? {} : { turnTriggerNote }),
         // The live phase only has meaning on the content-free form; passing it
         // alongside content would let a stale phase name a settled card.
         ...(emptyPhase === 'thinking' ? { phase: state.livePhase } : {}),
@@ -1574,9 +1576,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // New turn, new delivery question.
         turnTextOrder.delete(sessionId)
         // The trigger attribution belongs to one turn: re-decide it from this
-        // turn's own first user message.
-        state.sawTurnUserMessage = false
-        state.turnTriggeredByJob = false
+        // turn's own messages (see `foldTurnTrigger`).
+        state.sawHumanMessage = false
+        state.turnTrigger = undefined
         state.turnStats = {
           turnStartTime: event.time ?? Date.now(),
           stepCount: 0,
@@ -1605,22 +1607,23 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           if (state.stepCardSent) updateStepCard(state)
         }).catch(() => undefined)
       } else if (event.type === 'user/message') {
-        // Attribute the turn to its trigger. DSH appends the message that
-        // OPENED a turn right after that turn's first `step/start`, while a
-        // notice injected into a busy owner is claimed at a later step — so
-        // the turn's FIRST user message is what identifies a waking notice.
-        // Only the background-job notice is marked here (`tool-jobs`, the same
-        // source the Web UI attributes a "job" turn trigger from).
-        const source = (event.data as { source?: unknown } | undefined)?.source
-        if (!state.sawTurnUserMessage) {
-          state.sawTurnUserMessage = true
-          if ((source as { kind?: unknown } | undefined)?.kind === 'tool-jobs') {
-            state.turnTriggeredByJob = true
-            // The placeholder card is already on screen (posted at step/start,
-            // which precedes this message), so repaint it with the marker.
-            if (state.stepCardSent) updateStepCard(state)
-          }
+        // Attribute the turn to whatever opened it. Every DSH mechanism that
+        // starts a turn without a human — a settled background job, a schedule,
+        // a subagent, a webhook, a goal round, a plugin — announces itself as a
+        // `user/message` with its own source family (the same table the Web UI
+        // renders turn triggers from, see `autoTurnTrigger`). A human message
+        // owns the turn, so a notice claimed later in it is not a trigger.
+        const source = (event.data as { source?: unknown } | undefined)?.source as
+          { kind?: unknown; provider?: unknown } | undefined
+        const before: TurnTriggerState = { trigger: state.turnTrigger, sawHuman: state.sawHumanMessage }
+        const after = foldTurnTrigger(before, source)
+        if (after.trigger !== before.trigger) {
+          state.turnTrigger = after.trigger
+          // The placeholder card is already on screen (posted at step/start,
+          // which precedes this message), so repaint it with the marker.
+          if (state.stepCardSent) updateStepCard(state)
         }
+        state.sawHumanMessage = after.sawHuman
 
         // Every other non-`user` source is an injected context message. It gets
         // ONE notice line at the top of the card for the step whose request
@@ -2305,7 +2308,8 @@ export function renderStepCard(
     showToolArgs?: boolean
     showToolResults?: boolean
     empty?: 'thinking' | 'done'
-    triggeredByJob?: boolean
+    /** Localized family name of the non-human message that opened this turn. */
+    turnTriggerNote?: string
     phase?: StepLivePhase
     /** Route of the request in flight, named on the awaiting card. */
     route?: { provider: string; model: string }
@@ -2344,11 +2348,12 @@ export function renderStepCard(
   }
 
   // Attribution line, first so it reads as the reason this card exists at all.
-  // A background-job completion notice opens its own turn (DSH wakes an idle
-  // owner), which is otherwise invisible in the chat: the notice is a context
-  // message, not something the human wrote.
-  if (options?.triggeredByJob === true) {
-    elements.push({ tag: 'markdown', content: t.stepJobTriggerNote, text_size: 'notation' })
+  // A non-human notice opens its own turn (DSH wakes an idle owner), which is
+  // otherwise invisible in the chat: the notice is a context message, not
+  // something the human wrote. The family comes from `autoTurnTrigger`, i.e.
+  // the same names the Web UI uses for turn triggers.
+  if (options?.turnTriggerNote !== undefined) {
+    elements.push({ tag: 'markdown', content: t.stepAutoTriggerNote(options.turnTriggerNote), text_size: 'notation' })
   }
 
   // A step with nothing to render still needs a body: name what the step is
