@@ -106,6 +106,31 @@ describe('renderFooterCard deliverables', () => {
     expect(markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: [] }) as any)).not.toContain('Present files')
   })
 
+  it('renders the planned rows when the deliver controller supplied them', () => {
+    const card = renderFooterCard(t, {}, {
+      ...turnStats,
+      deliverables: [
+        { path: 'out/still.png', description: 'Final still' },
+        { path: 'out/notes.md' },
+      ],
+    }, [
+      { path: 'out/still.png', name: 'still.png', kind: 'image', description: 'Final still' },
+      { path: 'out/notes.md', name: 'notes.md', kind: 'other', size: 2048, token: 'tok-1' },
+    ]) as any
+    const elements = card.body.elements
+    const contents = elements.filter((element: any) => element.tag === 'markdown').map((element: any) => element.content)
+    // Media keeps the file name as plain text AND a link for the hydrator: the
+    // inlined picture's alt text is only a hover tooltip.
+    expect(contents[0]).toContain(t.deliverablesTitle(2))
+    expect(contents.some((content: string) => content.includes('still.png'))).toBe(true)
+    expect(contents.some((content: string) => content.includes('](out/still.png)'))).toBe(true)
+    // The file the operator can ask for is a clickable row, and the row — not
+    // the header — is what the divider follows.
+    const row = elements.find((element: any) => element.tag === 'interactive_container') as any
+    expect(row.behaviors).toEqual([{ type: 'callback', value: { p: 'deliver-open', token: 'tok-1' } }])
+    expect(elements.find((element: any) => element.tag === 'hr')).toBeDefined()
+  })
+
   it('leads the card, with a divider before the metrics', () => {
     const card = renderFooterCard(t, {}, {
       ...turnStats,
@@ -189,6 +214,44 @@ describe('Turn Complete media (deliverables go through the hydrator)', () => {
       expect(videos[0].file_key).toBe('file_v3_00or_probe')
       expect(videos[0].fallback.text.content).toBe('📹 Draft clip')
       expect(JSON.stringify(out)).not.toContain('](out/clip.mp4)')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('inlines a planned media row and keeps its file name visible', async () => {
+    const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { startCardImages } = await import('../src/card-images.ts')
+
+    const root = await mkdtemp(join(tmpdir(), 'dsh-footer-plan-'))
+    try {
+      await mkdir(join(root, 'out'), { recursive: true })
+      await writeFile(join(root, 'out', 'still.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      const handle = startCardImages({
+        resolveWorkspace: async () => root,
+        upload: async () => 'img_v3_plan_probe',
+        logger: { warn: () => undefined },
+      })
+      const card = renderFooterCard(t, { workspace: root }, {
+        ...turnStats,
+        deliverables: [{ path: 'out/still.png', description: 'Final still' }],
+      }, [
+        { path: 'out/still.png', name: 'still.png', kind: 'image', description: 'Final still' },
+      ]) as any
+      const out = await handle.hydrate(card, { workspace: root }) as any
+      const json = JSON.stringify(out)
+      // The picture is a real card image, and the file NAME survives as text
+      // (an inlined image's alt text is only a hover tooltip).
+      expect(json).toContain('img_v3_plan_probe')
+      expect(json).not.toContain('](out/still.png)')
+      const contents = out.body.elements
+        .filter((element: any) => element.tag === 'markdown')
+        .map((element: any) => element.content)
+        .join('\n')
+      expect(contents).toContain('still.png')
+      expect(contents).toContain('Final still')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

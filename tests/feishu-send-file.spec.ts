@@ -78,6 +78,42 @@ function toolOver(ch: LarkChannel, overrides: Partial<Parameters<typeof startFei
   return fake.registered.find(t => t.name === 'feishu_send_file')!
 }
 
+describe('sendWorkspaceFile (the shared bounded sender)', () => {
+  it('gives up on a send that never settles instead of hanging the caller', async () => {
+    const { sendWorkspaceFile } = await import('../src/feishu-send-file.ts')
+    const p = await tempFile(TXT_BYTES, 'note.txt')
+    const channel = {
+      // The SDK's HTTP client is built with `timeout: 0`; a half-open socket
+      // would leave this promise pending forever (关键坑 29).
+      send: vi.fn(() => new Promise(() => undefined)),
+      rawClient: { im: { v1: { image: { create: vi.fn() } } } },
+    } as unknown as LarkChannel
+    await expect(sendWorkspaceFile({
+      channel,
+      chatId: 'oc_x',
+      path: p,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      timeoutMs: 20,
+    })).rejects.toThrow(/timed out after 20ms/)
+    // A timeout is NOT a rejection: the request may still land, so the sender
+    // must not follow it with a second (file) send.
+    expect((channel.send as any).mock.calls).toHaveLength(1)
+  })
+
+  it('records a completed tool send so the deliverable auto-send can skip it', async () => {
+    const { wasDeliveredFile, resetDeliveredFiles } = await import('../src/deliver-files.ts')
+    resetDeliveredFiles()
+    const p = await tempFile(TXT_BYTES, 'note.txt')
+    const ch = fakeChannel()
+    const tool = toolOver(ch)
+    await tool.execute({ path: p }, execCtx())
+    // The tracker is keyed on the REAL path, which is what the delivery planner
+    // validates and records.
+    expect(wasDeliveredFile('session-1', p)).toBe(true)
+    resetDeliveredFiles()
+  })
+})
+
 describe('startFeishuSendFileTool', () => {
   it('registers a tool named feishu_send_file', async () => {
     const fake = fakeCtx()

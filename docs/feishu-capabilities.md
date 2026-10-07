@@ -263,6 +263,7 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 
 | 功能 | 组件 | 状态 | 说明 |
 |---|---|---|---|
+| `present` 交付清单可点行 + 确认卡 | `interactive_container` / `button` | ✅ **已实现**（2026-10-07，TODO O25） | Turn Complete 卡的交付清单里，「其他文件」与超限文档是整行可点的 `interactive_container`（回调只带不透明 token，**不带路径**）→ 弹确认卡 → `button`「📤 发送」才真正投递；媒体仍走 hydrator 卡内内联，文档白名单自动发原生文件消息。整张 Turn Complete 卡**只发不改**，所以不受「带按钮的卡就地更新 2–3 次后回调失效」限制 |
 | `/new` 工作区选择 | `interactive_container` | ✅ 已实现 | 最终用可点击整行（非 `select_static`），另含目录浏览器 |
 | Step 卡片多列布局 | `column_set` | ⚠️ 部分 | `column_set` 已用于按钮行 / 目录浏览器布局；step 卡本身仍单列 |
 | 溢出菜单 | `overflow` | 🔲 未实现 | 卡片右上角「更多操作」：查看 status/清空上下文/导出 |

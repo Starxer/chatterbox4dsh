@@ -128,6 +128,25 @@ const CARD_MEDIA_MAX_MB = {
 	}
 };
 /**
+* Bounds and default of `deliverDocMaxMb`, mirroring `DELIVER_DOC_MAX_MB` in
+* `src/config.ts`: how large a whitelisted document (pdf/doc/docx/ppt/pptx/
+* xls/xlsx) may be before `present` stops delivering it by itself and offers a
+* confirmation row instead.
+*/
+const DELIVER_DOC_MAX_MB = {
+	min: 1,
+	max: 30,
+	default: 30
+};
+/** Clamp the staged document auto-delivery limit the way the Host schema would. */
+function clampDeliverDocMaxMb(raw) {
+	const text = raw.trim();
+	if (text === "") return DELIVER_DOC_MAX_MB.default;
+	const value = Number(text);
+	if (!Number.isFinite(value)) return DELIVER_DOC_MAX_MB.default;
+	return Math.min(DELIVER_DOC_MAX_MB.max, Math.max(DELIVER_DOC_MAX_MB.min, Math.trunc(value)));
+}
+/**
 * Parse and clamp one staged size field.
 *
 * A blank field means "the user cleared it" and falls back to that field's own
@@ -161,7 +180,8 @@ const EDITABLE_FIELDS = [
 	"cardMediaLimit",
 	"cardImageMaxMb",
 	"cardVideoMaxMb",
-	"cardAudioMaxMb"
+	"cardAudioMaxMb",
+	"deliverDocMaxMb"
 ];
 /** Bridges the `lark-channel` form and the credentials domain onto the page. */
 var LarkSettingsCardController = class {
@@ -399,6 +419,7 @@ var LarkSettingsCardController = class {
 			cardImageMaxMb: String(value?.cardImageMaxMb ?? CARD_MEDIA_MAX_MB.cardImageMaxMb.default),
 			cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
 			cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
+			deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
 			...this.edits
 		};
 	}
@@ -447,6 +468,7 @@ function writeValue(field, form) {
 		case "cardImageMaxMb":
 		case "cardVideoMaxMb":
 		case "cardAudioMaxMb": return clampCardMediaMaxMb(field, form[field]);
+		case "deliverDocMaxMb": return clampDeliverDocMaxMb(form.deliverDocMaxMb);
 		case "groupAllowlist": return lines(form.groupAllowlist);
 		case "dmAllowlist": return lines(form.dmAllowlist);
 		default: return form[field];
@@ -801,6 +823,26 @@ function LarkSettingsCard(props) {
 							mediaMaxRow("cardImageMaxMb", t("cardImageMaxMb"), t("cardImageMaxMbHint")),
 							mediaMaxRow("cardVideoMaxMb", t("cardVideoMaxMb"), t("cardVideoMaxMbHint")),
 							mediaMaxRow("cardAudioMaxMb", t("cardAudioMaxMb"), t("cardAudioMaxMbHint")),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("deliverDocMaxMb") }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+									"aria-label": "deliverDocMaxMb",
+									type: "number",
+									min: DELIVER_DOC_MAX_MB.min,
+									max: DELIVER_DOC_MAX_MB.max,
+									step: 1,
+									inputMode: "numeric",
+									disabled: blocked,
+									value: form.deliverDocMaxMb,
+									onChange: (event) => {
+										props.edit("deliverDocMaxMb", event.target.value);
+									}
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dsh-feishu-toggle-hint",
+									children: t("deliverDocMaxMbHint")
+								})
+							] }),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 								"aria-label": "locale",
 								disabled: blocked,
@@ -2539,6 +2581,8 @@ const dictionaries = {
 		cardVideoMaxMbHint: "超过这个大小的视频不上传、只留路径文字。范围 1–30，默认 15；飞书文件接口硬上限 30MB。数字越大，卡片等上传的时间越长（已有预热与并发，但大文件仍会慢）。",
 		cardAudioMaxMb: "音频内联上限（MB）",
 		cardAudioMaxMbHint: "超过这个大小的音频不上传、只留路径文字。范围 1–30，默认 15；飞书文件接口硬上限 30MB。非 Opus 的音频还要先转码，另受 ffmpeg 是否可用的影响。",
+		deliverDocMaxMb: "文档自动投递上限（MB）",
+		deliverDocMaxMbHint: "`present` 声明的 pdf / doc / docx / ppt / pptx / xls / xlsx 不超过这个大小就直接发成飞书文件消息；超过它的文档、以及所有其他文件（源码、压缩包等）都变成交付清单里可点的一行，点一下弹确认卡，确认后才发送。范围 1–30，默认 30（飞书文件接口硬上限）。",
 		locale: "插件语言",
 		localeAuto: "跟随 Harness",
 		localeZh: "中文",
@@ -2622,6 +2666,8 @@ const dictionaries = {
 		cardVideoMaxMbHint: "A video larger than this is not uploaded — its path stays as text. Range 1-30, default 15; Feishu's file API caps at 30 MB. Bigger files only cost wait: the upload happens on the card-write path (warming and concurrency help, but a large file is still slow).",
 		cardAudioMaxMb: "Audio inline limit (MB)",
 		cardAudioMaxMbHint: "Audio larger than this is not uploaded — its path stays as text. Range 1-30, default 15; Feishu's file API caps at 30 MB. Non-Opus audio is transcoded first, so ffmpeg has to be available.",
+		deliverDocMaxMb: "Document auto-send limit (MB)",
+		deliverDocMaxMbHint: "A pdf / doc / docx / ppt / pptx / xls / xlsx declared by `present` under this size is pushed as a Feishu file message by itself. Larger documents — and every other file (source code, archives, …) — become a tappable row on the Turn Complete card: one tap opens a confirmation, and only that sends. Range 1-30, default 30 (Feishu's file API cap).",
 		locale: "Plugin language",
 		localeAuto: "Follow Harness",
 		localeZh: "中文",

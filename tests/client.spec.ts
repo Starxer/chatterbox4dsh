@@ -4,11 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createElement as h, useSyncExternalStore } from 'react'
 import { apply } from '../src/client/index.ts'
 import {
+  DELIVER_DOC_MAX_MB as CLIENT_DELIVER_DOC_MAX_MB,
   LARK_SETTINGS_NAMESPACE,
   type LarkCardFace,
   type LarkCardState,
   type LarkSettingsValues,
 } from '../src/client/LarkSettingsCardController.ts'
+import { DELIVER_DOC_MAX_MB as HOST_DELIVER_DOC_MAX_MB } from '../src/config.ts'
 import type { LarkChannelStatusFace, LarkChannelStatusState, ProvisionState, RuntimeStatus } from '../src/client/LarkChannelStatusController.ts'
 import { SnapshotStore } from '../src/client/snapshot-store.ts'
 import type {
@@ -435,6 +437,30 @@ describe('Lark settings client plugin', () => {
       { op: 'set', path: ['cardVideoMaxMb'], value: 8 },
       { op: 'set', path: ['cardAudioMaxMb'], value: 15 },
     ])
+  })
+
+  it('renders the document auto-send limit with the Host schema\'s own bounds', async () => {
+    stubStatus()
+    const form = createForm()
+    const harness = mount(form)
+    renderSettings(harness)
+    const props = settingsProps(harness)
+
+    await screen.findByDisplayValue('cli_existing')
+    const input = screen.getByLabelText('deliverDocMaxMb') as HTMLInputElement
+    expect(input.type).toBe('number')
+    expect(input.getAttribute('min')).toBe('1')
+    expect(input.getAttribute('max')).toBe('30')
+    expect(input.value).toBe('30')
+    expect(screen.getByText('deliverDocMaxMbHint')).toBeTruthy()
+    // The page's bounds must equal the Host schema's: 30 MB is Feishu's file
+    // ceiling, and a client-side range that drifted would let a save write a
+    // value the Host then clamps silently.
+    expect(CLIENT_DELIVER_DOC_MAX_MB).toEqual(HOST_DELIVER_DOC_MAX_MB)
+
+    props.edit('deliverDocMaxMb', '999')
+    await props.save()
+    expect(form.mutate.mock.calls[0]![0]).toContainEqual({ op: 'set', path: ['deliverDocMaxMb'], value: 30 })
   })
 
   it('clamps a media limit that reaches the controller out of range', async () => {

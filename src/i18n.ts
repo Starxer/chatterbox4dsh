@@ -286,9 +286,34 @@ export interface Translations {
   /** One extra sentence shown when the refusal is DSH's persistent-shell fence. */
   permissionSwitchBusyShellHint: string
 
-  // Turn Complete deliverables (channel.ts, from `deliverables/presented`)
+  // Turn Complete deliverables (channel.ts / feishu-deliver.ts, from
+  // `deliverables/presented`)
   deliverablesTitle: (count: number) => string
   deliverablesMore: (count: number) => string
+  /** Hint line above rows the operator can send with a tap. */
+  deliverTapHint: string
+  /** Suffix on a clickable row: tapping opens a confirmation. */
+  deliverTapToSend: string
+  /** Marker on a document this turn delivered by itself. */
+  deliverAutoSent: string
+  /** Link label that makes the card hydrator inline a media file. */
+  deliverPreview: string
+  /** Why a row cannot be sent by tapping. */
+  deliverBlockedReason: (reason: 'too-large' | 'unreadable' | 'outside') => string
+  /** Header shared by the confirmation and settlement cards. */
+  deliverCardTitle: string
+  /** Confirmation body: what would be sent, and how big it is. */
+  deliverConfirmBody: (name: string, size: string) => string
+  deliverSendButton: string
+  deliverCancelButton: string
+  deliverSent: (name: string) => string
+  deliverCancelled: (name: string) => string
+  deliverFailed: (name: string, reason: string) => string
+  deliverAutoFailed: (name: string, reason: string) => string
+  deliverExpired: string
+  deliverFileGone: string
+  deliverOutside: string
+  deliverTooLarge: string
 
   // Display switch card (feishu-display.ts)
   displayCardTitle: string
@@ -679,10 +704,32 @@ export const zh = {
   busyQueueDesc: '当前轮结束后作为新轮运行（默认）',
   busySteerDesc: '注入当前运行轮立即响应',
 
-  // Turn Complete 交付文件清单（channel.ts；来自 DSH `present` 工具的
-  // `deliverables/presented` 事件）。只列清单，不推送文件。
+  // Turn Complete 交付文件清单（channel.ts / feishu-deliver.ts；来自 DSH `present`
+  // 工具的 `deliverables/presented` 事件）。媒体在卡内内联；白名单文档按大小自动
+  // 发原生文件消息；其余文件点行 → 确认卡 → 才发送。
   deliverablesTitle: (count: number) => `📦 **交付文件**（${count}）`,
-  deliverablesMore: (count: number) => `_…另有 ${count} 个_`,
+  deliverablesMore: (count: number) => `_…另有 ${count} 个未显示（可以让模型用 \`feishu_send_file\` 单独发）_`,
+  deliverTapHint: '_标着「点击发送」的文件点一下即可发送，发送前还会再确认一次。_',
+  deliverTapToSend: '点击发送',
+  deliverAutoSent: '自动投递',
+  deliverPreview: '预览',
+  deliverBlockedReason: reason => ({
+    'too-large': '超过飞书 30MB 上限，无法发送',
+    unreadable: '文件不存在、为空或无法读取',
+    outside: '不在本会话工作区内，无法发送',
+  })[reason],
+  deliverCardTitle: '📤 文件投递',
+  deliverConfirmBody: (name, size) => `确认把 **${name}**（${size}）发送到本聊天？`,
+  deliverSendButton: '📤 发送',
+  deliverCancelButton: '取消',
+  deliverSent: name => `✅ 已发送 **${name}**。`,
+  deliverCancelled: name => `已取消发送 **${name}**。`,
+  deliverFailed: (name, reason) => `❌ 发送 **${name}** 失败：${reason}`,
+  deliverAutoFailed: (name, reason) => `⚠️ 自动发送 **${name}** 失败：${reason}（需要的话说一声我重发）`,
+  deliverExpired: '⌛ 这张文件卡已失效（超过 30 分钟，或来自上一次运行）。可以让模型重新列一遍交付文件。',
+  deliverFileGone: '文件已不存在或无法读取',
+  deliverOutside: '不在本会话工作区内',
+  deliverTooLarge: '超过飞书 30MB 上限',
 
   // 卡片显示开关卡片（feishu-display.ts）
   displayCardTitle: '📇 卡片显示',
@@ -784,7 +831,7 @@ export const zh = {
   onboardingWorkspaceHeader: '**📁 选择工作区**\n\n新建会话将在这个工作区中运行。',
   onboardingNoWorkspaces: '还没有工作区，请在下方输入路径新建一个。',
   onboardingNewWorkspaceHeader: '**🆕 新建工作区**\n\n输入绝对路径，或 `~` 开头的家目录相对路径。',
-  onboardingWorkspacePlaceholder: '如 /home/user/projects/my-app 或 ~/projects/my-app',
+  onboardingWorkspacePlaceholder: '如 ~/projects/my-app 或 /绝对/路径',
   onboardingCreateWorkspaceButton: '✅ 确认新建工作区',
   onboardingNewTitle: '🆕 新建会话',
   onboardingPresetHeader: '**🧩 选择 Agent 预设**\n\n模板决定这个会话拥有哪些能力。',
@@ -1068,10 +1115,33 @@ export const en: Translations = {
   busyQueueDesc: 'Runs as a new round after the current one (default)',
   busySteerDesc: 'Injects into the current running round to respond immediately',
 
-  // Turn Complete deliverables list (channel.ts; from DSH's `present` tool via
-  // `deliverables/presented`). Listed only — files are never pushed.
+  // Turn Complete deliverables list (channel.ts / feishu-deliver.ts; from DSH's
+  // `present` tool via `deliverables/presented`). Media renders in the card;
+  // whitelisted documents under the size setting are pushed as native file
+  // messages; every other file is a click → confirm → send row.
   deliverablesTitle: (count: number) => `📦 **Present files** (${count})`,
-  deliverablesMore: (count: number) => `_…and ${count} more_`,
+  deliverablesMore: (count: number) => `_…and ${count} more (not shown; ask the model to send one with \`feishu_send_file\`)_`,
+  deliverTapHint: '_Files marked "tap to send" go out with one tap, after a confirmation._',
+  deliverTapToSend: 'tap to send',
+  deliverAutoSent: 'auto-delivery',
+  deliverPreview: 'preview',
+  deliverBlockedReason: reason => ({
+    'too-large': 'over Feishu\'s 30 MB limit — cannot be sent',
+    unreadable: 'the file is missing, empty, or unreadable',
+    outside: 'outside this session\'s workspace — cannot be sent',
+  })[reason],
+  deliverCardTitle: '📤 File delivery',
+  deliverConfirmBody: (name, size) => `Send **${name}** (${size}) to this chat?`,
+  deliverSendButton: '📤 Send',
+  deliverCancelButton: 'Cancel',
+  deliverSent: name => `✅ Sent **${name}**.`,
+  deliverCancelled: name => `Cancelled sending **${name}**.`,
+  deliverFailed: (name, reason) => `❌ Could not send **${name}**: ${reason}`,
+  deliverAutoFailed: (name, reason) => `⚠️ Automatic delivery of **${name}** failed: ${reason} (ask me to resend it)`,
+  deliverExpired: '⌛ This file card has expired (older than 30 minutes, or from a previous run). Ask the model to list the files again.',
+  deliverFileGone: 'the file no longer exists or cannot be read',
+  deliverOutside: 'it is outside this session\'s workspace',
+  deliverTooLarge: 'it is over Feishu\'s 30 MB limit',
 
   // Display switch card (feishu-display.ts)
   displayCardTitle: '📇 Card display',
@@ -1173,7 +1243,7 @@ export const en: Translations = {
   onboardingWorkspaceHeader: '**📁 Pick a workspace**\n\nThe new session will run in this workspace.',
   onboardingNoWorkspaces: 'No workspaces yet — enter a path below to create one.',
   onboardingNewWorkspaceHeader: '**🆕 New workspace**\n\nEnter an absolute path, or a `~`-relative home path.',
-  onboardingWorkspacePlaceholder: 'e.g. /home/user/projects/my-app or ~/projects/my-app',
+  onboardingWorkspacePlaceholder: 'e.g. ~/projects/my-app or an absolute path',
   onboardingCreateWorkspaceButton: '✅ Confirm and create workspace',
   onboardingNewTitle: '🆕 New session',
   onboardingPresetHeader: '**🧩 Choose an agent preset**\n\nThe preset decides which capabilities this session has.',

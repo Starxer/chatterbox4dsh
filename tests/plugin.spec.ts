@@ -208,6 +208,184 @@ describe('startChannel', () => {
     await stop()
   })
 
+  it('plans the present deliverables for the footer and auto-delivers them', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => true),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const turnStats = {
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [{ path: 'out/report.pdf', description: 'Monthly report' }],
+    }
+    const flushed = vi.fn(async () => turnStats as any)
+    const plan = {
+      rows: [{ path: 'out/report.pdf', name: 'report.pdf', kind: 'document', size: 2048, auto: true }],
+      auto: [{ path: '/work/out/report.pdf', name: 'report.pdf', sessionId: 'test-session' }],
+    }
+    const deliver = { plan: vi.fn(async () => plan), autoSend: vi.fn(async () => undefined) }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,
+    deliver as any)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    expect(deliver.plan).toHaveBeenCalledWith({
+      sessionId: 'test-session', chatId: 'oc_1', workspace: '/work',
+      files: [{ path: 'out/report.pdf', description: 'Monthly report' }],
+    })
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).toContain('交付文件')
+    expect(sent).toContain('report.pdf')
+    expect(sent).toContain('自动投递')
+    expect(deliver.autoSend).toHaveBeenCalledWith(plan, { chatId: 'oc_1', rootId: 'om_1' })
+    await stop()
+  })
+
+  it('posts a deliverable footer on the fallback reply path too', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => ({
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [{ path: 'out/notes.md' }],
+    }) as any)
+    const plan = {
+      rows: [{ path: 'out/notes.md', name: 'notes.md', kind: 'other', size: 10, token: 'tok-1' }],
+      auto: [],
+    }
+    const deliver = { plan: vi.fn(async () => plan), autoSend: vi.fn(async () => undefined) }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,
+    deliver as any)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).toContain('the full answer')
+    expect(sent).toContain('交付文件')
+    expect(sent).toContain('tok-1')
+    expect(deliver.autoSend).toHaveBeenCalledOnce()
+    await stop()
+  })
+
+  it('registers the topic of a deliverable footer so its rows stay traceable', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => true),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => ({
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [{ path: 'out/notes.md' }],
+    }) as any)
+    const plan = {
+      rows: [{ path: 'out/notes.md', name: 'notes.md', kind: 'other', size: 10, token: 'tok-1' }],
+      auto: [],
+    }
+    const deliver = { plan: vi.fn(async () => plan), autoSend: vi.fn(async () => undefined) }
+    const noteCardTopic = vi.fn()
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,
+    deliver as any,
+    noteCardTopic)
+    await channel.handlers.get('message')!({
+      messageId: 'om_1', chatId: 'oc_1', chatType: 'group', threadId: 'th_1', rootId: 'om_root', content: 'hi',
+    })
+    await flushAsync()
+    // The footer that carries the clickable rows is the card a later tap will
+    // arrive from, so its message id must resolve back to THIS topic — never to
+    // a chat-level "most recent topic" guess (关键坑 31).
+    expect(noteCardTopic).toHaveBeenCalledWith('out', { threadId: 'th_1', rootId: 'om_root' })
+    expect(deliver.plan).toHaveBeenCalledWith(expect.objectContaining({
+      topic: { threadId: 'th_1', rootId: 'om_root' },
+    }))
+    await stop()
+  })
+
+  it('does not post a footer on the fallback path when the plan carries no rows', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => ({
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [{ path: 'out/notes.md' }],
+    }) as any)
+    const deliver = {
+      plan: vi.fn(async () => ({ rows: [], auto: [] })),
+      autoSend: vi.fn(async () => undefined),
+    }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,
+    deliver as any,
+    undefined)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    // One card: the reply itself. An empty footer would be noise on every
+    // fallback reply that happened to declare nothing sendable.
+    expect(channel.send.mock.calls).toHaveLength(1)
+    expect(deliver.autoSend).toHaveBeenCalledOnce()
+    await stop()
+  })
+
   it('skips the reaction when reactEmoji is empty', async () => {
     const channel = fakeChannel()
     const bridge = { reply: vi.fn(async () => 'ok'), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }

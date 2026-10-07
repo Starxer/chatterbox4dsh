@@ -16,6 +16,7 @@ import { downloadMessageResource } from './feishu-resource.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 import type { CardImageHydrator } from './card-images.ts'
+import { hasDeliverables, renderDeliverableElements, type DeliverChat, type DeliverPlan, type DeliverPlanInput, type DeliverRow } from './feishu-deliver.ts'
 
 // Re-exported for callers that historically reached the sniffer through this
 // module; the implementation now lives in `media-sniff.ts` next to the video
@@ -261,6 +262,21 @@ export async function startChannel(
    * and best-effort: `card-markdown.ts` already keeps the card valid without it.
    */
   hydrateImages?: CardImageHydrator,
+  /**
+   * Deliver the files DSH's `present` tool declared (see `feishu-deliver.ts`):
+   * plan them for the Turn Complete card, then push the ones that need no
+   * confirmation. Optional — without it the card keeps the plain list.
+   */
+  deliver?: {
+    plan(input: DeliverPlanInput): Promise<DeliverPlan>
+    autoSend(plan: DeliverPlan, chat: DeliverChat): Promise<void>
+  },
+  /**
+   * Remember which topic a card message landed in, so a later tap on it can be
+   * traced back (关键坑 31). Optional: without it the deliverable rows fall
+   * back to the chat-level topic guess.
+   */
+  noteCardTopic?: (messageId: string, topic: { threadId?: string; rootId?: string }) => void,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -355,18 +371,22 @@ export async function startChannel(
    * Send a card, first letting the image hydrator inline whatever local paths it
    * references. Hydration is bounded and never rejects; a card that cannot be
    * hydrated is still sent (its references then render as text).
+   *
+   * Returns the message id so the caller can register which topic the card
+   * landed in (关键坑 31): a card that carries clickable rows must be findable
+   * from the tap that follows.
    */
   const sendCard = async (
     to: string,
     card: object,
     opts: { replyInThread?: boolean; replyTo?: string },
     workspace?: string,
-  ): Promise<void> => {
+  ): Promise<{ messageId?: string }> => {
     let prepared = card
     if (hydrateImages !== undefined) {
       prepared = await hydrateImages(card, workspace === undefined ? {} : { workspace }).catch(() => card)
     }
-    await sendOutbound(to, { card: prepared }, opts)
+    return sendOutbound(to, { card: prepared }, opts)
   }
 
   const unsubscribers = [
@@ -543,17 +563,55 @@ export async function startChannel(
           // reading it earlier would miss that correction (key pitfall 29).
           const turnStats = await flushed?.(sessionId)
           const intermediateSent = bridge.consumeIntermediateSent(sessionId)
+          const deliverChat: DeliverChat = {
+            chatId,
+            ...(threadId === undefined ? {} : { threadId }),
+            rootId: replyToId,
+          }
+          // Plan the turn's `present` deliverables before the cards are built:
+          // the plan decides which rows are clickable and which documents go out
+          // by themselves (see `feishu-deliver.ts`). A planning failure must not
+          // cost the answer, so it is contained here.
+          const deliverPlan = deliver === undefined
+            ? undefined
+            : await deliver.plan({
+                sessionId,
+                chatId,
+                ...(threadId === undefined ? {} : { topic: { threadId, rootId: replyToId } }),
+                ...(meta?.workspace === undefined ? {} : { workspace: meta.workspace }),
+                files: turnStats?.deliverables ?? [],
+              }).catch((error: unknown) => {
+                logError(`dsh-feishu: deliverable planning failed: ${error instanceof Error ? error.message : String(error)}`)
+                return undefined
+              })
+          /** Remember the topic of a card that carries clickable rows. */
+          const noteTopic = (messageId: string | undefined): void => {
+            if (messageId === undefined || threadId === undefined || noteCardTopic === undefined) return
+            noteCardTopic(messageId, { threadId, rootId: replyToId })
+          }
+          const autoDeliver = async (): Promise<void> => {
+            if (deliver === undefined || deliverPlan === undefined) return
+            await deliver.autoSend(deliverPlan, deliverChat)
+          }
 
           if (intermediateSent) {
             // Streaming already sent a step card with the text content:
             // send only the Turn Complete footer.
             console.log('dsh-feishu: [reply] a step card carried the text → footer only')
-            const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats)
-            if (footerCard !== undefined) {
-              await sendCard(chatId, footerCard, {
-                replyTo: replyToId,
-                replyInThread,
-              }, meta?.workspace)
+            const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows)
+            // The auto-send runs even if posting the footer failed: the files
+            // are what the operator asked for, and swallowing them behind a
+            // card-send error would be the worse failure.
+            try {
+              if (footerCard !== undefined) {
+                const sent = await sendCard(chatId, footerCard, {
+                  replyTo: replyToId,
+                  replyInThread,
+                }, meta?.workspace)
+                noteTopic(sent.messageId)
+              }
+            } finally {
+              await autoDeliver()
             }
           } else {
             // No intermediate card made it to the chat — send the full reply,
@@ -570,6 +628,23 @@ export async function startChannel(
                 replyTo: replyToId,
                 replyInThread,
               }, meta?.workspace)
+            }
+            // This path builds no footer of its own, so a turn that declared
+            // deliverables would lose both the list and the auto-delivery. The
+            // footer is only posted when there IS something to deliver.
+            try {
+              if (hasDeliverables(deliverPlan)) {
+                const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan.rows)
+                if (footerCard !== undefined) {
+                  const sent = await sendCard(chatId, footerCard, {
+                    replyTo: replyToId,
+                    replyInThread,
+                  }, meta?.workspace)
+                  noteTopic(sent.messageId)
+                }
+              }
+            } finally {
+              await autoDeliver()
             }
           }
         }).catch((error: unknown) => {
@@ -808,25 +883,31 @@ function deliverableLink(path: string, description?: string): string {
 /**
  * Render a Turn Complete card with turn stats and optional session metadata.
  * Returns undefined when there's nothing to show.
+ *
+ * `deliverRows` (from `feishu-deliver.ts`) replaces the plain deliverable list
+ * when the caller planned one: media is named and inlined, whitelisted
+ * documents are marked as auto-sent, and everything else becomes a clickable
+ * row carrying an opaque token. Omitting it keeps the pre-2026-10-06 rendering
+ * (a plain list) — tests and any deployment without the deliver controller.
  */
 export function renderFooterCard(
   t: Translations,
   meta?: ReplyCardMeta,
   turnStats?: TurnStats,
+  deliverRows?: readonly DeliverRow[],
 ): object | undefined {
   const elements: object[] = []
 
   // Deliverables lead the card: they are the one part the user may want to act
   // on, so they must not sit underneath the metrics. A divider separates them
-  // from the stats that follow. The list IS the Feishu deliverable surface —
-  // the bytes are never pushed automatically, because a chat has no workspace
-  // browser to open them from and most deliveries are files the user can
-  // already reach. Asking for one sends it through `feishu_send_file`.
-  //
-  // Each entry is a link, not a code span, so media the turn delivered renders
-  // inline here too (see `deliverableLink`); the card writer hydrates it.
+  // from the stats that follow. The list IS the Feishu deliverable surface:
+  // media renders in the card itself, whitelisted documents are pushed right
+  // after this card, and the remaining files are one confirmation away.
   const deliverables = turnStats?.deliverables ?? []
-  if (deliverables.length > 0) {
+  if (deliverRows !== undefined && deliverRows.length > 0) {
+    elements.push(...renderDeliverableElements(deliverRows, t))
+    elements.push({ tag: 'hr' })
+  } else if (deliverables.length > 0) {
     const shown = deliverables.slice(0, DELIVERABLE_DISPLAY_CAP)
     const lines = shown.map((file) => `• ${deliverableLink(file.path, file.description)}`)
     if (deliverables.length > shown.length) {

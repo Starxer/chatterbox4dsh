@@ -72,6 +72,30 @@ export interface Config {
   cardVideoMaxMb?: number
   /** Largest audio (MB) the card hydrator will upload and inline. */
   cardAudioMaxMb?: number
+  /**
+   * Largest DOCUMENT (MB) `present` may push as a native file message without
+   * asking. Documents over this limit — and every non-document file — become a
+   * click-to-send row on the Turn Complete card instead. Range 1–30: 30 MB is
+   * Feishu's own file ceiling, so a larger value could never take effect.
+   */
+  deliverDocMaxMb?: number
+}
+
+/**
+ * Bounds of the `deliverDocMaxMb` setting.
+ *
+ * The document whitelist (`deliver-files.ts`) covers the finished office
+ * formats; this number decides how large one may be before the operator gets a
+ * say. 30 is Feishu's `im.v1.file.create` ceiling — the largest value that can
+ * ever be delivered — and it is the default because a produced report or deck
+ * is exactly what the operator asked for.
+ */
+export const DELIVER_DOC_MAX_MB = { min: 1, max: 30, default: 30 } as const
+
+/** Clamp a user-supplied document auto-delivery limit into its bounds. */
+export function clampDeliverDocMaxMb(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return DELIVER_DOC_MAX_MB.default
+  return Math.min(DELIVER_DOC_MAX_MB.max, Math.max(DELIVER_DOC_MAX_MB.min, Math.trunc(value)))
 }
 
 /**
@@ -183,6 +207,8 @@ export interface SettingsConfig extends Required<Pick<Config,
   cardVideoMaxMb?: number
   /** Largest audio (MB) the card hydrator will upload and inline. */
   cardAudioMaxMb?: number
+  /** Largest document (MB) `present` may deliver without asking. */
+  deliverDocMaxMb?: number
 }
 
 export interface RuntimeConfig extends Omit<SettingsConfig, 'appSecretRef'> {
@@ -223,6 +249,7 @@ export const ConfigSchema = z.object({
   cardImageMaxMb: z.number().min(CARD_MEDIA_MAX_MB.image.min).max(CARD_MEDIA_MAX_MB.image.max).default(CARD_MEDIA_MAX_MB.image.default).volatile().description('Largest image (MB) to upload and inline in a card. Feishu refuses an image over 10 MB, so this cannot exceed 10.'),
   cardVideoMaxMb: z.number().min(CARD_MEDIA_MAX_MB.video.min).max(CARD_MEDIA_MAX_MB.video.max).default(CARD_MEDIA_MAX_MB.video.default).volatile().description('Largest video (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
   cardAudioMaxMb: z.number().min(CARD_MEDIA_MAX_MB.audio.min).max(CARD_MEDIA_MAX_MB.audio.max).default(CARD_MEDIA_MAX_MB.audio.default).volatile().description('Largest audio (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
+  deliverDocMaxMb: z.number().min(DELIVER_DOC_MAX_MB.min).max(DELIVER_DOC_MAX_MB.max).default(DELIVER_DOC_MAX_MB.default).volatile().description('Largest document (pdf/doc/docx/ppt/pptx/xls/xlsx) the present tool may send as a file without asking. Larger documents and every other file become click-to-send rows with a confirmation. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
 })
 
 export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
@@ -258,6 +285,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     cardImageMaxMb: clampCardMediaMaxMb('image', readField(config.cardImageMaxMb)),
     cardVideoMaxMb: clampCardMediaMaxMb('video', readField(config.cardVideoMaxMb)),
     cardAudioMaxMb: clampCardMediaMaxMb('audio', readField(config.cardAudioMaxMb)),
+    deliverDocMaxMb: clampDeliverDocMaxMb(readField(config.deliverDocMaxMb)),
     ...(appSecret === undefined ? {} : { appSecret }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),

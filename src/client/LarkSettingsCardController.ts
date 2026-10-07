@@ -102,6 +102,23 @@ export const CARD_MEDIA_MAX_MB = {
 export type CardMediaMaxField = keyof typeof CARD_MEDIA_MAX_MB
 
 /**
+ * Bounds and default of `deliverDocMaxMb`, mirroring `DELIVER_DOC_MAX_MB` in
+ * `src/config.ts`: how large a whitelisted document (pdf/doc/docx/ppt/pptx/
+ * xls/xlsx) may be before `present` stops delivering it by itself and offers a
+ * confirmation row instead.
+ */
+export const DELIVER_DOC_MAX_MB = { min: 1, max: 30, default: 30 } as const
+
+/** Clamp the staged document auto-delivery limit the way the Host schema would. */
+function clampDeliverDocMaxMb(raw: string): number {
+  const text = raw.trim()
+  if (text === '') return DELIVER_DOC_MAX_MB.default
+  const value = Number(text)
+  if (!Number.isFinite(value)) return DELIVER_DOC_MAX_MB.default
+  return Math.min(DELIVER_DOC_MAX_MB.max, Math.max(DELIVER_DOC_MAX_MB.min, Math.trunc(value)))
+}
+
+/**
  * Parse and clamp one staged size field.
  *
  * A blank field means "the user cleared it" and falls back to that field's own
@@ -142,6 +159,8 @@ export interface LarkSettingsValues {
   cardImageMaxMb?: number
   cardVideoMaxMb?: number
   cardAudioMaxMb?: number
+  /** Largest document (MB) `present` may deliver without asking. */
+  deliverDocMaxMb?: number
 }
 
 /** The page's staged controls, after defaults and edits are folded together. */
@@ -174,6 +193,8 @@ export interface LarkFormValues {
   cardImageMaxMb: string
   cardVideoMaxMb: string
   cardAudioMaxMb: string
+  /** Raw input text, for the same reason as {@link cardMediaLimit}. */
+  deliverDocMaxMb: string
 }
 
 /** The field order every save walks; also the only keys a save may write. */
@@ -182,6 +203,7 @@ const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'transcriptView', 'locale', 'cardImages',
   'cardMediaLimit',
   'cardImageMaxMb', 'cardVideoMaxMb', 'cardAudioMaxMb',
+  'deliverDocMaxMb',
 ]
 
 /** What the credentials domain last reported, and for which reference. */
@@ -492,6 +514,7 @@ export class LarkSettingsCardController {
       cardImageMaxMb: String(value?.cardImageMaxMb ?? CARD_MEDIA_MAX_MB.cardImageMaxMb.default),
       cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
       cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
+      deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
     }
     return { ...base, ...this.edits }
   }
@@ -546,6 +569,8 @@ function writeValue(field: keyof LarkFormValues, form: LarkFormValues): unknown 
     case 'cardVideoMaxMb':
     case 'cardAudioMaxMb':
       return clampCardMediaMaxMb(field, form[field])
+    case 'deliverDocMaxMb':
+      return clampDeliverDocMaxMb(form.deliverDocMaxMb)
     case 'groupAllowlist': return lines(form.groupAllowlist)
     case 'dmAllowlist': return lines(form.dmAllowlist)
     default: return form[field]

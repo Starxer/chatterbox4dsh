@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, LARK_APP_SECRET_REF, clampCardMediaLimit, clampCardMediaMaxMb,
-  connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig,
+  CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, DELIVER_DOC_MAX_MB, LARK_APP_SECRET_REF, clampCardMediaLimit, clampCardMediaMaxMb,
+  clampDeliverDocMaxMb, connectionFingerprint, resolveRuntimeConfig, resolveSettingsConfig,
 } from '../src/config.ts'
 import type { ConfigInput } from '../src/config.ts'
 
@@ -77,6 +77,21 @@ describe('resolveSettingsConfig', () => {
     expect(clampCardMediaMaxMb('audio', undefined)).toBe(CARD_MEDIA_MAX_MB.audio.default)
     expect(resolveSettingsConfig({ appId: 'id', cardImageMaxMb: 40 }).cardImageMaxMb).toBe(10)
     expect(resolveSettingsConfig({ appId: 'id', cardAudioMaxMb: 0 }).cardAudioMaxMb).toBe(1)
+  })
+
+  it('defaults the document auto-delivery limit to Feishu\'s 30 MB ceiling', () => {
+    expect(resolveSettingsConfig({ appId: 'id' }).deliverDocMaxMb).toBe(DELIVER_DOC_MAX_MB.default)
+    expect(DELIVER_DOC_MAX_MB.default).toBe(DELIVER_DOC_MAX_MB.max)
+    expect(resolveSettingsConfig({ appId: 'id', deliverDocMaxMb: 5 }).deliverDocMaxMb).toBe(5)
+    expect(resolveSettingsConfig({ appId: 'id', deliverDocMaxMb: 40 }).deliverDocMaxMb).toBe(DELIVER_DOC_MAX_MB.max)
+    expect(resolveSettingsConfig({ appId: 'id', deliverDocMaxMb: 0 }).deliverDocMaxMb).toBe(DELIVER_DOC_MAX_MB.min)
+  })
+
+  it('clamps a document auto-delivery limit that never went through the schema', () => {
+    expect(clampDeliverDocMaxMb(undefined)).toBe(DELIVER_DOC_MAX_MB.default)
+    expect(clampDeliverDocMaxMb(Number.NaN)).toBe(DELIVER_DOC_MAX_MB.default)
+    expect(clampDeliverDocMaxMb(12.9)).toBe(12)
+    expect(clampDeliverDocMaxMb(1e9)).toBe(DELIVER_DOC_MAX_MB.max)
   })
 
   it('preserves an empty reaction override that disables the acknowledgement', () => {

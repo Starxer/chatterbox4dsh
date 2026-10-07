@@ -15,7 +15,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
-import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -32,6 +32,7 @@ import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuSubagents } from './feishu-subagents.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
+import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
 import { dispatchCardAction } from './card-dispatch.ts'
@@ -66,7 +67,7 @@ const CARD_BARRIER_TIMEOUT_MS = 60_000
 const CARD_SEND_TIMEOUT_MS = CARD_BARRIER_TIMEOUT_MS + OUTBOUND_TIMEOUT_MS
 
 import { startFeishuQuestions } from './feishu-questions.ts'
-import { startFeishuSendFileTool } from './feishu-send-file.ts'
+import { startFeishuSendFileTool, sendWorkspaceFile } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
 import { startFeishuModelSelect, renderProviderSelectCard, sendModelCardV2, type ModelSelectChannel } from './feishu-model-select.ts'
 import { renderSupersededCard } from './card-supersede.ts'
@@ -217,6 +218,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let busyHandle: FeishuBusyHandle | undefined = undefined
   let displayHandle: FeishuDisplayHandle | undefined = undefined
   let sessionHandle: FeishuSessionHandle | undefined = undefined
+  /** `present` deliverable delivery (planning + auto-send + confirm taps). */
+  let deliverHandle: FeishuDeliverHandle | undefined = undefined
   /** Card-action subscription that settles the `/new` confirmation card. */
   let stopNewSessionConfirmer: (() => void) | undefined = undefined
   /**
@@ -673,6 +676,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         },
       () => translationsFor(currentLocale().id),
         cardImages.hydrate,
+        deliverHandle,
+        // Register the topic of every deliverable-carrying footer card, so a
+        // tap on one of its rows can be traced back to the right topic instead
+        // of the chat-level guess (关键坑 31).
+        (messageId, topic) => cardTopics.note(messageId, topic),
       )
     },
   })
@@ -768,6 +776,40 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     workspaceRegistry,
     logger: ctx.logger('dsh-feishu'),
     getTranslations: () => translationsFor(currentLocale().id),
+  })
+  // `present` deliverable delivery (key pitfall 52 / TODO O25). The module is
+  // independent of the questions/approvals seams: it needs the live card
+  // channel, the session's workspace (which `channel.ts` passes in), the
+  // `deliverDocMaxMb` setting and a topic resolver — a confirmation card must
+  // land in the topic of the card that was tapped, never in a topic guessed
+  // from the chat (关键坑 31).
+  const sendDeliverFile: DeliverFileSender = async (input) => {
+    const ch = channelHolder.current
+    if (ch === undefined) throw new Error('dsh-feishu: channel not connected — try again later')
+    const result = await sendWorkspaceFile({
+      channel: ch,
+      chatId: input.chatId,
+      path: input.path,
+      ...(input.opts === undefined ? {} : { opts: input.opts }),
+      logger: ctx.logger('dsh-feishu'),
+    })
+    return { sentAs: result.sentAs, messageId: result.messageId }
+  }
+  deliverHandle = startFeishuDeliverables({
+    channel: cardChannel,
+    logger: ctx.logger('dsh-feishu'),
+    getTranslations: () => translationsFor(currentLocale().id),
+    docMaxMb: () => currentSettings().deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default,
+    topicFor: message => resolveCardTopic({
+      cardTopics,
+      message,
+      chatFallback: () => {
+        const fromBridge = bridgeHolder.current?.topicFor(message.chatId) ?? {}
+        if (fromBridge.rootId !== undefined) return fromBridge
+        return onboardingHandle?.topicFor(message.chatId) ?? {}
+      },
+    }),
+    sendFile: sendDeliverFile,
   })
   if (sessionController !== undefined && userQuestions !== undefined && approval !== undefined) {
     /**
@@ -1100,6 +1142,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     busyHandle?.stop()
     displayHandle?.stop()
     sessionHandle?.stop()
+    deliverHandle?.dispose()
     stopNewSessionConfirmer?.()
   }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
 

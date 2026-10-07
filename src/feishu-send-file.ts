@@ -1,12 +1,15 @@
 /**
- * `feishu_send_file` model tool: lets the agent push a workspace file to the
- * user's Feishu chat.
+ * Native file delivery to a Feishu chat.
  *
  * DSH itself has no "agent pushes a binary file to the client" primitive — the
  * agent writes files into the workspace, and the WebUI's `ui-deliverables`
- * plugin auto-links them. Feishu has no equivalent, so this tool gives the
- * agent an explicit way to deliver a produced file into the chat that owns the
- * current session.
+ * plugin auto-links them. Feishu has no equivalent, so this module owns BOTH
+ * ways a produced file reaches the chat:
+ *
+ * - {@link startFeishuSendFileTool} registers the `feishu_send_file` model tool,
+ *   the explicit path the agent chooses;
+ * - {@link sendWorkspaceFile} is the reusable sender, which `feishu-deliver.ts`
+ *   calls for the files DSH's `present` tool declared (the automatic path).
  *
  * Sending goes through the SDK's `LarkChannel.send` path, which already knows
  * every Feishu media message shape we want — no hand-rolled upload + send
@@ -31,7 +34,7 @@
  * @module @starxer/chatterbox4dsh/feishu-send-file
  */
 
-import { readFile, stat, unlink } from 'node:fs/promises'
+import { readFile, realpath, stat, unlink } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -42,19 +45,27 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { HarnessConversationService } from './harness.ts'
 import { errorText } from './error-text.ts'
 import { sniffAudioContainer, sniffImageMime, sniffVideoContainer } from './media-sniff.ts'
+import { withTimeout } from './outbound-timeout.ts'
+import { FEISHU_MAX_FILE_BYTES, FEISHU_MAX_IMAGE_BYTES, noteDeliveredFile } from './deliver-files.ts'
 
 const execFileAsync = promisify(execFile)
 
-/** Feishu file-message ceiling (`im.v1.file.create` rejects > 30 MB). */
-const MAX_FILE_BYTES = 30 * 1024 * 1024
-/** Feishu image-message ceiling (`im.v1.image.create` rejects > 10 MB; larger
- *  images must be sent as files and cannot inline-preview). */
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 /** Cover extraction is a nicety — never let a slow ffmpeg hold up the send. */
 const COVER_EXTRACT_TIMEOUT_MS = 15_000
+/**
+ * How long ONE file send may stay unresolved before it counts as failed.
+ *
+ * Much larger than the 20 s protocol timeout: the upload reads the whole
+ * (possibly 30 MB) file into memory and Feishu's own processing runs before the
+ * message id comes back, so this exists to break a permanent hang rather than
+ * to enforce a latency budget. The SDK builds its HTTP client with
+ * `timeout: 0`, so without this a half-open TLS socket would hang the caller
+ * forever (关键坑 29).
+ */
+export const FILE_SEND_TIMEOUT_MS = 120_000
 
 /** Minimal logger surface; matches ctx.logger's call style. */
-interface PluginLogger {
+export interface PluginLogger {
   warn(message: string): unknown
   error(message: string): unknown
 }
@@ -130,9 +141,12 @@ async function uploadCoverFrame(
   }
   if (frame === undefined || frame.length === 0) return undefined
   try {
-    const uploaded = await channel.rawClient.im.v1.image.create({
+    // Bounded like every other outbound call: the SDK's HTTP client is built
+    // with `timeout: 0`, so a half-open socket would otherwise hang the whole
+    // send (关键坑 29). The catch below already degrades to "no cover".
+    const uploaded = await withTimeout(channel.rawClient.im.v1.image.create({
       data: { image_type: 'message', image: frame },
-    })
+    }), 'upload cover frame', FILE_SEND_TIMEOUT_MS)
     const key = uploaded?.image_key
     if (key === undefined) {
       logger.warn('dsh-feishu: cover frame upload returned no image_key; sending the video without a cover')
@@ -143,6 +157,157 @@ async function uploadCoverFrame(
       + 'sending the video without a cover')
     return undefined
   }
+}
+
+/** One file to push into a chat, with the coordinates of that chat. */
+export interface SendWorkspaceFileDeps {
+  channel: LarkChannel
+  /** Target chat id. */
+  chatId: string
+  /** Path as the caller knows it (absolute or relative to the process cwd). */
+  path: string
+  /** Topic coordinates; omitted for a plain top-level reply. */
+  opts?: { replyInThread?: boolean; replyTo?: string }
+  logger: PluginLogger
+  /** Override for tests; defaults to the ffmpeg-backed extractor. */
+  extractCoverFrame?: CoverFrameExtractor
+  /** Abort check run before reading and before each send. */
+  signal?: { throwIfAborted(): void }
+  /**
+   * Run after the file passed validation and before anything is sent. The
+   * `feishu_send_file` tool uses it for the optional caption, so a bad path
+   * cannot leave a stray caption in the chat.
+   */
+  beforeSend?: () => Promise<void>
+  /** Test/live override for the bounded wait around one send. */
+  timeoutMs?: number
+}
+
+/** What one delivered file turned into. */
+export interface SendWorkspaceFileResult {
+  fileName: string
+  /** How Feishu rendered it: image, video, audio or file. */
+  sentAs: string
+  messageId: string
+  bytes: number
+}
+
+/**
+ * Validate one local file and send it into a Feishu chat, in the richest form
+ * the platform will render (see the module doc). Throws with an actionable
+ * reason for anything that cannot be delivered: a missing/empty/oversized file
+ * is reported before a single request goes out, and a refused upload is
+ * reported with Feishu's own code.
+ *
+ * Every send is bounded ({@link FILE_SEND_TIMEOUT_MS}) because the SDK's HTTP
+ * client never gives up on its own.
+ *
+ * @param deps - the live channel, target chat, file and hooks.
+ * @returns the file name, the rendering Feishu chose and the message id.
+ */
+export async function sendWorkspaceFile(deps: SendWorkspaceFileDeps): Promise<SendWorkspaceFileResult> {
+  const { channel, chatId, logger } = deps
+  const extractCoverFrame = deps.extractCoverFrame ?? extractCoverFrameWithFfmpeg
+  const timeoutMs = deps.timeoutMs ?? FILE_SEND_TIMEOUT_MS
+  const send = (input: SendInput) =>
+    withTimeout(channel.send(chatId, input, deps.opts), 'send file', timeoutMs)
+
+  deps.signal?.throwIfAborted()
+
+  // Validate locally so failures carry actionable messages rather than a
+  // Feishu API error (empty file, > 30 MB, missing path).
+  let fileStat
+  try {
+    fileStat = await stat(deps.path)
+  } catch {
+    throw new Error(`File not found or unreadable: ${deps.path}`)
+  }
+  if (!fileStat.isFile()) {
+    throw new Error(`Not a regular file: ${deps.path}`)
+  }
+  if (fileStat.size === 0) {
+    throw new Error(`File is empty (Feishu rejects empty files): ${deps.path}`)
+  }
+  if (fileStat.size > FEISHU_MAX_FILE_BYTES) {
+    throw new Error(`File is ${fileStat.size} bytes, over Feishu's 30 MB limit: ${deps.path}`)
+  }
+
+  deps.signal?.throwIfAborted()
+  const bytes = await readFile(deps.path)
+  const fileName = basename(deps.path)
+
+  if (deps.beforeSend !== undefined) await deps.beforeSend()
+
+  deps.signal?.throwIfAborted()
+  // Sniff from the BYTES, never the filename: sending a container the
+  // Feishu client cannot play produces a broken bubble, which is worse
+  // than the click-to-open attachment an unknown file gets.
+  const sendAsImage = sniffImageMime(bytes) !== undefined && bytes.length <= FEISHU_MAX_IMAGE_BYTES
+  const video = sendAsImage ? undefined : sniffVideoContainer(bytes)
+  const audio = sendAsImage || video !== undefined ? undefined : sniffAudioContainer(bytes)
+
+  const sendAsFile = async (): Promise<string> =>
+    (await send({ file: { source: bytes, fileName } })).messageId ?? ''
+
+  // The SDK throws when it cannot derive a media duration from the bytes
+  // (`duration could not be determined for video`), and Feishu can reject
+  // an upload it cannot play. Neither may cost the user the file.
+  //
+  // Images belong here too, which is why the union is not just video/audio:
+  // `im.v1.image.create` refuses a picture over 10 MB or over its
+  // resolution ceiling (GIF > 2000x2000, anything else > 12000x12000,
+  // `234039` — the API docs' own advice for such a picture is to upload it
+  // as a file). Without this fallback a long screenshot under 10 MB but
+  // over 12000 px failed the whole call and delivered nothing.
+  const sendWithFileFallback = async (
+    kind: 'image' | 'video' | 'audio',
+    input: SendInput,
+  ): Promise<{ id: string; sentAs: string }> => {
+    try {
+      const sent = await send(input)
+      return { id: sent.messageId ?? '', sentAs: kind }
+    } catch (inlineError: unknown) {
+      const reason = errorText(inlineError, 'unknown Feishu error')
+      // A TIMEOUT is not a rejection: `withTimeout` only stops the caller from
+      // waiting, and the request may still complete server-side. Retrying it as
+      // a file would therefore deliver the same file twice (关键坑 29).
+      if (/timed out after/u.test(reason)) throw inlineError
+      logger.warn(`dsh-feishu: inline ${kind} send of "${fileName}" failed `
+        + `(${reason}); falling back to a file attachment`)
+      return { id: await sendAsFile(), sentAs: 'file' }
+    }
+  }
+
+  let sentAs: string
+  let messageId: string
+  try {
+    if (sendAsImage) {
+      const outcome = await sendWithFileFallback('image', { image: { source: bytes } })
+      sentAs = outcome.sentAs
+      messageId = outcome.id
+    } else if (video !== undefined) {
+      const coverImageKey = await uploadCoverFrame(channel, deps.path, logger, extractCoverFrame)
+      const outcome = await sendWithFileFallback('video', {
+        video: { source: bytes, ...(coverImageKey === undefined ? {} : { coverImageKey }) },
+      })
+      sentAs = outcome.sentAs
+      messageId = outcome.id
+    } else if (audio !== undefined) {
+      const outcome = await sendWithFileFallback('audio', { audio: { source: bytes } })
+      sentAs = outcome.sentAs
+      messageId = outcome.id
+    } else {
+      sentAs = 'file'
+      messageId = await sendAsFile()
+    }
+  } catch (error: unknown) {
+    // Surfacing the specific reason (and Feishu API code, e.g. 230021 for
+    // an oversized file) lets the caller report exactly why the send failed
+    // instead of a generic "send failed".
+    throw new Error(`Failed to send "${fileName}" via Feishu: ${errorText(error, 'unknown Feishu error')}`)
+  }
+
+  return { fileName, sentAs, messageId, bytes: bytes.length }
 }
 
 /**
@@ -223,114 +388,43 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
         throw new Error('dsh-feishu: channel not connected — try again later')
       }
 
-      // Validate locally so failures carry actionable messages rather than a
-      // Feishu API error (empty file, > 30 MB, missing path).
-      let fileStat
-      try {
-        fileStat = await stat(args.path)
-      } catch {
-        throw new Error(`File not found or unreadable: ${args.path}`)
-      }
-      if (!fileStat.isFile()) {
-        throw new Error(`Not a regular file: ${args.path}`)
-      }
-      if (fileStat.size === 0) {
-        throw new Error(`File is empty (Feishu rejects empty files): ${args.path}`)
-      }
-      if (fileStat.size > MAX_FILE_BYTES) {
-        throw new Error(`File is ${fileStat.size} bytes, over Feishu's 30 MB limit: ${args.path}`)
-      }
-
-      exec.signal.throwIfAborted()
-      const bytes = await readFile(args.path)
-      const fileName = basename(args.path)
-
       const opts = chat.threadId !== undefined
         ? { replyInThread: true as const, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
         : {}
 
-      // Optional caption first, so the explanation precedes the attachment.
+      // The optional caption goes after validation (see `beforeSend`), so the
+      // explanation precedes the attachment and a bad path leaves no apology.
       let captionSent = false
-      if (args.caption !== undefined && args.caption.trim() !== '') {
-        try {
-          await ch.send(chat.chatId, { text: args.caption }, opts)
-          captionSent = true
-        } catch (error: unknown) {
-          throw new Error(`Failed to send caption via Feishu: ${errorText(error, 'unknown Feishu error')}`)
-        }
-      }
-
-      exec.signal.throwIfAborted()
-      // Sniff from the BYTES, never the filename: sending a container the
-      // Feishu client cannot play produces a broken bubble, which is worse
-      // than the click-to-open attachment an unknown file gets.
-      const sendAsImage = sniffImageMime(bytes) !== undefined && bytes.length <= MAX_IMAGE_BYTES
-      const video = sendAsImage ? undefined : sniffVideoContainer(bytes)
-      const audio = sendAsImage || video !== undefined ? undefined : sniffAudioContainer(bytes)
-
-      const sendAsFile = async (): Promise<string> =>
-        (await ch.send(chat.chatId, { file: { source: bytes, fileName } }, opts)).messageId ?? ''
-
-      // The SDK throws when it cannot derive a media duration from the bytes
-      // (`duration could not be determined for video`), and Feishu can reject
-      // an upload it cannot play. Neither may cost the user the file.
-      //
-      // Images belong here too, which is why the union is not just video/audio:
-      // `im.v1.image.create` refuses a picture over 10 MB or over its
-      // resolution ceiling (GIF > 2000x2000, anything else > 12000x12000,
-      // `234039` — the API docs' own advice for such a picture is to upload it
-      // as a file). Without this fallback a long screenshot under 10 MB but
-      // over 12000 px failed the whole call and delivered nothing.
-      const sendWithFileFallback = async (
-        kind: 'image' | 'video' | 'audio',
-        input: SendInput,
-      ): Promise<{ id: string; sentAs: string }> => {
-        try {
-          const sent = await ch.send(chat.chatId, input, opts)
-          return { id: sent.messageId ?? '', sentAs: kind }
-        } catch (inlineError: unknown) {
-          logger.warn(`dsh-feishu: inline ${kind} send of "${fileName}" failed `
-            + `(${errorText(inlineError, 'unknown Feishu error')}); falling back to a file attachment`)
-          return { id: await sendAsFile(), sentAs: 'file' }
-        }
-      }
-
-      let sentAs: string
-      let messageId: string
-      try {
-        if (sendAsImage) {
-          const outcome = await sendWithFileFallback('image', { image: { source: bytes } })
-          sentAs = outcome.sentAs
-          messageId = outcome.id
-        } else if (video !== undefined) {
-          const coverImageKey = await uploadCoverFrame(ch, args.path, logger, extractCoverFrame)
-          const outcome = await sendWithFileFallback('video', {
-            video: { source: bytes, ...(coverImageKey === undefined ? {} : { coverImageKey }) },
-          })
-          sentAs = outcome.sentAs
-          messageId = outcome.id
-        } else if (audio !== undefined) {
-          const outcome = await sendWithFileFallback('audio', { audio: { source: bytes } })
-          sentAs = outcome.sentAs
-          messageId = outcome.id
-        } else {
-          sentAs = 'file'
-          messageId = await sendAsFile()
-        }
-      } catch (error: unknown) {
-        // Surfacing the specific reason (and Feishu API code, e.g. 230021 for
-        // an oversized file) lets the agent report exactly why the send failed
-        // instead of a generic "send failed".
-        throw new Error(`Failed to send "${fileName}" via Feishu: ${errorText(error, 'unknown Feishu error')}`)
-      }
-      logger.warn(`dsh-feishu: feishu_send_file sent "${fileName}" to chat ${chat.chatId} (${sentAs})`)
+      const result = await sendWorkspaceFile({
+        channel: ch,
+        chatId: chat.chatId,
+        path: args.path,
+        opts,
+        logger,
+        extractCoverFrame,
+        signal: exec.signal,
+        beforeSend: async () => {
+          if (args.caption === undefined || args.caption.trim() === '') return
+          try {
+            await withTimeout(ch.send(chat.chatId, { text: args.caption }, opts), 'send caption', FILE_SEND_TIMEOUT_MS)
+            captionSent = true
+          } catch (error: unknown) {
+            throw new Error(`Failed to send caption via Feishu: ${errorText(error, 'unknown Feishu error')}`)
+          }
+        },
+      })
+      // Remember the explicit send so the same turn's `present` auto-delivery
+      // does not push the identical file a second time. Keyed on the REAL path,
+      // which is what the delivery planner validates and records.
+      noteDeliveredFile(agent.id, await realpath(args.path).catch(() => args.path))
+      logger.warn(`dsh-feishu: feishu_send_file sent "${result.fileName}" to chat ${chat.chatId} (${result.sentAs})`)
 
       return {
-        file_name: fileName,
-        message_id: messageId,
+        file_name: result.fileName,
+        message_id: result.messageId,
         chat_id: chat.chatId,
         caption_sent: captionSent,
-        sent_as: sentAs,
+        sent_as: result.sentAs,
       }
     },
   }))
