@@ -1928,7 +1928,7 @@ describe('display levels on the step card (O22/O5)', () => {
   it('gives the verbose level the whole chain, still folded', () => {
     const long = 'y'.repeat(900)
     const card = renderStepCard(t, long, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true } }) as any
+      { display: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
     const panel = panelOf(card)
     expect(panel.expanded).toBe(false)
     expect(panel.elements[0].content).toContain(long)
@@ -1937,7 +1937,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('shows only the first line and nothing to expand at the standard level', () => {
     const card = renderStepCard(t, 'first line\nsecond line', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     expect(panelOf(card)).toBeUndefined()
     const md = mdOf(card)
     expect(md).toContain('first line')
@@ -1948,7 +1948,7 @@ describe('display levels on the step card (O22/O5)', () => {
     const card = renderStepCard(t, 'hidden chain', undefined, []) as any
     expect(mdOf(card)).toContain('hidden chain')
     const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     expect(mdOf(compact)).not.toContain('hidden chain')
     expect(panelOf(compact)).toBeUndefined()
   })
@@ -1962,7 +1962,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('collapses tools to one count line at the compact level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool, { ...tool, callId: 'c2', result: { ...tool.result, isError: true } }], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     const md = mdOf(card)
     expect(md).toContain(t.stepToolCount(2, 1))
     // No per-call lines, no args, no result blocks.
@@ -1973,7 +1973,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('names each call but carries no payload at the standard level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false } }) as any
+      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     const md = mdOf(card)
     expect(md).toContain('bash')
     expect(md).not.toContain(t.stepToolArgsHeader)
@@ -2017,10 +2017,134 @@ describe('level + injection wiring through session events', () => {
     const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: 'private chain' } })
+    // A compact step opens its card on TEXT, not at `step/start`: the step cards
+    // carry the answer, and reasoning alone is invisible at this level.
+    expect(ch.createCardInstance).not.toHaveBeenCalled()
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 1 } })
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
     await tick(250)
+    expect(mdOf(lastCard(ch))).toContain('the answer')
     expect(mdOf(lastCard(ch))).not.toContain('private chain')
+    h.streaming.stop()
+  })
+
+  it('takes the mid-turn reply off its own card and onto the turn card', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '我先看一下那段代码' } })
+    // The same message that carries the prose also asks for a tool — WebUI
+    // parity: that text is process narration, never the turn's answer.
+    h.emit('assistant/message', {
+      message: {
+        content: [
+          { type: 'text', text: '我先看一下那段代码' },
+          { type: 'tool-call', id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        ],
+      },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    h.emit('tool/call', { callId: 'c1', name: 'read', arguments: '{"path":"a.ts"}' })
+    await tick(300)
+    // ONE card only: the turn progress card, whose step section carries the
+    // narration as a row. No step card was posted for the narration.
+    expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
+    const card = lastCard(ch)
+    expect(String(card.header.title.content)).toContain('本回合')
+    expect(mdOf(card)).toContain(t.turnCardStepNote('我先看一下那段代码'))
+    h.streaming.stop()
+  })
+
+  it('still opens the step card when that step carries an injection notice', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('user/message', { source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'narration' } })
+    h.emit('assistant/message', {
+      message: { content: [{ type: 'text', text: 'narration' }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{}' }] },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    await tick(250)
+    // Injection notices render on a step card and nowhere else (O21①), so that
+    // card stays — and the text stays with it instead of being duplicated onto
+    // the turn card.
+    const md = mdOf(lastCard(ch))
+    expect(md).toContain('@deepseek-ai/dsh-system-prompt')
+    expect(md).toContain('narration')
+    h.streaming.stop()
+  })
+
+  it('keeps the mid-turn reply on its own card for the non-compact levels', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'narration' } })
+    h.emit('assistant/message', {
+      message: { content: [{ type: 'text', text: 'narration' }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{}' }] },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    await tick(250)
+    const card = lastCard(ch)
+    expect(String(card.header.title.content)).toContain('第 1 轮')
+    expect(mdOf(card)).toContain('narration')
+    h.streaming.stop()
+  })
+
+  it('renders the compact answer card without the section chrome', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    await tick(250)
+    const card = lastCard(ch)
+    const elements = card.body.elements as any[]
+    // No `📝 消息` label (the card has one section), no `hr`, and both footer
+    // lines share ONE element so the card pays its element spacing once.
+    expect(mdOf(card)).toContain('the answer')
+    expect(mdOf(card)).not.toContain(t.stepMessageHeader)
+    expect(elements.some((el: any) => el.tag === 'hr')).toBe(false)
+    expect(elements.filter((el: any) => el.tag === 'markdown' && el.text_size === 'notation')).toHaveLength(1)
+    expect(card.body.vertical_spacing).toBe('4px')
+    h.streaming.stop()
+  })
+
+  it('keeps the section chrome on the detailed step card', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    await tick(250)
+    const card = lastCard(ch)
+    expect(mdOf(card)).toContain(t.stepMessageHeader)
+    expect((card.body.elements as any[]).some((el: any) => el.tag === 'hr')).toBe(true)
+    expect(card.body.vertical_spacing).toBeUndefined()
+    h.streaming.stop()
+  })
+
+  it('posts no card for a compact step that only ran tools', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    h.emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    h.emit('step/end')
+    await tick(300)
+    // Exactly ONE card in the whole step: the turn progress card. The step's tool
+    // work never opens a step card of its own under `compact`.
+    expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
+    const card = lastCard(ch)
+    expect(String(card.header.title.content)).toContain('本回合')
     h.streaming.stop()
   })
 
@@ -2091,5 +2215,104 @@ describe('level + injection wiring through session events', () => {
     h.emit('compaction/end', { compactionId: 'c1', turn: null })
     await tick(50)
     h.streaming.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Turn progress card (`compact` level): the turn's tool activity on ONE card
+// ---------------------------------------------------------------------------
+
+describe('turn progress card wiring', () => {
+  function channel(): StepChannel {
+    return {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+  }
+  /** Titles of every card instance the streaming module created for a turn. */
+  const titles = (ch: StepChannel): string[] =>
+    (ch.createCardInstance?.mock.calls ?? []).map(call => String((call[0] as any).header.title.content))
+  /** The progress card among the updated renders (its title names the turn). */
+  const progressRenders = (ch: StepChannel): any[] =>
+    (ch.updateCardInstance?.mock.calls ?? [])
+      .map(call => call[1] as any)
+      .filter(card => String(card.header?.title?.content ?? '').includes('本回合'))
+
+  it('mirrors the whole turn onto one card at the compact level', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(300)
+    // The ONE card so far is the progress card: a tool-only step posts no step
+    // card at this level (the whole point of the merge).
+    expect(titles(ch).some(title => title.includes('本回合'))).toBe(true)
+    expect(titles(ch).filter(title => !title.includes('本回合'))).toEqual([])
+    const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
+      .find(card => String(card.header.title.content).includes('本回合'))
+    expect(mdOf(opened)).toContain('⏳ `bash`')
+    expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…'))
+
+    emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    // The answer opens a step card of its own — carrying the text and NOTHING
+    // about the tools, which live on the turn card.
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(titles(ch).some(title => !title.includes('本回合'))).toBe(true) })
+    const answer = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
+      .find(card => !String(card.header.title.content).includes('本回合'))
+    expect(mdOf(answer)).toContain('the answer')
+    expect(mdOf(answer)).not.toContain('工具调用')
+    expect(mdOf(answer)).not.toContain('`bash`')
+
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => { expect(progressRenders(ch).length).toBeGreaterThan(0) })
+    const last = progressRenders(ch).at(-1)!
+    expect(last.header.template).toBe('green')
+    expect(mdOf(last)).toContain('✅ `bash`')
+    streaming.stop()
+  })
+
+  it('leaves the turn alone at the detailed level', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch)
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    expect(titles(ch).some(title => title.includes('本回合'))).toBe(false)
+    streaming.stop()
+  })
+
+  it('respects the tool-display switch: no progress card when tools are off', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, {
+      transcriptView: () => 'compact' as TranscriptView,
+      showToolCalls: () => false,
+    })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(200)
+    expect(titles(ch).some(title => title.includes('本回合'))).toBe(false)
+    streaming.stop()
+  })
+
+  it('sends no progress card for a turn that calls no tool', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'no tools here' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('step/end', {})
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await tick(200)
+    expect(titles(ch).some(title => title.includes('本回合'))).toBe(false)
+    streaming.stop()
   })
 })

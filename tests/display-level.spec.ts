@@ -27,14 +27,14 @@ describe('parseTranscriptView', () => {
 describe('resolveDisplayPolicy', () => {
   it('maps each level onto the axes the renderer reads', () => {
     expect(resolveDisplayPolicy({ transcriptView: 'compact' })).toEqual({
-      reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false,
+      reasoning: 'off', tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'standard' })).toEqual({
-      reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false,
+      reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(resolveDisplayPolicy({ transcriptView: 'verbose' })).toEqual({
-      reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true,
+      reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
     })
   })
 
@@ -43,8 +43,29 @@ describe('resolveDisplayPolicy', () => {
     // what the plugin did before a level existed.
     expect(resolveDisplayPolicy({})).toEqual(DETAILED_POLICY)
     expect(DETAILED_POLICY).toEqual({
-      reasoning: 'head', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false,
+      reasoning: 'head', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
     })
+  })
+
+  it('replaces the compact step card\'s tool section with the turn card', () => {
+    // `compact` shows tools on the ONE turn card (`feishu-progress.ts`), so the
+    // step cards carry no tool section at all — and a step that only ran tools
+    // stops being "visible", which is what keeps it from posting a card.
+    const compact = resolveDisplayPolicy({ transcriptView: 'compact' })
+    expect(compact.tools).toBe('off')
+    expect(compact.turnCard).toBe(true)
+  })
+
+  it('turns the turn progress card on at `compact` only', () => {
+    // `compact` merges the turn's tool activity onto one card (feishu-progress.ts);
+    // the other three levels keep the per-step rendering they always had.
+    expect(resolveDisplayPolicy({ transcriptView: 'compact' }).turnCard).toBe(true)
+    for (const level of ['standard', 'detailed', 'verbose'] as const) {
+      expect(resolveDisplayPolicy({ transcriptView: level }).turnCard).toBe(false)
+    }
+    // A user who asked for no tool display at all must not get a card that lists
+    // every tool either.
+    expect(resolveDisplayPolicy({ transcriptView: 'compact', showToolCalls: false }).turnCard).toBe(false)
   })
 
   it('lets a switch only ever show LESS than the level allows', () => {

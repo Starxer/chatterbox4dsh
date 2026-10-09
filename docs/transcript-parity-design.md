@@ -1,6 +1,6 @@
 # 上下文注入、压缩摘要与显示级别：与 WebUI 的对齐调研
 
-> 状态：**三件事都已实现并上线**（2026-09-29 收尾；同日追加「折叠必须看得出来」的可见性修复；2026-10-02 依据 DSH 版本刷新基线）。实现落点：[`src/injection-notice.ts`](../src/injection-notice.ts)、[`src/feishu-compaction.ts`](../src/feishu-compaction.ts)、[`src/display-level.ts`](../src/display-level.ts) + [`src/feishu-streaming.ts`](../src/feishu-streaming.ts)、[`src/card-fold.ts`](../src/card-fold.ts)。下文保留调研原文（结论、取证，以及当时被推翻的数字）；**「建议」「待拍板」是当时的记录，不是现状**。
+> 状态：**三件事都已实现并上线**（2026-09-29 收尾；同日追加「折叠必须看得出来」的可见性修复；2026-10-02 依据 DSH 版本刷新基线；**2026-10-09 补上「简洁档合并卡片」——见 §3.4 偏离 2 与「仍待拍板」②**）。实现落点：[`src/injection-notice.ts`](../src/injection-notice.ts)、[`src/feishu-compaction.ts`](../src/feishu-compaction.ts)、[`src/display-level.ts`](../src/display-level.ts) + [`src/feishu-streaming.ts`](../src/feishu-streaming.ts)、[`src/card-fold.ts`](../src/card-fold.ts)、[`src/feishu-progress.ts`](../src/feishu-progress.ts)。下文保留调研原文（结论、取证，以及当时被推翻的数字）；**「建议」「待拍板」是当时的记录，不是现状**。
 > 修订：2026-09-28 第二版按使用者质疑复核，**更正了 §1.1（来源是开放集合，不是 8 种）/ §1.2（注入行会被整轮折叠）/ §1.4（真实频次远低于第一版采信的单次开发期会话）**；同日第三版按使用者第二次提案把 §1.5 改为**插进所属 step 卡正文最前面**（原「独立卡片」决定作废），并新增 **§1.6 位置实测** 作为核验依据；同日第四版按使用者第三次决定收紧为**只显示一行提示、不渲染注入内容**（`form` 正文渲染与截断逻辑一并取消）。2026-09-29：§2.4 与 §3.3 的形态落地（压缩卡、4 档显示、思考折叠面板），并按真机读回把「折叠态要看得出来」定为硬要求（边框 + 底色 + 标题提示）。
 > 关联：[`src/feishu-streaming.ts`](../src/feishu-streaming.ts)（`session/event` fan-out 与步骤卡全部逻辑）、[`src/feishu-display.ts`](../src/feishu-display.ts)（`/display` 卡片）、[`src/display-level.ts`](../src/display-level.ts)（4 档与策略轴）、[`src/injection-notice.ts`](../src/injection-notice.ts)、[`src/feishu-compaction.ts`](../src/feishu-compaction.ts)、[`src/config.ts`](../src/config.ts)（档位 + 4 个显示开关）、[`docs/step-card-phases-design.md`](./step-card-phases-design.md)（O20，同一片代码、同一批信号）、[`docs/display-card-design.md`](./display-card-design.md)。
 > 台账：`TODO.md` 的 **O21**（注入与压缩完全不可见）、**O22**（显示级别不对齐）——均已收口。
@@ -325,7 +325,7 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 
 | 档位 | 推理 | 工具 | 参数 | 结果 | 上限 |
 |---|---|---|---|---|---|
-| **简洁** `compact` | 不显示 | 只报计数（`N 个工具调用 · M 个失败`） | 否 | 否 | — |
+| **简洁** `compact` | 不显示 | ~~只报计数（`N 个工具调用 · M 个失败`）~~ **2026-10-09 起：步骤卡不再有工具段，工具全在回合过程卡上（见下方偏离 2）** | 否 | 否 | — |
 | **标准** `standard` | 首行预览（无折叠区） | 每个调用一行摘要 | 否 | 否 | — |
 | **详细** `detailed`（默认） | 折叠面板，正文 200 字 | 摘要 + 参数 + 结果 | 是 | 是 | 1500 / 2000 字符 |
 | **完全展开** `verbose` | 折叠面板，**全文** | 同上 | 是 | 是 | **6000 / 6000 字符** |
@@ -333,7 +333,7 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 三处有意偏离上面的提案，理由并列在此：
 
 1. **档位是「基线」，不是「权威」**：不提 `custom` 档，而是把档位与四个老开关用 **AND** 合成（`resolveDisplayPolicy`，`src/display-level.ts`）。理由：① 升级不能让用户**已经关掉**的东西重新出现（`showToolArgs=false` 的部署不该因为档位是「详细」就把参数放回来）；② `custom` 档需要从四个布尔**反推**当前档位、并且要为「档位与布尔不一致」定义展示规则，是纯增复杂度；③ AND 语义下「档位能显示什么」永远是上界，理解成本最低。
-2. **简洁档不合并卡片**：提案里「一轮合并成 1 张过程卡」会引入一个新的卡片聚合生命周期（跨 step 复用一张卡、正文追加、与 `resetStep` / 交付守卫 / 溢出续卡全部交互），而收益只是「少几张卡」；`compact` 现在**只把卡片缩成状态行**，卡片数量不变。WebUI 的 `foldCompletedTurns` / `stepGrouping` 两轴在飞书因此**没有对应物**——这是「一个 step 只能一张卡」（关键坑 12）的直接后果，不是遗漏。
+2. ~~**简洁档不合并卡片**~~ → **2026-10-09 已改**：`compact` 现在把**整轮的工具活动**合并到一张回合级过程卡上（[`src/feishu-progress.ts`](../src/feishu-progress.ts)：懒创建、就地更新、`turn/end` 定格；标题 `⚙️ 本回合 · N 个工具 · 耗时`，正文是 step 小节 + 每行「工具名 · 耗时」，连续同名合并、超过 40 行按整步折叠进 `collapsible_panel`）。**分工在真机复核后定稿（同日）**：`compact` 的步骤卡 `tools` 降为 `off` ⇒ 步骤卡**只承载答案正文**、**纯工具步骤不再发卡**（活动全在过程卡上），`step/start` 的占位卡只在该步带注入提示行时才发（注入行只渲染在步骤卡上，丢了就真丢了，O21①）。所以「一个 step 只能一张卡」（关键坑 12）仍然成立——只是 `compact` 下**没有内容的 step 干脆没有卡**，而过程卡是**回合级**的卡、不是 step 卡的替代。当时担心的「跨 step 卡片生命周期」被收窄为：**一个回合一张、无按钮、不跨回合复用、不跨重启恢复**（卡片实体只能发送一次且只有 14 天有效期，见 `docs/feishu-capabilities.md` §七与关键坑 57）。WebUI 的 `foldCompletedTurns` / `stepGrouping` 两轴仍然**没有**逐 step 的对应物（关键坑 12 的直接后果），但「把这轮过程折进一张卡」这个意图现在有了对应实现。**第三轮（2026-10-09 晚，使用者复看后）**：① **中间那几句正文也归「过程」**——按 WebUI 自己的答案判据（`ui-chat/src/client/conversation-nodes/turn-process.ts` 的 `latestAnswer`：**带 tool-call 块的 assistant 消息永远不是最终答案**），同一条消息里既写话又调用工具的正文在 `compact` 下不再单独成卡，改为过程卡上该步小节下的一行 `💬 …`（首个非空行、空白折叠、80 字截断；注入提示行的步骤例外，卡与正文都留在步骤卡上）。② **简洁档的答案卡收紧**（去 `📝 消息` 标题、去 `hr`、脚注两行合一、`body.vertical_spacing: 4px`；过程卡同样 4px）——间距字段是**真机探针实测**的（坑 58：`cardkit.card.create` 静默容忍未知字段，所以用一次性测试群「真发一次」验证，`~/.dsh/probe-card-spacing.py`）。
 3. **`verbose` 的「不截断」是 4 倍上限，不是无限**：卡片 JSON 过 ~30KB 会被整张拒收（关键坑 42），而被拒收的卡**什么都不显示**；留一个上界比「完整但发不出去」诚实。
 
 ---
@@ -376,7 +376,7 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 ### 仍待拍板
 
 1. **注入提示行还能再压到什么程度**：要不要连 `<路径>` / `<skill 名>` 这类元数据、以及 `N 条` 计数也去掉，只留「📥 注入上下文」（§1.5 末尾）。**现状**：保留元数据，未知 kind 只报种类。
-2. **`compact` 档要不要真的合并卡片**（§3.4 偏离 2）：现在只缩内容不合并；若使用者要「一轮一张卡」，那是一项独立的卡片生命周期改造。
+2. ~~**`compact` 档要不要真的合并卡片**~~ → **已拍板并实现（2026-10-09）**：见 §3.4 偏离 2。形态先由使用者拍板（卡片 vs 普通消息 → **卡片**），实现为**回合级过程卡**（`src/feishu-progress.ts`）：只在 `compact` 生效（策略轴 `turnCard`），首个工具调用懒创建、整轮就地更新、`turn/end` 定格；步骤卡只承载答案正文、纯工具步骤不发卡（真机看到「旧的最小卡 + 新的过程卡」重复后，同日按使用者拍板定稿）。当时担心的「跨 step 卡片生命周期」被收窄为**一个回合一张、无按钮、不跨回合复用、不跨重启恢复**（卡片实体只能发送一次且 14 天有效，见 `docs/feishu-capabilities.md` §七与关键坑 57）。**仍未做**：把答案正文也并进这张卡（30KB 上限 + 溢出续卡会失控）。
 3. ~~折叠面板的初始展开态字段名~~：**已真机确认（2026-09-29）**——上线后读回线上卡片（`card_msg_content_type=user_card_content`）得到 `collapsible_panel` + `expanded=false`，即 `expanded` 生效、默认收起。
 4. **rc.2 的 `user-question-reply`（2026-10-02 记）**：DSH 0.2.0-rc.2 给 `MessageSourceMap` 加了这个新的持久注入 kind —— `tool-ask-user` 的 `Config.mode` 选 `timed` 时，「问题面板已关闭之后迟到的答案」会整批 steer 进 agent。**本部署仍是默认 `legacy`，所以它从未出现在真机会话里**。要定的两件事：① 提示行给它专门的中英文案（否则只会走未知 kind 兜底、显示 `📥 user-question-reply`）；② 「答案迟到」这件事要不要在**问题卡**那一侧也留痕（现在迟到答案只在注入行里看得见，问题卡本身不知道它已过期）。切 `timed` 之前先定，别等线上出现看不懂的一行。
 

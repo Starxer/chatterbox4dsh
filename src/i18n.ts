@@ -202,6 +202,32 @@ export interface Translations {
   /** One line of tool-call totals, shown by the `compact` detail level. */
   stepToolCount: (calls: number, failed: number) => string
 
+  // ---- Turn progress card (feishu-progress.ts) ----
+  // One card per turn, `compact` level only: the turn's tool activity merged
+  // into a single card updated in place. Durations arrive already formatted
+  // (`3.2s`) because they read the same in both languages.
+  /** Title while the turn is still running, e.g. `⚙️ 本回合进行中 · 5 个工具 · 12.3s`. */
+  turnCardTitleRunning: (calls: number, elapsed: string) => string
+  /** Title once the turn ended normally. */
+  turnCardTitleDone: (calls: number, failed: number, elapsed: string) => string
+  /** Title when the turn ended in an error (the reason rides the failure card). */
+  turnCardTitleFailed: (calls: number, elapsed: string) => string
+  /** Section header of one step, e.g. `**第 2 步** · 8.9s`. */
+  turnCardStep: (step: number, elapsed: string) => string
+  /**
+   * The step's own narration — the assistant text of a step that went on to call
+   * tools, i.e. process rather than answer. Already collapsed to one line.
+   */
+  turnCardStepNote: (note: string) => string
+  /** One tool call that has not returned yet; `label` is already in markup. */
+  turnCardToolRunning: (label: string, elapsed: string) => string
+  /** One tool call that returned successfully. */
+  turnCardToolDone: (label: string, elapsed: string) => string
+  /** One tool call that returned an error. */
+  turnCardToolFailed: (label: string, elapsed: string) => string
+  /** Header of the folded panel holding the rows that no longer fit. */
+  turnCardOlderRows: (rows: number) => string
+
   // ---- Context injections (injection-notice.ts) ----
   // One line per injected context message, carried at the TOP of the step card
   // that claims it. Only `source` metadata is ever rendered, never the injected
@@ -697,6 +723,18 @@ export const zh = {
   stepToolCount: (calls, failed) =>
     `🔧 ${calls} 个工具调用${failed > 0 ? ` · ${failed} 个失败` : ''}`,
 
+  // 回合过程卡（feishu-progress.ts）：简洁档把整轮的工具活动合并到一张卡上。
+  turnCardTitleRunning: (calls, elapsed) => `⚙️ 本回合进行中 · ${calls} 个工具 · ${elapsed}`,
+  turnCardTitleDone: (calls, failed, elapsed) =>
+    `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
+  turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
+  turnCardStep: (step, elapsed) => `**第 ${step} 步** · ${elapsed}`,
+  turnCardStepNote: note => `💬 ${note}`,
+  turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
+  turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
+  turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
+  turnCardOlderRows: rows => `**更早的 ${rows} 行**`,
+
   // 上下文注入提示行（injection-notice.ts）：只报来源，不显示注入内容。
   injectionContext: '📥 注入上下文',
   injectionRecall: '🔗 跨会话召回',
@@ -1147,6 +1185,21 @@ export const en: Translations = {
     `⚠️ ${turn > 0 && step > 0 ? `The card for turn ${turn}, step ${step}` : 'A card'} could not be updated and is stuck on its old content.\nReason: ${reason}`,
   stepToolCount: (calls, failed) =>
     `🔧 ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''}`,
+
+  // Turn progress card (feishu-progress.ts): `compact` merges the whole turn's
+  // tool activity onto one card.
+  turnCardTitleRunning: (calls, elapsed) =>
+    `⚙️ Turn running · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
+  turnCardTitleDone: (calls, failed, elapsed) =>
+    `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
+  turnCardTitleFailed: (calls, elapsed) =>
+    `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
+  turnCardStep: (step, elapsed) => `**Step ${step}** · ${elapsed}`,
+  turnCardStepNote: note => `💬 ${note}`,
+  turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
+  turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
+  turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
+  turnCardOlderRows: rows => `**${rows} earlier ${rows === 1 ? 'row' : 'rows'}**`,
 
   // Context-injection notices (injection-notice.ts): attribution only, never the
   // injected content.

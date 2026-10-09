@@ -34,6 +34,7 @@ import {
 import { injectionNotice } from './injection-notice.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
+import { createProgressCards } from './feishu-progress.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -406,6 +407,20 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * interleaves with a step card's own writes; it shares the channel only.
    */
   const compactionCards = createCompactionCards({
+    channel,
+    logger,
+    getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
+  })
+
+  /**
+   * The turn progress card (`compact` level only, see `feishu-progress.ts`).
+   *
+   * It is a SECOND card for the turn, not a replacement for the step cards: the
+   * step cards still carry the answer, while this one carries the tool timeline
+   * (names + durations per step) that `compact` otherwise reduces to a count.
+   * It opens lazily on the first tool call, so a tool-free turn never shows it.
+   */
+  const progressCards = createProgressCards({
     channel,
     logger,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
@@ -1434,7 +1449,24 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // A step that rendered nothing visible posts no card (see
         // `stepHasVisibleContent`). `lastStepHadContent` stays raw so it keeps
         // meaning "the model produced something", independent of display.
-        if (stepHasVisibleContent(state)) {
+        //
+        // `compact` reads one more fact before deciding: a message that calls
+        // tools is PROCESS, so its text is this step's narration, not the turn's
+        // answer (WebUI parity, see `messageCallsTools`). Posting it as a step
+        // card would put prose the user reads as a reply next to the real answer
+        // — the "middle reply" that used to arrive as its own card. It goes on
+        // the turn card as one row instead. The exception is a step with
+        // injection notices: those render on a step card and nowhere else, so
+        // that card stays (and keeps the text with it).
+        const narration = displayPolicy().turnCard
+          && state.stepNumber > 0
+          && state.text.trim() !== ''
+          && state.injections.length === 0
+          && messageCallsTools(event)
+        if (narration) {
+          progressCards.stepNote(sessionId, state.stepNumber, state.text, state.messageTime)
+        }
+        if (stepHasVisibleContent(state) && !narration) {
           // Reuse this step's existing card when one is already on screen (a
           // tool call can open the card before the assembled message arrives,
           // and a step can emit more than one assistant/message). Sending a
@@ -1464,6 +1496,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // event; callView stays undefined and renderStepCard falls back to
         // the tool name and arguments.
         state.toolCalls.push(toolCall)
+        // Mirror the call onto the turn progress card (`compact` only). The
+        // card opens on this first call and is updated in place from here on.
+        if (displayPolicy().turnCard) {
+          progressCards.toolStarted(sessionId, toolName, toolCallId, toolCall.startedAt)
+        }
 
         // With tool display off a tool call changes nothing on screen, so it
         // neither opens a card nor refreshes one.
@@ -1510,6 +1547,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
           const elapsed = Date.now() - toolCall.startedAt
 
+          if (displayPolicy().turnCard) {
+            progressCards.toolFinished(sessionId, toolCallId, elapsed, isError, event.time ?? Date.now())
+          }
+
           toolCall.result = {
             isError,
             content: summarizeValue(
@@ -1541,6 +1582,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         state.stepStartTime = event.time ?? Date.now()
         state.turnNumber = (event.data?.turn as number | undefined) ?? 0
         state.stepNumber = (event.data?.step as number | undefined) ?? 0
+        if (displayPolicy().turnCard) {
+          progressCards.stepStarted(sessionId, state.stepNumber, state.stepStartTime)
+        }
         // Injections that arrived before this `step/start` (a compaction's
         // re-injection, a session's opening baseline) belong to THIS step's
         // request, so they join the first render of its card. Moved after
@@ -1556,12 +1600,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // it opens is the SAME card every later stage updates in place —
         // `assistant/message` (reasoning/text) → `tool/call` → `tool/result`.
         //
-        // This send is UNCONDITIONAL, which is also what keeps the promise that a
-        // step carrying an injection always has a card to carry it on. If the send
-        // ever becomes conditional (a "tool-only steps post no card" policy), the
-        // injection case must stay an exception or the notice silently vanishes.
-        queueStepCardSend(chat, sessionId, state)
-        startPlaceholderTick(sessionId, state)
+        // `compact` is the exception, deliberately: its step cards carry the
+        // answer only, while the whole turn's tool activity lives on the one turn
+        // card (`feishu-progress.ts`). A step that has produced nothing yet
+        // therefore opens NO card, and a step that only ever runs tools never
+        // gets one (`tools: 'off'` also keeps it out of
+        // `stepHasVisibleContent`). The one case that must still open a card is a
+        // step carrying injections: those notices render on a step card and
+        // nowhere else, so dropping the card would silently drop them (O21①).
+        const stepPolicy = displayPolicy()
+        if (!stepPolicy.turnCard || state.injections.length > 0) {
+          queueStepCardSend(chat, sessionId, state)
+          startPlaceholderTick(sessionId, state)
+        }
       } else if (event.type === 'step/end') {
         // A step that never produced anything visible must not leave its
         // placeholder claiming to think forever: fold it into the terminal
@@ -1569,6 +1620,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // no visible tool call).
         state.stepEnded = true
         stopPlaceholderTick(state)
+        if (displayPolicy().turnCard) progressCards.stepEnded(sessionId, event.time ?? Date.now())
         if (state.stepCardSent && stepIsEmpty(state)) updateStepCard(state)
       } else if (event.type === 'turn/start') {
         resetStep(state)
@@ -1579,6 +1631,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // turn's own messages (see `foldTurnTrigger`).
         state.sawHumanMessage = false
         state.turnTrigger = undefined
+        // `compact` draws the turn's tool activity on one card; this turn owns a
+        // new one (the previous card is a historical record — a card entity may
+        // only be sent once).
+        if (displayPolicy().turnCard) progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
         state.turnStats = {
           turnStartTime: event.time ?? Date.now(),
           stepCount: 0,
@@ -1641,6 +1697,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             // Inside a step whose card is still inside its debounce window: the
             // pending send rebuilds from this state, so adding it here is enough.
             state.injections.push(notice)
+            // …except under `compact`, where a step that has produced nothing yet
+            // has NO pending send at all (see the `step/start` branch): open one
+            // now, or this notice would be dropped with nothing to render it.
+            if (!state.stepCardSent && displayPolicy().turnCard) {
+              queueStepCardSend(chat, sessionId, state)
+              startPlaceholderTick(sessionId, state)
+            }
           } else {
             // Between steps (or before the first one): DSH materializes an
             // injection when a step CLAIMS its inbox, so it belongs to the NEXT
@@ -1718,11 +1781,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (state.stepCardSent && repaint) updateStepCard(state)
       } else if (event.type === 'turn/end') {
         const turnStats = state.turnStats
+        const endTime = event.time ?? Date.now()
         if (turnStats !== undefined) {
-          const now = event.time ?? Date.now()
-          turnStats.totalTurnMs = now - turnStats.turnStartTime
+          turnStats.totalTurnMs = endTime - turnStats.turnStartTime
           turnStatsMap.set(sessionId, turnStats)
         }
+        // The `compact` progress card freezes here (green, or red when the turn
+        // failed). A no-op when no card was opened, so a level change mid-turn
+        // still closes whatever exists.
+        void progressCards.finish(sessionId, endTime, event.data?.reason?.kind === 'error')
 
         // A very short final step can end inside the send debounce window;
         // post its card before anything else so it precedes the overflow and
@@ -1954,6 +2021,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       flushPromises.clear()
       pendingInjections.clear()
       compactionCards.stop()
+      progressCards.stop()
     },
     consumeReasoning,
     consumeLastStepHadContent,
@@ -2076,6 +2144,14 @@ const TEXT_STEP_CAP = 3000
 const MAX_OVERFLOW_CARDS = 30
 
 /**
+ * Element spacing of a `compact` step card (the answer card). The default is
+ * visibly loose when a card is a paragraph plus one footer line; 4px keeps the
+ * two apart without the empty-line look. `vertical_spacing` takes a size token
+ * or px — see 关键坑 58 for the measured field behaviour.
+ */
+const STEP_CARD_ELEMENT_SPACING = '4px'
+
+/**
  * Truncate a value to a readable summary for card display.
  */
 function summarizeValue(value: unknown, maxLen: number = 200): string {
@@ -2116,6 +2192,26 @@ function sanitizeCodeblock(text: string): string {
   return text
     .replace(/`+/g, '`')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ')
+}
+
+/**
+ * Whether an assembled assistant message asked for tools.
+ *
+ * The tool-call BLOCKS are the authority: they arrive inside the assembled
+ * `assistant/message` (the separate `tool/call` session events come after it), so
+ * this is the only fact available at the moment the card would be sent. The Web
+ * UI draws the same line — a reply-bearing message that also calls tools is
+ * process narration, never a Turn's final answer
+ * (`ui-chat/src/client/conversation-nodes/turn-process.ts` → `latestAnswer`
+ * refuses any message whose blocks contain a tool call).
+ *
+ * @param event - the `assistant/message` session event.
+ * @returns whether the message carries a tool-call block.
+ */
+function messageCallsTools(event: { data?: any }): boolean {
+  const content = event.data?.message?.content
+  if (!Array.isArray(content)) return false
+  return content.some((block: { type?: unknown }) => block?.type === 'tool-call')
 }
 
 /**
@@ -2336,6 +2432,13 @@ export function renderStepCard(
     toolArgs: options?.showToolArgs !== false,
     toolResults: options?.showToolResults !== false,
   }
+  /**
+   * `compact`'s step card is a different animal: it carries the answer and
+   * nothing else, so the chrome that separates sections at the other levels (the
+   * `📝 消息` label, the `hr` rules, one element per footer line, the default
+   * element spacing) only adds emptiness. See 关键坑 58 for the spacing fields.
+   */
+  const tight = display.turnCard
 
   // Context-injection notices, FIRST: they are why this request carries what it
   // carries, so they read as the preamble of the step rather than as one more
@@ -2436,8 +2539,11 @@ export function renderStepCard(
     const displayText = text.length > TEXT_STEP_CAP
       ? chunkText(text, TEXT_STEP_CAP, MAX_OVERFLOW_CARDS + 1)[0] ?? text
       : text
-    if (elements.length > 0) elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: `${t.stepMessageHeader}\n\n${displayText}` })
+    // `compact` has exactly one section, so a label naming it ("📝 消息") labels
+    // nothing and costs a paragraph break. At the other levels the label is what
+    // tells this section apart from reasoning and tool calls.
+    if (!tight && elements.length > 0) elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: tight ? displayText : `${t.stepMessageHeader}\n\n${displayText}` })
   }
 
   // Tool calls section. `count` collapses the whole section to one line of
@@ -2553,12 +2659,20 @@ export function renderStepCard(
     speedParts.push(`📊 ${formatTokenCount(contextMeta.lastInputTokens)}/${formatTokenCount(contextMeta.contextWindow)} (${pct}%)`)
   }
   if (timingParts.length > 0 || speedParts.length > 0) {
-    elements.push({ tag: 'hr' })
-    if (timingParts.length > 0) {
-      elements.push({ tag: 'markdown', content: timingParts.join(' · '), text_size: 'notation' })
-    }
-    if (speedParts.length > 0) {
-      elements.push({ tag: 'markdown', content: speedParts.join(' · '), text_size: 'notation' })
+    // `compact`: no rule above the footer, and both notation lines share ONE
+    // element — each element costs its own vertical spacing, and a two-line
+    // footer was paying it twice.
+    if (tight) {
+      const footer = [timingParts.join(' · '), speedParts.join(' · ')].filter(part => part !== '')
+      elements.push({ tag: 'markdown', content: footer.join('\n'), text_size: 'notation' })
+    } else {
+      elements.push({ tag: 'hr' })
+      if (timingParts.length > 0) {
+        elements.push({ tag: 'markdown', content: timingParts.join(' · '), text_size: 'notation' })
+      }
+      if (speedParts.length > 0) {
+        elements.push({ tag: 'markdown', content: speedParts.join(' · '), text_size: 'notation' })
+      }
     }
   }
 
@@ -2609,7 +2723,12 @@ export function renderStepCard(
       title: { tag: 'plain_text', content: titleWithPosition },
       template,
     },
-    body: { elements },
+    body: {
+      // The measured default element spacing reads as an empty line between
+      // rows at `compact`, whose card is answer + one footer line. See 关键坑 58.
+      ...(tight ? { vertical_spacing: STEP_CARD_ELEMENT_SPACING } : {}),
+      elements,
+    },
   }
 }
 

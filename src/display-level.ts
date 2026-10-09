@@ -18,12 +18,16 @@
  *    args off does not get them back because the level happens to be
  *    `detailed`) and avoids a `custom` pseudo-level whose state would have to
  *    be reconstructed from four booleans.
- * 2. **A level changes how much a card says, never how many cards are sent.**
- *    The WebUI's `foldCompletedTurns` / `stepGrouping` axes have no visual
- *    equivalent here — one step is one card, always (关键坑 12) — so `compact`
- *    does not merge a turn into a single card. It only strips the cards down to
- *    a status line. Merging cards would make deliverable text ambiguous and is
- *    not worth the risk.
+ * 2. **A level changes what a step card says; only `compact` changes whether a
+ *    step gets one.** The WebUI's `foldCompletedTurns` / `stepGrouping` axes
+ *    have no visual equivalent for a step (关键坑 12), so a step that produced
+ *    text always keeps its own card. `compact` turns on
+ *    {@link DisplayPolicy.turnCard}: the turn's TOOL activity is merged into ONE
+ *    turn-level card updated in place (see `feishu-progress.ts`), and with it
+ *    the step cards lose their tool section entirely — a step that only ran
+ *    tools posts no card at all. That is the one place where the WebUI's
+ *    "collapse the process" idea translates, because a tool timeline is not a
+ *    step's answer.
  *
  * @module @starxer/chatterbox4dsh/display-level
  */
@@ -75,17 +79,26 @@ interface LevelSpec {
   toolResults: boolean
   /** Render args and result previews without their preview caps (verbose only). */
   fullToolOutput: boolean
+  /**
+   * Merge the turn's tool activity into ONE turn-level card updated in place
+   * (`feishu-progress.ts`). Compact only: it is the level whose whole point is
+   * "tell me the turn happened, not how it happened".
+   */
+  turnCard: boolean
 }
 
 const LEVELS: Record<TranscriptView, LevelSpec> = {
-  // 简洁: the card proves the step happened and says what it touched, nothing more.
-  compact: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false },
+  // 简洁: the step cards carry the ANSWER and nothing else — the turn's whole
+  // tool activity lives on the one turn card (`feishu-progress.ts`), so a step
+  // card renders no tool section and a step that only ran tools posts no card
+  // at all. `tools: 'off'` is what makes both of those true.
+  compact: { reasoning: 'off', tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true },
   // 标准: every call is named, but no payloads; reasoning is one line.
-  standard: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false },
+  standard: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false },
   // 详细: the pre-level default — preview + args + results, folded reasoning.
-  detailed: { reasoning: 'head', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false },
+  detailed: { reasoning: 'head', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false },
   // 完全展开: everything the card can carry, nothing truncated.
-  verbose: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true },
+  verbose: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false },
 }
 
 /** The resolved axes the renderers read. */
@@ -98,6 +111,11 @@ export interface DisplayPolicy {
   toolResults: boolean
   /** Skip the args/result preview caps, so long output is carried whole. */
   fullToolOutput: boolean
+  /**
+   * Whether this turn's tool activity is mirrored onto one turn-level progress
+   * card (created on the first tool call, updated in place until `turn/end`).
+   */
+  turnCard: boolean
 }
 
 /** The baseline switch values a resolved policy assumes. */
@@ -155,6 +173,11 @@ export function resolveDisplayPolicy(input: {
     toolArgs: tools === 'full' && level.toolArgs && input.showToolArgs !== false,
     toolResults: tools === 'full' && level.toolResults && input.showToolResults !== false,
     fullToolOutput: tools === 'full' && level.fullToolOutput,
+    // Not gated by the four switches: they control what a STEP card shows, and
+    // this axis controls a different card. `showToolCalls === false` does turn
+    // it off, because a user who asked for no tool display at all must not get
+    // a card that lists every tool.
+    turnCard: level.turnCard && input.showToolCalls !== false,
   }
 }
 
