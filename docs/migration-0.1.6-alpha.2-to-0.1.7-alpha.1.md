@@ -214,6 +214,16 @@ node apps/cli/lib/bin.js --version             # 期望 0.1.7-alpha.1；失败�
 
 > 判据要点：**「配置组合里有这个 preset」不等于「这个会话在用它」**。`--dump-config` 只能证明组装正确，绑定要看会话记录。
 
+### 7.1 同一个接缝的第二个受害者：恢复时的模型路线（2026-10-09 修复）
+
+「插件自己调底层 `agents.resume()`」还有第二个后果，形态和 §7 一模一样，但更安静：**上游 loop 的路线只认创建者传的 `agentOptions`**（`packages/core/agent-loop/src/agent.ts:556`：`route = { provider: this.options.provider ?? '', model: this.options.model ?? '' }`；会话日志里的 `request/header` **只在 provider+model 相同时**用来继承 reasoning effort）。宿主 `session-controller` 本来会在它自己建的 agent 上装一个 selection 监听器，让「会话自己的路线」优先（pending → 日志 header → 全局默认），**而它不会给插件直接建的 agent 装** ⇒ `agentOptions` 说了算。
+
+插件当时对**新建与恢复**共用 `creation ?? config ?? deps.selection()`，`deps.selection()` 就是**全局默认**；`config.provider/model` 为空、恢复时也没有 `creation` ⇒ **每次重建都用全局默认当路线**。又因为 `sessionController.selectModel()` 每次都会 `agentDefaultModel.saveSelection()` 把挑的模型**持久化成默认**（任何入口都一样：Web UI 选择器、插件 `/model`、`/effort`、模型卡、`/new`）⇒ 「任何入口挑一次模型 × 任何一次重启」= **所有被重建的会话一起被切到那个模型**。真机证据：重启后某会话打出 `request/header reason=resume` 用的是当时的默认 model，而它自己日志里没有任何该 model 的 `model/selection`。
+
+修法：恢复前读**该会话自己的日志**（`sessionPersistence.open(id,'read')` 分块读、`readFrom` 兜底），路线取 **最后一条 `model/selection` > 最后一条非 `resume` 的 `request/header` > 第一条 header**，`initial` 改成 **`creation` > 记录到的路线 > `config` > 全局默认**（新建会话行为不变）；日志读不出来时静默回退。已固化为**关键坑 59**，回归测试 3 例；被顶掉的历史会话用运行中宿主自己的 `session/selectModel` RPC 写回（无需重启），并把那次 `selectModel` 顺带改写的全局默认**还原**。
+
+> 判据要点：**「部署默认模型是 X」不等于「这个会话在 X 上跑」**。恢复一个会话后，看它自己的 `request/header`（或 `session/list` 里 `modelSelection` 投影的 `next`）才算数。
+
 ---
 
 ## 8. 关联记录

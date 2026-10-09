@@ -28,6 +28,7 @@ import { commandTranslationsFor } from './commands-i18n.ts'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { handleProvisionRequest, PROVISION_PATH } from './web.ts'
 import { startFeishuApprovals, type PendingApprovalView } from './feishu-approvals.ts'
+import { createCardInterleave } from './card-interleave.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuSubagents } from './feishu-subagents.ts'
@@ -298,6 +299,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     onTimeout: reason => console.log(`dsh-feishu: pending card flush gave up: ${reason}`),
   })
   /**
+   * "Another module posted a card into this chat" (`src/card-interleave.ts`).
+   * One instance for the whole plugin: the modules that post interrupting cards
+   * (todos, jobs, panels, questions, compactions) are not the module that owns
+   * the long-lived compact card, so the notice travels through here.
+   */
+  const cardInterleave = createCardInterleave()
+  /**
    * Shared `messageId → topic` registry for every card the plugin sends (see
    * `card-topics.ts`). One instance for the whole plugin because a card sent
    * by one module is clicked in another: the `/new` flow's model card is sent
@@ -389,7 +397,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // step-card chain above all — waits forever too (key pitfall 29).
     send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
       // The bound covers the barrier plus the HTTP call it precedes.
-      return withTimeout(cardBarrier.run(to, pendingCardFlush, () => rawChannelSend(to, input, opts)), 'send card or text', CARD_SEND_TIMEOUT_MS)
+      const sent = await withTimeout(cardBarrier.run(to, pendingCardFlush, () => rawChannelSend(to, input, opts)), 'send card or text', CARD_SEND_TIMEOUT_MS)
+      // This path is what every OTHER module posts a card through (todos, jobs,
+      // subagent panels, questions). A card that lands here sits after the
+      // long-lived compact cards, so their next content must not be written
+      // above it: announce it (see `src/card-interleave.ts`). Text messages are
+      // not announced — a busy notice or an error line does not reorder cards,
+      // and treating those as interruptions would multiply cards for nothing.
+      if ('card' in input && input.card !== undefined) cardInterleave.note(to)
+      return sent
     },
     /**
      * Post a step card WITHOUT the pre-send flush — the send the streaming
@@ -903,6 +919,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolResults: () => currentSettings().showToolResults,
       transcriptView: () => currentSettings().transcriptView,
       getTranslations: () => translationsFor(currentLocale().id),
+      interleave: cardInterleave,
       ...(noteDetachedJob !== undefined ? { noteDetachedJob } : {}),
       hydrateImages: cardImages.hydrate,
       // Warming resolves the same media against the text still being streamed,

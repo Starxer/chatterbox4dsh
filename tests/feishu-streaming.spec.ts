@@ -3,6 +3,7 @@ import { createCardSendBarrier } from '../src/card-send-barrier.ts'
 import { deriveToolSummary, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { TranscriptView } from '../src/display-level.ts'
+import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
 
 const t = translationsFor('zh')
 
@@ -356,6 +357,8 @@ function stepHarness(
     hydrateImages?: (card: any, scope: any, options?: any) => Promise<any>
     /** Card media warmer the streaming side fires at the text being streamed. */
     warmImages?: (card: any, scope: any) => void
+    /** Registry another module announces its cards through (card-interleave). */
+    interleave?: CardInterleave
   } = {},
 ) {
   // Listeners are keyed by EVENT NAME: the streaming module also subscribes to
@@ -2057,25 +2060,49 @@ describe('level + injection wiring through session events', () => {
     h.streaming.stop()
   })
 
-  it('still opens the step card when that step carries an injection notice', async () => {
+  it('merges an injection notice and the step narration onto the turn card', async () => {
     const ch = levelChannel()
     const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
     h.emit('turn/start')
+    // The runtime context lands on EVERY turn's first step, so this is the shape
+    // that used to post a stray step card carrying the narration as a reply.
     h.emit('user/message', { source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } })
     h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{}' })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'narration' } })
     h.emit('assistant/message', {
       message: { content: [{ type: 'text', text: 'narration' }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{}' }] },
       usage: { inputTokens: 1, outputTokens: 1 },
     })
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    // The narration reaches an ALREADY OPEN card through the write throttle, so
+    // give the coalescing window time to elapse.
+    await tick(1_100)
+    // ONE card: the turn card. It carries both the notice (process) and the
+    // narration (process) — no step card, and nothing is dropped (O21① survives
+    // as a row instead of as a card).
+    expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
+    const card = lastCard(ch)
+    const md = mdOf(card)
+    expect(String(card.header.title.content)).toContain('本回合')
+    expect(md).toContain('@deepseek-ai/dsh-system-prompt')
+    expect(md).toContain(t.turnCardStepNote('narration'))
+    h.streaming.stop()
+  })
+
+  it('keeps the injection notice on the step card at the other levels', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('turn/start')
+    h.emit('user/message', { source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'answer' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
     await tick(250)
-    // Injection notices render on a step card and nowhere else (O21①), so that
-    // card stays — and the text stays with it instead of being duplicated onto
-    // the turn card.
     const md = mdOf(lastCard(ch))
     expect(md).toContain('@deepseek-ai/dsh-system-prompt')
-    expect(md).toContain('narration')
+    expect(md).toContain('answer')
     h.streaming.stop()
   })
 
@@ -2113,6 +2140,28 @@ describe('level + injection wiring through session events', () => {
     expect(elements.some((el: any) => el.tag === 'hr')).toBe(false)
     expect(elements.filter((el: any) => el.tag === 'markdown' && el.text_size === 'notation')).toHaveLength(1)
     expect(card.body.vertical_spacing).toBe('4px')
+    h.streaming.stop()
+  })
+
+  it('opens a NEW compact answer card after another module posts one', async () => {
+    const interleave = createCardInterleave()
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, { interleave })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'part one' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalledTimes(1) })
+    // A todo card (or any other card this plugin posts) lands in the chat.
+    interleave.note('oc_1')
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: ' part two' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalledTimes(2) })
+    const fresh = (ch.createCardInstance as any).mock.calls[1]![0]
+    // The new card carries only what arrived after the interruption; the part
+    // already on the retired card stays there.
+    expect(mdOf(fresh)).toContain('part two')
+    expect(mdOf(fresh)).not.toContain('part one')
     h.streaming.stop()
   })
 

@@ -44,22 +44,44 @@ interface BridgeHolder {
   current: HarnessConversationService | undefined
 }
 
-/** Per-question state for the card click handler. */
-interface PendingCard {
+/** One card tap, as the batch loop sees it. */
+type BatchEvent =
+  | { kind: 'answered'; labels: string[]; custom: string | undefined }
+  | { kind: 'undo'; questionId: string }
+  | { kind: 'confirm' }
+  | { kind: 'abandoned' }
+
+/**
+ * One live `ask_user_question` batch.
+ *
+ * Questions are still asked one card at a time, but an answer is no longer
+ * gated by a second "confirm" tap (operator's 2026-10-09 redesign): tapping a
+ * row IS the answer, the card posted after it is a RECEIPT that carries 返回 so
+ * a mis-tap is one tap from being redone, and the whole set is committed by the
+ * final batch card (确认 / 返回上一题). A single-question batch is committed by
+ * its receipt — there is no "all the cards" to confirm.
+ */
+interface PendingBatch {
   pendingId: string
-  question: AskUserQuestionItem
-  sessionId: string
-  abortController: AbortController
-  /** Resolves when the user picks an option (or the request is aborted). */
-  resolve: (answer: AskUserQuestionAnswer | undefined) => void
-  /** Message ID of the sent card, used to update it after selection. */
-  cardMessageId?: string
-  /** Where the question card was posted, so follow-up cards land in the same
-   *  topic without ever inferring it from the group (hard rule 3 / pitfall 31). */
   chat: ConversationMessage
-  /** Single-select row tap awaiting a confirmation card (one open at a time).
-   *  `| undefined` is explicit because `exactOptionalPropertyTypes` is on. */
-  confirm?: { label: string; messageId?: string; sending?: boolean } | undefined
+  questions: readonly AskUserQuestionItem[]
+  abortController: AbortController
+  /** Answers so far, keyed by question id; the reply rebuilds question order. */
+  answers: Map<string, { labels: string[]; custom: string | undefined }>
+  /** The question whose interactive card is on screen right now. */
+  currentQuestionId: string | undefined
+  /** That card's message id (only its taps count). */
+  questionCardId: string | undefined
+  /** Receipt card per answered question (`✅ 已提交` + 返回). */
+  receipts: Map<string, string>
+  /** The final card that commits the whole batch. */
+  batchCardId: string | undefined
+  /** Set once the batch is dead (aborted, or a card could not be sent). */
+  abandoned: boolean
+  /** The loop parks here; a tap resumes it. */
+  settle: ((event: BatchEvent) => void) | undefined
+  /** A tap that arrived while the loop was between cards. */
+  queued: BatchEvent | undefined
 }
 
 /**
@@ -112,21 +134,13 @@ export interface FeishuQuestionsDeps {
  */
 export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
   const { ctx, channel, bridgeHolder, logger, getTranslations } = deps
-  const pendingCards = new Map<string, PendingCard>()
+  const batches = new Map<string, PendingBatch>()
 
-  // Build an answer from a card click and resolve the matching pending
-  // promise. The listener is what returns the answer to the waterfall; this
-  // helper is purely the cardAction → deferred bridge.
-  const settlePending = (pending: PendingCard, selected: readonly string[], custom: string | undefined): AskUserQuestionAnswer => {
-    pendingCards.delete(pending.pendingId)
-    return {
-      answers: [{
-        id: pending.question.id,
-        selected: [...selected],
-        ...custom === undefined ? {} : { custom },
-      }],
-    }
-  }
+  /** Options that keep a follow-up card in the topic the question card used. */
+  const chatOpts = (chat: ConversationMessage): { replyInThread?: boolean; replyTo?: string } =>
+    chat.threadId !== undefined
+      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
+      : {}
 
   /** Update a card, logging (never throwing) when the patch fails. */
   const updateCardQuiet = async (messageId: string, card: object): Promise<void> => {
@@ -137,73 +151,279 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
 
   /** Post a card into the same chat/topic the question card went to. */
   const postInChat = async (chat: ConversationMessage, card: object): Promise<string | undefined> => {
-    const result = await channel.send(chat.chatId, { card }, chat.threadId !== undefined
-      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
-      : {})
-    return (result as { messageId?: string })?.messageId
+    const result = await channel.send(chat.chatId, { card }, chatOpts(chat))
+    return (result as { messageId?: string } | undefined)?.messageId
   }
 
   /**
-   * Finish a single-select answer: mark the question card settled, close the
-   * confirmation card, and resolve the pending promise. Each card is written at
-   * most once here (pitfall 11).
+   * Hand a tap to the loop parked on this batch, or hold it until the loop parks
+   * again — a tap legitimately arrives while the next card is being posted (the
+   * receipt of question N is tappable while question N+1 goes out).
    */
-  const submitAnswer = async (pending: PendingCard, labels: readonly string[]): Promise<void> => {
+  const dispatch = (batch: PendingBatch, event: BatchEvent): void => {
+    if (batch.abandoned) return
+    const settle = batch.settle
+    if (settle === undefined) {
+      batch.queued = event
+      return
+    }
+    batch.settle = undefined
+    settle(event)
+  }
+
+  /** Wait for this batch's next tap. */
+  const nextEvent = (batch: PendingBatch): Promise<BatchEvent> => {
+    if (batch.abandoned) return Promise.resolve<BatchEvent>({ kind: 'abandoned' })
+    const queued = batch.queued
+    if (queued !== undefined) {
+      batch.queued = undefined
+      return Promise.resolve(queued)
+    }
+    return new Promise<BatchEvent>((resolve) => { batch.settle = resolve })
+  }
+
+  /** Kill a batch: no card of it may accept another tap, and the loop unwinds. */
+  const abandonBatch = (batch: PendingBatch): void => {
+    if (batch.abandoned) return
+    batch.abandoned = true
+    const settle = batch.settle
+    batch.settle = undefined
+    settle?.({ kind: 'abandoned' })
+  }
+
+  /**
+   * Post the interactive card of ONE question and wait for its tap.
+   *
+   * A row tap (`answer-open`) resolves as ANSWERED: it IS the decision, and the
+   * receipt card that follows carries the undo. Nothing is asked twice, so a
+   * mis-tap costs one tap instead of a whole confirmation step.
+   */
+  const askQuestion = async (
+    batch: PendingBatch,
+    question: AskUserQuestionItem,
+    cancelCard: (question: AskUserQuestionItem) => object,
+  ): Promise<BatchEvent> => {
     const t = getTranslations()
-    const questionCardId = pending.cardMessageId
-    // The result is posted as a NEW card and the (frozen) question card turns
-    // into a grey pointer to it — the same shape as "Back", so the end state of
-    // either branch is identical (operator's 2026-10-07 decision).
-    let posted: string | undefined
+    const options = question.options ?? []
+    const wantsMulti = question.multiSelect === true && options.length > 0
+    batch.questionCardId = undefined
+    batch.currentQuestionId = question.id
+    const send = async (card: object): Promise<string | undefined> => {
+      console.log(`dsh-feishu: [q] sending card to chat=${batch.chat.chatId} thread=${batch.chat.threadId ?? '-'}`)
+      const result = await channel.send(batch.chat.chatId, { card }, chatOpts(batch.chat))
+      const mid = (result as { messageId?: string } | undefined)?.messageId
+      console.log(`dsh-feishu: [q] card sent messageId=${mid ?? 'none'}`)
+      return mid
+    }
+    let messageId: string | undefined
     try {
-      posted = await postInChat(pending.chat, renderSettledQuestionCard(pending.question, labels, t))
+      messageId = await send(renderQuestionCard(question, options, batch.pendingId, t, wantsMulti))
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : String(error)
-      logger.warn(`dsh-feishu: failed to post the answer result card: ${reason}`)
+      if (!wantsMulti || batch.abortController.signal.aborted) {
+        console.log(`dsh-feishu: [q] card send failed: ${reason}`)
+        logger.warn(`dsh-feishu: [q] card send failed: ${reason}`)
+        return { kind: 'abandoned' }
+      }
+      // A tenant/client that rejects the `checker` control must not cost the user
+      // the question at all: retry once as a single-pick card.
+      logger.warn(`dsh-feishu: [q] multi-select card rejected, retrying as single-pick: ${reason}`)
+      try {
+        messageId = await send(renderQuestionCard(question, options, batch.pendingId, t, false))
+      } catch (retryError: unknown) {
+        const retryReason = retryError instanceof Error ? retryError.message : String(retryError)
+        console.log(`dsh-feishu: [q] card send failed: ${retryReason}`)
+        logger.warn(`dsh-feishu: [q] card send failed: ${retryReason}`)
+        return { kind: 'abandoned' }
+      }
     }
-    if (questionCardId !== undefined) {
-      // Without the new card the result has to live somewhere: fall back to
-      // writing it into the question card itself.
-      await updateCardQuiet(questionCardId, posted === undefined
-        ? renderSettledQuestionCard(pending.question, labels, t)
-        : renderSubmittedQuestionCard(t))
+    if (batch.abandoned) {
+      // Cancelled while the send was in flight: retire the card now that its id
+      // is finally known.
+      if (messageId !== undefined) {
+        void channel.updateCard(messageId, cancelCard(question)).catch((error: unknown) => {
+          logger.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      }
+      return { kind: 'abandoned' }
     }
-    const confirmId = pending.confirm?.messageId
-    pending.confirm = undefined
-    if (confirmId !== undefined) await updateCardQuiet(confirmId, renderConfirmDoneCard(labels, t))
-    pending.resolve(settlePending(pending, labels, undefined))
+    batch.questionCardId = messageId
+    return await nextEvent(batch)
+  }
+
+  /** The question card keeps the settled record of what the answer was. */
+  const settleQuestionCard = async (
+    batch: PendingBatch,
+    question: AskUserQuestionItem,
+    labels: readonly string[],
+    custom: string | undefined,
+  ): Promise<void> => {
+    if (batch.questionCardId === undefined) return
+    const t = getTranslations()
+    await updateCardQuiet(
+      batch.questionCardId,
+      renderSettledQuestionCard(question, settledLabels(labels, custom, t), t),
+    )
   }
 
   /**
-   * A card that already delivered one tap may stop sending callbacks for its
-   * clickable rows (the client keeps the tapped row "consumed"; its plain
-   * buttons still work — measured 2026-10-07 15:37–15:38: the row tap after
-   * Back never reached the plugin, while Skip on the same card did). So a spent
-   * question card is replaced instead of patched: every re-pick happens on a
-   * freshly sent card, and callbacks from any other card are ignored.
+   * The receipt card posted after an answer: what was submitted, with 返回 to
+   * redo this one question.
    */
-  const isCurrentQuestionCard = (pending: PendingCard, messageId: string | undefined): boolean =>
-    messageId === undefined || pending.cardMessageId === undefined || messageId === pending.cardMessageId
-
-  const isCurrentConfirmCard = (pending: PendingCard, messageId: string | undefined): boolean =>
-    messageId === undefined || pending.confirm?.messageId === undefined || messageId === pending.confirm.messageId
-
-  /** Post a fresh, fully interactive question card for the same pending question. */
-  const reopenQuestionCard = async (pending: PendingCard): Promise<string | undefined> => {
-    const options = pending.question.options ?? []
-    const card = renderQuestionCard(
-      pending.question,
-      options,
-      pending.pendingId,
-      getTranslations(),
-      pending.question.multiSelect === true && options.length > 0,
-    )
-    return postInChat(pending.chat, card)
+  const postReceipt = async (
+    batch: PendingBatch,
+    question: AskUserQuestionItem,
+    labels: readonly string[],
+    custom: string | undefined,
+  ): Promise<void> => {
+    const t = getTranslations()
+    try {
+      const messageId = await postInChat(
+        batch.chat,
+        renderReceiptCard(question, answerText(labels, custom, t), batch.pendingId, t),
+      )
+      if (messageId !== undefined) batch.receipts.set(question.id, messageId)
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: failed to post the answer receipt card: ${reason}`)
+    }
   }
 
-  /** The message id of the confirmation card the tap came from. */
-  const confirmMessageId = (pending: PendingCard, evt: CardActionLike): string | undefined =>
-    evt.messageId ?? pending.confirm?.messageId
+  /**
+   * Post the card that commits the whole batch: it lists every answer, 确认 hands
+   * them to the model, 返回上一题 drops the last one and asks it again.
+   */
+  const askBatchConfirm = async (batch: PendingBatch): Promise<BatchEvent> => {
+    const t = getTranslations()
+    let messageId: string | undefined
+    try {
+      messageId = await postInChat(
+        batch.chat,
+        renderBatchConfirmCard(batch.questions, batch.answers, batch.pendingId, t),
+      )
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error)
+      logger.warn(`dsh-feishu: failed to post the batch confirmation card: ${reason}`)
+      // Without that card the answers could never be committed: hand them over
+      // now rather than leaving the turn hanging on a card that is not there.
+      return { kind: 'confirm' }
+    }
+    batch.batchCardId = messageId
+    if (batch.abandoned) return { kind: 'abandoned' }
+    return await nextEvent(batch)
+  }
+
+  /**
+   * Present every question, one card at a time, and return the answers in
+   * question order.
+   */
+  const presentQuestions = async (
+    chat: ConversationMessage,
+    questions: readonly AskUserQuestionItem[],
+    abortController: AbortController,
+    cancelCard: (question: AskUserQuestionItem) => object,
+  ): Promise<AskUserQuestionAnswer> => {
+    if (questions.length === 0) return { answers: [] }
+    console.log(`dsh-feishu: [q] presenting ${questions.length} question(s) to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
+    const batch: PendingBatch = {
+      pendingId: `feishu-q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      chat,
+      questions,
+      abortController,
+      answers: new Map(),
+      currentQuestionId: undefined,
+      questionCardId: undefined,
+      receipts: new Map(),
+      batchCardId: undefined,
+      abandoned: false,
+      settle: undefined,
+      queued: undefined,
+    }
+    batches.set(batch.pendingId, batch)
+    /** Repaint one card of this batch with a stale notice. */
+    const retire = (messageId: string | undefined, card: object): void => {
+      if (messageId === undefined) return
+      void channel.updateCard(messageId, card).catch((error: unknown) => {
+        logger.warn(`dsh-feishu: failed to retire a question card: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+    // Abandoning the batch (a turn abort, or the Web UI answered first) must stop
+    // every card of it looking answerable.
+    const onCancel = (): void => {
+      abandonBatch(batch)
+      const current = questions.find(question => question.id === batch.currentQuestionId) ?? questions[0]
+      if (current !== undefined) retire(batch.questionCardId, cancelCard(current))
+      for (const question of questions) retire(batch.receipts.get(question.id), cancelCard(question))
+      retire(batch.batchCardId, renderSupersededCard(getTranslations()))
+      batches.delete(batch.pendingId)
+    }
+    if (abortController.signal.aborted) onCancel()
+    else abortController.signal.addEventListener('abort', onCancel, { once: true })
+    let index = 0
+    /** A receipt's 返回: forget that answer and ask that question again. */
+    const applyUndo = (questionId: string): void => {
+      batch.answers.delete(questionId)
+      const at = questions.findIndex(question => question.id === questionId)
+      index = at >= 0 ? at : 0
+    }
+    try {
+      while (!batch.abandoned) {
+        // An undo re-asks exactly ONE question; every other answer stays, so
+        // skip the questions that already have one.
+        while (index < questions.length && batch.answers.has(questions[index]!.id)) index += 1
+        if (index < questions.length) {
+          const question = questions[index]!
+          const event = await askQuestion(batch, question, cancelCard)
+          if (event.kind === 'abandoned') break
+          if (event.kind === 'undo') {
+            // The card of the question we were asking is not the live one any
+            // more: it must not keep looking answerable.
+            if (event.questionId !== question.id) retire(batch.questionCardId, renderSupersededCard(getTranslations()))
+            applyUndo(event.questionId)
+            continue
+          }
+          if (event.kind === 'confirm') continue
+          batch.answers.set(question.id, { labels: [...event.labels], custom: event.custom })
+          await settleQuestionCard(batch, question, event.labels, event.custom)
+          // The card posted after an answer is the receipt — except for the LAST
+          // answer, where the batch card takes its place (it lists every answer,
+          // including this one) so a batch of N costs N question cards, N-1
+          // receipts and one commit card.
+          if (!questions.every(candidate => batch.answers.has(candidate.id))) {
+            await postReceipt(batch, question, event.labels, event.custom)
+          }
+          index += 1
+          continue
+        }
+        // Every question has an answer: the batch card is the ONLY commit point,
+        // so a receipt's 返回 stays meaningful for as long as the user needs it
+        // (a batch of one included — the operator asked for the final card after
+        // "all the cards", and there is nothing else left to ask).
+        const event = await askBatchConfirm(batch)
+        if (event.kind === 'abandoned') break
+        if (event.kind === 'undo') {
+          retire(batch.batchCardId, renderSupersededCard(getTranslations()))
+          applyUndo(event.questionId)
+          continue
+        }
+        break
+      }
+    } finally {
+      abortController.signal.removeEventListener('abort', onCancel)
+      batches.delete(batch.pendingId)
+    }
+    const answers: AskUserQuestionAnswerItem[] = []
+    for (const question of questions) {
+      const answer = batch.answers.get(question.id)
+      if (answer === undefined) continue
+      answers.push({
+        id: question.id,
+        selected: [...answer.labels],
+        ...(answer.custom === undefined ? {} : { custom: answer.custom }),
+      })
+    }
+    return { answers }
+  }
 
   const onCardAction = async (evt: CardActionLike): Promise<void> => {
     const action = evt.action
@@ -232,153 +452,77 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     }
     const pendingId = typeof parsed.pendingId === 'string' ? parsed.pendingId : ''
     const questionId = typeof parsed.questionId === 'string' ? parsed.questionId : ''
-    if (pendingId === '' || questionId === '') return
-    const pending = pendingCards.get(pendingId)
-    if (pending === undefined) return
+    if (pendingId === '') return
+    const batch = batches.get(pendingId)
+    if (batch === undefined) return
+    const t = getTranslations()
+    /**
+     * A tap only counts on the card THIS batch posted for that role. A retired or
+     * superseded card keeps its old callback value, and tapping it must be a
+     * no-op (pitfall 55).
+     */
+    const fromCard = (expected: string | undefined): boolean =>
+      evt.messageId === undefined || expected === undefined || evt.messageId === expected
 
-    // Confirmations come from the confirmation card; everything else comes from
-    // the current question card. Taps on a retired card are ignored.
-    const fromConfirmCard = parsed.type === 'answer-confirm' || parsed.type === 'answer-back'
-    if (fromConfirmCard) {
-      if (!isCurrentConfirmCard(pending, evt.messageId)) return
-    } else if (!isCurrentQuestionCard(pending, evt.messageId)) {
-      return
-    }
-
-    if (parsed.type === 'multi-submit') {
-      // One submission for every checked box (`checker` elements in a form).
-      console.log(`dsh-feishu: [q] multi-submit form_value=${JSON.stringify(formValue)}`)
-      const selected = readMultiSelection(formValue, pending.question.options ?? [])
-      if (selected.length === 0) {
-        console.log('dsh-feishu: [q] multi-submit with nothing checked')
-        return
-      }
-      if (pending.cardMessageId !== undefined) {
-        const settledCard = renderSettledQuestionCard(pending.question, selected, getTranslations())
-        await channel.updateCard(pending.cardMessageId, settledCard).catch((error: unknown) => {
-          logger.warn(`dsh-feishu: failed to update question card: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      }
-      pending.resolve(settlePending(pending, selected, undefined))
-      return
-    }
-
-    if (parsed.type === 'skip') {
-      const answer = settlePending(pending, [], undefined)
-      if (pending.cardMessageId !== undefined) {
-        const settledCard = renderSettledQuestionCard(pending.question, [`⏭️ ${getTranslations().questionSkippedLabel}`], getTranslations())
-        await channel.updateCard(pending.cardMessageId, settledCard).catch((error: unknown) => {
-          logger.warn(`dsh-feishu: failed to update question card: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      }
-      pending.resolve(answer)
-      return
-    }
-
-    if (parsed.type === 'answer-open') {
-      // A clickable row answers on the first tap, so a mis-tap must be
-      // recoverable: show what would be submitted and let the user confirm.
-      const picked = Array.isArray(parsed.selected)
-        ? parsed.selected.filter((item: unknown): item is string => typeof item === 'string')
-        : []
-      const label = picked[0]
-      if (label === undefined) return
-      const option = (pending.question.options ?? []).find(candidate => candidate.label === label)
-      if (option === undefined) return
-      if (pending.confirm !== undefined && pending.confirm.label === label) return
-      const previous = pending.confirm
-      pending.confirm = { label, sending: true }
-      if (previous?.messageId !== undefined) {
-        await updateCardQuiet(previous.messageId, renderConfirmBackCard(getTranslations()))
-      }
-      try {
-        const t = getTranslations()
-        const messageId = await postInChat(pending.chat, renderConfirmAnswerCard(pending.question, option, pendingId, t))
-        if (pending.confirm?.label === label) {
-          pending.confirm = { label, ...(messageId !== undefined ? { messageId } : {}) }
-        }
-        // Freeze the question card: a spent card keeps looking answerable, and
-        // the client silently swallows any further row tap on it.
-        if (pending.cardMessageId !== undefined) {
-          await updateCardQuiet(pending.cardMessageId, renderFrozenQuestionCard(pending.question, option, t))
-        }
-      } catch (error: unknown) {
-        // No confirmation card means the tap would be a dead end; answer
-        // straight away instead (the behaviour before confirmations existed).
-        const reason = error instanceof Error ? error.message : String(error)
-        logger.warn(`dsh-feishu: failed to post the answer confirmation card, submitting directly: ${reason}`)
-        pending.confirm = undefined
-        await submitAnswer(pending, [label])
-      }
-      return
-    }
-
-    if (parsed.type === 'answer-confirm') {
-      const picked = Array.isArray(parsed.selected)
-        ? parsed.selected.filter((item: unknown): item is string => typeof item === 'string')
-        : []
-      if (picked.length === 0) return
-      await submitAnswer(pending, picked)
+    if (parsed.type === 'batch-confirm' || parsed.type === 'batch-back') {
+      if (!fromCard(batch.batchCardId)) return
+      console.log(`dsh-feishu: [q] batch card tap type=${String(parsed.type)}`)
+      dispatch(batch, parsed.type === 'batch-confirm' ? { kind: 'confirm' } : { kind: 'undo', questionId })
       return
     }
 
     if (parsed.type === 'answer-back') {
-      // The spent question card can no longer deliver row taps, so "Back" hands
-      // the user a NEW question card and retires the old one as a grey notice
-      // (pitfall 11's rule: one step, one card).
-      const t = getTranslations()
-      const spentMessageId = pending.cardMessageId
-      const confirmId = confirmMessageId(pending, evt)
-      let reopened: string | undefined
-      try {
-        reopened = await reopenQuestionCard(pending)
-      } catch (error: unknown) {
-        const reason = error instanceof Error ? error.message : String(error)
-        logger.warn(`dsh-feishu: failed to reopen the question card after Back: ${reason}`)
-      }
-      if (reopened === undefined) {
-        // Nothing to pick on: keep the confirmation card actionable so the
-        // tapped answer is still reachable.
-        logger.warn('dsh-feishu: question card could not be reopened; keeping the confirmation card open')
+      // A receipt's 返回: forget that answer and ask it again on a FRESH card —
+      // a card whose option row was already tapped never delivers another row
+      // tap (measured 2026-10-07, pitfall 55).
+      if (questionId === '' || !fromCard(batch.receipts.get(questionId))) return
+      const receiptId = batch.receipts.get(questionId)
+      batch.receipts.delete(questionId)
+      if (receiptId !== undefined) await updateCardQuiet(receiptId, renderReceiptUndoneCard(t))
+      console.log(`dsh-feishu: [q] undo the answer for ${questionId}`)
+      dispatch(batch, { kind: 'undo', questionId })
+      return
+    }
+
+    // Everything else can only come from the interactive card of the question
+    // that is on screen right now.
+    if (questionId === '' || questionId !== batch.currentQuestionId) return
+    if (!fromCard(batch.questionCardId)) return
+    const question = batch.questions.find(candidate => candidate.id === questionId)
+    if (question === undefined) return
+
+    if (parsed.type === 'multi-submit') {
+      // One submission for every checked box (`checker` elements in a form).
+      console.log(`dsh-feishu: [q] multi-submit form_value=${JSON.stringify(formValue)}`)
+      const selected = readMultiSelection(formValue, question.options ?? [])
+      if (selected.length === 0) {
+        console.log('dsh-feishu: [q] multi-submit with nothing checked')
         return
       }
-      pending.cardMessageId = reopened
-      pending.confirm = undefined
-      if (confirmId !== undefined) await updateCardQuiet(confirmId, renderConfirmBackCard(t))
-      if (spentMessageId !== undefined && spentMessageId !== reopened) {
-        await updateCardQuiet(spentMessageId, renderRetiredQuestionCard(t))
-      }
+      dispatch(batch, { kind: 'answered', labels: selected, custom: undefined })
+      return
+    }
+
+    if (parsed.type === 'skip') {
+      dispatch(batch, { kind: 'answered', labels: [], custom: undefined })
       return
     }
 
     if (parsed.type === 'custom') {
       const customText = typeof formValue.custom_text === 'string' ? formValue.custom_text.trim() : ''
       if (customText === '') return
-      const answer = settlePending(pending, [], customText)
-      if (pending.cardMessageId !== undefined) {
-        const settledCard = renderSettledQuestionCard(pending.question, [`✏️ ${customText}`], getTranslations())
-        await channel.updateCard(pending.cardMessageId, settledCard).catch((error: unknown) => {
-          logger.warn(`dsh-feishu: failed to update question card: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      }
-      pending.resolve(answer)
+      dispatch(batch, { kind: 'answered', labels: [], custom: customText })
       return
     }
 
-    const selected = Array.isArray(parsed.selected)
+    // A row tap (`answer-open`) IS the answer — no second confirmation step
+    // (operator's 2026-10-09 redesign); the receipt card is the undo path.
+    const picked = Array.isArray(parsed.selected)
       ? parsed.selected.filter((item: unknown): item is string => typeof item === 'string')
       : action?.option !== undefined ? [action.option] : []
     const custom = typeof parsed.custom === 'string' && parsed.custom !== '' ? parsed.custom : undefined
-    const selectedLabels = selected.length > 0 ? selected : (action?.option !== undefined ? [action.option] : [])
-    if (pending.cardMessageId !== undefined && selectedLabels.length > 0) {
-      const settledCard = renderSettledQuestionCard(pending.question, selectedLabels, getTranslations())
-      await channel.updateCard(pending.cardMessageId, settledCard).catch((error: unknown) => {
-        logger.warn(`dsh-feishu: failed to update question card: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }
-    if (selected.length === 0 && custom === undefined) return
-    const answer = settlePending(pending, selected, custom)
-    pending.resolve(answer)
+    if (picked.length === 0 && custom === undefined) return
+    dispatch(batch, { kind: 'answered', labels: picked, custom })
   }
   const unsubscribeCardAction = channel.onCardAction(onCardAction)
 
@@ -433,10 +577,9 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     }
 
     try {
-      const feishu = presentQuestions(
-        chat, channel, pendingCards, request.questions, abortController, logger, getTranslations(), cancelCard,
-      ).then((answer): AnswererResult<AskUserQuestionAnswer, 'feishu'> | undefined =>
-        answer.answers.length > 0 ? { via: 'feishu', value: answer } : undefined)
+      const feishu = presentQuestions(chat, request.questions, abortController, cancelCard)
+        .then((answer): AnswererResult<AskUserQuestionAnswer, 'feishu'> | undefined =>
+          answer.answers.length > 0 ? { via: 'feishu', value: answer } : undefined)
 
       if (next === undefined) {
         return (await feishu)?.value ?? { answers: [] }
@@ -486,152 +629,11 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
   return () => {
     disposeListener()
     unsubscribeCardAction()
-    for (const pending of pendingCards.values()) {
-      pending.resolve(undefined)
-      pending.abortController.abort()
+    for (const batch of batches.values()) {
+      abandonBatch(batch)
+      batch.abortController.abort()
     }
-    pendingCards.clear()
-  }
-}
-
-/**
- * Render each question as its own card and present the batch sequentially:
- * one card at a time, awaiting that card's answer before sending the next
- * question. A skipped question still yields an (empty-selection) answer item,
- * so the returned batch always has one item per question unless the request is
- * aborted or a card fails to send. This matches the WebUI's whole-batch answer
- * encoding while keeping Feishu's one-card-at-a-time chat UX.
- */
-async function presentQuestions(
-  chat: ConversationMessage,
-  channel: FeishuQuestionsChannel,
-  pendingCards: Map<string, PendingCard>,
-  questions: readonly AskUserQuestionItem[],
-  abortController: AbortController,
-  logger?: PluginLogger,
-  t?: Translations,
-  cancelCard?: (question: AskUserQuestionItem) => object,
-): Promise<AskUserQuestionAnswer> {
-  if (questions.length === 0) {
-    return { answers: [] }
-  }
-  console.log(`dsh-feishu: [q] presenting ${questions.length} question(s) to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
-  const answers: AskUserQuestionAnswerItem[] = []
-  for (const question of questions) {
-    const item = await presentOneQuestion(chat, channel, pendingCards, question, abortController, logger, t, cancelCard)
-    if (item === undefined) break
-    answers.push(item)
-  }
-  if (answers.length === 0) {
-    return { answers: [] }
-  }
-  return { answers }
-}
-
-/**
- * Render one question card and wait for its answer. Returns the single
- * `{ id, selected, custom }` answer item, or `undefined` when the card could
- * not be sent or the request is aborted (the caller stops the batch).
- */
-async function presentOneQuestion(
-  chat: ConversationMessage,
-  channel: FeishuQuestionsChannel,
-  pendingCards: Map<string, PendingCard>,
-  question: AskUserQuestionItem,
-  abortController: AbortController,
-  logger?: PluginLogger,
-  t?: Translations,
-  cancelCard?: (question: AskUserQuestionItem) => object,
-): Promise<AskUserQuestionAnswerItem | undefined> {
-  const pendingId = `feishu-q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const options = question.options ?? []
-  // The cardAction -> deferred bridge carries the whole `{ answers: [item] }`
-  // settle value; extract the single item here so the batch loop can accumulate.
-  const deferred = new Promise<AskUserQuestionAnswerItem | undefined>((resolve) => {
-    const pending: PendingCard = {
-      pendingId,
-      question,
-      sessionId: '',
-      abortController,
-      chat,
-      resolve: (answer) => resolve(answer?.answers?.[0]),
-    }
-    pendingCards.set(pendingId, pending)
-  })
-  // Abandoning this card (turn abort, or the Web UI answered first) must stop
-  // it looking answerable: drop it from the pending map, settle the deferred,
-  // and repaint it with whichever stale notice the caller selected.
-  const onCancel = (): void => {
-    const pending = pendingCards.get(pendingId)
-    if (pending === undefined) return
-    pendingCards.delete(pendingId)
-    pending.resolve(undefined)
-    const confirmId = pending.confirm?.messageId
-    pending.confirm = undefined
-    if (confirmId !== undefined && cancelCard !== undefined) {
-      // An open confirmation card answers a question that is now settled or
-      // superseded — it must not stay looking actionable.
-      void channel.updateCard(confirmId, cancelCard(question)).catch((error: unknown) => {
-        logger?.warn(`dsh-feishu: failed to retire cancelled confirmation card: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }
-    if (pending.cardMessageId !== undefined && cancelCard !== undefined) {
-      void channel.updateCard(pending.cardMessageId, cancelCard(question)).catch((error: unknown) => {
-        logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }
-  }
-  if (abortController.signal.aborted) onCancel()
-  else abortController.signal.addEventListener('abort', onCancel, { once: true })
-  const translations = t ?? translationsFor('zh')
-  const sendQuestionCard = async (payload: object): Promise<void> => {
-    console.log(`dsh-feishu: [q] sending card to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
-    const result = await channel.send(chat.chatId, { card: payload }, chat.threadId !== undefined
-      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
-      : {})
-    const mid = (result as { messageId?: string })?.messageId
-    console.log(`dsh-feishu: [q] card sent messageId=${mid ?? 'none'}`)
-    const pending = pendingCards.get(pendingId)
-    if (pending !== undefined && mid !== undefined) {
-      pending.cardMessageId = mid
-    } else if (mid !== undefined && cancelCard !== undefined) {
-      // Cancelled while the send was in flight: retire the card now that we
-      // finally know its message id.
-      void channel.updateCard(mid, cancelCard(question)).catch((error: unknown) => {
-        logger?.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }
-  }
-  const wantsMulti = question.multiSelect === true && options.length > 0
-  let card = renderQuestionCard(question, options, pendingId, translations, wantsMulti)
-  try {
-    await sendQuestionCard(card)
-  } catch (error: unknown) {
-    const reason = error instanceof Error ? error.message : String(error)
-    if (!wantsMulti || abortController.signal.aborted) {
-      console.log(`dsh-feishu: [q] card send failed: ${reason}`)
-      logger?.warn(`dsh-feishu: [q] card send failed: ${reason}`)
-      pendingCards.delete(pendingId)
-      return undefined
-    }
-    // A tenant/client that rejects the `checker` control must not cost the user
-    // the question at all: retry once as a single-pick card (index buttons).
-    logger?.warn(`dsh-feishu: [q] multi-select card rejected, retrying as single-pick: ${reason}`)
-    card = renderQuestionCard(question, options, pendingId, translations, false)
-    try {
-      await sendQuestionCard(card)
-    } catch (retryError: unknown) {
-      const retryReason = retryError instanceof Error ? retryError.message : String(retryError)
-      console.log(`dsh-feishu: [q] card send failed: ${retryReason}`)
-      logger?.warn(`dsh-feishu: [q] card send failed: ${retryReason}`)
-      pendingCards.delete(pendingId)
-      return undefined
-    }
-  }
-  try {
-    return await deferred
-  } finally {
-    abortController.signal.removeEventListener('abort', onCancel)
+    batches.clear()
   }
 }
 
@@ -793,105 +795,103 @@ function renderSettledQuestionCard(
   }
 }
 
+/** The answer line a receipt and the batch card show. */
+function answerText(labels: readonly string[], custom: string | undefined, t: Translations): string {
+  if (custom !== undefined && custom !== '') return `✏️ ${custom}`
+  if (labels.length === 0) return `⏭️ ${t.questionSkippedLabel}`
+  return labels.join('、')
+}
+
+/** The settled card's label list for one answer (custom/skip encoded as before). */
+function settledLabels(labels: readonly string[], custom: string | undefined, t: Translations): string[] {
+  if (custom !== undefined && custom !== '') return [`✏️ ${custom}`]
+  if (labels.length === 0) return [`⏭️ ${t.questionSkippedLabel}`]
+  return [...labels]
+}
+
 /**
- * Confirmation card for a single-select row tap. A clickable row answers on the
- * first tap, so a mis-tap has to be recoverable BEFORE the answer leaves the
- * chat: this card shows exactly what would be submitted, and only its
- * `answer-confirm` callback settles the question. It carries buttons, so it is
- * written at most once — a different pick gets a NEW card and the previous one
- * is retired as a no-button card (pitfall 11).
+ * The RECEIPT posted right after an answer: the answer is already submitted
+ * (a row tap is the decision — operator's 2026-10-09 redesign), so this card
+ * records what went through and carries 返回 to redo this one question. Its
+ * button is written once and never repainted (pitfall 11).
  */
-function renderConfirmAnswerCard(
+function renderReceiptCard(
   question: AskUserQuestionItem,
-  option: AskUserQuestionOption,
+  answer: string,
   pendingId: string,
   t: Translations,
 ): object {
-  const elements: object[] = [{ tag: 'markdown', content: t.questionConfirmBody(`**${option.label}**`) }]
-  if (option.description !== undefined && option.description !== '') {
-    elements.push({ tag: 'markdown', content: inlineText(option.description), text_size: 'notation' })
+  const elements: object[] = [
+    { tag: 'markdown', content: `**${question.header ?? question.question}**` },
+    { tag: 'markdown', content: t.questionReceiptAnswer(`**${answer}**`) },
+    { tag: 'markdown', content: t.questionReceiptNote, text_size: 'notation' },
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.questionReceiptBack },
+      type: 'default',
+      behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, type: 'answer-back' } }],
+    },
+  ]
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionReceiptTitle }, template: 'green' },
+    body: { elements },
   }
-  elements.push({ tag: 'markdown', content: t.questionConfirmNote, text_size: 'notation' })
-  elements.push({ tag: 'hr' })
+}
+
+/** Grey notice left where a receipt was once its answer was undone. */
+function renderReceiptUndoneCard(t: Translations): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionCardRetiredTitle }, template: 'grey' },
+    body: { elements: [{ tag: 'markdown', content: t.questionReceiptUndone }] },
+  }
+}
+
+/**
+ * The FINAL card of a batch: every question with the answer it got, 确认提交 to
+ * hand the set to the model, 返回上一题 to change the last one.
+ */
+function renderBatchConfirmCard(
+  questions: readonly AskUserQuestionItem[],
+  answers: ReadonlyMap<string, { labels: string[]; custom: string | undefined }>,
+  pendingId: string,
+  t: Translations,
+): object {
+  const elements: object[] = []
+  for (const question of questions) {
+    const answer = answers.get(question.id)
+    elements.push({
+      tag: 'markdown',
+      content: t.questionBatchRow(
+        question.header ?? question.question,
+        answer === undefined ? t.questionBatchUnanswered : answerText(answer.labels, answer.custom, t),
+      ),
+    })
+  }
+  elements.push({ tag: 'markdown', content: t.questionBatchNote, text_size: 'notation' })
   elements.push({
     tag: 'button',
-    text: { tag: 'plain_text', content: t.questionConfirmSend },
+    text: { tag: 'plain_text', content: t.questionBatchConfirm },
     type: 'primary',
-    behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, selected: [option.label], type: 'answer-confirm' } }],
+    behaviors: [{ type: 'callback', value: { pendingId, questionId: questions[0]?.id ?? '', type: 'batch-confirm' } }],
   })
   elements.push({
     tag: 'button',
-    text: { tag: 'plain_text', content: t.questionConfirmBack },
+    text: { tag: 'plain_text', content: t.questionBatchBack },
     type: 'default',
-    behaviors: [{ type: 'callback', value: { pendingId, questionId: question.id, type: 'answer-back' } }],
+    behaviors: [{
+      type: 'callback',
+      value: { pendingId, questionId: questions[questions.length - 1]?.id ?? '', type: 'batch-back' },
+    }],
   })
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: t.questionConfirmTitle }, template: 'orange' },
+    header: { title: { tag: 'plain_text', content: t.questionBatchTitle }, template: 'blue' },
     body: { elements },
-  }
-}
-
-/**
- * The question card once a row has been tapped and its answer is waiting on the
- * confirmation card: the rows are gone, so the card cannot take another pick
- * (which the client would swallow anyway) and the user can see the tap landed.
- */
-function renderFrozenQuestionCard(question: AskUserQuestionItem, option: AskUserQuestionOption, t: Translations): object {
-  const elements: object[] = [{ tag: 'markdown', content: t.questionFrozen(`**${option.label}**`) }]
-  if (option.description !== undefined && option.description !== '') {
-    elements.push({ tag: 'markdown', content: inlineText(option.description), text_size: 'notation' })
-  }
-  return {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: question.header ?? t.questionDefaultTitle }, template: 'grey' },
-    body: { elements },
-  }
-}
-
-/**
- * The grey notice left where a spent question card was: the client stops
- * delivering row taps from a card that already took one, so the live question
- * is re-sent as a new message and this one says where to look.
- */
-function renderRetiredQuestionCard(t: Translations): object {
-  return {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: t.questionCardRetiredTitle }, template: 'grey' },
-    body: { elements: [{ tag: 'markdown', content: t.questionCardRetired }] },
-  }
-}
-
-/** Grey notice left where the question card was once its answer was submitted. */
-function renderSubmittedQuestionCard(t: Translations): object {
-  return {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: t.questionCardRetiredTitle }, template: 'grey' },
-    body: { elements: [{ tag: 'markdown', content: t.questionCardSubmitted }] },
-  }
-}
-
-/** A retired confirmation card (the pick was replaced, or the user pressed Back). */
-function renderConfirmBackCard(t: Translations): object {
-  return {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: t.questionConfirmTitle }, template: 'grey' },
-    body: { elements: [{ tag: 'markdown', content: t.questionConfirmBacked }] },
-  }
-}
-
-/** A confirmation card whose answer was submitted (no buttons left). */
-function renderConfirmDoneCard(labels: readonly string[], t: Translations): object {
-  return {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: t.questionConfirmTitle }, template: 'turquoise' },
-    body: { elements: [{ tag: 'markdown', content: t.questionConfirmDone(labels.join('、')) }] },
   }
 }
 

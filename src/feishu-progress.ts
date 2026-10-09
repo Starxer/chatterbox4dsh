@@ -38,14 +38,30 @@
 
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
+import type { CardInterleave } from './card-interleave.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
 
 /** Tool lines kept visible before older ones fold away. */
 export const PROGRESS_MAX_ROWS = 40
 
+/**
+ * Whole steps kept visible before older ones fold away. Five is what a glance
+ * needs ("what is it doing now"); anything older is one tap away inside the
+ * folded panel. The row budget stays as the outer bound, because one step can
+ * hold dozens of calls on its own.
+ */
+export const PROGRESS_MAX_STEPS = 5
+
 /** Folded lines carried in the panel body (the panel is collapsed, not free). */
 export const PROGRESS_MAX_FOLDED = 60
+
+/**
+ * How often a still-running tool repaints its elapsed clock. A tool that finishes
+ * sooner never pays for a tick: the timer is dropped as soon as the last running
+ * row settles, and what is left goes through the normal write throttle.
+ */
+export const PROGRESS_RUNNING_TICK_MS = 30_000
 
 /**
  * Shortest gap between two writes to the same progress card. Measured against
@@ -93,6 +109,13 @@ export interface ProgressStep {
    * to one line by {@link condenseStepNote}; absent when the step said nothing.
    */
   note?: string | undefined
+  /**
+   * Context-injection notice lines this step claimed (`📥 注入上下文 · …`).
+   * Under `compact` they belong to the PROCESS, so they render here instead of
+   * forcing a step card of their own — the card that used to say nothing but
+   * "本步无输出" plus the notice. One line per injected message, in arrival order.
+   */
+  injections?: string[] | undefined
 }
 
 /** Everything one render needs. */
@@ -109,6 +132,13 @@ export interface ProgressFacts {
   failedTurn: boolean
   /** The clock for the running labels; injected so renders are deterministic. */
   now: number
+  /**
+   * Index into {@link steps} where THIS card's content begins. Another module
+   * posting a card into the chat ends the segment: the card that is on screen
+   * above it stops growing and the next event opens a new one carrying only what
+   * happened since (see `src/card-interleave.ts`).
+   */
+  segmentFrom?: number | undefined
 }
 
 /** The channel surface this module needs (structurally satisfied by the channel). */
@@ -174,10 +204,15 @@ function statusOf(tool: ProgressTool): RunStatus {
 function toolLine(t: Translations, name: string, status: RunStatus, elapsed: number, count: number, now: number): string {
   const label = `\`${name}\`${count > 1 ? ` ×${count}` : ''}`
   const ms = status === 'running' ? Math.max(0, now - elapsed) : elapsed
-  const text = formatProgressMs(ms)
-  return status === 'running'
-    ? t.turnCardToolRunning(label, text)
-    : status === 'error' ? t.turnCardToolFailed(label, text) : t.turnCardToolDone(label, text)
+  if (status !== 'running') {
+    return status === 'error' ? t.turnCardToolFailed(label, formatProgressMs(ms)) : t.turnCardToolDone(label, formatProgressMs(ms))
+  }
+  // A call that has not been running for a measurable moment says so instead of
+  // printing a frozen `0ms` — and once a tick has passed, the elapsed time it
+  // shows is real (the card repaints every PROGRESS_RUNNING_TICK_MS while
+  // anything is still running).
+  const text = ms < 1_000 ? t.turnCardRunningLabel : formatProgressMs(ms)
+  return t.turnCardToolRunning(label, text)
 }
 
 /** Flatten the facts into ordered lines. */
@@ -187,6 +222,12 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
     const end = step.endedAt ?? facts.now
     const stepElapsed = `${formatProgressMs(end - step.startedAt)}${step.endedAt === undefined ? '…' : ''}`
     lines.push({ text: t.turnCardStep(step.step, stepElapsed), header: true, step: step.step })
+    // Injection notices are the preamble of the request this step sends, so they
+    // read first — above the narration and above the tool rows.
+    for (const notice of step.injections ?? []) {
+      if (notice === '') continue
+      lines.push({ text: notice, header: false, step: step.step })
+    }
     // The step's narration (if it had one) sits directly under its header: it is
     // what the step said BEFORE it decided to call tools, so it reads as the
     // section's preamble rather than as another tool row.
@@ -239,7 +280,9 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
       : t.turnCardTitleDone(facts.calls, facts.failed, total)
   const template = running ? 'grey' : facts.failedTurn ? 'red' : 'green'
 
-  const lines = buildLines(t, facts)
+  // This card owns the turn from `segmentFrom` on: an earlier card — one that is
+  // now above a card some other module posted — carries everything before it.
+  const lines = buildLines(t, { ...facts, steps: facts.steps.slice(facts.segmentFrom ?? 0) })
   // Keep the NEWEST rows: a live process card is about what is happening now.
   // Rows are grouped into whole STEP blocks, because a section's rows without
   // their header read as belonging to the section above them.
@@ -250,10 +293,13 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
     else blocks.push([line])
   }
   let visible: Line[] = []
+  let steps = 0
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i]!
+    if (steps >= PROGRESS_MAX_STEPS) break
     if (visible.length > 0 && visible.length + block.length > PROGRESS_MAX_ROWS) break
     visible = block.concat(visible)
+    steps += 1
   }
   // A single step larger than the whole budget still keeps its header plus its
   // newest rows; the dropped ones join the folded part.
@@ -302,8 +348,19 @@ interface CardEntry {
   dirty: boolean
   /** Timer implementing the trailing edge of the write throttle. */
   timer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * Timer that repaints the elapsed clock of a tool that has been running for a
+   * while. Armed only while something runs, dropped as soon as it settles, so a
+   * fast call never costs an extra write.
+   */
+  runningTick: ReturnType<typeof setTimeout> | undefined
   /** The send itself failed: stop updating and answer in text at the end. */
   dead: boolean
+  /**
+   * Another module posted a card after this one: it is a closed segment. Writes
+   * already in flight may land; nothing new is scheduled.
+   */
+  superseded: boolean
   facts: ProgressFacts
 }
 
@@ -318,6 +375,14 @@ export interface ProgressCardsHandle {
    * rendered as one row under its header instead of as a card of its own.
    */
   stepNote(sessionId: string, step: number, text: string, at: number): void
+  /**
+   * An injection notice this step claimed. It is process, so it renders on this
+   * card rather than opening a step card (which used to appear as an empty card
+   * carrying nothing but the notice).
+   */
+  stepInjection(sessionId: string, step: number, notice: string, at: number): void
+  /** Whether this turn has a card on screen (used to decide who shows injections). */
+  hasCard(sessionId: string): boolean
   /** `tool/call`: append a running row (and open the card on the first one). */
   toolStarted(sessionId: string, toolName: string, callId: string, at: number): void
   /** `tool/result`: settle the row with that call id (fallback: oldest running). */
@@ -335,6 +400,12 @@ export interface ProgressCardsDeps {
   logger: { warn(message: string): unknown }
   /** Strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
+  /**
+   * "Another module posted a card into this chat" (`src/card-interleave.ts`).
+   * Ends the current segment: this card stops growing, the next event opens a
+   * new one below the interruption.
+   */
+  interleave?: CardInterleave | undefined
 }
 
 /**
@@ -350,6 +421,11 @@ export interface ProgressCardsDeps {
 export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandle {
   const { channel, logger, getTranslations } = deps
   const cards = new Map<string, CardEntry>()
+  /**
+   * Cards whose segment an interrupting card closed. They never grow again but
+   * still have to render the turn's outcome at `finish` (see {@link endSegment}).
+   */
+  const closedSegments = new Map<string, CardEntry[]>()
   /** Per-turn row state, kept for sessions whose card never opened. */
   const turns = new Map<string, { chat: ConversationMessage; facts: ProgressFacts }>()
   /** Set by {@link stop}: every entry point becomes a no-op. */
@@ -373,6 +449,38 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       .catch((error: unknown) => {
         logger.warn(`dsh-feishu: progress card notice failed: ${errorText(error, 'unknown error')}`)
       })
+  }
+
+  /** Whether any row of these facts is still waiting for its result. */
+  const hasRunningTool = (facts: ProgressFacts): boolean =>
+    facts.steps.some(step => step.tools.some(tool => tool.elapsed === undefined))
+
+  /**
+   * Repaint while a tool is still running. Without it the card keeps whatever
+   * elapsed time the row had when it was written — usually `0ms`, because the
+   * card is written the moment the call starts. A call that settles before the
+   * first tick clears the timer, so fast tools cost nothing.
+   */
+  const armRunningTick = (entry: CardEntry): void => {
+    if (entry.runningTick !== undefined || entry.dead) return
+    entry.runningTick = setTimeout(() => {
+      entry.runningTick = undefined
+      if (stopped || entry.dead) return
+      if (!hasRunningTool(entry.facts)) return
+      entry.facts.now = Date.now()
+      // Straight to the write: this repaint is the point of the timer, so it
+      // must not wait for another event to trigger the throttle.
+      writeNow(entry)
+      armRunningTick(entry)
+    }, PROGRESS_RUNNING_TICK_MS)
+  }
+
+  /** Cancel the running tick once nothing is running any more. */
+  const disarmRunningTick = (entry: CardEntry): void => {
+    if (entry.runningTick === undefined) return
+    if (hasRunningTool(entry.facts)) return
+    clearTimeout(entry.runningTick)
+    entry.runningTick = undefined
   }
 
   /** Render one write, serialized behind the card's previous write. */
@@ -402,7 +510,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       entry.writing = false
       // Coalesced changes: render the LATEST state, never replay the ones that
       // were superseded (their content is older than what is on the card).
-      if (entry.dirty && !entry.dead) {
+      if (entry.dirty && !entry.dead && !entry.superseded) {
         entry.dirty = false
         writeNow(entry)
       }
@@ -411,6 +519,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
 
   /** Leading-edge throttled write: first change writes now, the rest coalesce. */
   const schedule = (entry: CardEntry): void => {
+    if (entry.superseded || entry.dead) return
     if (entry.writing) {
       entry.dirty = true
       return
@@ -418,7 +527,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     if (entry.timer !== undefined) return
     entry.timer = setTimeout(() => {
       entry.timer = undefined
-      if (!stopped && !entry.dead) writeNow(entry)
+      if (!stopped && !entry.dead && !entry.superseded) writeNow(entry)
     }, PROGRESS_WRITE_GAP_MS)
   }
 
@@ -455,6 +564,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     // A new turn owns a new card: the previous one is a historical record and a
     // card entity may only be sent once, so it is simply forgotten here.
     cards.delete(sessionId)
+    closedSegments.delete(sessionId)
     turns.set(sessionId, {
       chat,
       facts: { steps: [], calls: 0, failed: 0, turnStart: at, failedTurn: false, now: at },
@@ -515,7 +625,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     facts.now = at
     const entry = cards.get(sessionId)
     if (entry === undefined) {
-      open({
+      const opened: CardEntry = {
         sessionId,
         chat: turn.chat,
         cardId: Promise.resolve(undefined),
@@ -525,13 +635,20 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
         writing: false,
         dirty: false,
         timer: undefined,
+        runningTick: undefined,
         dead: false,
+        superseded: false,
         facts,
-      })
+      }
+      open(opened)
+      // The card that was just opened already shows this call as running, so the
+      // elapsed-time tick has to start with it (not with the NEXT call).
+      armRunningTick(opened)
       return
     }
     entry.facts = facts
     schedule(entry)
+    armRunningTick(entry)
   }
 
   const toolFinished = (sessionId: string, callId: string, elapsed: number, isError: boolean, at: number): void => {
@@ -565,6 +682,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     if (entry !== undefined) {
       entry.facts = facts
       schedule(entry)
+      // The last running row just settled: no repaint is worth scheduling any
+      // more (this is what makes a fast tool cost nothing).
+      disarmRunningTick(entry)
     }
   }
 
@@ -589,40 +709,145 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     turns.delete(sessionId)
     const entry = cards.get(sessionId)
     cards.delete(sessionId)
+    const closed = closedSegments.get(sessionId) ?? []
+    closedSegments.delete(sessionId)
     if (turn === undefined) return
-    if (entry === undefined) return
-    if (entry.timer !== undefined) {
-      clearTimeout(entry.timer)
-      entry.timer = undefined
-    }
     const facts = turn.facts
     facts.now = at
     facts.endedAt = at
     facts.failedTurn = failedTurn
     const current = facts.steps[facts.steps.length - 1]
     if (current !== undefined && current.endedAt === undefined) current.endedAt = at
+    // A closed segment still has to say how the turn ended: its body is frozen
+    // (it is not the newest card any more, so new rows must not appear in it),
+    // but a card claiming "进行中" after the turn ended is a lie. Counters come
+    // from the live facts; the steps stay the snapshot.
+    for (const frozen of closed) {
+      if (frozen.timer !== undefined) clearTimeout(frozen.timer)
+      if (frozen.runningTick !== undefined) clearTimeout(frozen.runningTick)
+      frozen.facts = { ...frozen.facts, calls: facts.calls, failed: facts.failed, endedAt: at, failedTurn, now: at }
+      frozen.dirty = false
+      writeNow(frozen)
+    }
+    if (entry === undefined) {
+      // Nothing is on screen for the newest segment: the closed card above the
+      // interruption already carries this turn's outcome.
+      await Promise.all(closed.map(frozen => frozen.chain))
+      return
+    }
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer)
+      entry.timer = undefined
+    }
+    if (entry.runningTick !== undefined) {
+      clearTimeout(entry.runningTick)
+      entry.runningTick = undefined
+    }
     entry.facts = facts
     // The final render bypasses the throttle: a card that stays grey after the
     // turn ended is a lie, and one extra write is affordable here. Nothing is
     // dirty any more — this render already carries the final facts.
     entry.dirty = false
     writeNow(entry)
-    await entry.chain
+    await Promise.all([...closed.map(frozen => frozen.chain), entry.chain])
     if (entry.dead) sendTextFallback(entry)
   }
+
+  /**
+   * Record an injection notice on the step that claimed it, so it renders as a
+   * row of this card instead of opening a step card of its own.
+   */
+  const stepInjection = (sessionId: string, step: number, notice: string, at: number): void => {
+    if (stopped || notice === '') return
+    const turn = turns.get(sessionId)
+    if (turn === undefined) return
+    const facts = turn.facts
+    let target = facts.steps.find(candidate => candidate.step === step)
+    if (target === undefined) {
+      target = { step, startedAt: at, tools: [] }
+      facts.steps.push(target)
+    }
+    const list = target.injections ?? (target.injections = [])
+    // The same notice can arrive twice for one step (a re-injection, a retried
+    // frame); one row is enough.
+    if (list[list.length - 1] === notice) return
+    list.push(notice)
+    facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry !== undefined) {
+      entry.facts = facts
+      schedule(entry)
+    }
+  }
+
+  /** Whether this turn already has a card on screen. */
+  const hasCard = (sessionId: string): boolean => cards.has(sessionId)
+
+  /**
+   * Another module posted a card into this chat: close this segment. What is on
+   * screen stays as it is (it now sits above the interruption), and the next
+   * event that really has something new — a tool call, a step — opens a new card
+   * below it. Nothing is opened here on purpose: a question card, its
+   * confirmation card and its retirement notice are three interruptions in a
+   * row, and opening one card each produced exactly the "碎卡片" the user
+   * reported (2026-10-09): several identical cards carrying the same running
+   * step and no new row at all.
+   */
+  const endSegment = (chatId: string, at: number): void => {
+    for (const [sessionId, turn] of turns) {
+      if (turn.chat.chatId !== chatId) continue
+      const facts = turn.facts
+      const entry = cards.get(sessionId)
+      if (entry !== undefined) {
+        // Freeze what THIS card has already rendered: a write still in flight
+        // must not suddenly switch the old card to the new segment's content.
+        entry.facts = { ...facts, steps: [...facts.steps] }
+        entry.superseded = true
+        if (entry.timer !== undefined) {
+          clearTimeout(entry.timer)
+          entry.timer = undefined
+        }
+        // The running tick is deliberately left alone: a call that is still
+        // running keeps its elapsed clock on the closed card (that is a status
+        // write, not a new row — new rows only ever go to the new segment).
+        // Keep the entry as the turn's closed segment: it still has to show the
+        // turn's outcome (a card that says "进行中" forever is a lie), but it
+        // never grows again.
+        const closed = closedSegments.get(sessionId) ?? []
+        closed.push(entry)
+        closedSegments.set(sessionId, closed)
+        // Forget it as the CURRENT card: the next real event opens a new one (a
+        // card entity may be sent once, and updating in place is exactly what
+        // would read out of order once another card sits below it).
+        cards.delete(sessionId)
+      }
+      const last = facts.steps[facts.steps.length - 1]
+      // A step that is still running stays in the next segment (with its header),
+      // otherwise its remaining tools would land in a card that never shows them.
+      facts.segmentFrom = Math.max(0, last !== undefined && last.endedAt === undefined
+        ? facts.steps.length - 1
+        : facts.steps.length)
+      facts.now = at
+    }
+  }
+
+  const unsubscribe = deps.interleave?.onNotice(chatId => endSegment(chatId, Date.now()))
 
   const stop = (): void => {
     // A late event must not re-open a card: this module is disposed with the
     // listener, but an event already queued can still be delivered.
     stopped = true
-    for (const entry of cards.values()) {
+    unsubscribe?.()
+    for (const entry of [...cards.values(), ...[...closedSegments.values()].flat()]) {
       if (entry.timer !== undefined) clearTimeout(entry.timer)
+      if (entry.runningTick !== undefined) clearTimeout(entry.runningTick)
     }
     cards.clear()
+    closedSegments.clear()
     turns.clear()
   }
 
-  return { beginTurn, stepStarted, stepNote, toolStarted, toolFinished, stepEnded, finish, stop }
+  return { beginTurn, stepStarted, stepNote, stepInjection, hasCard, toolStarted, toolFinished, stepEnded, finish, stop }
 }
 
 /** The card's title, for the plain-text fallback. */

@@ -1539,16 +1539,6 @@ export class HarnessConversationService {
       // The plugin just hands the live agent back.
       return { agent: liveAgent as unknown as AgentLike, dispose: async () => undefined }
     }
-    const fallback = this.deps.selection()
-    const initial = {
-      provider: creation?.provider ?? this.config.provider ?? fallback.provider,
-      model: creation?.model ?? this.config.model ?? fallback.model,
-      ...(creation?.reasoningEffort !== undefined
-        ? { reasoningEffort: creation.reasoningEffort }
-        : fallback.reasoningEffort !== undefined
-          ? { reasoningEffort: fallback.reasoningEffort }
-          : {}),
-    } satisfies ModelSelection
     const configuredWorkspace = creation?.workspace ?? this.config.workspace
     const workspace = configuredWorkspace === undefined
       ? this.deps.workspaceRegistry.list()[0]
@@ -1557,6 +1547,23 @@ export class HarnessConversationService {
     // When no workspace is configured, use the first workspace's path
     const cwd = workspace?.path ?? configuredWorkspace ?? process.cwd()
     const persisted = (await this.deps.sessionPersistence.list()).some(item => this.persistedIdOf(item) === sessionId)
+    // A resumed session must run on the model route it recorded, not on
+    // whatever the deployment default happens to be right now — see
+    // {@link recordedRoute} (关键坑 59). Creation still wins: `/new <model>` and
+    // the new-session card carry an explicit route.
+    const recorded = persisted ? await this.recordedRoute(sessionId) : undefined
+    const fallback = this.deps.selection()
+    const initial = {
+      provider: creation?.provider ?? recorded?.provider ?? this.config.provider ?? fallback.provider,
+      model: creation?.model ?? recorded?.model ?? this.config.model ?? fallback.model,
+      ...(creation?.reasoningEffort !== undefined
+        ? { reasoningEffort: creation.reasoningEffort }
+        : recorded?.reasoningEffort !== undefined
+          ? { reasoningEffort: recorded.reasoningEffort }
+          : fallback.reasoningEffort !== undefined
+            ? { reasoningEffort: fallback.reasoningEffort }
+            : {}),
+    } satisfies ModelSelection
     // A rehydrated session must run under the preset it recorded, not under the
     // bridge's configured default. The creation header is only a creation fact
     // (a blank-session switch records `agent-preset/selected` instead), and the
@@ -1593,6 +1600,84 @@ export class HarnessConversationService {
       await this.applyCreationRoute(sessionId, creation)
     }
     return handle
+  }
+
+  /**
+   * Read the model route a persisted session last ran on.
+   *
+   * The upstream loop takes a live Agent's route from the `agentOptions` its
+   * creator passed: the session's own logged `request/header` only donates a
+   * reasoning effort, and only when provider and model already match
+   * (`agent-loop`). The session controller normally installs a selection
+   * listener that prefers the session's own route, but this bridge creates and
+   * resumes its agents through `agents` directly, so no listener exists and
+   * `agentOptions` decides. Without this read every re-created chat came back on
+   * the deployment default — i.e. on whatever model was picked last anywhere,
+   * because `selectModel` persists that pick as the default — which silently
+   * switched long-lived chats (关键坑 59).
+   *
+   * Precedence inside the log: the last explicit `model/selection` (the user or
+   * this plugin chose it), else the last `request/header` that is not a
+   * `resume` (the route the session last ran on under its own process), else the
+   * first `request/header`. The log is scanned in bounded chunks and never
+   * cached, so a route changed while the agent was live still wins.
+   * @param sessionId - persisted session to inspect.
+   * @returns the recorded route, or `undefined` when the log records none (the
+   *   caller then falls back to configuration and the deployment default).
+   */
+  private async recordedRoute(sessionId: string): Promise<ModelSelection | undefined> {
+    const persistence = this.deps.sessionPersistence
+    const open = typeof persistence.open === 'function' ? persistence.open.bind(persistence) : undefined
+    const readFrom = typeof persistence.readFrom === 'function' ? persistence.readFrom.bind(persistence) : undefined
+    if (open === undefined && readFrom === undefined) return undefined
+    const CHUNK = 512
+    let chosen: ModelSelection | undefined
+    let owned: ModelSelection | undefined
+    let first: ModelSelection | undefined
+    const routeOf = (raw: { provider?: unknown; model?: unknown; reasoningEffort?: unknown } | undefined): ModelSelection | undefined => {
+      if (typeof raw?.provider !== 'string' || typeof raw.model !== 'string') return undefined
+      return {
+        provider: raw.provider,
+        model: raw.model,
+        ...(typeof raw.reasoningEffort === 'string' ? { reasoningEffort: raw.reasoningEffort as never } : {}),
+      }
+    }
+    try {
+      const handle = open === undefined ? undefined : await open(sessionId as never, 'read')
+      try {
+        let offset = 0
+        for (;;) {
+          const result = handle !== undefined
+            ? await handle.read(offset, CHUNK)
+            : readFrom === undefined ? undefined : await readFrom(sessionId as never, offset)
+          if (result === undefined) break
+          const events = (result as { events?: ReadonlyArray<unknown> })?.events
+            ?? (result as unknown as ReadonlyArray<unknown>)
+          if (!Array.isArray(events) || events.length === 0) break
+          for (const event of events) {
+            const row = event as { type?: unknown; data?: any }
+            if (row.type === 'model/selection') {
+              chosen = routeOf(row.data) ?? chosen
+            } else if (row.type === 'request/header') {
+              const route = routeOf(row.data?.header?.config)
+              if (route !== undefined) {
+                first ??= route
+                if (row.data?.reason !== 'resume') owned = route
+              }
+            }
+          }
+          offset += events.length
+          // `readFrom` returns the whole tail per call, so one pass is enough.
+          if (handle === undefined || events.length < CHUNK) break
+        }
+      } finally {
+        await handle?.close().catch(() => undefined)
+      }
+    } catch {
+      // An unreadable log must never block the chat: fall back to configuration.
+      return undefined
+    }
+    return chosen ?? owned ?? first
   }
 
   /**

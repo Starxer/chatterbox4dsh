@@ -221,6 +221,11 @@ export interface Translations {
   turnCardStepNote: (note: string) => string
   /** One tool call that has not returned yet; `label` is already in markup. */
   turnCardToolRunning: (label: string, elapsed: string) => string
+  /**
+   * What a call that has not been running for a measurable moment says instead of
+   * a frozen `0ms` (`执行中` / `running`).
+   */
+  turnCardRunningLabel: string
   /** One tool call that returned successfully. */
   turnCardToolDone: (label: string, elapsed: string) => string
   /** One tool call that returned an error. */
@@ -523,20 +528,28 @@ export interface Translations {
   /** Hint above a single-select question's clickable option rows. */
   questionTapHint: string
   /** Confirmation card shown after a clickable single-select row is tapped. */
-  questionConfirmTitle: string
-  questionConfirmBody: (label: string) => string
-  questionConfirmNote: string
-  questionConfirmSend: string
-  questionConfirmBack: string
-  questionConfirmBacked: string
-  questionConfirmDone: (labels: string) => string
+  /** Receipt card posted straight after an answer (`✅ 已提交`). */
+  questionReceiptTitle: string
+  /** `已选：**Yes**` — the answer the receipt records. */
+  questionReceiptAnswer: (answer: string) => string
+  /** One line telling the user this answer can still be redone. */
+  questionReceiptNote: string
+  /** The receipt's undo button. */
+  questionReceiptBack: string
+  /** Grey notice replacing a receipt whose answer was undone. */
+  questionReceiptUndone: string
+  /** Final batch card: title, one row per question, and its two buttons. */
+  questionBatchTitle: string
+  questionBatchRow: (question: string, answer: string) => string
+  questionBatchUnanswered: string
+  questionBatchNote: string
+  questionBatchConfirm: string
+  questionBatchBack: string
   /** Stand-in card left behind when a spent question card is re-sent fresh. */
   questionCardRetiredTitle: string
   questionCardRetired: string
   /** The question card while it waits on the confirmation card. */
-  questionFrozen: (label: string) => string
   /** Stand-in card left behind when the result was posted as a new card. */
-  questionCardSubmitted: string
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: string
   jobPanelSummary: (running: number, total: number) => string
@@ -731,6 +744,7 @@ export const zh = {
   turnCardStep: (step, elapsed) => `**第 ${step} 步** · ${elapsed}`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
+  turnCardRunningLabel: '执行中',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
   turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
   turnCardOlderRows: rows => `**更早的 ${rows} 行**`,
@@ -992,17 +1006,19 @@ export const zh = {
   questionMultiHint: '可勾选多个，选好后按「提交」：',
   questionSubmitButton: '✅ 提交',
   questionTapHint: '点下面任意一项即可作答：',
-  questionConfirmTitle: '📋 确认提交',
-  questionConfirmBody: label => `确认把 ${label} 作为本题答案提交？`,
-  questionConfirmNote: '点错了就按「返回」——这张卡会作废，并另发一张新的问题卡给你重选。',
-  questionConfirmSend: '✅ 确认提交',
-  questionConfirmBack: '↩️ 返回',
-  questionConfirmBacked: '已返回。这张确认卡已作废，请在下方新发的问题卡上继续作答。',
-  questionConfirmDone: labels => `✅ 已提交：${labels}`,
+  questionReceiptTitle: '✅ 已提交',
+  questionReceiptAnswer: answer => `已选：${answer}`,
+  questionReceiptNote: '这一题已经记下了，选错了就点下面的「返回」重答本题。',
+  questionReceiptBack: '↩️ 返回重答',
+  questionReceiptUndone: '这次作答已撤销，请在下方新发的问题卡上重答本题。',
+  questionBatchTitle: '📝 确认全部回答',
+  questionBatchRow: (question, answer) => `**${question}**\n${answer}`,
+  questionBatchUnanswered: '（未作答）',
+  questionBatchNote: '全部答完了。点「确认提交」把这组回答交给模型；想改最后一题就点「返回上一题」。',
+  questionBatchConfirm: '✅ 确认提交',
+  questionBatchBack: '↩️ 返回上一题',
   questionCardRetiredTitle: '已作废',
   questionCardRetired: '这张卡片已用过一次，飞书不再投递它上面的选项点击。**请使用下方新发的同一张问题卡继续作答。**',
-  questionFrozen: label => `⏳ 已选择 ${label}，请在下方确认卡上确认或返回。`,
-  questionCardSubmitted: '本题**已提交**，结果见下方新发的卡片。',
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: '🧩 后台任务',
   jobPanelSummary: (running, total) => `运行中 ${running} · 共 ${total} 个`,
@@ -1197,6 +1213,7 @@ export const en: Translations = {
   turnCardStep: (step, elapsed) => `**Step ${step}** · ${elapsed}`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
+  turnCardRunningLabel: 'running',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
   turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
   turnCardOlderRows: rows => `**${rows} earlier ${rows === 1 ? 'row' : 'rows'}**`,
@@ -1460,17 +1477,19 @@ export const en: Translations = {
   questionMultiHint: 'Select one or more, then press Submit:',
   questionSubmitButton: '✅ Submit',
   questionTapHint: 'Tap an option to answer:',
-  questionConfirmTitle: '📋 Confirm answer',
-  questionConfirmBody: label => `Submit ${label} as the answer to this question?`,
-  questionConfirmNote: 'Tapped by mistake? Press Back — that retires this card and posts a fresh question card below.',
-  questionConfirmSend: '✅ Submit answer',
-  questionConfirmBack: '↩️ Back',
-  questionConfirmBacked: 'Back — this confirmation is retired; answer on the fresh question card below.',
-  questionConfirmDone: labels => `✅ Submitted: ${labels}`,
+  questionReceiptTitle: '✅ Submitted',
+  questionReceiptAnswer: answer => `Selected: ${answer}`,
+  questionReceiptNote: 'Recorded. Tapped the wrong one? Use 返回 below to answer this question again.',
+  questionReceiptBack: '↩️ Redo this one',
+  questionReceiptUndone: 'That answer was undone — answer this question on the fresh card below.',
+  questionBatchTitle: '📝 Confirm all answers',
+  questionBatchRow: (question, answer) => `**${question}**\n${answer}`,
+  questionBatchUnanswered: '(unanswered)',
+  questionBatchNote: 'All answered. Confirm hands the set to the model; back one question lets you change the last one.',
+  questionBatchConfirm: '✅ Confirm',
+  questionBatchBack: '↩️ Back one question',
   questionCardRetiredTitle: 'Superseded',
   questionCardRetired: 'This card already delivered one tap, so Feishu no longer reports taps on its option rows. **Please answer on the fresh copy of the question below.**',
-  questionFrozen: label => `⏳ Selected ${label} — use the confirmation card below to submit or go back.`,
-  questionCardSubmitted: 'This question was **submitted** — the result is in the new card below.',
 
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: '🧩 Background jobs',

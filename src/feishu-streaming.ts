@@ -35,6 +35,7 @@ import { injectionNotice } from './injection-notice.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
 import { createProgressCards } from './feishu-progress.ts'
+import type { CardInterleave } from './card-interleave.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -174,6 +175,13 @@ export interface FeishuStreamingDeps {
    * rejects. Optional so tests need no filesystem.
    */
   warmImages?: (card: object, scope: { sessionId?: string }) => void
+  /**
+   * "Another module posted a card into this chat" (`src/card-interleave.ts`).
+   * The compact turn card uses it to end one segment and continue in a new card
+   * below the interruption. Optional: without it, that card just keeps updating
+   * in place.
+   */
+  interleave?: CardInterleave | undefined
 }
 
 /** Per-step usage from assistant/message event. */
@@ -330,6 +338,14 @@ interface SessionStepState {
   /** Chat info for the current step. */
   chat: ConversationMessage | undefined
   /**
+   * Offset into {@link text} where THIS card's segment starts, set when another
+   * module posts a card after the one on screen (`src/card-interleave.ts`).
+   * Under `compact` the answer card then stops growing: the next content opens a
+   * new card carrying only what arrived after the interruption. `undefined`
+   * means "this step has had no interruption".
+   */
+  supersededFrom: number | undefined
+  /**
    * Context-injection notice lines claimed by the CURRENT step, rendered at the
    * very top of its card. Per-step: `resetStep` clears them, because an
    * injection belongs to the request it precedes (see §1.5 of the parity
@@ -386,7 +402,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -410,6 +426,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     channel,
     logger,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
+    ...(interleave === undefined ? {} : { interleave }),
   })
 
   /**
@@ -424,6 +441,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     channel,
     logger,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
+    ...(interleave === undefined ? {} : { interleave }),
   })
 
   const getState = (sessionId: string): SessionStepState => {
@@ -436,6 +454,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         toolCalls: [],
         stepCardSent: false,
         stepCardRef: undefined,
+        supersededFrom: undefined,
         stepEnded: false,
         placeholderTimer: undefined,
         warmTimer: undefined,
@@ -478,6 +497,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.injections = []
     state.stepCardSent = false
     state.stepCardRef = undefined
+    state.supersededFrom = undefined
     state.pendingSend = undefined
     state.stepEnded = false
     stopPlaceholderTick(state)
@@ -584,7 +604,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       : state.stepEnded ? 'done' : 'thinking'
     const showR = reasoningShown() && state.reasoning.trim() !== ''
     const reasoning = showR ? state.reasoning.trim() : undefined
-    const text = state.text.trim() !== '' ? state.text.trim() : undefined
+    // An interruption ends this card's segment: the text up to `supersededFrom`
+    // is already on the card above it (see `src/card-interleave.ts`).
+    const visibleText = state.supersededFrom === undefined ? state.text : state.text.slice(state.supersededFrom)
+    const text = visibleText.trim() !== '' ? visibleText.trim() : undefined
     // Hiding tool calls also drops the tool-derived title/status: a step that
     // only did tool work never renders, and a step with text renders as a
     // plain reply card with no trace of the tools behind it.
@@ -602,6 +625,16 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     const reasoningMs = state.reasoningEndTime > state.reasoningStartTime
       ? state.reasoningEndTime - state.reasoningStartTime
       : undefined
+
+    // Under `compact` the notices live on the turn card as soon as that card
+    // exists, so this card carries them only when it does not (a turn with no
+    // tool at all): a notice is shown exactly once, and no step card is ever
+    // opened just to hold one.
+    const shownInjections = state.injections.length === 0
+      ? []
+      : !displayPolicy().turnCard || !progressCards.hasCard(state.sessionId)
+        ? state.injections
+        : []
 
     return renderStepCard(
       getTranslations?.() ?? translationsFor('zh'),
@@ -622,7 +655,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // to say the same thing is how a renderer starts disagreeing with the
         // settings page.
         display: displayPolicy(),
-        ...(state.injections.length > 0 ? { injections: state.injections } : {}),
+        ...(shownInjections.length > 0 ? { injections: shownInjections } : {}),
         ...(turnTriggerNote === undefined ? {} : { turnTriggerNote }),
         // The live phase only has meaning on the content-free form; passing it
         // alongside content would let a stale phase name a settled card.
@@ -1275,10 +1308,35 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     return trackUpdate(ref.sessionId, () => scheduleCardWrite(ref, entry.write).then(() => undefined))
   }
 
+  /**
+   * Close a step card whose segment an interrupting card ended. The next content
+   * opens a new card carrying only what arrived since; nothing is written to the
+   * old one any more.
+   */
+  const retireStepCard = (state: SessionStepState): void => {
+    const chat = state.chat
+    state.stepCardSent = false
+    state.stepCardRef = undefined
+    state.pendingSend = undefined
+    stopPlaceholderTick(state)
+    if (chat === undefined) return
+    // Nothing NEW arrived since the interruption: posting an empty card would be
+    // worse than leaving the retired one as the record of that step.
+    if (state.text.slice(state.supersededFrom ?? 0).trim() === '') return
+    queueStepCardSend(chat, state.sessionId, state)
+  }
+
   /** Update the existing step card with current state (debounced). */
   const updateStepCard = (state: SessionStepState): void => {
     if (!state.stepCardSent || state.stepCardRef === undefined) {
       console.log(`dsh-feishu: [update] skipped: sent=${state.stepCardSent} ref=${state.stepCardRef !== undefined}`)
+      return
+    }
+    if (state.supersededFrom !== undefined) {
+      // Another module posted a card after this one: writing here would put the
+      // newest line ABOVE it. Retire this card and let the content since the
+      // interruption go out as a NEW card below (see `src/card-interleave.ts`).
+      retireStepCard(state)
       return
     }
     // This update may be the moment the step's text first reaches the screen
@@ -1455,13 +1513,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // answer (WebUI parity, see `messageCallsTools`). Posting it as a step
         // card would put prose the user reads as a reply next to the real answer
         // — the "middle reply" that used to arrive as its own card. It goes on
-        // the turn card as one row instead. The exception is a step with
-        // injection notices: those render on a step card and nowhere else, so
-        // that card stays (and keeps the text with it).
+        // the turn card as one row instead. Injection notices are process too and
+        // live on that same card, so they no longer force a step card here: a
+        // step card under `compact` is the ANSWER, or nothing.
         const narration = displayPolicy().turnCard
           && state.stepNumber > 0
           && state.text.trim() !== ''
-          && state.injections.length === 0
           && messageCallsTools(event)
         if (narration) {
           progressCards.stepNote(sessionId, state.stepNumber, state.text, state.messageTime)
@@ -1601,15 +1658,18 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // `assistant/message` (reasoning/text) → `tool/call` → `tool/result`.
         //
         // `compact` is the exception, deliberately: its step cards carry the
-        // answer only, while the whole turn's tool activity lives on the one turn
-        // card (`feishu-progress.ts`). A step that has produced nothing yet
-        // therefore opens NO card, and a step that only ever runs tools never
-        // gets one (`tools: 'off'` also keeps it out of
-        // `stepHasVisibleContent`). The one case that must still open a card is a
-        // step carrying injections: those notices render on a step card and
-        // nowhere else, so dropping the card would silently drop them (O21①).
+        // answer only, while the whole turn's tool activity AND its injection
+        // notices live on the one turn card (`feishu-progress.ts`). A step that
+        // has produced nothing yet therefore opens NO card — not even for an
+        // injection, which is process like everything else on that card.
         const stepPolicy = displayPolicy()
-        if (!stepPolicy.turnCard || state.injections.length > 0) {
+        if (stepPolicy.turnCard) {
+          // Anything buffered before this `step/start` belongs to THIS step's
+          // request, so it becomes a row of this step's section right away.
+          for (const notice of state.injections) {
+            progressCards.stepInjection(sessionId, state.stepNumber, notice, state.stepStartTime)
+          }
+        } else {
           queueStepCardSend(chat, sessionId, state)
           startPlaceholderTick(sessionId, state)
         }
@@ -1687,27 +1747,32 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // a card of its own.
         const notice = injectionNotice(source, getTranslations?.() ?? translationsFor('zh'))
         if (notice !== undefined) {
-          if (state.stepCardSent && !state.stepEnded) {
+          /** The step whose request this injection precedes is already open. */
+          const liveStep = state.stepStartTime > 0 && !state.stepEnded
+          if (displayPolicy().turnCard && liveStep) {
+            // `compact` keeps the process on the turn card, and an injection IS
+            // process: it becomes a row of the section for the step that claims
+            // it. Opening a step card for it (the old O21① exception) produced
+            // cards that said nothing but "本步无输出" plus the notice, and — on
+            // every turn's first step, which always claims the runtime context —
+            // a stray card carrying the step's narration as if it were a reply.
+            state.injections.push(notice)
+            progressCards.stepInjection(sessionId, state.stepNumber, notice, event.time ?? Date.now())
+          } else if (liveStep && state.stepCardSent) {
             // The step's card is on screen and the step is still running: this
             // injection precedes a request that has not been sent yet, so it
             // goes on top of the card the user is already looking at.
             state.injections.push(notice)
             updateStepCard(state)
-          } else if (!state.stepEnded && state.stepStartTime > 0) {
+          } else if (liveStep) {
             // Inside a step whose card is still inside its debounce window: the
             // pending send rebuilds from this state, so adding it here is enough.
             state.injections.push(notice)
-            // …except under `compact`, where a step that has produced nothing yet
-            // has NO pending send at all (see the `step/start` branch): open one
-            // now, or this notice would be dropped with nothing to render it.
-            if (!state.stepCardSent && displayPolicy().turnCard) {
-              queueStepCardSend(chat, sessionId, state)
-              startPlaceholderTick(sessionId, state)
-            }
           } else {
             // Between steps (or before the first one): DSH materializes an
             // injection when a step CLAIMS its inbox, so it belongs to the NEXT
-            // step's request. Buffer it; `step/start` moves it in.
+            // step's request. Buffer it; `step/start` moves it in (and mirrors it
+            // onto the turn card under `compact`).
             const buffered = pendingInjections.get(sessionId) ?? []
             buffered.push(notice)
             pendingInjections.set(sessionId, buffered)
@@ -1994,10 +2059,26 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     return settled
   }
 
+  /**
+   * Another module posted a card into a chat: under `compact` the answer card
+   * that is on screen for a step of that chat is a closed segment from here on
+   * (see `src/card-interleave.ts`). Nothing is written to it any more; the next
+   * content of that step opens a new card below the interruption.
+   */
+  const unsubscribeInterleave = interleave?.onNotice((chatId: string) => {
+    for (const state of sessionStates.values()) {
+      if (state.chat?.chatId !== chatId) continue
+      if (!displayPolicy().turnCard) continue
+      if (state.stepEnded || !state.stepCardSent) continue
+      state.supersededFrom = state.text.length
+    }
+  })
+
   return {
     stop: () => {
       disposeListener()
       disposeStream()
+      unsubscribeInterleave?.()
       for (const entry of pendingUpdates.values()) clearTimeout(entry.timer)
       pendingUpdates.clear()
       for (const timer of staleTimers) clearTimeout(timer)

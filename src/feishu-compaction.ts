@@ -33,6 +33,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
+import type { CardInterleave } from './card-interleave.ts'
 
 /** Longest summary body carried into the folded panel, in characters. */
 export const COMPACTION_SUMMARY_CAP = 200
@@ -81,6 +82,11 @@ export interface CompactionCardChannel {
 }
 
 export interface CompactionCardsDeps {
+  /**
+   * "Another module posted a card into this chat" (`src/card-interleave.ts`):
+   * the compact turn card ends its current segment on this notice. Optional.
+   */
+  interleave?: CardInterleave | undefined
   channel: CompactionCardChannel
   logger: { warn(message: string): unknown; error(message: string): unknown }
   /** Strings for the ACTIVE locale, read at render time. */
@@ -212,7 +218,7 @@ export interface CompactionCardsHandle {
  * and the previous card is already a historical record.
  */
 export function createCompactionCards(deps: CompactionCardsDeps): CompactionCardsHandle {
-  const { channel, logger, getTranslations } = deps
+  const { channel, logger, getTranslations, interleave } = deps
   const cards = new Map<string, CardEntry>()
   /** Set by {@link stop}: every entry point becomes a no-op. */
   let stopped = false
@@ -292,6 +298,11 @@ export function createCompactionCards(deps: CompactionCardsDeps): CompactionCard
         return channel.sendCardByReference!(chat.chatId, id, opts).then(r => r.messageId)
       }
       return channel.send(chat.chatId, { card: render() }, opts).then(r => r.messageId)
+    }).then((messageId) => {
+      // A compaction card lands BETWEEN steps of a running turn, so it ends the
+      // compact turn card's segment: what comes after must read BELOW this card.
+      if (messageId !== undefined) interleave?.note(chat.chatId)
+      return messageId
     }).catch((error: unknown) => {
       logger.warn(`dsh-feishu: compaction card send failed: ${errorText(error, 'unknown error')}`)
       textFallback(entry, textLine(getTranslations(), first))

@@ -142,6 +142,71 @@ describe('HarnessConversationService', () => {
     expect(f.mount).toHaveBeenCalledWith({}, 'cordis')
   })
 
+  it('resumes a persisted session on the model route it recorded, not the deployment default', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    // The deployment default is deepseek-flash; this session last ran on minimax.
+    // The upstream loop takes the route from `agentOptions`, so the resume must
+    // carry the session's own route (关键坑 59).
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: {},
+      events: [{
+        seq: 1,
+        type: 'request/header',
+        data: { header: { config: { provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview', reasoningEffort: 'high' } }, reason: 'initial' },
+      }],
+    }))
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })
+
+    expect(f.resume).toHaveBeenCalledWith(expect.objectContaining({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview', reasoningEffort: 'high' },
+    }))
+  })
+
+  it('prefers the last explicit model selection over a forced resume header', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    // A resume the bridge used to force onto the deployment default logged the
+    // wrong route; the user's own pick is the authority.
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: {},
+      events: [
+        { seq: 1, type: 'request/header', data: { header: { config: { provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview' } }, reason: 'initial' } },
+        { seq: 2, type: 'model/selection', data: { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'medium' } },
+        { seq: 3, type: 'request/header', data: { header: { config: { provider: 'deepseek-official', model: 'deepseek-flash' } }, reason: 'resume' } },
+      ],
+    }))
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })
+
+    expect(f.resume).toHaveBeenCalledWith(expect.objectContaining({
+      agentOptions: { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'medium' },
+    }))
+  })
+
+  it('creates a new session with the explicit /new model route', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionPersistence.list = vi.fn(async () => [])
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+    service.startNewSession({ chatId: 'a', chatType: 'p2p' } as never, 'salt', {
+      provider: 'cpa-codex', model: 'gpt-6.1-sol',
+    })
+
+    await service.reply({ chatId: 'a', chatType: 'p2p', content: 'first' })
+
+    expect(f.create).toHaveBeenCalledWith(expect.objectContaining({
+      agentOptions: { provider: 'cpa-codex', model: 'gpt-6.1-sol' },
+    }))
+  })
   it('recovers the recorded preset from the head of a long session log, not the whole log', async () => {
     const f = fixture()
     const deps = dependencies(f)
@@ -164,10 +229,12 @@ describe('HarnessConversationService', () => {
 
     await service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })
 
-    // One bounded read: the selection event can only be appended while the
-    // session is blank, so it always sits in the log's head — a long history is
-    // never pulled into memory just to remount a preset.
-    expect(read.mock.calls).toEqual([[0, 64]])
+    // The preset scan is one bounded read of the log's head (the selection event
+    // can only be appended while the session is blank, so it always sits there),
+    // and the model-route scan reads in bounded chunks too — a long history is
+    // never pulled into memory in one call.
+    expect(read.mock.calls).toContainEqual([0, 64])
+    expect(read.mock.calls.every(call => typeof call[1] === 'number' && call[1] <= 512)).toBe(true)
     const setup = f.resume.mock.calls[0]?.[0]?.setup as (ctx: unknown) => Promise<void>
     await setup?.({})
     expect(f.mount).toHaveBeenCalledWith({}, 'cordis')

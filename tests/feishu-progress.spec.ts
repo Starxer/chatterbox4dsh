@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_NOTE_MAX, PROGRESS_WRITE_GAP_MS,
+  PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_MAX_STEPS, PROGRESS_NOTE_MAX,
+  PROGRESS_RUNNING_TICK_MS, PROGRESS_WRITE_GAP_MS,
   condenseStepNote, createProgressCards, formatProgressMs, renderProgressCard, type ProgressFacts,
 } from '../src/feishu-progress.ts'
+import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { ConversationMessage } from '../src/conversation.ts'
 
@@ -217,6 +219,66 @@ describe('renderProgressCard', () => {
     expect(mdOf(card)).not.toContain('💬')
   })
 
+  it('renders injection notices as rows of the step that claimed them', () => {
+    const card: any = renderProgressCard(t, facts({
+      steps: [{
+        step: 1,
+        startedAt: 0,
+        endedAt: 2_000,
+        tools: [{ name: 'bash', startedAt: 500, elapsed: 100 }],
+        injections: ['📥 注入上下文 · AGENTS.md（已更新）'],
+        note: '我看一下',
+      }],
+      calls: 1,
+      now: 2_000,
+    }))
+    // Preamble first (the notice is why the request carries what it carries),
+    // then the narration, then the tool rows.
+    expect(visibleLines(card)).toEqual([
+      t.turnCardStep(1, '2.0s'),
+      '📥 注入上下文 · AGENTS.md（已更新）',
+      t.turnCardStepNote('我看一下'),
+      t.turnCardToolDone('`bash`', '100ms'),
+    ])
+  })
+
+  it('keeps only the newest five steps visible and folds the older ones', () => {
+    const steps = Array.from({ length: 8 }, (_, i) => ({
+      step: i + 1,
+      startedAt: 0,
+      endedAt: 100,
+      tools: [
+        { name: `t${i}a`, startedAt: 0, elapsed: 10 },
+        { name: `t${i}b`, startedAt: 0, elapsed: 10 },
+      ],
+    }))
+    const card: any = renderProgressCard(t, { steps, calls: 16, failed: 0, turnStart: 0, now: 200, failedTurn: false })
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    // Steps 1-3 fold away (their headers included): 3 headers + 6 rows.
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(9)))
+    const visible = visibleLines(card)
+    expect(visible[0]).toBe(t.turnCardStep(4, '100ms'))
+    expect(visible.filter(line => line.startsWith('**第'))).toHaveLength(5)
+  })
+
+  it('renders only the rows of this segment when one was cut short', () => {
+    const card: any = renderProgressCard(t, facts({
+      steps: [
+        { step: 1, startedAt: 0, endedAt: 100, tools: [{ name: 'old', startedAt: 0, elapsed: 10 }] },
+        { step: 2, startedAt: 100, endedAt: 200, tools: [{ name: 'fresh', startedAt: 100, elapsed: 10 }] },
+      ],
+      calls: 2,
+      now: 200,
+      endedAt: 200,
+      segmentFrom: 1,
+    }))
+    const md = mdOf(card)
+    expect(md).not.toContain('`old`')
+    expect(md).toContain('`fresh`')
+    // The counters stay turn-wide: the title counts the whole turn's calls.
+    expect(card.header.title.content).toBe(t.turnCardTitleDone(2, 0, '200ms'))
+  })
+
   it('keeps the rows close together (measured spacing, not the loose default)', () => {
     const card: any = renderProgressCard(t, facts())
     expect(card.body.vertical_spacing).toBe(PROGRESS_ELEMENT_SPACING)
@@ -224,7 +286,7 @@ describe('renderProgressCard', () => {
 })
 
 describe('createProgressCards', () => {
-  function harness(options: { failCardSend?: boolean } = {}) {
+  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave } = {}) {
     const channel = {
       send: vi.fn(async (_to: string, input: { card?: object; text?: string }) =>
         input.card !== undefined && options.failCardSend
@@ -238,7 +300,12 @@ describe('createProgressCards', () => {
       updateCardInstance: vi.fn(async () => undefined),
     }
     const logger = { warn: vi.fn() }
-    const cards = createProgressCards({ channel: channel as any, logger, getTranslations: () => t })
+    const cards = createProgressCards({
+      channel: channel as any,
+      logger,
+      getTranslations: () => t,
+      ...(options.interleave === undefined ? {} : { interleave: options.interleave }),
+    })
     return { channel, logger, cards }
   }
 
@@ -358,7 +425,8 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
     const card = (channel.updateCardInstance.mock.calls[1] as any)[1]
-    expect(mdOf(card)).toContain(t.turnCardToolRunning('`bash`', '0ms'))
+    // A call that has just started says `执行中`, never a frozen `0ms`.
+    expect(mdOf(card)).toContain(t.turnCardToolRunning('`bash`', t.turnCardRunningLabel))
   })
 
   it('finishes with a green render and ignores anything after turn/end', async () => {
@@ -406,5 +474,127 @@ describe('createProgressCards', () => {
     cards.stop()
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS * 3)
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
+  })
+
+  it('says 执行中 at first, then repaints the elapsed clock every 30s', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', Date.now())
+    // The tick measures against the wall clock, so the call has to be anchored
+    // on it as well (fake timers keep the real epoch as their origin).
+    cards.toolStarted('s1', 'bash', 'c1', Date.now())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mdOf((channel.createCardInstance.mock.calls[0] as any)[0]))
+      .toContain(t.turnCardToolRunning('`bash`', t.turnCardRunningLabel))
+    // Nothing is written before the tick: a fast call must not pay for one.
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS - 1)
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(mdOf(card)).toContain(t.turnCardToolRunning('`bash`', '30.0s'))
+  })
+
+  it('drops the running tick as soon as the call settles', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', Date.now())
+    cards.toolStarted('s1', 'bash', 'c1', Date.now())
+    await vi.advanceTimersByTimeAsync(0)
+    cards.toolFinished('s1', 'c1', 400, false, Date.now())
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const writes = channel.updateCardInstance.mock.calls.length
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 3)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(writes)
+  })
+
+  it('opens a NEW card after another module posts one, showing only new rows', async () => {
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 10)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    cards.toolFinished('s1', 'c1', 100, false, 120)
+    cards.stepEnded('s1', 200)
+    // A todo card (or a job card, a question card, a compaction card) lands in
+    // the chat: the card above it must stop growing.
+    interleave.note('oc_1')
+    cards.stepStarted('s1', 2, 300)
+    cards.toolStarted('s1', 'bash', 'c2', 400)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(2))
+    const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
+    expect(mdOf(fresh)).not.toContain('`read`')
+    expect(String(mdOf(fresh))).toContain('`bash`')
+    // The first card was left exactly as it was.
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    // …and the turn's totals still count everything.
+    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning(2, '400ms'))
+  })
+
+  it('keeps a running step in the new segment so its later rows still show', async () => {
+    vi.useFakeTimers()
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    const t0 = Date.now()
+    cards.beginTurn(chat, 's1', t0)
+    cards.stepStarted('s1', 1, t0)
+    cards.toolStarted('s1', 'read', 'c1', t0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    // The interruption arrives mid-step (the step has not ended). The segment is
+    // closed but NOT re-opened: nothing new has happened yet.
+    await vi.advanceTimersByTimeAsync(120)
+    interleave.note('oc_1')
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    // The next call does have something new to say, so the new segment opens
+    // with its step (and its header), below the interrupting card.
+    cards.toolStarted('s1', 'bash', 'c2', Date.now())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
+    const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
+    expect(String(mdOf(fresh))).toContain('**第 1 步**')
+    expect(String(mdOf(fresh))).toContain('`read`')
+    expect(String(mdOf(fresh))).toContain('`bash`')
+  })
+
+  it('keeps a closed segment\'s clock alive without adding rows to it', async () => {
+    vi.useFakeTimers()
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    cards.beginTurn(chat, 's1', Date.now())
+    cards.stepStarted('s1', 1, Date.now())
+    cards.toolStarted('s1', 'ask_user_question', 'c1', Date.now())
+    await vi.advanceTimersByTimeAsync(0)
+    interleave.note('oc_1')
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS)
+    // Same card, same rows — only the elapsed clock moved on.
+    const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(mdOf(card)).toContain(t.turnCardToolRunning('`ask_user_question`', '30.0s'))
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS)
+    expect(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1]))
+      .toContain(t.turnCardToolRunning('`ask_user_question`', '1m00s'))
+  })
+
+  it('closes the turn on the card above the interruption when no new row arrived', async () => {
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'ask_user_question', 'c1', 10)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    // A question card, then its confirmation card, then a retirement notice: the
+    // three of them used to spawn three identical cards.
+    interleave.note('oc_1')
+    interleave.note('oc_1')
+    interleave.note('oc_1')
+    await cards.finish('s1', 900_000, false)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    const updated = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(updated.header.template).toBe('green')
+    expect(updated.header.title.content).toBe(t.turnCardTitleDone(1, 0, '15m00s'))
+    // The body is the frozen one: the turn's own rows, unchanged.
+    expect(mdOf(updated)).toContain('⏳ `ask_user_question`')
   })
 })

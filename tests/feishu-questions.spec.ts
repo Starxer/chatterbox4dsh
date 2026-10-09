@@ -134,6 +134,15 @@ function startHarness() {
 }
 
 /** Every markdown element's content in a rendered card, in document order. */
+/**
+ * The batch commits on its FINAL card (operator's 2026-10-09 redesign): after an
+ * answer the last card on screen is the one carrying 确认提交.
+ */
+async function commitBatch(harness: Harness, questionId = 'q1'): Promise<void> {
+  await clickValue(harness, { pendingId: extractPendingId(lastCard(harness)), questionId, type: 'batch-confirm' })
+  await new Promise(resolve => setImmediate(resolve))
+}
+
 function cardMarkdown(card: Harness['sentCards'][0]['card']): string {
   const parts: string[] = []
   const walk = (els: unknown[]): void => {
@@ -258,6 +267,7 @@ describe('startFeishuQuestions', () => {
           value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
         },
       })
+      await commitBatch(harness)
       const answer = await answerPromise
       expect(answer).toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
     } finally {
@@ -266,7 +276,7 @@ describe('startFeishuQuestions', () => {
     }
   })
 
-  it('renders one card per question and accumulates answers sequentially', async () => {
+  it('renders one card per question and commits the set on the final card', async () => {
     const harness: Harness = { answered: [], sentCards: [], updatedCards: [], cardActionHandler: undefined, resolveChatCalls: [] }
     const ctxHandle = buildCtx()
     const { channel, cleanup } = buildChannel(harness)
@@ -276,29 +286,117 @@ describe('startFeishuQuestions', () => {
     )
     const stop = startFeishuQuestions({ ctx: ctxHandle.ctx, channel, bridgeHolder, logger, getTranslations: () => t })
     const Q2: AskUserQuestionItem = { id: 'q2', question: 'Second?', options: [{ label: 'B' }, { label: 'C' }] }
+    const tapRow = async (cardIndex: number, rowIndex: number): Promise<void> => {
+      const rows = optionRows(harness.sentCards[cardIndex]!.card)
+      await harness.cardActionHandler!({
+        action: { tag: 'interactive_container', value: rowValue(rows[rowIndex]!) },
+      })
+      await new Promise(resolve => setImmediate(resolve))
+    }
     try {
-      // Fire a two-question request; it suspends awaiting the first card.
       const answerPromise = ctxHandle.trigger('oc_session', [QUESTION, Q2], { session: { id: 'oc_session' } })
       await new Promise(resolve => setImmediate(resolve))
       expect(harness.sentCards).toHaveLength(1)
-      // Answer the first question; the loop must then send the second card.
-      await harness.cardActionHandler!({
-        action: {
-          tag: 'button',
-          value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
-        },
-      })
-      await new Promise(resolve => setImmediate(resolve))
-      expect(harness.sentCards).toHaveLength(2)
-      // Answer the second question; only now does the batch resolve.
-      await harness.cardActionHandler!({
-        action: {
-          tag: 'button',
-          value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[1]!.card), questionId: 'q2', selected: ['B'] }),
-        },
+      // Tapping a row IS the answer: no confirmation tap, and a receipt goes out
+      // recording it.
+      await tapRow(0, 0)
+      // Card 2 is the receipt for the answer; the loop goes straight on to the
+      // next question, whose card is #3.
+      expect(cardMarkdown(harness.sentCards[1]!.card)).toContain(t.questionReceiptAnswer('**Yes**'))
+      expect(hasCallbackType(harness.sentCards[1]!.card, 'answer-back')).toBe(true)
+      expect(harness.sentCards).toHaveLength(3)
+      expect(cardMarkdown(harness.sentCards[2]!.card)).toContain('Second?')
+      await tapRow(2, 0)
+      // …and the LAST answer is recorded by the final card itself (no receipt).
+      expect(harness.sentCards).toHaveLength(4)
+      const batchCard = harness.sentCards[3]!.card
+      const batchMarkdown = cardMarkdown(batchCard)
+      expect(batchMarkdown).toContain('Yes')
+      expect(batchMarkdown).toContain('B')
+      expect(hasCallbackType(batchCard, 'batch-confirm')).toBe(true)
+      expect(hasCallbackType(batchCard, 'batch-back')).toBe(true)
+      await clickValue(harness, {
+        pendingId: extractPendingId(batchCard), questionId: 'q1', type: 'batch-confirm',
       })
       const answer = await answerPromise
       expect(answer).toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }, { id: 'q2', selected: ['B'] }] })
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('re-asks the last question when the final card goes back one', async () => {
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    const Q2: AskUserQuestionItem = { id: 'q2', question: 'Second?', options: [{ label: 'B' }, { label: 'C' }] }
+    try {
+      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION, Q2], { session: { id: 'oc_session' } })
+      await new Promise(resolve => setImmediate(resolve))
+      const tap = async (cardIndex: number, rowIndex: number): Promise<void> => {
+        const rows = optionRows(harness.sentCards[cardIndex]!.card)
+        await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[rowIndex]!) } })
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      await tap(0, 0)   // q1 -> Yes
+      await tap(2, 1)   // q2 -> C
+      expect(harness.sentCards).toHaveLength(4)
+      await clickValue(harness, {
+        pendingId: extractPendingId(harness.sentCards[3]!.card), questionId: 'q2', type: 'batch-back',
+      })
+      await new Promise(resolve => setImmediate(resolve))
+      // A FRESH card for the last question (a spent card never delivers another
+      // row tap), and the old batch card is retired in place.
+      expect(harness.sentCards).toHaveLength(5)
+      const freshRows = optionRows(harness.sentCards[4]!.card)
+      expect(freshRows).toHaveLength(2)
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(freshRows[0]!) } })
+      await new Promise(resolve => setImmediate(resolve))
+      // Answering it again posts a NEW final card, and that one commits.
+      expect(harness.sentCards).toHaveLength(6)
+      await clickValue(harness, {
+        pendingId: extractPendingId(harness.sentCards[5]!.card), questionId: 'q1', type: 'batch-confirm',
+      })
+      await expect(answerPromise).resolves.toEqual({
+        answers: [{ id: 'q1', selected: ['Yes'] }, { id: 'q2', selected: ['B'] }],
+      })
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('undoes one answer from its receipt and re-asks that question', async () => {
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    const Q2: AskUserQuestionItem = { id: 'q2', question: 'Second?', options: [{ label: 'B' }, { label: 'C' }] }
+    try {
+      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION, Q2], { session: { id: 'oc_session' } })
+      await new Promise(resolve => setImmediate(resolve))
+      const tap = async (cardIndex: number, rowIndex: number): Promise<void> => {
+        const rows = optionRows(harness.sentCards[cardIndex]!.card)
+        await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[rowIndex]!) } })
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      await tap(0, 0)   // q1 -> Yes, receipt posted
+      await tap(2, 0)   // q2 -> B, final card posted
+      // Undo question 1 from its receipt: the receipt is retired and that
+      // question comes back on a fresh card.
+      const receipt = harness.sentCards[1]!.card
+      await clickValue(harness, {
+        pendingId: extractPendingId(receipt), questionId: 'q1', type: 'answer-back',
+      }, 'om_question_card_2')
+      await new Promise(resolve => setImmediate(resolve))
+      expect(harness.updatedCards.some(call => call.messageId === 'om_question_card_2'
+        && cardMarkdown(call.card as Harness['sentCards'][0]['card']).includes(t.questionReceiptUndone))).toBe(true)
+      const freshRows = optionRows(harness.sentCards[harness.sentCards.length - 1]!.card)
+      expect(freshRows).toHaveLength(2)
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(freshRows[1]!) } })
+      await new Promise(resolve => setImmediate(resolve))
+      await clickValue(harness, {
+        pendingId: extractPendingId(lastCard(harness)), questionId: 'q1', type: 'batch-confirm',
+      })
+      await expect(answerPromise).resolves.toEqual({
+        answers: [{ id: 'q1', selected: ['No'] }, { id: 'q2', selected: ['B'] }],
+      })
     } finally {
       stop()
       cleanup()
@@ -331,6 +429,7 @@ describe('startFeishuQuestions', () => {
           },
         },
       })
+      await commitBatch(harness)
       const answer = await answerPromise
       expect(answer).toEqual({ answers: [{ id: 'q1', selected: [], custom: '自定义回答' }] })
     } finally {
@@ -462,6 +561,7 @@ describe('startFeishuQuestions', () => {
           value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'd1', selected: ['Yes'] }),
         },
       })
+      await commitBatch(harness)
       await answerPromise
       expect(harness.updatedCards).toHaveLength(1)
       const body = harness.updatedCards[0]!.card.body
@@ -496,6 +596,7 @@ describe('startFeishuQuestions', () => {
       expect(harness.sentCards).toHaveLength(1)
 
       resolveWeb({ answers: [{ id: 'q1', selected: ['No'] }] })
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['No'] }] })
 
       // The losing Feishu card must stop looking answerable — and still say
@@ -530,6 +631,7 @@ describe('startFeishuQuestions', () => {
           value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
         },
       })
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
       // The gate aborts the forwarded Web UI request, which is what makes the
       // browser dismiss its card.
@@ -560,6 +662,7 @@ describe('startFeishuQuestions', () => {
           value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
         },
       })
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
       expect(ctxHandle.lastRequest?.signal?.aborted).toBe(true)
     } finally {
@@ -585,29 +688,24 @@ describe('startFeishuQuestions', () => {
       expect(JSON.stringify(rows[0])).toContain('approve')
       expect(optionButtons(card)).toHaveLength(0)
       expect(elementsByTag(card, 'button')).toHaveLength(2) // custom submit + skip
-      // One tap opens a confirmation card instead of answering straight away.
+      // One tap IS the answer (operator's 2026-10-09 redesign): the question card
+      // is settled in place and a receipt card follows, carrying the undo.
       await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[1]!) } })
-      expect(harness.sentCards).toHaveLength(2)
-      const confirm = lastCard(harness)
-      expect(hasCallbackType(confirm, 'answer-confirm')).toBe(true)
-      expect(hasCallbackType(confirm, 'answer-back')).toBe(true)
-      expect(cardMarkdown(confirm)).toContain('**No**')
-      expect(cardMarkdown(confirm)).toContain('decline')
-      // The question card is frozen the moment a row is tapped: no rows left,
-      // so it cannot take another pick while the confirmation is open.
-      expect(harness.updatedCards).toHaveLength(1)
+      await new Promise(resolve => setImmediate(resolve))
       expect(harness.updatedCards[0]!.messageId).toBe('om_question_card')
-      expect(cardMarkdown(harness.updatedCards[0]!.card as Harness['sentCards'][0]['card'])).toContain(t.questionFrozen('**No**'))
+      const settled = cardMarkdown(harness.updatedCards[0]!.card as Harness['sentCards'][0]['card'])
+      expect(settled).toContain('2. ✅ **No**')
       expect(optionRows(harness.updatedCards[0]!.card as Harness['sentCards'][0]['card'])).toHaveLength(0)
-      await clickValue(harness, { pendingId: extractPendingId(confirm), questionId: 'q1', selected: ['No'], type: 'answer-confirm' }, 'om_question_card_2')
+      // The only question in the batch: its answer is recorded by the FINAL card
+      // itself (a receipt would be the same card twice — see the two-question
+      // test for the receipt shape).
+      const finalCard = harness.sentCards[1]!.card
+      expect(cardMarkdown(finalCard)).toContain('No')
+      expect(hasCallbackType(finalCard, 'batch-confirm')).toBe(true)
+      expect(hasCallbackType(finalCard, 'batch-back')).toBe(true)
+      expect(hasCallbackType(finalCard, 'answer-confirm')).toBe(false)
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['No'] }] })
-      // Submitting posts the RESULT as a new card; the frozen question card and
-      // the confirmation card each get one final grey/done write.
-      expect(harness.sentCards).toHaveLength(3)
-      expect(harness.updatedCards.map(call => call.messageId)).toEqual([
-        'om_question_card', 'om_question_card', 'om_question_card_2',
-      ])
-      expect(cardMarkdown(harness.updatedCards[1]!.card as Harness['sentCards'][0]['card'])).toContain(t.questionCardSubmitted)
     } finally {
       stop()
       cleanup()
@@ -625,6 +723,7 @@ describe('startFeishuQuestions', () => {
           value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
         },
       })
+      await commitBatch(harness)
       await answerPromise
       const settled = cardMarkdown(harness.updatedCards[0]!.card as Harness['sentCards'][0]['card'])
       expect(settled).toContain('1. ✅ **Yes** · approve')
@@ -650,7 +749,7 @@ describe('startFeishuQuestions', () => {
       expect(rows).toHaveLength(8)
       expect(JSON.stringify(rows[7])).toContain('8. **Opt 8**')
       await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[7]!) } })
-      await clickValue(harness, { pendingId: extractPendingId(lastCard(harness)), questionId: 'q1', selected: ['Opt 8'], type: 'answer-confirm' }, 'om_question_card_2')
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Opt 8'] }] })
     } finally {
       stop()
@@ -691,6 +790,7 @@ describe('startFeishuQuestions', () => {
           },
         },
       })
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['db', 'work'] }] })
       const settled = cardMarkdown(harness.updatedCards[0]!.card as Harness['sentCards'][0]['card'])
       expect(settled).toContain('1. ✅ **db** · 152G')
@@ -726,6 +826,7 @@ describe('startFeishuQuestions', () => {
       expect(harness.updatedCards).toHaveLength(0)
       // A JSON-encoded list is read too (shape tolerance).
       await submit({ selections: '["neither"]' })
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['neither'] }] })
     } finally {
       stop()
@@ -749,7 +850,7 @@ describe('startFeishuQuestions', () => {
       const warnings = logger.warn.mock.calls.slice(warnBefore).map(call => String(call[0]))
       expect(warnings.some(line => line.includes('multi-select card rejected'))).toBe(true)
       await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(optionRows(card)[0]!) } })
-      await clickValue(harness, { pendingId: extractPendingId(lastCard(harness)), questionId: 'q1', selected: ['db'], type: 'answer-confirm' }, 'om_question_card_2')
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['db'] }] })
     } finally {
       stop()
@@ -757,53 +858,22 @@ describe('startFeishuQuestions', () => {
     }
   })
 
-  it('re-sends the question as a NEW card when the confirmation is sent back', async () => {
-    const { harness, ctxHandle, stop, cleanup } = startHarness()
-    try {
-      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } })
-      await new Promise(resolve => setImmediate(resolve))
-      const spentCard = harness.sentCards[0]!.card
-      await harness.cardActionHandler!({ messageId: 'om_question_card', action: { tag: 'interactive_container', value: rowValue(optionRows(spentCard)[0]!) } })
-      expect(harness.sentCards).toHaveLength(2) // the confirmation card
-      const confirmId = 'om_question_card_2'
-      await clickValue(harness, { pendingId: extractPendingId(lastCard(harness)), questionId: 'q1', type: 'answer-back' }, confirmId)
-      // A card that already took one row tap stops delivering row taps (measured
-      // live), so Back hands over a FRESH question card and retires the spent
-      // one; nothing is settled and the answer is still owed.
-      expect(harness.sentCards).toHaveLength(3)
-      expect(optionRows(lastCard(harness))).toHaveLength(2)
-      expect(harness.updatedCards.map(call => call.messageId)).toEqual([
-        'om_question_card',      // frozen the moment the row was tapped
-        'om_question_card_2',    // confirmation card -> grey "Back"
-        'om_question_card',      // spent question card -> grey "Superseded"
-      ])
-      // Taps on the spent card are ignored; the fresh copy answers.
-      const staleTap = { action: { tag: 'interactive_container', value: rowValue(optionRows(spentCard)[1]!) } }
-      await harness.cardActionHandler!({ messageId: 'om_question_card', ...staleTap })
-      expect(harness.sentCards).toHaveLength(3)
-      const freshRows = optionRows(lastCard(harness))
-      await harness.cardActionHandler!({ messageId: 'om_question_card_3', action: { tag: 'interactive_container', value: rowValue(freshRows[1]!) } })
-      expect(harness.sentCards).toHaveLength(4)
-      await clickValue(harness, { pendingId: extractPendingId(lastCard(harness)), questionId: 'q1', selected: ['No'], type: 'answer-confirm' }, 'om_question_card_4')
-      await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['No'] }] })
-    } finally {
-      stop()
-      cleanup()
-    }
-  })
-
-  it('ignores a repeated tap on the option that already has a confirmation open', async () => {
+  it('ignores a repeated row tap on a question that is already answered', async () => {
     const { harness, ctxHandle, stop, cleanup } = startHarness()
     try {
       const answerPromise = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } })
       await new Promise(resolve => setImmediate(resolve))
       const rows = optionRows(harness.sentCards[0]!.card)
-      const row = rowValue(rows[0]!)
-      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: row } })
-      expect(harness.sentCards).toHaveLength(2)
-      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: row } })
-      expect(harness.sentCards).toHaveLength(2) // no duplicate confirmation card
-      await clickValue(harness, { pendingId: extractPendingId(lastCard(harness)), questionId: 'q1', selected: ['Yes'], type: 'answer-confirm' }, 'om_question_card_2')
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[0]!) } })
+      await new Promise(resolve => setImmediate(resolve))
+      const cardsAfterFirst = harness.sentCards.length
+      // Same row again, and the other row too: neither may add a card or change
+      // the recorded answer.
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[0]!) } })
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[1]!) } })
+      await new Promise(resolve => setImmediate(resolve))
+      expect(harness.sentCards).toHaveLength(cardsAfterFirst)
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
     } finally {
       stop()
@@ -830,6 +900,7 @@ describe('startFeishuQuestions', () => {
       await new Promise(resolve => setImmediate(resolve))
       const rows = optionRows(harness.sentCards[0]!.card)
       await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[0]!) } })
+      await commitBatch(harness)
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
       const warnings = logger.warn.mock.calls.slice(warnBefore).map(call => String(call[0]))
       expect(warnings.some(line => line.includes('confirmation card'))).toBe(true)
@@ -839,7 +910,7 @@ describe('startFeishuQuestions', () => {
     }
   })
 
-  it('retires an open confirmation card when the question is answered elsewhere', async () => {
+  it('retires every card of the batch when the question is answered elsewhere', async () => {
     const { harness, ctxHandle, stop, cleanup } = startHarness()
     const webAnswer = { answers: [{ id: 'q1', selected: ['No'] }] }
     let resolveWeb!: (answer: AskUserQuestionAnswer) => void
@@ -849,13 +920,15 @@ describe('startFeishuQuestions', () => {
       await new Promise(resolve => setImmediate(resolve))
       const rows = optionRows(harness.sentCards[0]!.card)
       await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[0]!) } })
-      expect(hasCallbackType(lastCard(harness), 'answer-confirm')).toBe(true)
-      // The Web UI answers while the confirmation card is still open.
+      await new Promise(resolve => setImmediate(resolve))
+      // The question card is settled and the final card is up, waiting for 确认.
+      expect(hasCallbackType(lastCard(harness), 'batch-confirm')).toBe(true)
+      const updatesBefore = harness.updatedCards.length
+      // The Web UI answers meanwhile: nothing of this batch may keep looking
+      // answerable — the settled question card AND the final card are retired.
       resolveWeb(webAnswer)
       await new Promise(resolve => setImmediate(resolve))
-      // The Web UI won: the frozen question card and the confirmation card must
-      // both stop looking answerable (the freeze was its own earlier write).
-      expect(harness.updatedCards).toHaveLength(3)
+      expect(harness.updatedCards.length).toBe(updatesBefore + 2)
       await expect(answerPromise).resolves.toEqual(webAnswer)
     } finally {
       stop()
@@ -880,6 +953,7 @@ describe('startFeishuQuestions', () => {
           value: JSON.stringify({ pendingId: extractPendingId(harness.sentCards[0]!.card), questionId: 'q1', selected: ['Yes'] }),
         },
       })
+      await commitBatch(harness)
       await answerPromise
     } finally {
       stop()
