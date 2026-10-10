@@ -36,6 +36,8 @@
  * @module @starxer/chatterbox4dsh/card-markdown
  */
 
+import { normalizeCardEmphasis } from './card-emphasis.ts'
+
 /** An uploaded-image key, e.g. `img_v3_0215q_0a59b5e6-4758-41de-95a5-…`. */
 const IMAGE_KEY_PATTERN = /^img_[A-Za-z0-9]+_[A-Za-z0-9_-]+$/
 
@@ -331,8 +333,11 @@ export function neutralizeCardMarkdown(text: string, options: NeutralizeOptions 
     if (options.aggressive === true || isOpenableTarget(reference.target)) return reference.raw
     return linkFallback(reference.alt, reference.target)
   })
-  return mapCardMarkdownAudio(withReferences, (fileKey, raw) =>
+  const withAudio = mapCardMarkdownAudio(withReferences, (fileKey, raw) =>
     options.aggressive !== true && isFeishuFileKey(fileKey) ? raw : audioFallback(fileKey, raw))
+  // Emphasis LAST: it must judge the markdown Feishu actually receives, code
+  // spans the fallbacks inserted included (see card-emphasis.ts).
+  return normalizeCardEmphasis(withAudio)
 }
 
 /** Rewrite every `markdown` element of a card tree; everything else is copied. */

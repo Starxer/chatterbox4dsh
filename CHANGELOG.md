@@ -32,6 +32,23 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 修复：标点被包进加粗（`**加粗。**后面`）时飞书按字面渲染星号（`src/card-emphasis.ts`（新）/ `src/card-markdown.ts` / `tests/card-emphasis.spec.ts`（新），2026-10-10）
+
+承接上一条排查时发现的第二类成因。真机探针（两张编号卡：A 每行一个 `markdown` 元素，B 全部行放一个元素 + 一个表格单元格）逐条确认：
+
+| 源文本 | 渲染 |
+|---|---|
+| `**加粗。**后面` / `**加粗：**后面` / `**带括号（说明）**后面` / `**加粗…**后面` | **字面 `**`**（编号 2 / 4 / 9 / 11，表格单元格同） |
+| `**加粗**。后面` / `**加粗**：后面` / `**加粗**，后面` | 粗体正常（3 / 5 / 6） |
+| `**加粗** 前后有空格` / `前缀**加粗**后缀` / `**整行只有加粗**` / `**两处**和**第二处**` / 行内代码混排 | 粗体正常（1 / 7 / 8 / 10 / 12 / 14） |
+
+即：**关闭 `**` 夹在"末尾标点"与"紧跟的字"之间时不是合法的关闭分隔符**，飞书照字面输出；把标点移到加粗外面即可（可见文字完全不变）。这正是 CommonMark 的分隔符规则，第三方实现（[loopx PR #5352](https://github.com/loopx-project/loopx/pull/5352)）独立得出了同一条结论。
+
+- 新增 `src/card-emphasis.ts` 的 `normalizeCardEmphasis(text)`：只处理成对的 `**`（`***` 长串不碰），按规则把加粗内部的末尾标点移到外面；围栏代码块、行内代码 span、转义字符、链接目标一律不透明，未闭合的 marker 不动（那是上一条截断问题，不是这里的事）；**幂等**。
+- 接入 `neutralizeCardMarkdown` 的**最后一道**：判的是飞书真正收到的 markdown（包括前面回退逻辑刚插入的代码 span），于是每张出站卡片自动经过。
+- **全量实测**：9019 条真实助手文本中 **67 条（0.74%）、87 行**被改写；**可见文字 0 变化**（只移动 `**` 的位置）；对全部真实文本幂等。
+- 测试：`tests/card-emphasis.spec.ts` 17 例（探针 14 条逐条钉住、不透明性、幂等、与 `neutralizeCardMarkdown` 的集成）。
+
 ### 修复：卡片里的加粗被固定字数硬切，星号按字面渲染（`src/text-chunk.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/feishu-compaction.ts` / `src/channel.ts` / `src/feishu-deliver.ts` / `src/error-text.ts`，2026-10-10）
 
 使用者反馈「卡片消息加粗符号近期经常渲染失败」。逐条排查后确认，问题在**我们自己把文本切短的方式**，不在飞书：
@@ -40,7 +57,7 @@
 - **修法**：新增 `truncateInline(text, maxLen)`（`src/text-chunk.ts`）：切之前先定位切口处仍未闭合的 `**` 或行内代码 span，把该 opener **丢掉**再补省略号。刻意**不自动补闭合**——补了会把模型没写完的句子整段加粗；丢掉 marker 只是少一处强调，读者看到的文字不变。转义字符（`\*`）与三连星（`***`）不参与判定，反引号只有"与开 span 等长"才算闭合。
 - **接入点**：简洁档解说行 `condenseStepNote`（80）、推理预览（80）、压缩摘要（200）、回合交付物说明（60）、交付清单行说明（60）、错误原因（1000）。推理全文与摘要正文渲染在代码围栏里，不受影响。
 - **测试**：`tests/truncation.spec.ts` 新增 8 例（含"切口正好落在 `**` 两个星号之间"、"闭合的粗体对保持不动"、"未闭合行内代码被丢掉"），`tests/feishu-progress.spec.ts` 新增 1 例；**948 tests / 52 files** 全绿，typecheck 0 error，`npm run build` 通过（`client/client.js` 未变动）。
-- **另记一条尚未定论的候选**（不在本批次内）：第三方实现 [loopx PR #5352](https://github.com/loopx-project/loopx/pull/5352) 报告 Lark 的 CommonMark 解析器不接受"关闭 `**` 紧跟在标点之后、且后面立刻跟字"的写法（`**Done.**Next` 要写成 `**Done**.Next`，可见文字不变）。本机同类形态 66/8998（0.7%）。是否也作用于卡片元素，已发两张编号探针卡让使用者逐条确认，确认后再决定要不要移植这条规范化。
+- **同批发现的第二条**（真机探针确认，修法见下一条）：第三方实现 [loopx PR #5352](https://github.com/loopx-project/loopx/pull/5352) 报告的「关闭 `**` 夹在标点与后字之间时 Lark 不认」确实作用于**卡片**元素——已发两张编号探针卡实测确认。
 
 ### 新增：简洁档把整轮的工具活动合并到一张卡片（O22 第二轮，`src/feishu-progress.ts`（新）/ `src/display-level.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-10-09）
 
