@@ -48,6 +48,7 @@
 - 接入 `neutralizeCardMarkdown` 的**最后一道**：判的是飞书真正收到的 markdown（包括前面回退逻辑刚插入的代码 span），于是每张出站卡片自动经过。
 - **全量实测**：9019 条真实助手文本中 **67 条（0.74%）、87 行**被改写；**可见文字 0 变化**（只移动 `**` 的位置）；对全部真实文本幂等。
 - 测试：`tests/card-emphasis.spec.ts` 17 例（探针 14 条逐条钉住、不透明性、幂等、与 `neutralizeCardMarkdown` 的集成）。
+- **上线与确认**：两条修复（本条 + 上一条截断）于 **2026-10-10 12:39:54** 插件重载后同时生效（重载后仍正常收发卡片、无 error），使用者当日确认「没问题了」。
 
 ### 修复：卡片里的加粗被固定字数硬切，星号按字面渲染（`src/text-chunk.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/feishu-compaction.ts` / `src/channel.ts` / `src/feishu-deliver.ts` / `src/error-text.ts`，2026-10-10）
 
@@ -56,7 +57,7 @@
 - **根因**：所有一行式预览都用 `slice(0, N) + '…'` 硬切。当切口落在 `**…**` 的中间，卡上就剩下一个**未闭合的 `**`**，飞书按字面渲染出星号；如果切口落在行内代码 span 里，同样会留下一个孤零零的反引号。全量取证：8998 条助手文本里，简洁档解说行（上限 80 字）有 **218 条（3.1%）** 会被切出悬空 `**`，近三天为 6/63、2/272、5/281——与「近期经常」吻合（简洁档的解说行是 2026-10-09 那一批改动引入的）。
 - **修法**：新增 `truncateInline(text, maxLen)`（`src/text-chunk.ts`）：切之前先定位切口处仍未闭合的 `**` 或行内代码 span，把该 opener **丢掉**再补省略号。刻意**不自动补闭合**——补了会把模型没写完的句子整段加粗；丢掉 marker 只是少一处强调，读者看到的文字不变。转义字符（`\*`）与三连星（`***`）不参与判定，反引号只有"与开 span 等长"才算闭合。
 - **接入点**：简洁档解说行 `condenseStepNote`（80）、推理预览（80）、压缩摘要（200）、回合交付物说明（60）、交付清单行说明（60）、错误原因（1000）。推理全文与摘要正文渲染在代码围栏里，不受影响。
-- **测试**：`tests/truncation.spec.ts` 新增 8 例（含"切口正好落在 `**` 两个星号之间"、"闭合的粗体对保持不动"、"未闭合行内代码被丢掉"），`tests/feishu-progress.spec.ts` 新增 1 例；**948 tests / 52 files** 全绿，typecheck 0 error，`npm run build` 通过（`client/client.js` 未变动）。
+- **测试**：`tests/truncation.spec.ts` 新增 8 例（含"切口正好落在 `**` 两个星号之间"、"闭合的粗体对保持不动"、"未闭合行内代码被丢掉"），`tests/feishu-progress.spec.ts` 新增 1 例；**948 tests / 52 files** 全绿，typecheck 0 error，`npm run build` 通过（`client/client.js` 未变动）。**上线**：与下一条（强调边界规范化）同批于 2026-10-10 12:39:54 插件重载后生效。
 - **同批发现的第二条**（真机探针确认，修法见下一条）：第三方实现 [loopx PR #5352](https://github.com/loopx-project/loopx/pull/5352) 报告的「关闭 `**` 夹在标点与后字之间时 Lark 不认」确实作用于**卡片**元素——已发两张编号探针卡实测确认。
 
 ### 新增：简洁档把整轮的工具活动合并到一张卡片（O22 第二轮，`src/feishu-progress.ts`（新）/ `src/display-level.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-10-09）
