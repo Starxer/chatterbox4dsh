@@ -23,7 +23,7 @@ import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
 import type { DetachedJobNotice } from './feishu-jobs.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
-import { chunkText } from './text-chunk.ts'
+import { chunkText, truncateInline } from './text-chunk.ts'
 import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
 import type { CardImageHydrator } from './card-images.ts'
@@ -2589,8 +2589,10 @@ export function renderStepCard(
     const header = meta.length > 0 ? `${t.stepReasoningHeader} · ${meta.join(' · ')}` : t.stepReasoningHeader
     if (display.reasoning === 'preview') {
       const firstLine = reasoning.split('\n').find(line => line.trim() !== '') ?? reasoning
+      // `truncateInline`: the preview renders as a blockquote (live markdown), so
+      // a cut inside `**…**` would print the markers to the reader.
       const preview = firstLine.trim().length > REASONING_PREVIEW_CAP
-        ? `${firstLine.trim().slice(0, REASONING_PREVIEW_CAP)}…`
+        ? truncateInline(firstLine.trim(), REASONING_PREVIEW_CAP)
         : firstLine.trim()
       elements.push({
         tag: 'markdown',

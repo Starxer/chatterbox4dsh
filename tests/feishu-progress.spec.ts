@@ -79,6 +79,14 @@ describe('condenseStepNote', () => {
     expect(condenseStepNote(long)).toBe(`${'x'.repeat(PROGRESS_NOTE_MAX)}…`)
   })
 
+  it('never leaves a bold opener dangling at the cut', () => {
+    // The cut used to land inside `**…**`, so the row rendered a literal `**`.
+    const long = `先说结论：**${'x'.repeat(PROGRESS_NOTE_MAX)}**收尾`
+    const row = condenseStepNote(long)
+    expect(row.endsWith('…')).toBe(true)
+    expect(row).not.toContain('**')
+  })
+
   it('returns an empty string for whitespace-only text', () => {
     expect(condenseStepNote('   \n\n ')).toBe('')
   })

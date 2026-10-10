@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderReplyCards } from '../src/channel.ts'
-import { chunkText, capChunks, CARD_TEXT_MAX } from '../src/text-chunk.ts'
+import { chunkText, capChunks, truncateInline, CARD_TEXT_MAX } from '../src/text-chunk.ts'
 
 describe('chunkText', () => {
   it('returns a single chunk for short text', () => {
@@ -116,6 +116,52 @@ describe('capChunks', () => {
   it('truncates over-long chunks with an ellipsis', () => {
     expect(capChunks(['a'.repeat(50)], 20)).toEqual(['a'.repeat(20) + '…'])
     expect(capChunks(['short'], 20)).toEqual(['short'])
+  })
+})
+
+describe('truncateInline', () => {
+  it('returns short text untouched', () => {
+    expect(truncateInline('**短**', 20)).toBe('**短**')
+  })
+
+  it('cuts plain text at the budget with an ellipsis', () => {
+    expect(truncateInline('x'.repeat(30), 10)).toBe(`${'x'.repeat(10)}…`)
+  })
+
+  it('drops a strong opener left dangling by the cut', () => {
+    // A cut inside `**…**` used to leave the row showing a literal `**`.
+    const text = `先说结论：**${'x'.repeat(100)}**收尾`
+    const row = truncateInline(text, 80)
+    expect(row.endsWith('…')).toBe(true)
+    expect((row.match(/\*\*/g) ?? []).length % 2).toBe(0)
+    expect(row).not.toContain('**')
+  })
+
+  it('keeps a bold pair that closes before the cut', () => {
+    const text = `**结论**：${'y'.repeat(200)}`
+    const row = truncateInline(text, 40)
+    expect(row.startsWith('**结论**：')).toBe(true)
+    expect((row.match(/\*\*/g) ?? []).length % 2).toBe(0)
+  })
+
+  it('drops an unclosed inline code span and keeps closed ones', () => {
+    expect(truncateInline('看 `src/a.ts` 然后 `src/b', 20)).toBe('看 `src/a.ts` 然后…')
+    expect(truncateInline('看 `src/a.ts` 然后继续', 20)).toBe('看 `src/a.ts` 然后继续')
+  })
+
+  it('never leaves half of a marker at the cut', () => {
+    // The budget lands between the two asterisks of `**加粗**`.
+    const row = truncateInline('ab**cd**', 4)
+    expect(row).toBe('ab…')
+  })
+
+  it('ignores escaped markers and triple-star runs', () => {
+    expect(truncateInline('a \\* b \\* c d e f', 10)).toBe('a \\* b \\*…')
+    expect(truncateInline('a ***b*** c d e f', 10)).toBe('a ***b***…')
+  })
+
+  it('returns just the ellipsis for a non-positive budget', () => {
+    expect(truncateInline('anything', 0)).toBe('…')
   })
 })
 

@@ -33,6 +33,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
+import { truncateInline } from './text-chunk.ts'
 import type { CardInterleave } from './card-interleave.ts'
 
 /** Longest summary body carried into the folded panel, in characters. */
@@ -168,7 +169,7 @@ export function renderCompactionCard(t: Translations, input: CompactionRenderInp
         tag: 'markdown',
         content: body === undefined
           ? t.compactionSummaryUnavailable
-          : body.length > COMPACTION_SUMMARY_CAP ? `${body.slice(0, COMPACTION_SUMMARY_CAP)}…` : body,
+          : body.length > COMPACTION_SUMMARY_CAP ? truncateInline(body, COMPACTION_SUMMARY_CAP) : body,
       }]))
     }
   }

@@ -41,6 +41,7 @@ import type { Translations } from './i18n.ts'
 import type { CardInterleave } from './card-interleave.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
+import { truncateInline } from './text-chunk.ts'
 
 /** Tool lines kept visible before older ones fold away. */
 export const PROGRESS_MAX_ROWS = 40
@@ -188,7 +189,9 @@ interface Line {
 export function condenseStepNote(text: string): string {
   const first = text.split('\n').map(line => line.trim()).find(line => line !== '') ?? ''
   const squeezed = first.replace(/\s+/g, ' ').trim()
-  return squeezed.length > PROGRESS_NOTE_MAX ? `${squeezed.slice(0, PROGRESS_NOTE_MAX)}…` : squeezed
+  // `truncateInline`, not `slice`: a cut inside `**加粗…**` left the row showing
+  // a literal `**` on the card (2026-10-10).
+  return squeezed.length > PROGRESS_NOTE_MAX ? truncateInline(squeezed, PROGRESS_NOTE_MAX) : squeezed
 }
 
 /** How a merged run of consecutive same-named calls reads. */

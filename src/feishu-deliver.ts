@@ -53,6 +53,7 @@ import {
 } from './deliver-files.ts'
 import type { PluginLogger } from './feishu-send-file.ts'
 import type { Translations } from './i18n.ts'
+import { truncateInline } from './text-chunk.ts'
 
 /** Callback namespace: a deliverable row was tapped. */
 export const DELIVER_OPEN = 'deliver-open'
@@ -225,7 +226,7 @@ export interface DeliverEntry {
 /** Strip the markdown constructs a description or name must not carry. */
 function cardText(value: string): string {
   const flat = value.replace(/`/gu, "'").replace(/[[\]]/gu, ' ').replace(/\s+/gu, ' ').trim()
-  return flat.length <= ROW_NOTE_CAP ? flat : `${flat.slice(0, ROW_NOTE_CAP - 1)}…`
+  return flat.length <= ROW_NOTE_CAP ? flat : truncateInline(flat, ROW_NOTE_CAP - 1)
 }
 
 /** Wrap a link destination the way `card-markdown.ts`'s scanner accepts it. */

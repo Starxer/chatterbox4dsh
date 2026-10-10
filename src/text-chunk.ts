@@ -244,5 +244,78 @@ export function capChunks(chunks: string[], maxLen: number): string[] {
   return chunks.map(c => (c.length > maxLen ? c.slice(0, maxLen) + '…' : c))
 }
 
+/**
+ * Index of the earliest inline construct left OPEN at the end of `text`, or
+ * `undefined` when every inline code span and every `**` pair closes.
+ *
+ * Feishu renders an unpaired marker literally, so a card row that was cut
+ * inside `**加粗…` shows the two asterisks to the reader. Escaped characters are
+ * skipped and a run of three or more asterisks is left alone (it is not a
+ * strong-emphasis pair); a run of N backticks only counts while it is the run
+ * that opened the current code span.
+ */
+function danglingInlineStart(text: string): number | undefined {
+  let strong = -1
+  let code = -1
+  let ticks = 0
+  let cursor = 0
+  while (cursor < text.length) {
+    const character = text[cursor]!
+    if (character === '\\') {
+      cursor += 2
+      continue
+    }
+    if (character === '`') {
+      let end = cursor + 1
+      while (end < text.length && text[end] === '`') end += 1
+      const run = end - cursor
+      if (ticks === 0) {
+        ticks = run
+        code = cursor
+      } else if (run === ticks) {
+        ticks = 0
+        code = -1
+      }
+      cursor = end
+      continue
+    }
+    if (ticks === 0 && character === '*') {
+      let end = cursor + 1
+      while (end < text.length && text[end] === '*') end += 1
+      if (end - cursor === 2) strong = strong === -1 ? cursor : -1
+      cursor = end
+      continue
+    }
+    cursor += 1
+  }
+  const open = [strong, code].filter(index => index >= 0)
+  return open.length === 0 ? undefined : Math.min(...open)
+}
+
+/**
+ * Cut `text` to at most `maxLen` characters without leaving an inline construct
+ * open, then append `ellipsis`.
+ *
+ * A plain `slice` is what puts a literal `**` on a card: `condenseStepNote` and
+ * the other one-line previews cut model prose at a fixed width, and when the
+ * cut lands inside `**重要：…**` the reader sees the asterisks instead of bold
+ * (2026-10-10). The dangling opener is dropped rather than auto-closed: closing
+ * it would bold text the author may not have finished, and a dropped `**`
+ * changes nothing the reader can see beyond losing that emphasis.
+ *
+ * @param text - source text (one line is the expected use; newlines are kept).
+ * @param maxLen - maximum characters to keep, before the ellipsis.
+ * @param ellipsis - suffix appended when something was dropped.
+ * @returns the original text when it fits, otherwise a balanced prefix.
+ */
+export function truncateInline(text: string, maxLen: number, ellipsis = '…'): string {
+  if (maxLen <= 0) return ellipsis
+  if (text.length <= maxLen) return text
+  const head = text.slice(0, maxLen)
+  const open = danglingInlineStart(head)
+  const kept = (open === undefined ? head : head.slice(0, open)).replace(/[*`]+$/u, '').trimEnd()
+  return `${kept}${ellipsis}`
+}
+
 /** Default per-card character budget for Feishu markdown content. */
 export const CARD_TEXT_MAX = 4000

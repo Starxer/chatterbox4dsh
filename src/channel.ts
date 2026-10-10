@@ -10,7 +10,7 @@ import { TurnDroppedError } from './harness.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { errorText } from './error-text.ts'
 import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn-failure.ts'
-import { chunkText, CARD_TEXT_MAX } from './text-chunk.ts'
+import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
@@ -852,7 +852,7 @@ const DELIVERABLE_NOTE_CAP = 60
 /** Shorten a deliverable description so one long note cannot dominate the card. */
 function capDeliverableNote(value: string): string {
   const flat = value.replace(/[\r\n]+/gu, ' ').trim()
-  return flat.length <= DELIVERABLE_NOTE_CAP ? flat : `${flat.slice(0, DELIVERABLE_NOTE_CAP - 1)}…`
+  return flat.length <= DELIVERABLE_NOTE_CAP ? flat : truncateInline(flat, DELIVERABLE_NOTE_CAP - 1)
 }
 
 /**

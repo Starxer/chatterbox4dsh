@@ -25,6 +25,8 @@
  * @module @starxer/chatterbox4dsh/error-text
  */
 
+import { truncateInline } from './text-chunk.ts'
+
 /**
  * Cap on the rendered reason, in characters. Generous on purpose: raising it
  * costs nothing on the text-message path and the cause chain is worth keeping.
@@ -119,5 +121,5 @@ export function errorText(error: unknown, fallback: string): string {
   }
   if (code !== undefined) detail = detail === '' ? `error code ${code}` : `${detail} (code: ${code})`
   if (detail === '') return fallback
-  return detail.length > ERROR_TEXT_CAP ? `${detail.slice(0, ERROR_TEXT_CAP)}…` : detail
+  return detail.length > ERROR_TEXT_CAP ? truncateInline(detail, ERROR_TEXT_CAP) : detail
 }
