@@ -280,14 +280,12 @@ function toolLine(
  * Markdown the card's rows carry, so the shape is one decision in one place
  * (chosen by the user on a rendered card, 2026-10-12).
  *
- * - a tool call is an ITEM of an unordered list: the run of calls under one step
- *   reads as one list, which is what makes them belong to that step;
- * - a step's narration ("reply") is a QUOTE: it is the model talking BETWEEN the
- *   calls, and a quote separates it from the tool lines without another heading;
- * - the step's own line is the list's title, marked by the icon in
- *   `Translations.turnCardStep`.
+ * A step's narration ("reply") is a QUOTE: it is the model talking BETWEEN the
+ * tool calls, and the quote sets it apart without another heading. The tool rows
+ * themselves carry NO list marker — they were tried as `- ` items and the user
+ * kept the plain rows once `hr` separated the steps: with a rule between steps
+ * the list bullets were one piece of punctuation too many.
  */
-export const PROGRESS_TOOL_MARKER = '- '
 export const PROGRESS_QUOTE_MARKER = '> '
 
 /** Flatten the facts into ordered lines. */
@@ -339,7 +337,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
         addDetails(next.detail)
       }
       lines.push({
-        text: `${PROGRESS_TOOL_MARKER}${toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details)}`,
+        text: toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details),
         header: false,
         step: step.step,
       })

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_MAX_STEPS, PROGRESS_NOTE_MAX,
   PROGRESS_RUNNING_TICK_MS, PROGRESS_WRITE_GAP_MS,
-  PROGRESS_QUOTE_MARKER, PROGRESS_TOOL_MARKER,
+  PROGRESS_QUOTE_MARKER,
   condenseStepNote, createProgressCards, formatProgressMs, inlineMarkupBalanced, renderProgressCard, type ProgressFacts,
 } from '../src/feishu-progress.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
@@ -231,7 +231,7 @@ describe('renderProgressCard', () => {
     expect(lines).toEqual([
       t.turnCardStep(2, '3.0s'),
       `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('我先看一下流式卡片那段代码')}`,
-      `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`read`', '200ms')}`,
+      t.turnCardToolDone('`read`', '200ms'),
     ])
   })
 
@@ -259,7 +259,7 @@ describe('renderProgressCard', () => {
       t.turnCardStep(1, '2.0s'),
       '📥 注入上下文 · AGENTS.md（已更新）',
       `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('我看一下')}`,
-      `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`bash`', '100ms')}`,
+      t.turnCardToolDone('`bash`', '100ms'),
     ])
   })
 
@@ -329,8 +329,8 @@ describe('renderProgressCard', () => {
       expect(visibleElements(card)).toEqual([
         [
           t.turnCardStep(3, '3.0s'),
-          `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`read`', '100ms')}`,
-          `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`bash` ×2', '400ms')}`,
+          t.turnCardToolDone('`read`', '100ms'),
+          t.turnCardToolDone('`bash` ×2', '400ms'),
         ].join('\n'),
       ])
       // The rows are still separate LINES: only the element boundary changed.
