@@ -47,6 +47,15 @@ function visibleElements(card: any): string[] {
   return visible.filter(el => el.tag === 'markdown').map(el => String(el.content))
 }
 
+/**
+ * A step's CONTENT row: since 2026-10-12 every line under the `▸` heading is one
+ * quote block, and the heading itself stays outside it (the user's rule: frame
+ * what the step did, not its title).
+ */
+function row(text: string): string {
+  return `${PROGRESS_QUOTE_MARKER}${text}`
+}
+
 /** Every tag in the card JSON, at any depth. */
 function tagsOf(card: any): string[] {
   const out: string[] = []
@@ -230,8 +239,8 @@ describe('renderProgressCard', () => {
     const lines = visibleLines(card)
     expect(lines).toEqual([
       t.turnCardStep(2, '3.0s'),
-      `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('我先看一下流式卡片那段代码')}`,
-      t.turnCardToolDone('`read`', '200ms'),
+      row(t.turnCardStepNote('我先看一下流式卡片那段代码')),
+      row(t.turnCardToolDone('`read`', '200ms')),
     ])
   })
 
@@ -254,13 +263,40 @@ describe('renderProgressCard', () => {
       now: 2_000,
     }))
     // Preamble first (the notice is why the request carries what it carries),
-    // then the narration, then the tool rows.
+    // then the narration, then the tool rows — all of them inside the step's one
+    // quote block, with the heading left outside it.
     expect(visibleLines(card)).toEqual([
       t.turnCardStep(1, '2.0s'),
-      '📥 注入上下文 · AGENTS.md（已更新）',
-      `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('我看一下')}`,
-      t.turnCardToolDone('`bash`', '100ms'),
+      row('📥 注入上下文 · AGENTS.md（已更新）'),
+      row(t.turnCardStepNote('我看一下')),
+      row(t.turnCardToolDone('`bash`', '100ms')),
     ])
+  })
+
+  it("quotes every content row and leaves the step's heading outside the block", () => {
+    const card: any = renderProgressCard(t, facts({
+      steps: [
+        {
+          step: 1,
+          startedAt: 0,
+          endedAt: 2_000,
+          tools: [{ name: 'bash', startedAt: 500, elapsed: 100 }],
+          injections: ['📥 注入上下文 · AGENTS.md（已更新）'],
+          note: '我看一下',
+        },
+        { step: 2, startedAt: 2_000, endedAt: 3_000, tools: [{ name: 'read', startedAt: 2_100, elapsed: 50 }] },
+      ],
+      calls: 2,
+      now: 3_000,
+    }))
+    const lines = visibleLines(card)
+    const headings = lines.filter(line => line === t.turnCardStep(1, '2.0s') || line === t.turnCardStep(2, '1.0s'))
+    expect(headings).toHaveLength(2)
+    for (const line of lines) {
+      // The two headings are the ONLY unquoted rows on the card: a step's title
+      // is a title, and everything under it is what the step did.
+      expect(line.startsWith(PROGRESS_QUOTE_MARKER)).toBe(!headings.includes(line))
+    }
   })
 
   it('keeps only the newest three STEPS visible and folds the older ones', () => {
@@ -329,8 +365,8 @@ describe('renderProgressCard', () => {
       expect(visibleElements(card)).toEqual([
         [
           t.turnCardStep(3, '3.0s'),
-          t.turnCardToolDone('`read`', '100ms'),
-          t.turnCardToolDone('`bash` ×2', '400ms'),
+          row(t.turnCardToolDone('`read`', '100ms')),
+          row(t.turnCardToolDone('`bash` ×2', '400ms')),
         ].join('\n'),
       ])
       // The rows are still separate LINES: only the element boundary changed.

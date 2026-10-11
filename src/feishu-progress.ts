@@ -277,14 +277,22 @@ function toolLine(
 }
 
 /**
- * Markdown the card's rows carry, so the shape is one decision in one place
- * (chosen by the user on a rendered card, 2026-10-12).
+ * The marker that puts a step's CONTENT inside one quote block, so the shape is
+ * one decision in one place (chosen by the user on rendered samples, 2026-10-12).
  *
- * A step's narration ("reply") is a QUOTE: it is the model talking BETWEEN the
- * tool calls, and the quote sets it apart without another heading. The tool rows
- * themselves carry NO list marker — they were tried as `- ` items and the user
- * kept the plain rows once `hr` separated the steps: with a rule between steps
- * the list bullets were one piece of punctuation too many.
+ * A step reads as `▸ **第 N 步** · 4.8s` — the heading, OUTSIDE the block —
+ * followed by its content: the injection notices, the narration and the tool
+ * rows, all quoted. The heading stays plain so it is the section's title rather
+ * than the first line of a quotation; everything under it is what the step did.
+ *
+ * Every content line carries the marker EXPLICITLY instead of leaning on the
+ * renderer's lazy continuation: a narration whose inline markup is unbalanced
+ * keeps an element of its own (关键坑 60), and lazy continuation would break the
+ * block exactly there, leaving that step's tool rows outside the quote — the same
+ * card then showing some steps framed and others not.
+ *
+ * Tool rows were tried as `- ` list items and the user kept them plain: with a
+ * rule between steps the list bullets were one piece of punctuation too many.
  */
 export const PROGRESS_QUOTE_MARKER = '> '
 
@@ -299,7 +307,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
     // read first — above the narration and above the tool rows.
     for (const notice of step.injections ?? []) {
       if (notice === '') continue
-      lines.push({ text: notice, header: false, step: step.step })
+      lines.push({ text: `${PROGRESS_QUOTE_MARKER}${notice}`, header: false, step: step.step })
     }
     // The step's narration (if it had one) sits directly under its header: it is
     // what the step said BEFORE it decided to call tools, so it reads as the
@@ -337,7 +345,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
         addDetails(next.detail)
       }
       lines.push({
-        text: toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details),
+        text: `${PROGRESS_QUOTE_MARKER}${toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details)}`,
         header: false,
         step: step.step,
       })

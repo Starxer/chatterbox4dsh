@@ -32,6 +32,22 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 改进：回合过程卡——引用块框住「步内内容」，步骤标题留在块外（`src/feishu-progress.ts` / `tests/feishu-progress.spec.ts`，2026-10-12）
+
+使用者先追问「工具调用的 quote 逻辑是什么，**为什么上下文注入的显示不会出现那个符号**」，随后自己给出规则：**竖线只框步骤内的内容，不要把步骤标题也框住**；再补一条判断标准：「已经有那个 emoji 图标了，再加个竖线不是多余吗，**要不全有 要么全没有**」。
+
+**问题**：上一版只有**叙述行**带 `> `，于是竖线靠飞书的**惰性延续**顺带盖住它下面的工具行，而**它上面的注入行在框外** —— 同一张卡上三种待遇（框外 / 框内 / 看起来被框住），读起来就像「漏了一个符号」，而且竖线的含义（「模型说的话」）和它实际盖住的范围（整步）对不上。
+
+**改法**：**注入行、叙述行、工具行统一带 `PROGRESS_QUOTE_MARKER`**，步头 `▸ **第 N 步** · 4.8s` 保持平铺 ⇒ 步头是这一节的标题，它下面的每一行都属于「这一步做了什么」的那一个引用块。**逐行显式加，不靠惰性延续**：叙述行行内标记不成对时会单独成一个元素（坑 60），延续会在那里断掉、把该步的工具行留在框外——同一张卡就会有的步骤框住、有的没框住（这条写进了常量注释）。
+
+**先发样板再改**（关键坑 63 的做法）：用**真实渲染器**（`renderProgressCard`，不是手写 JSON）渲染同一份 2 步内容，发到飞书共 **7 张**——A 现状 / B 叙述单独成元素 / C 注入也加线 / D 全无竖线 / E 连标题一起框 / F 框内容不框标题（逐行显式）/ F2 同上但只标第一行（靠延续）。使用者确认 **F 与 F2 看不出差别** ⇒ 取 **F**（显式，理由见上）。
+
+**成本**：元素数不变（步头与内容仍在同一个元素里，元素内换行不付间距），样板卡 699 → 731 字节。
+
+**验证**：`npm run typecheck` 0 error；**1077 tests / 56 files 全绿**（`tests/feishu-progress.spec.ts` 49 → 50：新增一条钉住「**只有步头不带 `> `，其余每一行都带**」，另把 3 处行断言改走新的 `row()` 助手，形状改动集中在一处）；`npm run build` 已产出。
+
+**English**: The user first asked what the tool rows' quote logic was and **why context-injection rows did not carry that symbol**, then stated the rule: the bar frames a step's CONTENT, never its heading — with the tie-breaker "the emoji is already there, so a bar on top of it is redundant: **either all rows or none**". The previous shape quoted only the narration, so the renderer's lazy continuation dragged the bar over the tool rows below it while the injection row ABOVE it sat outside — three different treatments on one card, reading like a missing marker, and a bar whose meaning ("the model speaking") no longer matched what it covered. Now every content row — injection notices, narration and tool rows — carries `PROGRESS_QUOTE_MARKER`, while the `▸ **Step N**` heading stays plain: the heading titles the section and everything under it is what the step did. The marker is emitted **per line instead of leaning on lazy continuation**, because a narration with unbalanced inline markup keeps an element of its own (pitfall 60) and the continuation would break exactly there, leaving that step's tool rows unframed — some steps framed, others not. Seven sample cards rendered by the REAL renderer (`renderProgressCard`) went to Feishu before any code changed (A current / B narration alone / C injections quoted too / D no bar / E heading quoted too / F content framed with the heading outside / F2 same but relying on continuation); the user confirmed F and F2 look identical, so F (explicit) was taken. Element count is unchanged (heading and content still share one element, so in-element newlines cost nothing) and the sample card went from 699 to 731 bytes. typecheck clean, **1077 tests across 55 files** green (one new case pins "only the heading is unquoted, every other row is quoted"), artifacts rebuilt.
+
 ### 改进：压缩摘要从「200 字」提到「单卡能装的上限」（`src/feishu-compaction.ts` / `src/i18n.ts`，2026-10-12）
 
 使用者要求「增多压缩摘要可显示的字数」。**先量真实数据再定数**：65 个会话日志里 **182 条真实压缩摘要** —— 最短 **1,338**、中位 **11,303**、p90 15,478、最长 21,127 字 ⇒ 原来的 200 字上限**只显示了不到 2%**。
@@ -52,7 +68,7 @@
 
 **没做的**：把完整摘要（中位 11.3K、最长 21K 字）送进飞书 —— **一张卡物理上装不下**，要完整只能多条续卡或文件消息；设计文档 §2.4 当初明确否掉了「另发文件」的按钮，本轮不动，已在 `docs/transcript-parity-design.md` 记下这条路仍空着。
 
-**验证**：`npm run typecheck` 0 error；**1076 tests / 55 files 全绿**（新增 6 例：5,000 字摘要**完整**带上卡、最长真实摘要（21,127 字）下**卡片 JSON 仍 <30KB**、英文按字节装得更多、**每个字节预算都不乱码**（扫 53 档）、**不切进字形簇**、无 ICU 时退回码点切仍合法）；`npm run build` 已产出。**未重启**（要生效需重启）。
+**验证**：`npm run typecheck` 0 error；**1076 tests / 56 files 全绿**（新增 6 例：5,000 字摘要**完整**带上卡、最长真实摘要（21,127 字）下**卡片 JSON 仍 <30KB**、英文按字节装得更多、**每个字节预算都不乱码**（扫 53 档）、**不切进字形簇**、无 ICU 时退回码点切仍合法）；`npm run build` 已产出。**未重启**（要生效需重启）。
 
 ### 修复：`bash` 行里的「程序名」认错——引号内的 `\|`、heredoc 正文、循环关键字都被当成程序（O27 补丁，`src/shell-programs.ts`（新）/ `src/feishu-streaming.ts`，2026-10-12）
 
@@ -70,7 +86,7 @@
 
 **改法**：**不再切分，改成解析**（新模块 `src/shell-programs.ts`）：引号/注释/heredoc 正文整体跳过、分隔符只在它们之外生效、`\` 续行留在同一段（否则下一行的 `--flag` 会被当成命令）、候选词必须**长得像个程序**（裸名字）才被采纳，`do`/`then`/`{` 这类**前缀关键字跳过它自己**（`do curl …` 要认的是 `curl`），`for`/`done`/`$(…)`/`cd` 这类**整段跳过**。读不出来的词直接丢掉——**写错一个程序名比不写更糟**（这条写进了模块注释）。
 
-**验证**：12 条真实命令**全部给出合理结果**（`python3` / `git / echo / grep` / `echo / grep / head` / `cat / python3` / `run_h3.sh / curl / echo` …），并把这 6 条**逐字**写进 `tests/shell-programs.spec.ts` 当回归（16 例，含 `splitShellSegments` 的引号/注释/heredoc/续行四条）；`npm run typecheck` 0 error、**1070 tests / 55 files 全绿**、`npm run build` 已产出。**按要求未重启**。
+**验证**：12 条真实命令**全部给出合理结果**（`python3` / `git / echo / grep` / `echo / grep / head` / `cat / python3` / `run_h3.sh / curl / echo` …），并把这 6 条**逐字**写进 `tests/shell-programs.spec.ts` 当回归（16 例，含 `splitShellSegments` 的引号/注释/heredoc/续行四条）；`npm run typecheck` 0 error、**1070 tests / 56 files 全绿**、`npm run build` 已产出。**按要求未重启**。
 
 ### 改进：compact 回合过程卡——一步一个元素，工具行标出「碰了什么」（O27，`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-10-11）
 
