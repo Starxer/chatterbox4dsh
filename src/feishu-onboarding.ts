@@ -20,9 +20,9 @@ import type { HarnessConversationService, ChatCreationOptions } from './harness.
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import type { DirectoryEntry, DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker'
-import { opendir, stat } from 'node:fs/promises'
+import { mkdir, opendir, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createCardSuperseder, type SupersedeChannel } from './card-supersede.ts'
 import { createCardTopicRegistry, type CardTopicRegistry } from './card-topics.ts'
 
@@ -96,6 +96,25 @@ interface AgentPresetsLike {
   defaultId: string
 }
 
+/**
+ * The `/new` flow's per-chat state, filled in one step at a time.
+ *
+ * Nothing here has happened in the world yet: the workspace is only REGISTERED
+ * (and, for a path that did not exist, created) at the very last step, so
+ * cancelling the flow leaves nothing behind (关键坑 O19).
+ */
+export interface NewSessionFlowState {
+  /** Chosen workspace path. A `~` was already expanded by the form. */
+  workspace?: string
+  agentPreset?: string
+  /**
+   * The chosen workspace does not exist yet and the operator confirmed on the
+   * "create it?" card that it should be. The final step runs `mkdir -p` before
+   * registering it (O16).
+   */
+  workspaceMissing?: boolean
+}
+
 /** Narrow agentDefaultModel view. */
 interface AgentDefaultModelLike {
   currentSelection(): { provider: string; model: string; reasoningEffort?: string }
@@ -129,7 +148,7 @@ export interface FeishuOnboardingDeps {
    *  model-select provider card (reusing feishu-model-select with flow
    *  `new-session`); the model-select handle's onNewSessionConfirm callback
    *  then commits the selection to session creation. */
-  onModelStep: (chatMessage: ConversationMessage, messageId: string | undefined, flowState: { workspace?: string; agentPreset?: string }) => Promise<void>
+  onModelStep: (chatMessage: ConversationMessage, messageId: string | undefined, flowState: NewSessionFlowState) => Promise<void>
   /**
    * Shared `messageId → topic` registry (see `card-topics.ts`). The caller
    * passes the same instance to the model-select flow so a card sent by one
@@ -143,8 +162,9 @@ export interface FeishuOnboardingDeps {
 interface QueuedAction {
   kind:
     | 'attach' | 'new' | 'pick-workspace' | 'pick-preset' | 'create-workspace' | 'cancel'
+    | 'create-workspace-confirm' | 'workspace-back'
     | 'browse-open' | 'browse-enter' | 'browse-home' | 'browse-hidden' | 'browse-page'
-    | 'browse-pick' | 'browse-back'
+    | 'browse-pick' | 'browse-back' | 'browse-mkdir'
   chatMessage: ConversationMessage
   messageId: string | undefined
   sessionId?: string
@@ -195,6 +215,12 @@ function parseOnboardingAction(evt: CardActionLike): QueuedAction | undefined {
       if (path !== undefined) return { kind: 'pick-workspace', chatMessage, messageId: evt.messageId, value: path }
       return undefined
     }
+    if (kind === 'browse-mkdir') {
+      // Submitted by the folder browser's "new folder" form: one path segment.
+      const name = typeof formValue.new_folder === 'string' ? formValue.new_folder.trim() : ''
+      if (name !== '') return { kind: 'browse-mkdir', chatMessage, messageId: evt.messageId, value: name }
+      return undefined
+    }
     return undefined
   }
 
@@ -232,6 +258,10 @@ function parseOnboardingAction(evt: CardActionLike): QueuedAction | undefined {
   if (kind === 'browse-page' && value !== undefined) return { kind: 'browse-page', chatMessage, messageId: evt.messageId, value }
   if (kind === 'browse-pick' && value !== undefined) return { kind: 'browse-pick', chatMessage, messageId: evt.messageId, value }
   if (kind === 'browse-back') return { kind: 'browse-back', chatMessage, messageId: evt.messageId }
+  if (kind === 'create-workspace-confirm' && value !== undefined) {
+    return { kind: 'create-workspace-confirm', chatMessage, messageId: evt.messageId, value }
+  }
+  if (kind === 'workspace-back') return { kind: 'workspace-back', chatMessage, messageId: evt.messageId }
   return undefined
 }
 
@@ -482,13 +512,13 @@ interface BrowseState {
  *  name is never elided. A plain button could not do this — buttons inside a
  *  `column_set` ignore `width: 'fill'`, and one full-width button per row adds
  *  button chrome around every name. */
-function browseEntryRow(entry: DirectoryEntry): object {
+function browseEntryRow(entry: DirectoryEntry, kind: 'browse-enter' | 'browse-pick' = 'browse-enter'): object {
   return {
     tag: 'interactive_container',
     width: 'fill',
     has_border: false,
     padding: '4px 12px 4px 12px',
-    behaviors: [{ type: 'callback', value: { kind: 'browse-enter', value: entry.path } }],
+    behaviors: [{ type: 'callback', value: { kind, value: entry.path } }],
     elements: [{ tag: 'markdown', content: `📁 ${entry.name}` }],
   }
 }
@@ -526,13 +556,19 @@ function buttonRow(buttons: readonly object[]): object {
 }
 
 /** Folder-browser card: navigate levels, toggle hidden entries, page a large
- *  level, and pick the listed directory as the new session's workspace.
+ *  level, create a folder in this level (when the mounted backend can), and pick
+ *  the listed directory as the new session's workspace.
  *
  *  Every entry is a borderless `interactive_container` row, so the list is
  *  directly clickable, looks like text rather than buttons, and never elides a
  *  name. Short control labels (up / home / hidden / pager) share an auto-width
  *  row. */
-function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t: Translations): object {
+function renderWorkspaceBrowser(
+  state: BrowseState,
+  listing: DirectoryListing,
+  t: Translations,
+  options?: { canCreateFolder?: boolean; notice?: string },
+): object {
   const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
   const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
   const page = Math.min(Math.max(state.page, 0), totalPages - 1)
@@ -542,8 +578,13 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
 
   const elements: object[] = [
     { tag: 'markdown', content: t.onboardingBrowseHeader(listing.path) },
-    { tag: 'hr' },
   ]
+  // A failed action reports ON the browser it happened on, so the level stays
+  // visible and the operator can retry without re-navigating.
+  if (options?.notice !== undefined && options.notice !== '') {
+    elements.push({ tag: 'markdown', content: options.notice })
+  }
+  elements.push({ tag: 'hr' })
   // Up / home / hidden are a handful of short labels, so one row always fits.
   const controls: object[] = []
   if (parent !== undefined) {
@@ -580,6 +621,34 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     elements.push({ tag: 'markdown', content: t.onboardingBrowseTruncated })
   }
 
+  // Create a folder in THIS level. Hidden unless the mounted backend really has
+  // `createDirectory` (the `native` chooser and the plugin's own read-only
+  // listing do not), because a button that can only fail is worse than none.
+  // The form shape is the one the workspace picker already proved: `input` +
+  // a `form_action_type: 'submit'` button, no label field (a card input cannot
+  // be prefilled and has no completion — docs/feishu-capabilities.md §2.2.2).
+  if (options?.canCreateFolder === true) {
+    elements.push({
+      tag: 'form',
+      name: 'browse_new_folder',
+      elements: [
+        {
+          tag: 'input',
+          name: 'new_folder',
+          placeholder: { tag: 'plain_text', content: t.onboardingBrowseNewFolderPlaceholder },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: t.onboardingBrowseNewFolder },
+          type: 'default',
+          name: 'mkdir',
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { kind: 'browse-mkdir' } }],
+        },
+      ],
+    })
+  }
+
   elements.push({ tag: 'hr' })
   elements.push({
     tag: 'button',
@@ -604,6 +673,102 @@ function renderWorkspaceBrowser(state: BrowseState, listing: DirectoryListing, t
     },
     body: { elements },
   }
+}
+
+/** How many "next door" rows the missing-path card offers. */
+const BROWSE_SIBLING_LIMIT = 8
+
+/** Does `path` exist, and is it a directory?
+ *
+ *  Only `ENOENT` means "it is not there": anything else (a permission problem,
+ *  a broken symlink on the way) is rethrown so the operator gets the real
+ *  message instead of a guess. */
+async function inspectDirectory(path: string): Promise<{ exists: boolean; isDirectory: boolean }> {
+  try {
+    const info = await stat(path)
+    return { exists: true, isDirectory: info.isDirectory() }
+  } catch (error: unknown) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+      return { exists: false, isDirectory: false }
+    }
+    throw error
+  }
+}
+
+/** The child directories of one level, sorted, hidden ones excluded. */
+async function listChildDirectories(dir: string): Promise<DirectoryEntry[]> {
+  const entries: DirectoryEntry[] = []
+  try {
+    for (const dirent of await readdir(dir, { withFileTypes: true })) {
+      if (!dirent.isDirectory() || dirent.name.startsWith('.')) continue
+      entries.push({ name: dirent.name, path: join(dir, dirent.name), hidden: false })
+    }
+  } catch {
+    return []
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name))
+  return entries.slice(0, BROWSE_SIBLING_LIMIT)
+}
+
+/**
+ * The child directories of the deepest ancestor of `path` that exists.
+ *
+ * This is the cheap stand-in for path completion: a card input cannot complete
+ * as the operator types — no candidate field, and Feishu sends no keystroke
+ * events (`docs/feishu-capabilities.md` §2.2.2) — so the "that path does not
+ * exist" card shows what is actually next door, and one tap commits the right
+ * directory instead of retyping the whole path.
+ */
+async function siblingDirectories(path: string): Promise<DirectoryEntry[]> {
+  let dir = dirname(path)
+  for (let hops = 0; hops < 32; hops += 1) {
+    const parent = dirname(dir)
+    try {
+      if ((await stat(dir)).isDirectory()) return await listChildDirectories(dir)
+    } catch {
+      // Not there (or not readable): keep walking up.
+    }
+    if (parent === dir) return []
+    dir = parent
+  }
+  return []
+}
+
+/**
+ * "That path does not exist — create it, or use one of its neighbours?"
+ *
+ * The rows are the SAME clickable rows the browser uses, but they commit the
+ * directory (`browse-pick`) instead of navigating into it, so a typo is one tap
+ * to fix. This card creates nothing: the confirm button only records the
+ * intent, and the directory itself appears at the last step.
+ */
+function renderNewWorkspaceConfirmCard(path: string, siblings: readonly DirectoryEntry[], t: Translations): object {
+  const elements: object[] = [{ tag: 'markdown', content: t.onboardingCreateWorkspaceConfirmBody(path) }]
+  if (siblings.length > 0) {
+    elements.push({ tag: 'markdown', content: t.onboardingCreateWorkspaceSiblingHeader(dirname(path)) })
+    for (const entry of siblings) elements.push(browseEntryRow(entry, 'browse-pick'))
+  }
+  elements.push({ tag: 'hr' })
+  elements.push(controlButton(
+    t.onboardingCreateWorkspaceConfirmButton,
+    { kind: 'create-workspace-confirm', value: path },
+    'primary',
+  ))
+  elements.push(controlButton(t.onboardingCreateWorkspaceBackButton, { kind: 'workspace-back' }))
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.onboardingCreateWorkspaceConfirmTitle }, template: 'orange' },
+    body: { elements },
+  }
+}
+
+/** Turn a `createDirectory` failure into something the operator can act on: the
+ *  backend's own messages are English and code-shaped. */
+function describeCreateFailure(name: string, message: string, t: Translations): string {
+  if (/already exists|EEXIST/u.test(message)) return t.onboardingBrowseNewFolderExists(name)
+  if (/single path segment|fully qualified/u.test(message)) return t.onboardingBrowseNewFolderInvalid(name)
+  return t.onboardingBrowseNewFolderFailed(message)
 }
 
 /** Agent preset picker card (step 2 of /new). */
@@ -688,7 +853,7 @@ export interface FeishuOnboardingHandle {
   /** Start the `/new` card flow: workspace → preset → model → create. */
   startNewFlow(chatMessage: ConversationMessage): Promise<void>
   /** The workspace/preset captured so far by this chat's `/new` flow. */
-  creationOptionsFor(chatId: string): { workspace?: string; agentPreset?: string }
+  creationOptionsFor(chatId: string): NewSessionFlowState
   /** Topic reply context recorded for a chat (rootId/threadId), so the
    *  model-step card sent by the caller lands in the same topic. */
   topicFor(chatId: string): { rootId?: string; threadId?: string }
@@ -712,7 +877,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   const cardTopics = deps.cardTopics ?? createCardTopicRegistry()
 
   /** Per-chat in-flight `/new` flow state. */
-  const newFlow = new Map<string, { workspace?: string; agentPreset?: string }>()
+  const newFlow = new Map<string, NewSessionFlowState>()
   /** Per-chat folder-browser position (kept only while the browser is open). */
   const browseState = new Map<string, BrowseState>()
   /** Topic reply context per chat, so cards sent from button callbacks land
@@ -830,13 +995,27 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   }
 
   /**
+   * The mounted backend's `createDirectory`, or undefined when it cannot create
+   * — the `native` chooser (an OS dialog on the host display) and the plugin's
+   * own read-only listing have no such method. The browser HIDES the button in
+   * that case rather than offering one that can only fail.
+   */
+  function resolveDirectoryCreator(): ((path: string, name: string) => Promise<string>) | undefined {
+    const capability = getDirectoryPicker?.()?.capability()
+    if (capability === undefined || capability.kind !== 'browse') return undefined
+    const create = capability.createDirectory
+    if (create === undefined) return undefined
+    return (path: string, name: string) => create.call(capability, path, name)
+  }
+
+  /**
    * Render (or re-render) the folder browser at `path` (absent = the host
    * home directory) and record the position for later navigation actions.
    */
   async function showBrowser(
     action: QueuedAction,
     path: string | undefined,
-    overrides?: { hidden?: boolean; page?: number },
+    overrides?: { hidden?: boolean; page?: number; notice?: string },
   ): Promise<void> {
     const list = resolveDirectoryLister()
     let listing: DirectoryListing
@@ -862,11 +1041,17 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     }
     browseState.set(action.chatMessage.chatId, state)
     logger.info(`dsh-feishu: browse ${action.kind} → ${state.path} page=${state.page} entries=${listing.entries.length} hidden=${state.hidden}`)
-    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations()), { navigation: true })
+    await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations(), {
+      canCreateFolder: resolveDirectoryCreator() !== undefined,
+      ...(overrides?.notice !== undefined ? { notice: overrides.notice } : {}),
+    }), { navigation: true })
   }
 
-  /** Re-list the current level with updated display options (hidden/page). */
-  async function refreshBrowser(action: QueuedAction, overrides: { hidden?: boolean; page?: number }): Promise<void> {
+  /** Re-list the current level with updated display options (hidden/page/notice). */
+  async function refreshBrowser(
+    action: QueuedAction,
+    overrides: { hidden?: boolean; page?: number; notice?: string },
+  ): Promise<void> {
     const state = browseState.get(action.chatMessage.chatId)
     if (state === undefined) {
       await showBrowser(action, undefined)
@@ -875,32 +1060,83 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     await showBrowser(action, state.path, overrides)
   }
 
-  /** Register `path` as a workspace and advance to the preset picker. */
-  async function commitWorkspace(action: QueuedAction, path: string): Promise<void> {
+  /** Freeze the chosen directory on the card that decided it and move to the
+   *  preset step. Nothing is registered here — see {@link commitWorkspace}. */
+  async function advanceToPresets(action: QueuedAction, path: string, options?: { missing?: boolean }): Promise<void> {
     const chatKey = action.chatMessage.chatId
-    try {
-      await workspaceRegistry.create(path)
-      logger.info(`dsh-feishu: created workspace ${path}`)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      const card = {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        header: { title: { tag: 'plain_text', content: getTranslations().onboardingCreateWorkspaceFailTitle }, template: 'red' },
-        body: { elements: [{ tag: 'markdown', content: getTranslations().onboardingCreateWorkspaceFailBody(path, msg) }] },
-      }
-      await sendCard(action.chatMessage, card, { terminal: true })
-      return
-    }
     browseState.delete(chatKey)
     const flowState = newFlow.get(chatKey) ?? {}
     flowState.workspace = path
+    if (options?.missing === true) flowState.workspaceMissing = true
+    else delete flowState.workspaceMissing
     newFlow.set(chatKey, flowState)
     const presets = await agentPresets.list()
     const card = renderPresetPicker(presets, flowState.agentPreset ?? agentPresets.defaultId, getTranslations())
-    // The card the operator clicked ("use this directory" / the path form) is
-    // the directory decision: freeze it showing the chosen path.
     await sendCard(action.chatMessage, card, { settlePrevious: path })
+  }
+
+  /** The red card for a path the operator cannot use as a workspace. */
+  async function sendWorkspaceError(action: QueuedAction, path: string, detail: string): Promise<void> {
+    const t = getTranslations()
+    await sendCard(action.chatMessage, {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: t.onboardingCreateWorkspaceFailTitle }, template: 'red' },
+      body: { elements: [{ tag: 'markdown', content: t.onboardingCreateWorkspaceFailBody(path, detail) }] },
+    }, { terminal: true })
+  }
+
+  /**
+   * The operator chose a workspace path (typed form, browser pick, or one of the
+   * "what is next door" rows).
+   *
+   * Nothing is created and nothing is registered here. The path is validated,
+   * a path that does not exist yet ASKS FIRST (O16 — the old code went straight
+   * to `workspaceRegistry.create`, so a typo produced a red card that said
+   * `ENOENT`, and the ledger's "just mkdir it" alternative would have planted a
+   * directory nobody asked for), and registration itself waits for the last
+   * step of the flow (O19 — cancelling leaves nothing behind).
+   */
+  async function commitWorkspace(action: QueuedAction, path: string): Promise<void> {
+    const t = getTranslations()
+    if (path === '' || !isAbsolute(path)) {
+      await sendCard(action.chatMessage, {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: t.onboardingCreateWorkspaceFailTitle }, template: 'red' },
+        body: { elements: [{ tag: 'markdown', content: t.onboardingCreateWorkspaceNotAbsolute(path) }] },
+      }, { terminal: true })
+      return
+    }
+    let info: { exists: boolean; isDirectory: boolean }
+    try {
+      info = await inspectDirectory(path)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      // The old failure branch only painted a card: a silent failure is the most
+      // expensive kind (关键坑 6 / the O16 note).
+      logger.warn(`dsh-feishu: workspace path check failed for ${path}: ${msg}`)
+      await sendWorkspaceError(action, path, msg)
+      return
+    }
+    if (info.exists && !info.isDirectory) {
+      logger.warn(`dsh-feishu: workspace path is not a directory: ${path}`)
+      await sendWorkspaceError(action, path, t.onboardingCreateWorkspaceNotADirectory)
+      return
+    }
+    if (!info.exists) {
+      const chatKey = action.chatMessage.chatId
+      const flowState = newFlow.get(chatKey) ?? {}
+      flowState.workspace = path
+      flowState.workspaceMissing = true
+      newFlow.set(chatKey, flowState)
+      browseState.delete(chatKey)
+      const siblings = await siblingDirectories(path)
+      logger.info(`dsh-feishu: workspace ${path} does not exist; asked before creating (${siblings.length} neighbours offered)`)
+      await sendCard(action.chatMessage, renderNewWorkspaceConfirmCard(path, siblings, t), { settlePrevious: path })
+      return
+    }
+    await advanceToPresets(action, path)
   }
 
   async function handleAttach(action: QueuedAction): Promise<void> {
@@ -1030,6 +1266,48 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
         case 'create-workspace':
           await handleCreateWorkspace(action)
           break
+        case 'create-workspace-confirm': {
+          // O16: the operator confirmed that a path which does not exist should
+          // be created. Record the intent only — the directory and the registry
+          // entry both happen at the flow's last step (O19). A stale card (the
+          // typed path changed in the meantime) must not commit the old one.
+          const chatKey = action.chatMessage.chatId
+          const flowState = newFlow.get(chatKey)
+          if (flowState?.workspace === undefined || flowState.workspace !== action.value) break
+          await advanceToPresets(action, flowState.workspace, { missing: true })
+          break
+        }
+        case 'workspace-back': {
+          // "Enter another path": drop the workspace decision and hand back the
+          // picker. The preset choice (if any) survives.
+          const chatKey = action.chatMessage.chatId
+          const flowState = newFlow.get(chatKey)
+          if (flowState !== undefined) {
+            delete flowState.workspace
+            delete flowState.workspaceMissing
+            newFlow.set(chatKey, flowState)
+          }
+          await sendCard(action.chatMessage, await buildWorkspacePicker(action.chatMessage))
+          break
+        }
+        case 'browse-mkdir': {
+          // O17: create one folder inside the level being browsed. The backend
+          // (DSH's `browse` capability) does the work: a single path segment,
+          // non-recursive, `directory-exists` when it is already there.
+          const state = browseState.get(action.chatMessage.chatId)
+          const create = resolveDirectoryCreator()
+          if (state === undefined || create === undefined || action.value === undefined) break
+          try {
+            const created = await create(state.path, action.value)
+            logger.info(`dsh-feishu: created directory ${created}`)
+            await showBrowser(action, created)
+          } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error)
+            logger.warn(`dsh-feishu: could not create a folder under ${state.path}: ${msg}`)
+            await refreshBrowser(action, { notice: describeCreateFailure(action.value, msg, getTranslations()) })
+          }
+          break
+        }
         case 'browse-open':
           await showBrowser(action, undefined)
           break
@@ -1088,7 +1366,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       const card = await buildWorkspacePicker(chatMessage)
       await sendCard(chatMessage, card)
     },
-    creationOptionsFor: (chatId: string): { workspace?: string; agentPreset?: string } => {
+    creationOptionsFor: (chatId: string): NewSessionFlowState => {
       return newFlow.get(chatId) ?? {}
     },
     topicFor: (chatId: string): { rootId?: string; threadId?: string } => {

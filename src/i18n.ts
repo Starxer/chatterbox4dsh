@@ -492,6 +492,8 @@ export interface Translations {
   newSessionCancelledBody: string
   /** Summary line parts of the confirmation card. */
   newSessionConfirmWorkspace: (path: string) => string
+  /** Extra line when the chosen workspace will be created at this last step (O16). */
+  newSessionConfirmWillCreate: (path: string) => string
   newSessionConfirmPreset: (preset: string) => string
   newSessionConfirmModel: (route: string) => string
   newSessionConfirmEffort: (effort: string) => string
@@ -519,6 +521,20 @@ export interface Translations {
   onboardingBrowseTruncated: string
   onboardingBrowsePick: string
   onboardingBrowseBack: string
+  /** Confirming a workspace path that does not exist yet (O16). */
+  onboardingCreateWorkspaceConfirmTitle: string
+  onboardingCreateWorkspaceConfirmBody: (path: string) => string
+  onboardingCreateWorkspaceConfirmButton: string
+  onboardingCreateWorkspaceBackButton: string
+  onboardingCreateWorkspaceSiblingHeader: (parent: string) => string
+  onboardingCreateWorkspaceNotAbsolute: (path: string) => string
+  onboardingCreateWorkspaceNotADirectory: string
+  /** Creating a folder from the browser (O17). */
+  onboardingBrowseNewFolder: string
+  onboardingBrowseNewFolderPlaceholder: string
+  onboardingBrowseNewFolderExists: (name: string) => string
+  onboardingBrowseNewFolderInvalid: (name: string) => string
+  onboardingBrowseNewFolderFailed: (msg: string) => string
 
   // Questions extras (feishu-questions.ts)
   questionSelectedSuffix: string
@@ -985,6 +1001,7 @@ export const zh = {
   newSessionCancelledTitle: '✖️ 已取消新建会话',
   newSessionCancelledBody: '没有创建会话，可以重新发起 `/new`。',
   newSessionConfirmWorkspace: path => `📁 **工作区**：\`${path}\``,
+  newSessionConfirmWillCreate: path => `🆕 **将新建目录**：\`${path}\`（含缺失的上级目录）`,
   newSessionConfirmPreset: preset => `🧩 **Agent 预设**：\`${preset}\``,
   newSessionConfirmModel: route => `🤖 **模型**：\`${route}\``,
   newSessionConfirmEffort: effort => `🧠 **推理等级**：\`${effort}\``,
@@ -998,6 +1015,18 @@ export const zh = {
   onboardingCreateWorkspaceFailBody: (path, msg) => `⚠️ **创建工作区失败**\n\n\`${path}\`\n\n${msg}`,
   onboardingCancelTitle: '🚀 新建会话',
   onboardingCancelledBody: '已取消新建会话。',
+  onboardingCreateWorkspaceConfirmTitle: '📁 这个目录还不存在',
+  onboardingCreateWorkspaceConfirmBody: path => `⚠️ **这个目录还不存在**\n\n\`${path}\`\n\n创建会话时会**新建它**（含缺失的上级目录）。确认之前不会在磁盘上留下任何东西。`,
+  onboardingCreateWorkspaceConfirmButton: '✅ 就建这个目录',
+  onboardingCreateWorkspaceBackButton: '← 返回重输',
+  onboardingCreateWorkspaceSiblingHeader: parent => `**旁边有什么**（点一行改用它，\`${parent}\` 下）`,
+  onboardingCreateWorkspaceNotAbsolute: path => `⚠️ **需要一个绝对路径**\n\n\`${path || '（空）'}\`\n\n请以 \`/\` 开头，或用 \`~\` 表示家目录。`,
+  onboardingCreateWorkspaceNotADirectory: '这个路径已经存在，但它不是一个目录（是个文件）。',
+  onboardingBrowseNewFolder: '📁＋ 新建文件夹',
+  onboardingBrowseNewFolderPlaceholder: '新文件夹名（单段，不含 /）',
+  onboardingBrowseNewFolderExists: name => `⚠️ 已经有一个叫“${name}”的文件夹了。`,
+  onboardingBrowseNewFolderInvalid: name => `⚠️ “${name}”不是合法的文件夹名（只能一段，且不含 / 或 \\）。`,
+  onboardingBrowseNewFolderFailed: msg => `⚠️ 新建文件夹失败：${msg}`,
   onboardingBrowseButton: '📂 浏览目录…',
   onboardingBrowseTitle: '📂 选择工作区目录',
   onboardingBrowseHeader: path => `**📁 当前目录**\n\n\`${path}\``,
@@ -1460,6 +1489,7 @@ export const en: Translations = {
   newSessionCancelledTitle: '✖️ New session cancelled',
   newSessionCancelledBody: 'No session was created. Run `/new` again to retry.',
   newSessionConfirmWorkspace: path => `📁 **Workspace**: \`${path}\``,
+  newSessionConfirmWillCreate: path => `🆕 **Will create the folder**: \`${path}\` (missing parents included)`,
   newSessionConfirmPreset: preset => `🧩 **Agent preset**: \`${preset}\``,
   newSessionConfirmModel: route => `🤖 **Model**: \`${route}\``,
   newSessionConfirmEffort: effort => `🧠 **Reasoning effort**: \`${effort}\``,
@@ -1473,6 +1503,18 @@ export const en: Translations = {
   onboardingCreateWorkspaceFailBody: (path, msg) => `⚠️ **Failed to create workspace**\n\n\`${path}\`\n\n${msg}`,
   onboardingCancelTitle: '🚀 New session',
   onboardingCancelledBody: 'New session creation was cancelled.',
+  onboardingCreateWorkspaceConfirmTitle: '📁 That folder does not exist yet',
+  onboardingCreateWorkspaceConfirmBody: path => `⚠️ **That folder does not exist yet**\n\n\`${path}\`\n\nCreating the session will **create it** (missing parents included). Nothing is written to disk until you confirm.`,
+  onboardingCreateWorkspaceConfirmButton: '✅ Create this folder',
+  onboardingCreateWorkspaceBackButton: '← Enter another path',
+  onboardingCreateWorkspaceSiblingHeader: parent => `**What is next door** (tap a row to use it instead, under \`${parent}\`)`,
+  onboardingCreateWorkspaceNotAbsolute: path => `⚠️ **An absolute path is required**\n\n\`${path || '(empty)'}\`\n\nStart with \`/\`, or use \`~\` for your home directory.`,
+  onboardingCreateWorkspaceNotADirectory: 'That path already exists, but it is a file, not a directory.',
+  onboardingBrowseNewFolder: '📁＋ New folder',
+  onboardingBrowseNewFolderPlaceholder: 'New folder name (one segment, no /)',
+  onboardingBrowseNewFolderExists: name => `⚠️ A folder named “${name}” is already there.`,
+  onboardingBrowseNewFolderInvalid: name => `⚠️ “${name}” is not a usable folder name (one segment, no / or \\).`,
+  onboardingBrowseNewFolderFailed: msg => `⚠️ Could not create the folder: ${msg}`,
   onboardingBrowseButton: '📂 Browse folders…',
   onboardingBrowseTitle: '📂 Pick a workspace folder',
   onboardingBrowseHeader: path => `**📁 Current folder**\n\n\`${path}\``,

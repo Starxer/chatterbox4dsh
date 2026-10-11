@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -1019,7 +1020,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           ...(selection.reasoningEffort !== undefined ? { reasoningEffort: selection.reasoningEffort as never } : {}),
         }
         await retireModelCard(messageId, t)
-        const card = renderNewSessionConfirmCard(options, t)
+        const card = renderNewSessionConfirmCard(options, t, flowOptions.workspaceMissing === true)
         const topic = chatTopicFor(chatMessage)
         const opts = topic.threadId !== undefined && topic.rootId !== undefined
           ? { replyInThread: true, replyTo: topic.rootId }
@@ -1112,9 +1113,23 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       }
       const bridge = bridgeHolder.current
       if (bridge === undefined) return
+      // O19: the workspace is registered HERE, at the flow's last step, not back
+      // when it was picked — cancelling `/new` therefore leaves nothing behind.
+      // A path the operator confirmed creating does not exist yet, so it is
+      // created (`mkdir -p`, missing parents included) immediately before the
+      // session that needs it (O16).
+      const flow = onboardingHandle?.creationOptionsFor(chatId) ?? {}
       await commitNewSession(bridge, cardChannel, pending.chatMessage, pending.options, pending.messageId, pending.topic, {
         cardId: pending.cardId,
         paint: (card: object) => paintNewSessionCard(pending.cardId, card),
+      }, {
+        prepareWorkspace: pending.options.workspace === undefined
+          ? undefined
+          : async () => {
+            const path = pending.options.workspace as string
+            if (flow.workspaceMissing === true) await mkdir(path, { recursive: true })
+            await workspaceRegistry.create(path)
+          },
       })
     })
     stopNewSessionConfirmer = stopNewSessionConfirm
@@ -1442,7 +1457,7 @@ function parseNewModelRoute(rawInput: string): { provider: string; model: string
 /** Create a fresh session for a chat with explicit creation options, and
  *  render the confirmation card. Shared by the `/new` card flow (model step
  *  confirmed) and the `/new <workspace> <preset> [model]` text command. */
-async function commitNewSession(
+export async function commitNewSession(
   bridge: HarnessConversationService,
   cardChannel: ModelSelectChannel,
   chatMessage: ConversationMessage,
@@ -1450,7 +1465,34 @@ async function commitNewSession(
   messageId?: string,
   topic?: { rootId?: string; threadId?: string },
   repaint?: { cardId: string; paint: (card: object) => Promise<void> },
+  hooks?: { prepareWorkspace?: (() => Promise<void>) | undefined },
 ): Promise<{ messageId?: string }> {
+  // The workspace must exist (and be registered) before the session that lives
+  // in it is created: this is the one place where the `/new` flow touches the
+  // world, which is what makes "cancel leaves nothing behind" true (O19).
+  if (hooks?.prepareWorkspace !== undefined) {
+    try {
+      await hooks.prepareWorkspace()
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.log(`dsh-feishu: could not prepare the workspace: ${msg}`)
+      const failed = {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: '📁 工作区' }, template: 'red' },
+        body: {
+          elements: [{
+            tag: 'markdown',
+            content: `⚠️ **无法创建工作区**\n\n\`${options.workspace ?? ''}\`\n\n${msg}\n\n会话没有创建。`,
+          }],
+        },
+      }
+      if (repaint !== undefined) {
+        await repaint.paint(failed)
+        return {}
+      }
+    }
+  }
   const salt = `new-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const sessionId = bridge.startNewSession(chatMessage, salt, options)
   const parts: string[] = []

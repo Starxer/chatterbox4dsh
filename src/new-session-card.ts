@@ -23,10 +23,17 @@ export const NEW_SESSION_CANCEL_ACTION = 'new-session-cancel'
  * The buttons carry `behaviors` (not a top-level `value`) because the card is
  * posted as a CardKit instance, and only `behaviors` survives that path (see
  * AGENTS.md 关键坑 4).
+ *
+ * @param willCreate - the chosen workspace does not exist yet and the operator
+ *   confirmed creating it; the card then says so, because the folder appears
+ *   only when the create button is pressed.
  */
-export function renderNewSessionConfirmCard(options: ChatCreationOptions, t: Translations): object {
+export function renderNewSessionConfirmCard(options: ChatCreationOptions, t: Translations, willCreate = false): object {
   const lines: string[] = []
   if (options.workspace !== undefined) lines.push(t.newSessionConfirmWorkspace(options.workspace))
+  // Say it here rather than surprising them later: the folder is created by the
+  // button below, together with the workspace registration (O16 + O19).
+  if (willCreate && options.workspace !== undefined) lines.push(t.newSessionConfirmWillCreate(options.workspace))
   if (options.agentPreset !== undefined) lines.push(t.newSessionConfirmPreset(options.agentPreset))
   if (options.provider !== undefined && options.model !== undefined) {
     lines.push(t.newSessionConfirmModel(`${options.provider}/${options.model}`))

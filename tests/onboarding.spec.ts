@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startFeishuOnboarding, type FeishuOnboardingDeps } from '../src/feishu-onboarding.ts'
@@ -299,23 +299,33 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('create-workspace form creates the workspace and advances to preset picker', async () => {
+  it('takes an existing path to the preset picker without registering it yet', async () => {
     const { channel, handlers } = fakeChannel()
     const bridge = fakeBridge()
     const create = vi.fn(async () => undefined)
     const d = deps(channel, bridge)
     d.workspaceRegistry = { list: () => [], create }
     const handle = startFeishuOnboarding(d)
-    await fire(handlers, {
-      chatId: 'oc_1',
-      messageId: 'm-ref',
-      action: { value: JSON.stringify({ kind: 'create-workspace' }) },
-      raw: { action: { form_value: { workspace_path: '~/projects/my-app' } } },
-    })
-    expect(create).toHaveBeenCalledWith(expect.stringMatching(/\/projects\/my-app$/))
-    expect(channel.createCardInstance).toHaveBeenCalled()
-    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    expect(JSON.stringify(card)).toContain('选择 Agent 预设')
+    // A real directory on this machine: the flow records it and moves on. It is
+    // NOT registered here — that happens at the last step (O19), so cancelling
+    // `/new` leaves no workspace behind.
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-'))
+    try {
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'create-workspace' }) },
+        raw: { action: { form_value: { workspace_path: root } } },
+      })
+      expect(create).not.toHaveBeenCalled()
+      expect(channel.createCardInstance).toHaveBeenCalled()
+      const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+      expect(JSON.stringify(card)).toContain('选择 Agent 预设')
+      expect(handle.creationOptionsFor('oc_1').workspace).toBe(root)
+      expect(handle.creationOptionsFor('oc_1').workspaceMissing).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
     handle.dispose()
   })
 
@@ -545,11 +555,14 @@ describe('feishu-onboarding', () => {
     card = channel.createCardInstance.mock.calls.at(-1)![0] as any
     expect(JSON.stringify(card)).toContain('my-app')
 
-    // Commit the listed directory as the workspace → preset picker.
+    // Commit the listed directory as the workspace. The fake backend lists a
+    // tree that does not exist on disk, so this is exactly the "that path is not
+    // there" case (O16): it asks before creating anything, and it does NOT
+    // register a workspace on the way (O19).
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-pick', value: '/home/me/projects' }) } })
-    expect(create).toHaveBeenCalledWith('/home/me/projects')
+    expect(create).not.toHaveBeenCalled()
     card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    expect(JSON.stringify(card)).toContain('选择 Agent 预设')
+    expect(JSON.stringify(card)).toContain('这个目录还不存在')
     handle.dispose()
   })
 
@@ -736,6 +749,223 @@ describe('feishu-onboarding', () => {
     // Last page carries no "next page" button.
     expect(card).not.toContain('下一页')
     expect(channel.createCardInstance.mock.calls.length).toBe(cardsBefore + 4)
+    handle.dispose()
+  })
+})
+
+describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
+  /** The browse backend plus an optional createDirectory over a real temp tree. */
+  function realPicker(root: string, create?: ReturnType<typeof vi.fn>) {
+    const list = vi.fn(async (path?: string) => {
+      const dir = path ?? root
+      const entries = []
+      for (const name of await readdir(dir)) {
+        const full = join(dir, name)
+        if (!(await stat(full)).isDirectory()) continue
+        entries.push({ name, path: full, hidden: name.startsWith('.') })
+      }
+      entries.sort((a, b) => a.name.localeCompare(b.name))
+      return {
+        path: dir,
+        home: root,
+        crumbs: dir === root ? [] : [{ name: root, path: root, hidden: false }],
+        entries,
+        truncated: false,
+      }
+    })
+    const capability = create === undefined
+      ? { kind: 'browse' as const, list }
+      : { kind: 'browse' as const, list, createDirectory: create }
+    return { list, picker: { capability: () => capability } }
+  }
+
+  it('asks before creating a path that does not exist, and never registers it on the way', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-ask-'))
+    await mkdir(join(root, 'existing-sibling'))
+    const target = join(root, 'brand-new', 'nested')
+    const { channel, handlers } = fakeChannel()
+    const create = vi.fn(async () => undefined)
+    const d = deps(channel, fakeBridge())
+    d.workspaceRegistry = { list: () => [], create }
+    const handle = startFeishuOnboarding(d)
+    try {
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'create-workspace' }) },
+        raw: { action: { form_value: { workspace_path: target } } },
+      })
+      // Nothing happened in the world: no registration, and no directory.
+      expect(create).not.toHaveBeenCalled()
+      await expect(stat(join(root, 'brand-new'))).rejects.toThrow()
+      const card = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+      expect(card).toContain('这个目录还不存在')
+      expect(card).toContain('create-workspace-confirm')
+      // The neighbours of the deepest existing ancestor are one-tap fixes.
+      expect(card).toContain('existing-sibling')
+      expect(handle.creationOptionsFor('oc_1').workspaceMissing).toBe(true)
+      expect(handle.creationOptionsFor('oc_1').workspace).toBe(target)
+
+      // Confirming still only records the intent — the directory is created by
+      // the flow's LAST step, together with the registration.
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'create-workspace-confirm', value: target }) },
+      })
+      expect(create).not.toHaveBeenCalled()
+      await expect(stat(join(root, 'brand-new'))).rejects.toThrow()
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('选择 Agent 预设')
+      expect(handle.creationOptionsFor('oc_1').workspaceMissing).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+    handle.dispose()
+  })
+
+  it('lets a neighbour row replace the typo, and forgets the missing flag', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-neighbour-'))
+    await mkdir(join(root, 'alpha'))
+    await mkdir(join(root, 'beta'))
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.workspaceRegistry = { list: () => [], create: vi.fn(async () => undefined) }
+    const handle = startFeishuOnboarding(d)
+    try {
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'create-workspace' }) },
+        raw: { action: { form_value: { workspace_path: join(root, 'alphaa') } } },
+      })
+      const card = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+      expect(card).toContain('alpha')
+      expect(card).toContain('beta')
+
+      // Tapping the right neighbour commits THAT directory and clears the flag.
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-pick', value: join(root, 'alpha') }) },
+      })
+      expect(handle.creationOptionsFor('oc_1').workspace).toBe(join(root, 'alpha'))
+      expect(handle.creationOptionsFor('oc_1').workspaceMissing).toBeUndefined()
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('选择 Agent 预设')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+    handle.dispose()
+  })
+
+  it('refuses a relative path and a file with its own message (and logs it)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-relative-'))
+    const file = join(root, 'a-file')
+    await writeFile(file, 'x')
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.workspaceRegistry = { list: () => [], create: vi.fn(async () => undefined) }
+    const handle = startFeishuOnboarding(d)
+    try {
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'create-workspace' }) },
+        raw: { action: { form_value: { workspace_path: 'foo/bar' } } },
+      })
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('需要一个绝对路径')
+
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'create-workspace' }) },
+        raw: { action: { form_value: { workspace_path: file } } },
+      })
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('不是一个目录')
+      // The old failure branch was silent; 关键坑 6 says a silent failure is the
+      // most expensive kind, so the path check warns.
+      expect((d.logger.warn as any)).toHaveBeenCalled()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+    handle.dispose()
+  })
+
+  it('hides the new-folder form when the mounted backend cannot create directories', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o17-gate-'))
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => realPicker(root).picker // no createDirectory
+    const handle = startFeishuOnboarding(d)
+    try {
+      await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+      const card = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+      expect(card).not.toContain('browse-mkdir')
+      expect(card).not.toContain('新建文件夹')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+    handle.dispose()
+  })
+
+  it('creates a folder in the browsed level and enters it, and reports a clash on the card', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o17-'))
+    const createDirectory = vi.fn(async (path: string, name: string) => {
+      const target = join(path, name)
+      await mkdir(target)
+      return target
+    })
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => realPicker(root, createDirectory).picker
+    const handle = startFeishuOnboarding(d)
+    try {
+      await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('新建文件夹')
+
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-mkdir' }) },
+        raw: { action: { form_value: { new_folder: 'draft' } } },
+      })
+      expect(createDirectory).toHaveBeenCalledWith(root, 'draft')
+      // The browser follows the new folder, so it is immediately usable.
+      const entered = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
+      expect(entered).toContain(join(root, 'draft'))
+
+      // Back up one level, then create the SAME name again: that is the clash,
+      // reported as one line on the browser the operator is looking at.
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-enter', value: root }) },
+      })
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-mkdir' }) },
+        raw: { action: { form_value: { new_folder: 'draft' } } },
+      })
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('已经有一个叫')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+    handle.dispose()
+  })
+
+  it('ignores a new-folder form when no backend can create (stale card)', async () => {
+    const { channel, handlers } = fakeChannel()
+    const d = deps(channel, fakeBridge())
+    d.getDirectoryPicker = () => ({ capability: () => ({ kind: 'native' }) })
+    const handle = startFeishuOnboarding(d)
+    const before = channel.createCardInstance.mock.calls.length
+    await fire(handlers, {
+      chatId: 'oc_1',
+      messageId: 'm-ref',
+      action: { value: JSON.stringify({ kind: 'browse-mkdir' }) },
+      raw: { action: { form_value: { new_folder: 'x' } } },
+    })
+    expect(channel.createCardInstance.mock.calls.length).toBe(before)
     handle.dispose()
   })
 })
