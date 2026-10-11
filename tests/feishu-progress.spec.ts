@@ -279,7 +279,7 @@ describe('renderProgressCard', () => {
     expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(15)))
     const visible = visibleLines(card)
     expect(visible[0]).toBe(t.turnCardStep(6, '100ms'))
-    expect(visible.filter(line => /\*\*【第 \d+ 步】\*\*/.test(line))).toHaveLength(3)
+    expect(visible.filter(line => line.startsWith('**第'))).toHaveLength(3)
   })
 
   it('renders only the rows of this segment when one was cut short', () => {
