@@ -219,6 +219,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
     cardVideoMaxMb: 15           # 1–30 —— 视频内联大小上限 · largest video to inline
     cardAudioMaxMb: 15           # 1–30 —— 音频内联大小上限 · largest audio to inline
     deliverDocMaxMb: 30          # 1–30 —— 文档自动投递大小上限 · largest document to auto-send
+    produceCard: delivery        # off / summary / delivery —— 本轮产出物（文件/图表等）怎么处理 · what to do with files the turn produced
     surfaceContext: true         # 告诉模型用户在飞书（仅绑定飞书的会话；与 Web bundle 的 surfaceContext 同义）· tell the model the user is on Feishu
     mirrorExternalTurns: true    # 把 Web GUI / 后台任务发起的回合也镜像到飞书（回显 + 收尾卡 + 交付）· mirror turns started outside Feishu
 ```
@@ -238,7 +239,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `workspace` | 第一个注册的 Workspace | Agent 工作目录 |
 | `agentPreset` | Harness 默认 Preset | Agent preset |
 | `reactEmoji` | `THUMBSUP` | 收到消息时的表情回应（空字符串关闭） |
-| `transcriptView` | `detailed` | 工作展示**档位**（与 DSH Web UI 同名同义）：`compact` 只发**答案卡** + 一张「回合过程卡」（工具名 + 各自耗时 + 每步耗时，一条消息就地更新，运行中灰头、结束绿头；纯工具步骤不发卡，注入提示行与中段叙述也各是一行；**只留最新 5 步**、更早的折叠；运行中的调用显示 `执行中`/已耗时间并每 30 秒刷新；别的模块在它下面发过卡之后，新内容另起一张新卡）/ `standard` 每个工具一行摘要 / `detailed` 加参数与结果预览、思考过程折叠 / `verbose` 全部展开且不截断。下面的 4 个开关**只能"减"不能"加"**；`compact` 的过程卡由首个工具调用懒创建（工具全关或整轮没调用工具时没有这张卡） |
+| `transcriptView` | `detailed` | 工作展示**档位**（与 DSH Web UI 同名同义）：`compact` 只发**答案卡** + 一张「回合过程卡」（工具名 + 各自耗时 + 每步耗时，一条消息就地更新，运行中灰头、结束绿头；纯工具步骤不发卡，注入提示行与中段叙述也各是一行；**只留最新 3 步**（窗口按步骤计数，更早的整步连标题一起折叠）、**步与步之间画一条分隔线**（原生 `hr` 元素）；步骤行是 `▸ **第 N 步** · 耗时`，工具行**不带列表符**、直接跟在步骤行下面，**并标出它碰了什么**（读写编辑给文件名、`bash` 给程序名，如 `✅ `read` · …/src/x.ts · 40ms` / `✅ `bash` ×3 · npm / tail / git · 13.3s`）；步骤中间夹的叙述行（模型的话）排成 **引用** `> 💬 …`；整步的行装在**同一个卡片元素**里（元素之间各付一次间距，步内的换行不付）；运行中的调用显示 `执行中`/已耗时间并每 30 秒刷新；别的模块在它下面发过卡之后，新内容另起一张新卡）/ `standard` 每个工具一行摘要 / `detailed` 加参数与结果预览、思考过程折叠 / `verbose` 全部展开且不截断。下面的 4 个开关**只能"减"不能"加"**；`compact` 的过程卡由首个工具调用懒创建（工具全关或整轮没调用工具时没有这张卡） |
 | `showReasoning` | `true` | 步骤卡是否展示模型思考过程（在所选档位允许的范围内：预览 / 折叠全文 / 不显示） |
 | `showToolCalls` | `true` | 是否展示工具调用；关闭后只有工具的步骤不再发卡 |
 | `showToolArgs` | `true` | 是否展示工具调用的参数块（需 `showToolCalls`） |
@@ -250,6 +251,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `cardVideoMaxMb` | `15` | **视频**自动内联的大小上限（MB），范围 1–30（飞书文件接口硬上限 30MB）。数字越大，卡片等上传的时间越长 |
 | `cardAudioMaxMb` | `15` | **音频**自动内联的大小上限（MB），范围 1–30。非 Opus 的音频还要先转码，另受 ffmpeg 是否可用影响 |
 | `deliverDocMaxMb` | `30` | `present` 声明的**文档**（pdf/doc/docx/ppt/pptx/xls/xlsx）自动发成飞书文件消息的大小上限（MB），范围 1–30；单轮最多自动发 8 个。更大的文档、超出的文档、以及所有其他文件都变成交付清单里**可点的一行**：点一下弹确认卡，确认后才发送 |
+| `produceCard` | `delivery` | 本轮用 `write`/`edit` 写过、但**没有**用 `present` 声明的文件怎么处理：`off` 完全静默 / `summary` 只在收尾卡写一行「本回合新生成 N 个文件」/ `delivery`（默认）把其中**媒体与 pdf/office 文档**走 `present` 完全相同的投递路径。源码、测试、临时脚本**永不投递**（这里是聊天，不是文件浏览器） |
 | `surfaceContext` | `true` | 给**绑定到飞书**的会话加一句系统提示词：用户在飞书聊天里、打不开本地路径、`present` 落在回合末的交付卡上（形状与 Web bundle 的 `surfaceContext` 相同；未绑定飞书的会话完全不受影响） |
 | `mirrorExternalTurns` | `true` | 把**外部入口**发起的回合（Web GUI / 后台任务唤醒 / 定时任务）也镜像到绑定飞书聊天：回显用户消息、补发 Turn Complete 卡并投递 `present` 交付物 |
 
@@ -268,7 +270,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `workspace` | First registered workspace | Agent working directory |
 | `agentPreset` | Harness default preset | Agent preset |
 | `reactEmoji` | `THUMBSUP` | Reaction added on incoming messages (empty string disables it) |
-| `transcriptView` | `detailed` | Work-detail **level**, named and meant exactly as in the DSH Web UI: `compact` keeps the answer text on the step cards and **merges the whole turn's tool activity onto one turn progress card** (tool names + their durations + each step's duration, one message updated in place, grey while running and green when done; a step that only ran tools posts no card, injection notices and mid-turn narration are rows on that card too, only the newest five steps stay visible, a running call shows `running`/its elapsed time refreshed every 30 seconds, and once another module posts a card below it the next content opens a NEW card) / `standard` adds one summary line per call / `detailed` adds arguments and result previews and folds the reasoning away / `verbose` shows everything untruncated. The four switches below can only **subtract** from it. A level changes how much one card says; `compact` additionally posts that one progress card (and posts none at all when tool display is off) |
+| `transcriptView` | `detailed` | Work-detail **level**, named and meant exactly as in the DSH Web UI: `compact` keeps the answer text on the step cards and **merges the whole turn's tool activity onto one turn progress card** (tool names + their durations + each step's duration, one message updated in place, grey while running and green when done; a step that only ran tools posts no card, injection notices and mid-turn narration are rows on that card too, only the newest three steps stay visible (the window counts STEPS; older steps fold away whole, title included), with an **`hr` rule between steps**; a step line reads `▸ **Step N** · 1.2s`, its tool rows follow with **no list marker** and **name what they touched** (a file for read/write/edit, the programs for `bash`: `✅ `read` · …/src/x.ts · 40ms` / `✅ `bash` ×3 · npm / tail / git · 13.3s`), the narration a step says between calls is a **quote** (`> 💬 …`), and a step's rows share ONE card element (elements pay the inter-element spacing, newlines inside one do not); a running call shows `running`/its elapsed time refreshed every 30 seconds, and once another module posts a card below it the next content opens a NEW card) / `standard` adds one summary line per call / `detailed` adds arguments and result previews and folds the reasoning away / `verbose` shows everything untruncated. The four switches below can only **subtract** from it. A level changes how much one card says; `compact` additionally posts that one progress card (and posts none at all when tool display is off) |
 | `showReasoning` | `true` | Show the model reasoning on step cards (within what the level allows: one preview line / a folded panel / nothing) |
 | `showToolCalls` | `true` | Show tool calls; when off, tool-only steps post no card |
 | `showToolArgs` | `true` | Show each tool call's argument block (requires `showToolCalls`) |
@@ -280,6 +282,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `cardVideoMaxMb` | `15` | Largest **video** (MB) to inline automatically, 1-30 (Feishu's file API caps at 30 MB). A bigger number only costs wait: the upload runs on the card-write path |
 | `cardAudioMaxMb` | `15` | Largest **audio** (MB) to inline automatically, 1-30. Non-Opus audio is transcoded first, so ffmpeg has to be available |
 | `deliverDocMaxMb` | `30` | Largest **document** (pdf/doc/docx/ppt/pptx/xls/xlsx) declared through `present` (MB) that is pushed as a Feishu file message by itself, 1-30; at most 8 documents go out per turn. Larger or extra documents — and every other file — become a tappable row on the delivery list: one tap opens a confirmation, and only that sends |
+| `produceCard` | `delivery` | What to do with files a turn wrote through `write`/`edit` but never declared through `present`: `off` stays silent, `summary` adds one line to the Turn Complete card ("N file(s) produced this turn"), and `delivery` (default) routes the **media and pdf/office documents** among them through exactly the same path as `present`. Source code, tests and scratch scripts are NEVER delivered — this is a chat, not a file browser |
 | `surfaceContext` | `true` | Add one system-prompt sentence to **Feishu-bound** sessions: the user is in a Feishu chat, cannot open local paths, and `present` surfaces on the end-of-turn delivery card (same shape as the Web bundle's `surfaceContext`; sessions not bound to Feishu are untouched) |
 | `mirrorExternalTurns` | `true` | Mirror turns started through another surface (Web GUI, background-job wake-up, schedule) into the bound Feishu chat: echo the user message, post the Turn Complete card and deliver `present` files |
 
