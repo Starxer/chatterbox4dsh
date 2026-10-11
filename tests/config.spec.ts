@@ -38,6 +38,17 @@ describe('resolveSettingsConfig', () => {
     expect(resolveSettingsConfig({ appId: 'id', cardImages: 'any' }).cardImages).toBe('any')
   })
 
+  it('defaults produced-file handling to delivery and reads the other two modes', () => {
+    // TODO O3: the default delivers the artifact-shaped subset, because the gap
+    // it closes is measured (21 turns wrote files, one called present).
+    expect(resolveSettingsConfig({ appId: 'id' }).produceCard).toBe('delivery')
+    expect(resolveSettingsConfig({ appId: 'id', produceCard: 'summary' }).produceCard).toBe('summary')
+    expect(resolveSettingsConfig({ appId: 'id', produceCard: 'off' }).produceCard).toBe('off')
+    // A hand-edited settings.yaml, or a value from a future release, must not
+    // change behaviour silently: unknown falls back to the default.
+    expect(resolveSettingsConfig({ appId: 'id', produceCard: 'nope' as any }).produceCard).toBe('delivery')
+  })
+
   it('defaults the per-card media limit and keeps whatever the user picked', () => {
     expect(resolveSettingsConfig({ appId: 'id' }).cardMediaLimit).toBe(CARD_MEDIA_LIMIT.default)
     expect(resolveSettingsConfig({ appId: 'id', cardMediaLimit: 3 }).cardMediaLimit).toBe(3)

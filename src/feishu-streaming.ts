@@ -32,6 +32,7 @@ import {
   resolveDisplayPolicy, type DisplayPolicy, type TranscriptView,
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
+import { pendingProducedCall, settleProducedCall, type ProducedPath } from './produced-files.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
 import { createProgressCards } from './feishu-progress.ts'
@@ -242,6 +243,16 @@ export interface TurnStats {
    * actually asks for it (`feishu_send_file`).
    */
   deliverables?: PresentedFile[]
+  /**
+   * Files this turn WROTE without declaring them (`write` / `edit` /
+   * `str_replace_editor` whose result was not an error) — the host-side mirror
+   * of the WebUI's `produced` set, in the order the results landed.
+   *
+   * The `produceCard` setting decides what happens to them
+   * (`src/produced-files.ts`): nothing, a count line, or delivery of the
+   * artifact-shaped subset through the `present` pipeline.
+   */
+  produced?: ProducedPath[]
 }
 
 /** One tool call tracked within a step. */
@@ -256,6 +267,12 @@ interface StepToolCall {
   callView?: { card?: string; title?: string; description?: string; workdir?: string }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   resultView?: any
+  /**
+   * What this call would produce if it succeeds (`produced-files.ts`), computed
+   * at `tool/call` time because the RESULT does not carry the arguments. Absent
+   * for every call that is not a file mutation.
+   */
+  produced?: { path: string | undefined }
 }
 
 /** Per-session state for accumulating a step's content. */
@@ -392,6 +409,18 @@ interface SessionStepState {
    * the route changes, so clearing it would blank the route on every later step.
    */
   requestRoute: { provider: string; model: string } | undefined
+  /**
+   * Every path this SESSION has ever declared through `present`.
+   *
+   * Not turn-scoped on purpose: the produced-artifact delivery must not hand a
+   * file over a second time just because the model wrote it once more in a
+   * later turn — the `present` declaration that already delivered it may be
+   * arbitrarily far back, while a turn's own `deliverables` list starts empty.
+   * Only ever consulted to SUPPRESS a delivery, so one entry per session is
+   * enough and unbounded growth is not a concern (a presented path is rare, and
+   * the session's own log holds the authoritative list anyway).
+   */
+  everPresentedPaths: Set<string>
   // --- Turn-level aggregation ---
   turnStats: TurnStats | undefined
 }
@@ -476,6 +505,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         turnTrigger: undefined,
         livePhase: 'none',
         requestRoute: undefined,
+        everPresentedPaths: new Set<string>(),
         turnStats: undefined,
       }
       sessionStates.set(sessionId, state)
@@ -1548,6 +1578,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           callId: toolCallId,
           arguments: args,
           startedAt: Date.now(),
+          // Whether this call mutates a file is decided from its ARGUMENTS, so
+          // it has to be captured here: `tool/result` carries no arguments, and
+          // the turn's produced list is rebuilt from these two events
+          // (`src/produced-files.ts`).
+          produced: pendingProducedCall(toolName, args),
         }
         // tool/call no longer carries a presentation view on the session
         // event; callView stays undefined and renderStepCard falls back to
@@ -1606,6 +1641,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
           if (displayPolicy().turnCard) {
             progressCards.toolFinished(sessionId, toolCallId, elapsed, isError, event.time ?? Date.now())
+          }
+
+          // The turn's produced list (host-side mirror of the WebUI's
+          // `produced` set): a file mutation whose result did not fail. The
+          // `produceCard` setting is applied later, when the cards are built —
+          // collecting is free and keeps both decisions in one place.
+          const produced = settleProducedCall(toolCall.produced, isError)
+          if (produced !== undefined && state.turnStats?.produced !== undefined) {
+            state.turnStats.produced.push(produced)
           }
 
           toolCall.result = {
@@ -1711,6 +1755,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           totalToolMs: 0,
           totalTurnMs: 0,
           deliverables: [],
+          produced: [],
         }
         let resolve!: () => void
         const promise = new Promise<void>((r) => { resolve = r })
@@ -1799,6 +1844,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           for (const file of files) {
             const path = typeof file?.path === 'string' ? file.path.trim() : ''
             if (path === '') continue
+            // Remember it for the SESSION, not just this turn: the produced
+            // artifacts of a later turn must not deliver a file the model
+            // already handed over (`everPresentedPaths`).
+            state.everPresentedPaths.add(path)
             const description = typeof file.description === 'string' && file.description.trim() !== ''
               ? file.description.trim()
               : undefined

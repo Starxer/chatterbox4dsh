@@ -106,6 +106,24 @@ describe('renderFooterCard deliverables', () => {
     expect(markdownOf(renderFooterCard(t, {}, { ...turnStats, deliverables: [] }) as any)).not.toContain('Present files')
   })
 
+  it('reports the produced-artifact count in one line when the setting asks for it', () => {
+    // TODO O3: a turn that wrote an image or a document without calling
+    // `present` used to leave the chat silent about it.
+    const card = renderFooterCard(t, {}, turnStats, undefined, undefined, 2) as any
+    expect(markdownOf(card)).toContain(t.turnProducedLine(2))
+    // Count only — never the paths: the artifact files themselves reach the
+    // card through the delivery rows, and a chat is not a workspace browser.
+    expect(markdownOf(card)).not.toContain('/tmp/')
+  })
+
+  it('omits the produced line when the setting is off or nothing was produced', () => {
+    // `off` passes undefined; a turn that produced nothing passes 0.
+    expect(markdownOf(renderFooterCard(t, {}, turnStats, undefined, undefined, undefined) as any))
+      .not.toContain(t.turnProducedLine(1))
+    expect(markdownOf(renderFooterCard(t, {}, turnStats, undefined, undefined, 0) as any))
+      .not.toContain(t.turnProducedLine(1))
+  })
+
   it('renders the planned rows when the deliver controller supplied them', () => {
     const card = renderFooterCard(t, {}, {
       ...turnStats,

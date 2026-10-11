@@ -80,6 +80,20 @@ export interface Config {
    */
   deliverDocMaxMb?: number
   /**
+   * What the plugin does with files a turn PRODUCED (successful `write` /
+   * `edit` / `str_replace_editor`) but never declared through `present`.
+   *
+   * Feishu is a chat, not a workspace browser, so the WebUI's produced list is
+   * deliberately NOT mirrored in full: in a coding session it is almost
+   * entirely source files and scratch scripts (measured 2026-10-11: 69 produced
+   * paths against 3 presented ones, all of them workspace files). `off` keeps
+   * that silence; `summary` announces the artifact count; `delivery` (default)
+   * also hands the artifacts over through the `present` pipeline — media
+   * inlined on the card, documents under `deliverDocMaxMb` pushed as native
+   * file messages, anything else offered as a tap-to-send row.
+   */
+  produceCard?: ProduceCardMode
+  /**
    * Append one sentence to the system prompt of a Feishu-bound session saying
    * where the user is (same idea as the Web bundle's `surfaceContext`). Sessions
    * not bound to Feishu get nothing.
@@ -87,6 +101,33 @@ export interface Config {
   surfaceContext?: boolean
   /** Mirror turns started outside Feishu into the bound chat (echo + completion + delivery). */
   mirrorExternalTurns?: boolean
+}
+
+/** Every value the `produceCard` setting accepts. */
+export const PRODUCE_CARD_MODES = ['off', 'summary', 'delivery'] as const
+
+/**
+ * What to do with a turn's produced-but-not-presented artifacts; see
+ * {@link Config.produceCard}.
+ */
+export type ProduceCardMode = typeof PRODUCE_CARD_MODES[number]
+
+/**
+ * Default for {@link Config.produceCard}.
+ *
+ * `delivery` rather than `off` because the gap it closes is real and measured:
+ * of 21 turns in one session that wrote files, exactly one called `present`, so
+ * an artifact generated without a `present` call reached the chat nowhere. The
+ * narrow artifact filter is what keeps that from turning a chat into a file
+ * browser — and the setting exists so a deployment that disagrees can say `off`.
+ */
+export const DEFAULT_PRODUCE_CARD: ProduceCardMode = 'delivery'
+
+/** Parse a stored `produceCard` value, falling back to the default. */
+export function parseProduceCardMode(value: unknown): ProduceCardMode {
+  return typeof value === 'string' && (PRODUCE_CARD_MODES as readonly string[]).includes(value)
+    ? value as ProduceCardMode
+    : DEFAULT_PRODUCE_CARD
 }
 
 /**
@@ -218,6 +259,12 @@ export interface SettingsConfig extends Required<Pick<Config,
   /** Largest document (MB) `present` may deliver without asking. */
   deliverDocMaxMb?: number
   /**
+   * What to do with files a turn produced without declaring them through
+   * `present`; optional like `cardImages`, always filled by
+   * {@link resolveSettingsConfig}.
+   */
+  produceCard?: ProduceCardMode
+  /**
    * Announce this Feishu chat as the surface the model is talking to (one
    * system-prompt sentence; sessions not bound to Feishu are untouched).
    */
@@ -265,6 +312,7 @@ export const ConfigSchema = z.object({
   cardVideoMaxMb: z.number().min(CARD_MEDIA_MAX_MB.video.min).max(CARD_MEDIA_MAX_MB.video.max).default(CARD_MEDIA_MAX_MB.video.default).volatile().description('Largest video (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
   cardAudioMaxMb: z.number().min(CARD_MEDIA_MAX_MB.audio.min).max(CARD_MEDIA_MAX_MB.audio.max).default(CARD_MEDIA_MAX_MB.audio.default).volatile().description('Largest audio (MB) to upload and inline in a card. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
   deliverDocMaxMb: z.number().min(DELIVER_DOC_MAX_MB.min).max(DELIVER_DOC_MAX_MB.max).default(DELIVER_DOC_MAX_MB.default).volatile().description('Largest document (pdf/doc/docx/ppt/pptx/xls/xlsx) the present tool may send as a file without asking. Larger documents and every other file become click-to-send rows with a confirmation. Feishu refuses a file over 30 MB, so this cannot exceed 30.'),
+  produceCard: z.union([...PRODUCE_CARD_MODES]).default(DEFAULT_PRODUCE_CARD).volatile().description('Files a turn produced (successful write/edit) without using present: off ignores them, summary adds one count line to the Turn Complete card, delivery also hands the artifact-shaped ones (media, documents) over exactly like presented files - media inlined, documents sent as file messages, anything else offered as a tap-to-send row. Source files and scratch scripts are never delivered, because this is a chat and not a workspace browser.'),
   surfaceContext: z.boolean().default(true).volatile().description('Tell the model which surface the user is on: a session bridged to Feishu gets one system-prompt sentence (the user reads Feishu cards and cannot open local paths; present surfaces on the end-of-turn delivery card). The same idea as the Web bundle\'s surfaceContext switch; sessions not bridged to Feishu are unchanged.'),
   mirrorExternalTurns: z.boolean().default(true).volatile().description('Mirror turns the user starts outside Feishu (Web GUI, background-job wake-up, schedule) into the bound Feishu chat: their user messages are echoed and their Turn Complete card plus present delivery are posted, exactly like a turn started from a Feishu message.'),
 })
@@ -303,6 +351,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     cardVideoMaxMb: clampCardMediaMaxMb('video', readField(config.cardVideoMaxMb)),
     cardAudioMaxMb: clampCardMediaMaxMb('audio', readField(config.cardAudioMaxMb)),
     deliverDocMaxMb: clampDeliverDocMaxMb(readField(config.deliverDocMaxMb)),
+    produceCard: parseProduceCardMode(readField(config.produceCard)),
     surfaceContext: readField(config.surfaceContext) ?? true,
     mirrorExternalTurns: readField(config.mirrorExternalTurns) ?? true,
     ...(appSecret === undefined ? {} : { appSecret }),

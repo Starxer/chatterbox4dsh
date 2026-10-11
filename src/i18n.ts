@@ -342,6 +342,13 @@ export interface Translations {
   // `deliverables/presented`)
   deliverablesTitle: (count: number) => string
   deliverablesMore: (count: number) => string
+  /**
+   * One line reporting files the turn produced without `present`
+   * (`src/produced-files.ts`). Deliberately a count and never a path list: a
+   * chat is not a workspace browser, and the artifact-shaped files among them
+   * are listed by the delivery rows above instead.
+   */
+  turnProducedLine: (count: number) => string
   /** Hint line above rows the operator can send with a tap. */
   deliverTapHint: string
   /** Suffix on a clickable row: tapping opens a confirmation. */
@@ -838,6 +845,7 @@ export const zh = {
   // 发原生文件消息；其余文件点行 → 确认卡 → 才发送。
   deliverablesTitle: (count: number) => `📦 **交付文件**（${count}）`,
   deliverablesMore: (count: number) => `_…另有 ${count} 个未显示（可以让模型用 \`feishu_send_file\` 单独发）_`,
+  turnProducedLine: (count: number) => `📦 本回合新生成 ${count} 个文件`,
   deliverTapHint: '_标着「点击发送」的文件点一下即可发送，发送前还会再确认一次。_',
   deliverTapToSend: '点击发送',
   deliverAutoSent: '自动投递',
@@ -1311,6 +1319,7 @@ export const en: Translations = {
   // messages; every other file is a click → confirm → send row.
   deliverablesTitle: (count: number) => `📦 **Present files** (${count})`,
   deliverablesMore: (count: number) => `_…and ${count} more (not shown; ask the model to send one with \`feishu_send_file\`)_`,
+  turnProducedLine: (count: number) => `📦 ${count} file(s) produced this turn`,
   deliverTapHint: '_Files marked "tap to send" go out with one tap, after a confirmation._',
   deliverTapToSend: 'tap to send',
   deliverAutoSent: 'auto-delivery',

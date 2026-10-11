@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import { Domain, LoggerLevel, createLarkChannel } from '@larksuiteoapi/node-sdk'
 import type { LarkChannel, LarkChannelOptions, NormalizedMessage, ResourceDescriptor } from '@larksuiteoapi/node-sdk'
 import type { AttachmentStore, FileAttachmentRef, ImageAttachmentRef, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
-import type { RuntimeConfig } from './config.ts'
+import type { RuntimeConfig, ProduceCardMode } from './config.ts'
 import type { HarnessConversationService, InboundMessage } from './harness.ts'
 import type { BusyMode } from './harness.ts'
 import { translationsFor, type Translations } from './i18n.ts'
@@ -17,6 +17,7 @@ import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import { hasDeliverables, renderDeliverableElements, type DeliverChat, type DeliverPlan, type DeliverPlanInput, type DeliverRow } from './feishu-deliver.ts'
+import { mergeProducedArtifacts, producedArtifacts } from './produced-files.ts'
 
 // Re-exported for callers that historically reached the sniffer through this
 // module; the implementation now lives in `media-sniff.ts` next to the video
@@ -277,6 +278,13 @@ export async function startChannel(
    * back to the chat-level topic guess.
    */
   noteCardTopic?: (messageId: string, topic: { threadId?: string; rootId?: string }) => void,
+  /**
+   * Live `produceCard` setting: what to do with files this turn produced without
+   * declaring them through `present` (`src/produced-files.ts`). `off` (and an
+   * omitted callback) keeps them invisible, `summary` adds the count line,
+   * `delivery` also routes the artifact-shaped ones through the delivery plan.
+   */
+  produceCardMode?: () => ProduceCardMode,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -563,6 +571,16 @@ export async function startChannel(
           // reading it earlier would miss that correction (key pitfall 29).
           const turnStats = await flushed?.(sessionId)
           const intermediateSent = bridge.consumeIntermediateSent(sessionId)
+          // What this turn produced without declaring it through `present`
+          // (TODO O3). `off` keeps the pre-2026-10-11 silence; `summary` only
+          // announces the count; `delivery` also folds the artifact-shaped files
+          // into the delivery plan below, so they get the SAME treatment a
+          // presented file gets — media inlined, documents auto-sent, the rest a
+          // tap-to-send row. Source files and scratch scripts are never part of
+          // it (`producedArtifacts`), because a chat is not a file browser.
+          const produceMode = produceCardMode?.() ?? 'off'
+          const produced = produceMode === 'off' ? [] : producedArtifacts(turnStats?.produced ?? [])
+          const producedCount = produceMode === 'off' ? undefined : produced.length
           const deliverChat: DeliverChat = {
             chatId,
             ...(threadId === undefined ? {} : { threadId }),
@@ -579,7 +597,9 @@ export async function startChannel(
                 chatId,
                 ...(threadId === undefined ? {} : { topic: { threadId, rootId: replyToId } }),
                 ...(meta?.workspace === undefined ? {} : { workspace: meta.workspace }),
-                files: turnStats?.deliverables ?? [],
+                files: produceMode === 'delivery'
+                  ? mergeProducedArtifacts(turnStats?.deliverables ?? [], produced, meta?.workspace)
+                  : turnStats?.deliverables ?? [],
               }).catch((error: unknown) => {
                 logError(`dsh-feishu: deliverable planning failed: ${error instanceof Error ? error.message : String(error)}`)
                 return undefined
@@ -598,7 +618,7 @@ export async function startChannel(
             // Streaming already sent a step card with the text content:
             // send only the Turn Complete footer.
             console.log('dsh-feishu: [reply] a step card carried the text → footer only')
-            const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows)
+            const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows, undefined, producedCount)
             // The auto-send runs even if posting the footer failed: the files
             // are what the operator asked for, and swallowing them behind a
             // card-send error would be the worse failure.
@@ -634,7 +654,7 @@ export async function startChannel(
             // footer is only posted when there IS something to deliver.
             try {
               if (hasDeliverables(deliverPlan)) {
-                const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan.rows)
+                const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan.rows, undefined, producedCount)
                 if (footerCard !== undefined) {
                   const sent = await sendCard(chatId, footerCard, {
                     replyTo: replyToId,
@@ -903,6 +923,12 @@ export function renderFooterCard(
    * Feishu-started turn.
    */
   externalSource?: string,
+  /**
+   * How many artifact-shaped files this turn produced without `present`, or
+   * `undefined` when the `produceCard` setting is `off` (see
+   * `src/produced-files.ts`). Rendered as one notation line under the metrics.
+   */
+  producedCount?: number,
 ): object | undefined {
   const elements: object[] = []
   if (externalSource !== undefined) {
@@ -940,6 +966,15 @@ export function renderFooterCard(
       `🔧 Tools ${formatMs(toolMs)}`,
     ]
     elements.push({ tag: 'markdown', content: durParts.join(' · '), text_size: 'notation' })
+
+    // What the turn PRODUCED beyond what `present` declared (TODO O3). One line,
+    // no paths and no buttons: a chat is not a workspace browser, and this is
+    // the count the WebUI's produced row carries — the artifact-shaped files
+    // themselves are delivered through the row list above. Absent when the
+    // `produceCard` setting is `off` (the caller passes nothing then).
+    if (producedCount !== undefined && producedCount > 0) {
+      elements.push({ tag: 'markdown', content: t.turnProducedLine(producedCount), text_size: 'notation' })
+    }
 
     // Performance: TTFT · tok/s · steps
     const perfParts: string[] = []

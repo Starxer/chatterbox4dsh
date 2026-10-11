@@ -163,6 +163,11 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
         {mediaMaxRow('cardVideoMaxMb', t('cardVideoMaxMb'), t('cardVideoMaxMbHint'))}
         {mediaMaxRow('cardAudioMaxMb', t('cardAudioMaxMb'), t('cardAudioMaxMbHint'))}
         <label><span>{t('deliverDocMaxMb')}</span><Input aria-label="deliverDocMaxMb" type="number" min={DELIVER_DOC_MAX_MB.min} max={DELIVER_DOC_MAX_MB.max} step={1} inputMode="numeric" disabled={blocked} value={form.deliverDocMaxMb} onChange={event => { props.edit('deliverDocMaxMb', event.target.value) }} /><span className="dsh-feishu-toggle-hint">{t('deliverDocMaxMbHint')}</span></label>
+        <label><span>{t('produceCard')}</span><select aria-label="produceCard" disabled={blocked} value={form.produceCard} onChange={event => { props.edit('produceCard', event.target.value as LarkFormValues['produceCard']) }}>
+          <option value="delivery">{t('produceCardDelivery')}</option>
+          <option value="summary">{t('produceCardSummary')}</option>
+          <option value="off">{t('produceCardOff')}</option>
+        </select><span className="dsh-feishu-toggle-hint">{t('produceCardHint')}</span></label>
         <label><span>{t('locale')}</span><select aria-label="locale" disabled={blocked} value={form.locale} onChange={event => { props.edit('locale', event.target.value as LarkFormValues['locale']) }}>
           <option value="auto">{t('localeAuto')}</option>
           <option value="zh">{t('localeZh')}</option>

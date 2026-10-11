@@ -32,6 +32,24 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 新增：本轮「产出物」——一行计数 + 只投产出物形状的那一份（O3 结案，`src/produced-files.ts`（新）/ `src/feishu-streaming.ts` / `src/channel.ts` / `src/config.ts` / `src/i18n.ts` / `src/client/`，2026-10-11）
+
+承接 O3（「飞书这边没有 produced 产物行」）。**先决定不做什么**：WebUI 的 produced 是**成功 `write`/`edit` 改过的文件**，而飞书是聊天不是工作区浏览器 —— 本会话实测 **69 个 produced 路径 vs 3 个 presented**，逐条看全是 `src/`、`tests/`、`docs/` 与 `/tmp` 脚本，**没有一个是用户要拿走的东西**；每轮贴 4–6 行路径只会把答案挤出屏幕。所以**不做 produced 全表**（也因此没去接 `workspace/changes` / `workspaceChanges.summary()` 那条 git 口径的主机服务：全表都不做，它就没有必须接的理由）。
+
+**做的是两件**：
+
+1. **Turn Complete 卡加一行计数**：`📦 本回合新生成 N 个文件`（notation 档、**不列路径、不带按钮**），只在真有产出物时出现。
+2. **只投「产出物形状」的那一份**：媒体（图/视频/音频）与 pdf/office 文档，**复用既有 `present` 投递管线** —— 媒体卡内内联、文档 ≤ `deliverDocMaxMb` 自动发原生文件消息、其余给可点行。源码、测试、临时脚本**永不投递**（`producedArtifacts()` 按 `deliver-files.ts` 的分类过滤）。这条正是几次真机场景：模型生成了图/报告却忘了 `present`，以前聊天里毫无迹象。
+
+**实现**：
+
+- **`src/produced-files.ts`（新，纯函数）**：`mutationPathOf()` 按 WebUI `ui-deliverables/src/client/turn-deliverables.ts` 的同一套规则从工具参数取路径（`write` 需 string `content`；`edit` 需非空且真的不同的 `old_string`/`new_string`；`str_replace_editor` 只认 `create`/`str_replace`/`insert`）；`settleProducedCall()` 与**成功**的 `tool/result` 配对（失败的结果不产出任何东西）；`producedArtifacts()` 只留媒体与文档；`mergeProducedArtifacts()` 按**解析后路径**去重（模型写 `out.png`、`present` 写 `/abs/ws/out.png` 时不能投两次）后并入 `present` 的清单。
+- **采集（`feishu-streaming.ts`）**：`tool/call` 时把「这个调用会写哪个文件」记在 `StepToolCall.produced`（**参数只在 `tool/call` 上**），`tool/result` 时按 `isError` 结算进 `turnStats.produced`（逐回合清空）；另有**会话级** `everPresentedPaths` —— `present` 声明过的路径记一辈子，避免「更早的轮次 `present` 交付过、这一轮又写了一次」被再投一遍。
+- **合并与显示（`channel.ts`）**：只有 `produceCard === 'delivery'` 才把这些产出物并进 `deliver.plan()` 的 `files`（于是走 `stat`/`realpath`/大小/白名单那一整套既有校验）；计数行由 `renderFooterCard(..., producedCount)` 渲染，`off` 时调用方传 `undefined`。
+- **开关（`produceCard`，默认 `delivery`）**：`off` 完全静默（= 以前的行为）/ `summary` 只报个数、不投任何文件 / `delivery` 两者都做。WebUI 设置页「卡片显示」里的「本轮产出物」也是它，`.volatile()` 热生效。默认选 `delivery` 是因为缺口是实测的（21 个回合写过文件，只有 1 个回合调过 `present`）；不同意就选 `off`。
+
+**验证**：`npm run typecheck` 0 error；**993 tests / 54 files 全绿**（新增 27 例：`tests/produced-files.spec.ts` 18 例钉住参数规则/成败配对/分类过滤/去重口径，`feishu-streaming.spec.ts` 4 例钉住采集与逐回合清空，`channel-footer.spec.ts` 2 例钉住计数行**只报数不列路径**与 `off`/0 的静默，`plugin.spec.ts` 2 例钉住 `delivery` 真的把产出物并进 plan、`summary` 一个都不投，`config.spec.ts` 1 例钉住默认与未知值回退）；`npm run build` 产出 `lib/index.js` + `client/client.js`。**生效需要重启 dsh**（本次按要求未重启）。
+
 ### 修复：提问卡的「确认提交」点完卡片原样不动，看不出是否已确认（`src/feishu-questions.ts` / `src/i18n.ts`，2026-10-11）
 
 操作者反馈：提问卡的最后一张「📝 确认全部回答」卡上点「✅ 确认提交」后**卡片样式没有任何变化**，因此无法判断答案是否已经提交给模型。

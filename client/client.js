@@ -75,6 +75,16 @@ function parseTranscriptView(value) {
 	if (value === "normal" || value === "expanded") return "detailed";
 	return typeof value === "string" && TRANSCRIPT_VIEWS.includes(value) ? value : "detailed";
 }
+/** The modes in the order the page lists them (most useful first). */
+const PRODUCE_CARD_MODES = [
+	"delivery",
+	"summary",
+	"off"
+];
+/** Read one stored mode; anything unrecognized falls back to the default. */
+function parseProduceCardMode(value) {
+	return typeof value === "string" && PRODUCE_CARD_MODES.includes(value) ? value : "delivery";
+}
 /**
 * Namespace of this plugin's Host entry (`options.id`): the profile row id,
 * which is what `settings.describe()` keys every descriptor on. Spelled here
@@ -181,7 +191,8 @@ const EDITABLE_FIELDS = [
 	"cardImageMaxMb",
 	"cardVideoMaxMb",
 	"cardAudioMaxMb",
-	"deliverDocMaxMb"
+	"deliverDocMaxMb",
+	"produceCard"
 ];
 /** Bridges the `lark-channel` form and the credentials domain onto the page. */
 var LarkSettingsCardController = class {
@@ -420,6 +431,7 @@ var LarkSettingsCardController = class {
 			cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
 			cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
 			deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
+			produceCard: parseProduceCardMode(value?.produceCard),
 			...this.edits
 		};
 	}
@@ -841,6 +853,35 @@ function LarkSettingsCard(props) {
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									className: "dsh-feishu-toggle-hint",
 									children: t("deliverDocMaxMbHint")
+								})
+							] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("produceCard") }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+									"aria-label": "produceCard",
+									disabled: blocked,
+									value: form.produceCard,
+									onChange: (event) => {
+										props.edit("produceCard", event.target.value);
+									},
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "delivery",
+											children: t("produceCardDelivery")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "summary",
+											children: t("produceCardSummary")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "off",
+											children: t("produceCardOff")
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dsh-feishu-toggle-hint",
+									children: t("produceCardHint")
 								})
 							] }),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("locale") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
@@ -2573,6 +2614,9 @@ const dictionaries = {
 		cardImagesWorkspace: "仅工作区内（默认）：自动上传并内联显示",
 		cardImagesText: "不上传：只显示路径文字",
 		cardImagesAny: "任意可读路径：工作区外的媒体也上传",
+		produceCardDelivery: "自动投递（默认）",
+		produceCardSummary: "只在卡上报个数",
+		produceCardOff: "不处理",
 		cardMediaLimit: "单卡媒体上限",
 		cardMediaLimitHint: "一张卡里最多内联几个：图片算一处、视频与音频合起来算一处（各按这个数），1–30，默认 12；超出的一律退回可读路径文字。飞书本身能放更多（一张卡 200 个元素/组件，带封面的视频一个占 3 个名额、约 66 个），这个数字只是为了让消息别太长。",
 		cardImageMaxMb: "图片内联上限（MB）",
@@ -2583,6 +2627,8 @@ const dictionaries = {
 		cardAudioMaxMbHint: "超过这个大小的音频不上传、只留路径文字。范围 1–30，默认 15；飞书文件接口硬上限 30MB。非 Opus 的音频还要先转码，另受 ffmpeg 是否可用的影响。",
 		deliverDocMaxMb: "文档自动投递上限（MB）",
 		deliverDocMaxMbHint: "`present` 声明的 pdf / doc / docx / ppt / pptx / xls / xlsx 不超过这个大小就直接发成飞书文件消息；超过它的文档、以及所有其他文件（源码、压缩包等）都变成交付清单里可点的一行，点一下弹确认卡，确认后才发送。范围 1–30，默认 30（飞书文件接口硬上限）。",
+		produceCard: "本轮产出物",
+		produceCardHint: "一轮里模型用 write/edit 写过、但没有用 `present` 声明的文件：源码、测试、临时脚本这类**永不投递**（这里是聊天，不是文件浏览器）；只有图片/视频/音频与 pdf/office 文档会被当成交付物。选「自动投递」（默认）会把这些产出物走和 `present` 完全一样的路：媒体内联在卡上、文档不超过上限就发成文件消息、其余给可点的一行；选「只在卡上报个数」只加一行「本回合新生成 N 个文件」；选「不处理」则完全静默。",
 		locale: "插件语言",
 		localeAuto: "跟随 Harness",
 		localeZh: "中文",
@@ -2658,6 +2704,9 @@ const dictionaries = {
 		cardImagesWorkspace: "Workspace only (default): upload and show inline",
 		cardImagesText: "Never upload: show the path as text",
 		cardImagesAny: "Any readable path: upload media outside the workspace too",
+		produceCardDelivery: "Deliver (default)",
+		produceCardSummary: "Count only",
+		produceCardOff: "Ignore",
 		cardMediaLimit: "Media per card",
 		cardMediaLimitHint: "How many media one card may inline, counted per group: images on the one hand, video and audio together on the other, 1-30, default 12; anything past it stays a readable path. Feishu itself allows far more (200 elements/components per card, and a video with a cover spends three, so about 66 videos) — this number is here to keep a message readable.",
 		cardImageMaxMb: "Image inline limit (MB)",
@@ -2668,6 +2717,8 @@ const dictionaries = {
 		cardAudioMaxMbHint: "Audio larger than this is not uploaded — its path stays as text. Range 1-30, default 15; Feishu's file API caps at 30 MB. Non-Opus audio is transcoded first, so ffmpeg has to be available.",
 		deliverDocMaxMb: "Document auto-send limit (MB)",
 		deliverDocMaxMbHint: "A pdf / doc / docx / ppt / pptx / xls / xlsx declared by `present` under this size is pushed as a Feishu file message by itself. Larger documents — and every other file (source code, archives, …) — become a tappable row on the Turn Complete card: one tap opens a confirmation, and only that sends. Range 1-30, default 30 (Feishu's file API cap).",
+		produceCard: "Produced files",
+		produceCardHint: "Files a turn wrote with write/edit but never declared through `present`: source code, tests and scratch scripts are NEVER delivered (this is a chat, not a file browser) - only images/video/audio and pdf/office documents count as artifacts. \"Deliver\" (default) sends those through exactly the same path as `present`: media inline on the card, documents under the size limit as file messages, the rest as a tappable row. \"Count only\" adds one line (\"N file(s) produced this turn\"). \"Ignore\" stays silent.",
 		locale: "Plugin language",
 		localeAuto: "Follow Harness",
 		localeZh: "中文",

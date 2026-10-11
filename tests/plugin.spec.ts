@@ -297,6 +297,104 @@ describe('startChannel', () => {
     await stop()
   })
 
+  /**
+   * TODO O3 — the produced half. A turn that wrote a chart and a report but
+   * never called `present` used to leave the chat silent; with the default
+   * `delivery` mode those artifacts go through the SAME plan as presented
+   * files, and the footer says how many were produced.
+   */
+  it('folds produced artifacts into the delivery plan and reports the count', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => true),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => ({
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [{ path: 'out/report.pdf', description: 'Monthly report' }],
+      produced: [
+        // Already handed over through `present` — must not be planned twice.
+        { path: '/work/out/report.pdf', kind: 'document' },
+        // Written only: this is the one the artifact path adds.
+        { path: 'shots/chart.png', kind: 'image' },
+        // Source code is never an artifact, whatever the settings say.
+        { path: 'src/index.ts', kind: 'other' },
+      ],
+    }) as any)
+    const deliver = { plan: vi.fn(async () => ({ rows: [], auto: [] })), autoSend: vi.fn(async () => undefined) }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,  // hydrateImages
+    deliver as any,  // noteCardTopic comes next; deliver is position 15
+    undefined,  // noteCardTopic
+    () => 'delivery')
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    expect(deliver.plan).toHaveBeenCalledWith(expect.objectContaining({
+      files: [{ path: 'out/report.pdf', description: 'Monthly report' }, { path: 'shots/chart.png' }],
+    }))
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).toContain('本回合新生成 2 个文件')
+    await stop()
+  })
+
+  /**
+   * `summary` announces the count and hands nothing over, so the plan must see
+   * the presented files only — the switch has to be able to hold a chat back
+   * from receiving files the operator never asked for.
+   */
+  it('keeps produced artifacts out of the plan in summary mode', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => true),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const flushed = vi.fn(async () => ({
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [],
+      produced: [{ path: 'shots/chart.png', kind: 'image' }],
+    }) as any)
+    const deliver = { plan: vi.fn(async () => ({ rows: [], auto: [] })), autoSend: vi.fn(async () => undefined) }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,  // hydrateImages
+    deliver as any,  // position 15
+    undefined,  // noteCardTopic
+    () => 'summary')
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    expect(deliver.plan).toHaveBeenCalledWith(expect.objectContaining({ files: [] }))
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).toContain('本回合新生成 1 个文件')
+    await stop()
+  })
+
   it('registers the topic of a deliverable footer so its rows stay traceable', async () => {
     const channel = fakeChannel()
     const bridge = {

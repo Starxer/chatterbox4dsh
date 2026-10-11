@@ -15,7 +15,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
-import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -709,6 +709,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // tap on one of its rows can be traced back to the right topic instead
         // of the chat-level guess (关键坑 31).
         (messageId, topic) => cardTopics.note(messageId, topic),
+        // Live `produceCard` setting: files a turn wrote without declaring them
+        // through `present` (TODO O3). Read per turn so a settings write applies
+        // to the very next turn without a remount.
+        () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
       )
     },
   })

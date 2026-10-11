@@ -892,6 +892,82 @@ describe('turn deliverables (DSH present tool)', () => {
   })
 })
 
+/**
+ * The PRODUCED half (TODO O3): files a turn wrote with `write`/`edit` without
+ * declaring them through `present`. Collection has to pair the call's arguments
+ * with the result's success flag — `tool/result` carries no arguments, so a
+ * result arriving without its call tells us nothing.
+ */
+describe('produced files (a turn wrote but never presented)', () => {
+  const channel: StepChannel = {
+    send: vi.fn(async () => ({ messageId: 'm-plain' })),
+    updateCard: vi.fn(async () => undefined),
+  }
+  const ok = (callId: string) => ({ message: { toolCallId: callId, source: { callId }, content: [{ type: 'text', text: 'ok' }] } })
+  const failed = (callId: string) => ({
+    message: { toolCallId: callId, source: { callId }, isError: true, content: [{ type: 'text', text: 'boom' }] },
+  })
+  const writeArgs = (path: string): string => JSON.stringify({ file_path: path, content: 'x' })
+
+  it('records a file whose write succeeded, with its kind', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'write', arguments: writeArgs('shots/grid.png') })
+    emit('tool/result', ok('c1'))
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.produced).toEqual([{ path: 'shots/grid.png', kind: 'image' }])
+    streaming.stop()
+  })
+
+  it('records nothing for a failed write, a read, or a bash redirect', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'write', arguments: writeArgs('a.png') })
+    emit('tool/result', failed('c1'))
+    emit('tool/call', { callId: 'c2', name: 'read', arguments: JSON.stringify({ file_path: 'b.png' }) })
+    emit('tool/result', ok('c2'))
+    emit('tool/call', { callId: 'c3', name: 'bash', arguments: JSON.stringify({ command: 'echo x > c.png' }) })
+    emit('tool/result', ok('c3'))
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.produced).toEqual([])
+    streaming.stop()
+  })
+
+  it('keeps every produced file of the turn in order, duplicates included', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'write', arguments: writeArgs('a.png') })
+    emit('tool/result', ok('c1'))
+    emit('tool/call', { callId: 'c2', name: 'edit', arguments: JSON.stringify({ file_path: 'a.png', old_string: 'x', new_string: 'y' }) })
+    emit('tool/result', ok('c2'))
+    emit('tool/call', { callId: 'c3', name: 'write', arguments: writeArgs('doc.pdf') })
+    emit('tool/result', ok('c3'))
+    emit('turn/end')
+    // Two writes of the same path stay two entries: dedup is the delivery
+    // planner's job (it resolves paths), not the collector's.
+    expect((await streaming.flushed('s-1'))?.produced).toEqual([
+      { path: 'a.png', kind: 'image' },
+      { path: 'a.png', kind: 'image' },
+      { path: 'doc.pdf', kind: 'document' },
+    ])
+    streaming.stop()
+  })
+
+  it('drops the previous turn\'s produced list', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'write', arguments: writeArgs('a.png') })
+    emit('tool/result', ok('c1'))
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.produced).toHaveLength(1)
+
+    emit('turn/start')
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.produced).toEqual([])
+    streaming.stop()
+  })
+})
+
 describe('intermediate-sent note (the duplicate-reply guard channel.ts reads)', () => {
   const plainChannel = (): StepChannel => ({
     send: vi.fn(async () => ({ messageId: 'm-plain' })),

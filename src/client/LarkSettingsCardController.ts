@@ -45,6 +45,24 @@ export function parseTranscriptView(value: unknown): TranscriptView {
 }
 
 /**
+ * What to do with files a turn produced without declaring them through
+ * `present`, spelled exactly as the Host's `produceCard` setting spells it.
+ * Duplicated here for the same reason as {@link TranscriptView}: the client half
+ * must not import a Host module.
+ */
+export type ProduceCardMode = 'off' | 'summary' | 'delivery'
+
+/** The modes in the order the page lists them (most useful first). */
+export const PRODUCE_CARD_MODES: readonly ProduceCardMode[] = ['delivery', 'summary', 'off']
+
+/** Read one stored mode; anything unrecognized falls back to the default. */
+export function parseProduceCardMode(value: unknown): ProduceCardMode {
+  return typeof value === 'string' && (PRODUCE_CARD_MODES as readonly string[]).includes(value)
+    ? value as ProduceCardMode
+    : 'delivery'
+}
+
+/**
  * Namespace of this plugin's Host entry (`options.id`): the profile row id,
  * which is what `settings.describe()` keys every descriptor on. Spelled here
  * rather than imported — the client half must not depend on a Host module.
@@ -161,6 +179,8 @@ export interface LarkSettingsValues {
   cardAudioMaxMb?: number
   /** Largest document (MB) `present` may deliver without asking. */
   deliverDocMaxMb?: number
+  /** What to do with files a turn produced without declaring them via `present`. */
+  produceCard?: ProduceCardMode
 }
 
 /** The page's staged controls, after defaults and edits are folded together. */
@@ -195,6 +215,8 @@ export interface LarkFormValues {
   cardAudioMaxMb: string
   /** Raw input text, for the same reason as {@link cardMediaLimit}. */
   deliverDocMaxMb: string
+  /** Produced-file handling; see `src/produced-files.ts`. */
+  produceCard: ProduceCardMode
 }
 
 /** The field order every save walks; also the only keys a save may write. */
@@ -204,6 +226,7 @@ const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'cardMediaLimit',
   'cardImageMaxMb', 'cardVideoMaxMb', 'cardAudioMaxMb',
   'deliverDocMaxMb',
+  'produceCard',
 ]
 
 /** What the credentials domain last reported, and for which reference. */
@@ -515,6 +538,7 @@ export class LarkSettingsCardController {
       cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
       cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
       deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
+      produceCard: parseProduceCardMode(value?.produceCard),
     }
     return { ...base, ...this.edits }
   }
