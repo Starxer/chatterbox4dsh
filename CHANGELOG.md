@@ -32,6 +32,21 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 修复：提问卡的「确认提交」点完卡片原样不动，看不出是否已确认（`src/feishu-questions.ts` / `src/i18n.ts`，2026-10-11）
+
+操作者反馈：提问卡的最后一张「📝 确认全部回答」卡上点「✅ 确认提交」后**卡片样式没有任何变化**，因此无法判断答案是否已经提交给模型。
+
+**取证（只查、未重启）**：
+
+- 事件日志（2026-10-11 09:08，`ask_user_question` 单题批次）：09:08:21 发问题卡 `om_…ef7ad` → 09:08:42 `answer-open`（点选项行）→ 09:08:48 `[card] type=batch-confirm` → 09:08:48 `[q] batch card tap type=batch-confirm` → 09:08:48 起**再无任何卡片写入**（无 patch、无 `230020`、无拒收警告）。
+- 只读读回飞书上的两张卡（`im.v1.message.get` + `card_msg_content_type=user_card_content`）：问题卡已是 `turquoise` 表头、选中项 `✅ … — *已选择*`、无按钮（说明**选项行那一步确实重绘过**）；确认卡仍是 `blue` 表头、两行答案 + `✅ 确认提交` / `↩️ 返回上一题` 两个按钮**原样**，其最后写入时间就是它**发出**的时刻。
+- 提交本身是成功的：该会话日志 `turn 417 step 1` 的 `tool/result` = `{"answers":[{"id":"which_two","selected":["三个都跑（5 个模型）"]}]}`。
+- 代码侧对得上：`batch-confirm` 分支原来只 `dispatch({kind:'confirm'})` 就放行回合，`askBatchConfirm` 里提交后也没有任何重绘 ⇒ **不是写入失败，是提交后从来没写入过**。单题批次的回执卡按设计被跳过（最后一个答案由最终卡记录），所以用户连 `✅ 已提交` 那张回执也看不到，观感被放大。
+
+**改了什么**：`batch-confirm` 被认下的那次点击，在把答案交给模型**之前**把确认卡就地重绘为结算态——表头 `blue 📝 确认全部回答` → `green ✅ 已提交`，保留逐题答案行，底部提示换成「这组回答已经交给模型，这张卡片不再接受修改。要改请在下面直接回复。」，**去掉两个按钮**。写入走 `updateCardQuiet`（失败只记 warn），提交本身绝不依赖卡片写入（坑 29）；重绘只在**真正被认下**的点击上发生，歧义卡（`fromCard` 忽略掉的陈旧点击）不会留下假回执。行渲染抽成 `batchAnswerRows()`，确认卡与结算卡共用。
+
+**验证**：`npm run typecheck` 0 error；**966 tests / 53 files 全绿**（`tests/feishu-questions.spec.ts` 23 → 24 例，新增「确认后确认卡被重绘成绿色回执、答案仍在、按钮为 0」；测试替身顺手补上**真实 message id**：此前 `commitBatch` 在确认卡还没发出时就点「最后一张卡」，走的是 `evt.messageId === undefined` 兜底路径，根本测不到重绘）；`npm run build` 产出 `lib/index.js`。**生效需要重启 dsh**（本次按操作者要求**未重启**）。
+
 ### 修复：标点被包进加粗（`**加粗。**后面`）时飞书按字面渲染星号（`src/card-emphasis.ts`（新）/ `src/card-markdown.ts` / `tests/card-emphasis.spec.ts`（新），2026-10-10）
 
 承接上一条排查时发现的第二类成因。真机探针（两张编号卡：A 每行一个 `markdown` 元素，B 全部行放一个元素 + 一个表格单元格）逐条确认：

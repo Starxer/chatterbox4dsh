@@ -545,6 +545,14 @@ export interface Translations {
   questionBatchNote: string
   questionBatchConfirm: string
   questionBatchBack: string
+  /**
+   * What the commit card becomes once 确认提交 landed: green header, the same
+   * answer rows, no buttons. Without it the card keeps offering 确认 / 返回 and
+   * the operator cannot tell the tap was accepted.
+   */
+  questionBatchSubmittedTitle: string
+  /** The line that replaces the commit card's buttons after the commit. */
+  questionBatchSubmittedNote: string
   /** Stand-in card left behind when a spent question card is re-sent fresh. */
   questionCardRetiredTitle: string
   questionCardRetired: string
@@ -1017,6 +1025,8 @@ export const zh = {
   questionBatchNote: '全部答完了。点「确认提交」把这组回答交给模型；想改最后一题就点「返回上一题」。',
   questionBatchConfirm: '✅ 确认提交',
   questionBatchBack: '↩️ 返回上一题',
+  questionBatchSubmittedTitle: '✅ 已提交',
+  questionBatchSubmittedNote: '这组回答已经交给模型，这张卡片不再接受修改。要改请在下面直接回复。',
   questionCardRetiredTitle: '已作废',
   questionCardRetired: '这张卡片已用过一次，飞书不再投递它上面的选项点击。**请使用下方新发的同一张问题卡继续作答。**',
   // Background-task panel (feishu-jobs.ts)
@@ -1488,6 +1498,8 @@ export const en: Translations = {
   questionBatchNote: 'All answered. Confirm hands the set to the model; back one question lets you change the last one.',
   questionBatchConfirm: '✅ Confirm',
   questionBatchBack: '↩️ Back one question',
+  questionBatchSubmittedTitle: '✅ Submitted',
+  questionBatchSubmittedNote: 'The set has been handed to the model; this card no longer accepts changes. Reply below to change it.',
   questionCardRetiredTitle: 'Superseded',
   questionCardRetired: 'This card already delivered one tap, so Feishu no longer reports taps on its option rows. **Please answer on the fresh copy of the question below.**',
 

@@ -467,7 +467,22 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     if (parsed.type === 'batch-confirm' || parsed.type === 'batch-back') {
       if (!fromCard(batch.batchCardId)) return
       console.log(`dsh-feishu: [q] batch card tap type=${String(parsed.type)}`)
-      dispatch(batch, parsed.type === 'batch-confirm' ? { kind: 'confirm' } : { kind: 'undo', questionId })
+      if (parsed.type === 'batch-confirm') {
+        // The commit is invisible unless the card says so: repaint it into the
+        // submitted shape (green header, no buttons) BEFORE the answers are
+        // handed over, so "did my tap land?" has an answer on screen even if the
+        // turn that follows is slow to start. A failed repaint only logs — the
+        // commit itself must never depend on a card write (pitfall 29).
+        if (batch.batchCardId !== undefined) {
+          await updateCardQuiet(
+            batch.batchCardId,
+            renderBatchSubmittedCard(batch.questions, batch.answers, t),
+          )
+        }
+        dispatch(batch, { kind: 'confirm' })
+        return
+      }
+      dispatch(batch, { kind: 'undo', questionId })
       return
     }
 
@@ -850,6 +865,26 @@ function renderReceiptUndoneCard(t: Translations): object {
   }
 }
 
+/** One row per question, showing the answer it got (or that it has none). */
+function batchAnswerRows(
+  questions: readonly AskUserQuestionItem[],
+  answers: ReadonlyMap<string, { labels: string[]; custom: string | undefined }>,
+  t: Translations,
+): object[] {
+  const rows: object[] = []
+  for (const question of questions) {
+    const answer = answers.get(question.id)
+    rows.push({
+      tag: 'markdown',
+      content: t.questionBatchRow(
+        question.header ?? question.question,
+        answer === undefined ? t.questionBatchUnanswered : answerText(answer.labels, answer.custom, t),
+      ),
+    })
+  }
+  return rows
+}
+
 /**
  * The FINAL card of a batch: every question with the answer it got, 确认提交 to
  * hand the set to the model, 返回上一题 to change the last one.
@@ -860,17 +895,7 @@ function renderBatchConfirmCard(
   pendingId: string,
   t: Translations,
 ): object {
-  const elements: object[] = []
-  for (const question of questions) {
-    const answer = answers.get(question.id)
-    elements.push({
-      tag: 'markdown',
-      content: t.questionBatchRow(
-        question.header ?? question.question,
-        answer === undefined ? t.questionBatchUnanswered : answerText(answer.labels, answer.custom, t),
-      ),
-    })
-  }
+  const elements = batchAnswerRows(questions, answers, t)
   elements.push({ tag: 'markdown', content: t.questionBatchNote, text_size: 'notation' })
   elements.push({
     tag: 'button',
@@ -891,6 +916,32 @@ function renderBatchConfirmCard(
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: t.questionBatchTitle }, template: 'blue' },
+    body: { elements },
+  }
+}
+
+/**
+ * What the commit card becomes once 确认提交 was accepted.
+ *
+ * Measured 2026-10-11: this card used to be left untouched after the commit tap
+ * (nothing on the confirm path ever wrote to it), so it kept its blue header and
+ * both buttons and the operator could not tell whether the answers had gone
+ * through. The submitted shape mirrors the receipt card — green header, the
+ * answer rows, and no controls — and is written ONLY on a tap that actually
+ * committed, so a tap on a stale card (ignored by `fromCard`) leaves no false
+ * receipt behind.
+ */
+function renderBatchSubmittedCard(
+  questions: readonly AskUserQuestionItem[],
+  answers: ReadonlyMap<string, { labels: string[]; custom: string | undefined }>,
+  t: Translations,
+): object {
+  const elements = batchAnswerRows(questions, answers, t)
+  elements.push({ tag: 'markdown', content: t.questionBatchSubmittedNote, text_size: 'notation' })
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.questionBatchSubmittedTitle }, template: 'green' },
     body: { elements },
   }
 }

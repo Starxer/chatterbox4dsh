@@ -19,7 +19,7 @@ const QUESTION: AskUserQuestionItem = {
 interface Harness {
   /** Resolved answers captured from listener return values. */
   answered: Array<{ sessionId: string; answer: AskUserQuestionAnswer }>
-  sentCards: Array<{ to: string; card: { schema?: string; header?: { title?: { content?: string } }; body?: { elements?: unknown[] }; elements?: unknown[] } }>
+  sentCards: Array<{ to: string; card: { schema?: string; header?: { title?: { content?: string } }; body?: { elements?: unknown[] }; elements?: unknown[] }; messageId?: string }>
   updatedCards: Array<{ messageId?: string; card: { body?: { elements?: Array<{ tag?: string; content?: string }> } } }>
   cardActionHandler: ((evt: unknown) => void | Promise<void>) | undefined
   resolveChatCalls: string[]
@@ -86,11 +86,15 @@ function buildChannel(harness: Harness): ChannelHandle {
   let sent = 0
   const channel = {
     send: vi.fn(async (to: string, input: { card?: object; text?: string }) => {
-      if (input.card !== undefined) {
-        harness.sentCards.push({ to, card: input.card as Harness['sentCards'][0]['card'] })
-      }
       sent += 1
-      return { messageId: sent === 1 ? 'om_question_card' : `om_question_card_${sent}` }
+      // The REAL message id, so a test can aim a tap at the card it means —
+      // nothing here may guess an id from a card's position (pitfall 55: a tap
+      // only counts on the card the batch posted for that role).
+      const messageId = sent === 1 ? 'om_question_card' : `om_question_card_${sent}`
+      if (input.card !== undefined) {
+        harness.sentCards.push({ to, card: input.card as Harness['sentCards'][0]['card'], messageId })
+      }
+      return { messageId }
     }),
     updateCard: vi.fn(async (messageId: string, card: any) => {
       harness.updatedCards.push({ messageId, card })
@@ -197,6 +201,26 @@ function clickValue(harness: Harness, value: unknown, messageId?: string): Promi
 /** The most recently sent card (the confirmation card after a row tap). */
 function lastCard(harness: Harness): Harness['sentCards'][0]['card'] {
   return harness.sentCards[harness.sentCards.length - 1]!.card
+}
+
+/**
+ * Wait until the batch's commit card is on screen, and return it with the
+ * message id it was posted as.
+ *
+ * A tap only counts when it comes from the card the batch posted for that role,
+ * so a test that taps "the last card" before the commit card has been posted is
+ * exercising the `evt.messageId === undefined` fallback rather than the real
+ * flow. Real users always wait for the card; tests do too.
+ */
+async function waitForBatchCard(harness: Harness): Promise<{ card: Harness['sentCards'][0]['card']; messageId: string }> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const sent = harness.sentCards[harness.sentCards.length - 1]
+    if (sent !== undefined && sent.messageId !== undefined && hasCallbackType(sent.card, 'batch-confirm')) {
+      return { card: sent.card, messageId: sent.messageId }
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  throw new Error('the batch confirmation card never arrived')
 }
 
 /** True when the card carries a button whose callback `type` matches. */
@@ -320,6 +344,41 @@ describe('startFeishuQuestions', () => {
       })
       const answer = await answerPromise
       expect(answer).toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }, { id: 'q2', selected: ['B'] }] })
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('repaints the commit card into a submitted receipt when 确认提交 lands', async () => {
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    try {
+      const answerPromise = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } })
+      await new Promise(resolve => setImmediate(resolve))
+      const rows = optionRows(harness.sentCards[0]!.card)
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[0]!) } })
+      // The operator sees the commit card and taps IT — no fallback path.
+      const { card: batchCard, messageId: batchMessageId } = await waitForBatchCard(harness)
+      await clickValue(
+        harness,
+        { pendingId: extractPendingId(batchCard), questionId: 'q1', type: 'batch-confirm' },
+        batchMessageId,
+      )
+      await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['Yes'] }] })
+      // "Did my tap land?" must be answerable on the card itself: the commit card
+      // is repainted as a green receipt with the answers and NO controls.
+      const submitted = harness.updatedCards.find(call => call.messageId === batchMessageId)
+      expect(submitted).toBeDefined()
+      const card = submitted!.card as unknown as Harness['sentCards'][0]['card']
+      expect(card.header).toMatchObject({ template: 'green' })
+      // The receipt is header + note: the body alone must no longer offer the
+      // commit, and the answers stay visible on the card.
+      expect(card.header?.title?.content).toBe(t.questionBatchSubmittedTitle)
+      expect(cardMarkdown(card)).toContain(t.questionBatchSubmittedNote)
+      expect(cardMarkdown(card)).toContain('Yes')
+      expect(elementsByTag(card, 'button')).toHaveLength(0)
+      expect(hasCallbackType(card, 'batch-confirm')).toBe(false)
+      expect(hasCallbackType(card, 'batch-back')).toBe(false)
     } finally {
       stop()
       cleanup()
@@ -563,7 +622,10 @@ describe('startFeishuQuestions', () => {
       })
       await commitBatch(harness)
       await answerPromise
-      expect(harness.updatedCards).toHaveLength(1)
+      // The QUESTION card records the answer; the commit card's own receipt is
+      // covered by its own test, so only the question card is asserted here —
+      // its repaint must not be before the tap that settles it.
+      expect(harness.updatedCards[0]!.messageId).toBe('om_question_card')
       const body = harness.updatedCards[0]!.card.body
       const md = (body?.elements ?? [])
         .filter((el: any) => el.tag === 'markdown')
@@ -600,12 +662,14 @@ describe('startFeishuQuestions', () => {
       await expect(answerPromise).resolves.toEqual({ answers: [{ id: 'q1', selected: ['No'] }] })
 
       // The losing Feishu card must stop looking answerable — and still say
-      // which option the Web UI picked.
-      expect(harness.updatedCards).toHaveLength(1)
-      const retired = JSON.stringify(harness.updatedCards[0]!.card)
-      expect(retired).toContain(t.cardAnsweredElsewhereTitle)
-      expect(retired).toContain('✅ **No**')
-      expect(retired).not.toContain('behaviors')
+      // which option the Web UI picked. The commit receipt is NOT written: this
+      // batch never confirmed anything on the Feishu side.
+      const retired = harness.updatedCards
+        .filter(call => JSON.stringify(call.card).includes(t.cardAnsweredElsewhereTitle))
+        .map(call => JSON.stringify(call.card))
+      expect(retired).toHaveLength(1)
+      expect(retired[0]).toContain('✅ **No**')
+      expect(retired[0]).not.toContain('behaviors')
     } finally {
       stop()
       cleanup()
