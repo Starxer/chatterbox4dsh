@@ -273,6 +273,8 @@ export interface Translations {
   compactionFoldedTokens: (tokens: string) => string
   compactionSummaryLabel: string
   compactionSummaryUnavailable: string
+  /** Shown under a summary that did not fit the card's byte budget. */
+  compactionSummaryCut: (shown: number, total: number) => string
   compactionFailedReason: (reason: string) => string
   compactionNoSummary: string
   turnCompleteTitle: string
@@ -794,6 +796,7 @@ export const zh = {
   compactionFoldedTokens: tokens => `约 ${tokens} tokens`,
   compactionSummaryLabel: '摘要',
   compactionSummaryUnavailable: '（这次压缩没有摘要内容）',
+  compactionSummaryCut: (shown, total) => `⚠️ 单张卡片装不下整份摘要：上面是前约 ${shown} 字，全文 ${total} 字`,
   compactionFailedReason: reason => `原因：${reason}`,
   compactionNoSummary: '本次没有产生摘要，会话历史没有被替换。',
   turnCompleteTitle: '✅ Turn 已完成',
@@ -1267,6 +1270,7 @@ export const en: Translations = {
   compactionFoldedTokens: tokens => `about ${tokens} tokens`,
   compactionSummaryLabel: 'Summary',
   compactionSummaryUnavailable: '(this compaction carried no summary)',
+  compactionSummaryCut: (shown, total) => `⚠️ One card cannot carry the whole summary: the text above is the first ~${shown} characters of ${total}`,
   compactionFailedReason: reason => `Reason: ${reason}`,
   compactionNoSummary: 'No summary was produced, so the session history was left unchanged.',
   turnCompleteTitle: '✅ Turn complete',

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  COMPACTION_SUMMARY_CAP, createCompactionCards, renderCompactionCard, summaryText,
+  COMPACTION_SUMMARY_BYTES, createCompactionCards, fitBytes, renderCompactionCard, summaryText,
 } from '../src/feishu-compaction.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { ConversationMessage } from '../src/conversation.ts'
@@ -56,8 +56,8 @@ describe('renderCompactionCard', () => {
     expect(card.header.template).toBe('green')
   })
 
-  it('folds the summary with the 2.0 tag, collapsed, and caps its body at 200 characters', () => {
-    const long = 'q'.repeat(COMPACTION_SUMMARY_CAP + 50)
+  it('folds the summary with the 2.0 tag, collapsed, carrying what one card can hold', () => {
+    const long = 'q'.repeat(COMPACTION_SUMMARY_BYTES + 50)
     const card: any = renderCompactionCard(t, { phase: 'summary', manual: false, facts: { summary: long } })
     const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
     // `collapsible` (the 1.0 name) is refused by CardKit with `10002 not
@@ -70,7 +70,45 @@ describe('renderCompactionCard', () => {
     expect(panel.header.title.content).toContain('已折叠')
     expect(panel.header.background_color).toBe('grey-100')
     expect(panel.border).toEqual({ color: 'grey-300', corner_radius: '4px' })
-    expect(panel.elements[0].content).toBe(`${'q'.repeat(COMPACTION_SUMMARY_CAP)}…`)
+    // ASCII: the budget is bytes, so this carries COMPACTION_SUMMARY_BYTES of them.
+    expect(panel.elements[0].content).toBe(`${'q'.repeat(COMPACTION_SUMMARY_BYTES)}…\n\n${t.compactionSummaryCut(COMPACTION_SUMMARY_BYTES, long.length)}`)
+  })
+
+  // Measured 2026-10-12 over 182 real summaries (65 session logs): min 1,338,
+  // median 11,303, p90 15,478, max 21,127 characters — the old 200-character cap
+  // showed under 2% of a typical one. A card is limited by its JSON SIZE (~30KB),
+  // and Chinese costs three bytes per character there, so the cap is a byte
+  // budget now: 22KB is the most one card can carry with headroom.
+  it('carries a summary that used to be cut off after 200 characters', () => {
+    const summary = '这一段是摘要正文，用来把卡片撑到真实规模。'.repeat(200).slice(0, 5_000)
+    const card: any = renderCompactionCard(t, { phase: 'summary', manual: false, facts: { summary } })
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    expect(panel.elements[0].content).toBe(summary)
+  })
+
+  it('keeps the card inside the ~30KB JSON limit even for the longest real summary', () => {
+    // 21,127 characters is the longest summary measured across 65 session logs.
+    const summary = '摘要正文'.repeat(6_000).slice(0, 21_127)
+    const card: any = renderCompactionCard(t, { phase: 'summary', manual: false, facts: { foldedItems: 42, foldedTokens: 1_000, summary } })
+    const bytes = Buffer.byteLength(JSON.stringify(card), 'utf8')
+    expect(bytes).toBeLessThan(30 * 1024)
+    // …and it still says how much of the whole is on the card.
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    expect(String(panel.elements[0].content)).toContain(t.compactionSummaryCut(fitBytes(summary, COMPACTION_SUMMARY_BYTES), 21_127))
+  })
+
+  it('counts bytes, not characters, so English fits more than Chinese', () => {
+    const english = 'detail text '.repeat(1_000).slice(0, 20_000)
+    const card: any = renderCompactionCard(t, { phase: 'summary', manual: false, facts: { summary: english } })
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    expect(panel.elements[0].content).toBe(english)
+  })
+
+  it('cuts at a character boundary, never inside a code point', () => {
+    const emoji = '🀄'.repeat(100)          // 4 UTF-8 bytes each
+    // `fitBytes` returns a SLICE index (UTF-16 units), so two 4-byte emoji are 4.
+    expect(fitBytes(emoji, 9)).toBe(4)      // two code points fit, the third does not
+    expect(emoji.slice(0, fitBytes(emoji, 9))).toBe('🀄🀄')
   })
 
   it('says so when there is no summary at all (a prune)', () => {

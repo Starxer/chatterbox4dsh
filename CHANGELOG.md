@@ -32,6 +32,28 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 改进：压缩摘要从「200 字」提到「单卡能装的上限」（`src/feishu-compaction.ts` / `src/i18n.ts`，2026-10-12）
+
+使用者要求「增多压缩摘要可显示的字数」。**先量真实数据再定数**：65 个会话日志里 **182 条真实压缩摘要** —— 最短 **1,338**、中位 **11,303**、p90 15,478、最长 21,127 字 ⇒ 原来的 200 字上限**只显示了不到 2%**。
+
+**量着量着发现单位就错了**：卡片真正的约束是 **JSON 体积**（~30KB），而**中文在 JSON 里 3 字节/字**。用真实卡片外壳实测：
+
+| 摘要 | 卡片 JSON | 占 30KB |
+|---|---|---|
+| 200 字（旧上限） | 1.0KB | 3% |
+| 5,000 字 | 13.3KB | 43% |
+| 8,000 字 | 21.0KB | 68% |
+| 11,303 字（真实中位） | 29.4KB | 96% 贴边 |
+| 15,478 字（p90） | 40.1KB | **130% ⇒ 整卡会被拒收** |
+| 21,127 字（最长） | 54.5KB | 177% |
+| 英文 20,000 字 | 20.5KB | 67% ✅ |
+
+**改法**：上限从「200 个字符」改成**字节预算** `COMPACTION_SUMMARY_BYTES = 22_000`（`fitBytes()` 按 UTF-8 逐码点累计，不会把一个码点切成半个）⇒ **≈7,300 中文 / ≈22,000 英文**，是单卡能装的最多内容（**比原来多 36 倍**），并留出其余卡片内容与 JSON 转义的余量。截断仍走 `truncateInline`（切口落在 `**` 里会留字面星号，坑 60）。**装不下时卡片自己说清楚**：新增 i18n 键在摘要下面补一行「⚠️ 单张卡片装不下整份摘要：上面是前约 N 字，全文 M 字」，不再只留一个省略号。
+
+**没做的**：把完整摘要（中位 11.3K、最长 21K 字）送进飞书 —— **一张卡物理上装不下**，要完整只能多条续卡或文件消息；设计文档 §2.4 当初明确否掉了「另发文件」的按钮，本轮不动，已在 `docs/transcript-parity-design.md` 记下这条路仍空着。
+
+**验证**：`npm run typecheck` 0 error；**1074 tests / 55 files 全绿**（新增 4 例：5,000 字摘要**完整**带上卡、最长真实摘要（21,127 字）下**卡片 JSON 仍 <30KB**、英文按字节装得更多、`fitBytes` 不会切进码点中间）；`npm run build` 已产出。**未重启**（要生效需重启）。
+
 ### 修复：`bash` 行里的「程序名」认错——引号内的 `\|`、heredoc 正文、循环关键字都被当成程序（O27 补丁，`src/shell-programs.ts`（新）/ `src/feishu-streaming.ts`，2026-10-12）
 
 使用者看着真机卡片提出「bash 命令获取不准确」。**没有猜，直接把真实输入捞出来复现**：从会话日志里取出最近 **12 条 `bash` 调用**的原始命令，逐条跑当时的提取函数 —— **6 条是错的**：

@@ -18,8 +18,9 @@
  * Everything the user sees was decided in `docs/transcript-parity-design.md`
  * §2.4: the details go ABOVE the fold, the summary is folded (`collapsible_panel`,
  * verified against the live API 2026-09-29), its body is capped at
- * {@link COMPACTION_SUMMARY_CAP} characters, and there is no "send the full
- * summary as a file" button.
+ * {@link COMPACTION_SUMMARY_BYTES} of UTF-8 (a card is limited by JSON size, and
+ * Chinese costs three bytes a character), and there is no "send the full summary
+ * as a file" button — a summary longer than one card can carry says so in place.
  *
  * Writes are serialized per card and never reject. This card is not on any
  * critical path — a compaction happens BETWEEN steps — so a failed write only
@@ -36,8 +37,56 @@ import { foldedPanel } from './card-fold.ts'
 import { truncateInline } from './text-chunk.ts'
 import type { CardInterleave } from './card-interleave.ts'
 
-/** Longest summary body carried into the folded panel, in characters. */
-export const COMPACTION_SUMMARY_CAP = 200
+/**
+ * How many UTF-8 bytes of summary the folded panel may carry.
+ *
+ * A character cap was the wrong unit: a Feishu card is limited by its JSON SIZE
+ * (~30KB), and Chinese text costs THREE bytes per character in that JSON. The
+ * old cap of 200 characters showed under 2% of a real summary — measured over
+ * 182 summaries in 65 session logs: min 1,338, median 11,303, p90 15,478, max
+ * 21,127 characters. Measured against the limit with the real card chrome:
+ *
+ * | summary | card JSON |
+ * |---|---|
+ * | 5,000 chars | 13.3KB (43%) |
+ * | 8,000 chars | 21.0KB (68%) |
+ * | 11,303 chars (the real median) | 29.4KB (96%) — at the wall |
+ * | 15,478 chars (p90) | 40.1KB — the send would be REFUSED |
+ *
+ * So 22,000 bytes (≈7,300 Chinese characters, or ~22,000 characters of English)
+ * is the most one card can carry with headroom for the rest of the card and for
+ * JSON escaping — a 36× increase on the character count the card used to show.
+ * Anything longer still truncates, and the card SAYS SO rather than ending in a
+ * bare ellipsis: a summary the user cannot see the end of is worth a note.
+ */
+export const COMPACTION_SUMMARY_BYTES = 22_000
+
+/** UTF-8 length of one code point, without encoding it. */
+function utf8Size(char: string): number {
+  const code = char.codePointAt(0) ?? 0
+  if (code < 0x80) return 1
+  if (code < 0x800) return 2
+  if (code < 0x10000) return 3
+  return 4
+}
+
+/**
+ * The longest prefix of `text` that fits in `maxBytes` of UTF-8.
+ * @param text - the summary body.
+ * @param maxBytes - the byte budget.
+ * @returns the character index to cut at (0 when even one character is too big).
+ */
+export function fitBytes(text: string, maxBytes: number): number {
+  let bytes = 0
+  let cut = 0
+  for (const char of text) {
+    const size = utf8Size(char)
+    if (bytes + size > maxBytes) break
+    bytes += size
+    cut += char.length
+  }
+  return cut
+}
 
 /** Where the card currently is. */
 export type CompactionPhase = 'start' | 'summary' | 'done' | 'failed'
@@ -165,12 +214,16 @@ export function renderCompactionCard(t: Translations, input: CompactionRenderInp
       // the "已折叠 · 点击展开" hint: a folded summary nobody notices is a
       // summary nobody reads.
       const body = input.facts?.summary
-      elements.push(foldedPanel(t, `**${t.compactionSummaryLabel}**`, [{
-        tag: 'markdown',
-        content: body === undefined
-          ? t.compactionSummaryUnavailable
-          : body.length > COMPACTION_SUMMARY_CAP ? truncateInline(body, COMPACTION_SUMMARY_CAP) : body,
-      }]))
+      // `truncateInline`, not a slice: a cut inside `**…**` would leave a literal
+      // `**` on the card (关键坑 60). The byte budget gives the character index to
+      // hand it, so the safe cut and the byte limit agree.
+      const cut = body === undefined ? 0 : fitBytes(body, COMPACTION_SUMMARY_BYTES)
+      const content = body === undefined
+        ? t.compactionSummaryUnavailable
+        : body.length > cut
+          ? `${truncateInline(body, cut)}\n\n${t.compactionSummaryCut(cut, body.length)}`
+          : body
+      elements.push(foldedPanel(t, `**${t.compactionSummaryLabel}**`, [{ tag: 'markdown', content }]))
     }
   }
 
