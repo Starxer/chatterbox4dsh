@@ -71,7 +71,23 @@ function utf8Size(char: string): number {
 }
 
 /**
- * The longest prefix of `text` that fits in `maxBytes` of UTF-8.
+ * The longest prefix of `text` that fits in `maxBytes` of UTF-8, ending on a
+ * GRAPHEME boundary.
+ *
+ * Two levels of safety, both measured rather than argued (2026-10-12: every byte
+ * budget swept over CJK + astral emoji + a ZWJ family + a combining mark — 53
+ * budgets):
+ *
+ * 1. **Never mojibake.** The walk is by CODE POINT (`for…of` + `codePointAt`), so
+ *    a cut cannot split a surrogate pair or a multi-byte sequence: zero lone
+ *    surrogates, zero UTF-8 round-trip failures, zero over-budget results. A
+ *    naive `slice(0, maxBytes)` on the string would have produced garbage.
+ * 2. **Not even inside a grapheme cluster.** A code-point cut is valid text but
+ *    can still land inside `👨‍👩‍👧` (ZWJ) or `e` + U+0301, which renders as that
+ *    cluster's FIRST member alone — 16 of the 53 budgets did. So the cut walks
+ *    back to the nearest cluster boundary: a few characters are dropped instead
+ *    of showing a half-built emoji where the text stops.
+ *
  * @param text - the summary body.
  * @param maxBytes - the byte budget.
  * @returns the character index to cut at (0 when even one character is too big).
@@ -85,7 +101,23 @@ export function fitBytes(text: string, maxBytes: number): number {
     bytes += size
     cut += char.length
   }
-  return cut
+  return snapToGrapheme(text, cut)
+}
+
+/** Walk back to the last grapheme boundary at or before `cut`. */
+function snapToGrapheme(text: string, cut: number): number {
+  if (cut <= 0 || cut >= text.length) return cut
+  const Segmenter = (Intl as typeof Intl & { Segmenter?: typeof Intl.Segmenter }).Segmenter
+  // A runtime without ICU keeps the code-point cut: still valid text, at worst a
+  // partial emoji at the very end of the truncation point.
+  if (Segmenter === undefined) return cut
+  let snapped = 0
+  for (const part of new Segmenter('und', { granularity: 'grapheme' }).segment(text)) {
+    const next = part.index + part.segment.length
+    if (next > cut) break
+    snapped = next
+  }
+  return snapped
 }
 
 /** Where the card currently is. */

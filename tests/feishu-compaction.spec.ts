@@ -104,11 +104,53 @@ describe('renderCompactionCard', () => {
     expect(panel.elements[0].content).toBe(english)
   })
 
-  it('cuts at a character boundary, never inside a code point', () => {
-    const emoji = '🀄'.repeat(100)          // 4 UTF-8 bytes each
-    // `fitBytes` returns a SLICE index (UTF-16 units), so two 4-byte emoji are 4.
-    expect(fitBytes(emoji, 9)).toBe(4)      // two code points fit, the third does not
-    expect(emoji.slice(0, fitBytes(emoji, 9))).toBe('🀄🀄')
+  // The user asked the right question about a byte budget: "can this produce
+  // mojibake?". Swept over every byte budget of mixed text (2026-10-12): not one
+  // lone surrogate, not one UTF-8 round-trip failure, never over budget — and no
+  // cut inside a grapheme cluster either.
+  it('never cuts mojibake, at any byte budget', () => {
+    const text = '中文摘要😀👨‍👩‍👧e\u0301一𠀀二結束'
+    const loneSurrogate = (value: string): boolean => {
+      for (let i = 0; i < value.length; i++) {
+        const unit = value.charCodeAt(i)
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          const next = value.charCodeAt(i + 1)
+          if (!(next >= 0xdc00 && next <= 0xdfff)) return true
+          i += 1
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) return true
+      }
+      return false
+    }
+    for (let budget = 1; budget <= Buffer.byteLength(text, 'utf8'); budget++) {
+      const prefix = text.slice(0, fitBytes(text, budget))
+      expect(loneSurrogate(prefix), `budget ${budget}`).toBe(false)
+      expect(Buffer.from(prefix, 'utf8').toString('utf8')).toBe(prefix)
+      expect(Buffer.byteLength(prefix, 'utf8')).toBeLessThanOrEqual(budget)
+    }
+  })
+
+  it('stops before a grapheme cluster rather than showing half of it', () => {
+    const family = '👨‍👩‍👧'
+    const text = `中文摘要😀${family}`
+    const cut = fitBytes(text, 20)                 // the budget lands inside the family
+    expect(text.slice(0, cut)).toBe('中文摘要😀')   // …so the whole cluster is dropped
+    // A cut that lands on a boundary keeps it.
+    expect(text.slice(0, fitBytes(text, 16))).toBe('中文摘要😀')
+  })
+
+  it('cuts at a code point boundary even without a grapheme segmenter', () => {
+    // The fallback path is what a runtime without ICU gets; it must still be
+    // valid text. Asserted directly on the code-point cut by hiding Segmenter.
+    const original = (Intl as any).Segmenter
+    try {
+      delete (Intl as any).Segmenter
+      const emoji = '🀄'.repeat(100)      // 4 UTF-8 bytes each
+      // `fitBytes` returns a SLICE index (UTF-16 units): two emoji are 4 units.
+      expect(fitBytes(emoji, 9)).toBe(4)  // two code points fit, the third does not
+      expect(emoji.slice(0, fitBytes(emoji, 9))).toBe('🀄🀄')
+    } finally {
+      ;(Intl as any).Segmenter = original
+    }
   })
 
   it('says so when there is no summary at all (a prune)', () => {
