@@ -418,17 +418,23 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
   // sides (关键坑 58), and this card used to render 40 single-line elements: a
   // measured turn spent 64px of pure spacing on 327 characters of text. Lines
   // inside ONE element are separated by an ordinary newline instead, so a step
-  // costs one block — and the boundary BETWEEN steps keeps its spacing, which is
-  // what makes the sections readable.
+  // costs one block.
   //
   // A step's narration is model text and joins the block only when its inline
   // markup is balanced; an odd `**` would pair with the next line's (关键坑 60).
   // It keeps its own element in that case, which costs one block, not a lie.
+  //
+  // Steps are separated by a real `hr` ELEMENT (2026-10-12, at the user's
+  // request). A text rule (`---`) is not an option: card markdown does not
+  // necessarily draw one, and a line of box-drawing characters would be a fake
+  // rule that still takes a text line. The rule goes between GROUPS, never
+  // before the first one and never between a step's own elements.
+  const groups: Array<{ step: number; content: string }> = []
   let block: string[] = []
   let blockStep: number | undefined
   const flush = (): void => {
     if (block.length === 0) return
-    elements.push({ tag: 'markdown', content: block.join('\n') })
+    groups.push({ step: blockStep ?? 0, content: block.join('\n') })
     block = []
     blockStep = undefined
   }
@@ -436,13 +442,19 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
     const loneNote = line.note === true && !inlineMarkupBalanced(line.text)
     if (loneNote || (blockStep !== undefined && line.step !== blockStep)) flush()
     if (loneNote) {
-      elements.push({ tag: 'markdown', content: line.text })
+      groups.push({ step: line.step, content: line.text })
       continue
     }
     blockStep = line.step
     block.push(line.text)
   }
   flush()
+  let separated: number | undefined
+  for (const group of groups) {
+    if (separated !== undefined && group.step !== separated) elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: group.content })
+    separated = group.step
+  }
 
   return {
     schema: '2.0',

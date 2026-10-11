@@ -426,6 +426,50 @@ describe('renderProgressCard', () => {
     })
   })
 
+  describe('step separators', () => {
+    it('draws one rule BETWEEN steps, and none before the first', () => {
+      const card: any = renderProgressCard(t, {
+        steps: [
+          { step: 1, startedAt: 0, endedAt: 100, tools: [{ name: 'a', startedAt: 0, elapsed: 10 }] },
+          { step: 2, startedAt: 100, endedAt: 200, tools: [{ name: 'b', startedAt: 100, elapsed: 10 }] },
+        ],
+        calls: 2, failed: 0, turnStart: 0, endedAt: 200, now: 200, failedTurn: false,
+      })
+      expect((card.body.elements as any[]).map(el => el.tag)).toEqual(['markdown', 'hr', 'markdown'])
+    })
+
+    it('puts the rule after the folded panel, not between it and the first step', () => {
+      const steps = [0, 1, 2, 3].map(i => ({
+        step: i + 1,
+        startedAt: 0,
+        endedAt: 100,
+        tools: Array.from({ length: 4 }, (_, j) => ({ name: `t${i}_${j}`, startedAt: 0, elapsed: 10 })),
+      }))
+      const card: any = renderProgressCard(t, { steps, calls: 16, failed: 0, turnStart: 0, now: 200, failedTurn: false })
+      const elements = card.body.elements as any[]
+      expect(elements[0].tag).toBe('collapsible_panel')
+      expect(elements[1].tag).toBe('markdown')
+      // Steps 2-4 stay visible -> two rules, both BETWEEN step blocks.
+      expect(elements.filter(el => el.tag === 'hr')).toHaveLength(2)
+    })
+
+    it('does not split a step that needed two elements of its own', () => {
+      // An unbalanced narration gets its own element; that is still ONE step, so
+      // no rule may land between its header and its rows.
+      const card: any = renderProgressCard(t, facts({
+        steps: [{
+          step: 1,
+          startedAt: 0,
+          endedAt: 1_000,
+          tools: [{ name: 'read', startedAt: 0, elapsed: 10 }],
+          note: '这条**没闭合',
+        }],
+        calls: 1, now: 1_000,
+      }))
+      expect((card.body.elements as any[]).filter(el => el.tag === 'hr')).toHaveLength(0)
+    })
+  })
+
   describe('inlineMarkupBalanced', () => {
     it('accepts plain text and balanced runs', () => {
       expect(inlineMarkupBalanced('普通一句话')).toBe(true)

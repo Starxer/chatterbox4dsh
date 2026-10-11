@@ -756,7 +756,7 @@ export const zh = {
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
-  turnCardStep: (step, elapsed) => `🔹 **第 ${step} 步** · ${elapsed}`,
+  turnCardStep: (step, elapsed) => `▸ **第 ${step} 步** · ${elapsed}`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: '执行中',
@@ -1228,7 +1228,7 @@ export const en: Translations = {
     `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) =>
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
-  turnCardStep: (step, elapsed) => `🔹 **Step ${step}** · ${elapsed}`,
+  turnCardStep: (step, elapsed) => `▸ **Step ${step}** · ${elapsed}`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: 'running',
