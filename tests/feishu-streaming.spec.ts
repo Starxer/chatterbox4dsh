@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
-import { deriveToolSummary, progressToolDetails, renderStepCard, shellPrograms, startFeishuStreaming } from '../src/feishu-streaming.ts'
+import { deriveToolSummary, progressToolDetails, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { TranscriptView } from '../src/display-level.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
@@ -144,28 +144,6 @@ describe('progressToolDetails', () => {
     expect(progressToolDetails('todo_write', JSON.stringify({ todos: [] }))).toBeUndefined()
     expect(progressToolDetails('bash', JSON.stringify({ command: '' }))).toBeUndefined()
     expect(progressToolDetails('read', 'not json')).toBeUndefined()
-  })
-})
-
-describe('shellPrograms', () => {
-  it('drops wrappers, env assignments and a wrapper argument', () => {
-    expect(shellPrograms('sudo FOO=1 timeout 5 npm test')).toEqual(['npm'])
-  })
-
-  it('splits on pipes, separators and newlines', () => {
-    expect(shellPrograms('ls | wc -l && echo done')).toEqual(['ls', 'wc', 'echo'])
-    expect(shellPrograms('a\nb')).toEqual(['a', 'b'])
-  })
-
-  it('basenames a program and dedupes it', () => {
-    expect(shellPrograms('/usr/bin/python3 x.py && python3 y.py')).toEqual(['python3'])
-  })
-
-  it('ignores a leading flag, and does not parse a substitution', () => {
-    expect(shellPrograms('-x; ls')).toEqual(['ls'])
-    // `$(…)` is shell parsing, which this deliberately does not do: naming it
-    // "whoami" would be a guess, and a guess on a live card is worse than a gap.
-    expect(shellPrograms('echo $(whoami)')).toEqual(['echo'])
   })
 })
 

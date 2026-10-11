@@ -35,7 +35,11 @@ import { injectionNotice } from './injection-notice.ts'
 import { pendingProducedCall, settleProducedCall, type ProducedPath } from './produced-files.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
-import { createProgressCards, PROGRESS_MAX_DETAILS } from './feishu-progress.ts'
+import { createProgressCards } from './feishu-progress.ts'
+import { shellPrograms } from './shell-programs.ts'
+
+// Re-exported for the callers that already import it from this module.
+export { shellPrograms }
 import type { CardInterleave } from './card-interleave.ts'
 
 /** Minimal logger surface. */
@@ -2515,56 +2519,6 @@ export function deriveToolSummary(toolName: string, argsRaw: string): string {
 }
 
 /**
- * Programs a shell command runs, in order, at most `limit`.
- *
- * The compact turn card names what a `bash` row actually did, and the honest
- * short form of a one-liner is the programs it invoked: `npm / node / git` for
- * `npm run build 2>&1 | tail -5 && node scripts/x.mjs`. Extraction is
- * deliberately shallow — split on the shell's own separators, drop leading
- * wrappers and `VAR=` assignments, keep the first word, basename it, dedupe.
- * A quoted program (`bash -c "…"`) therefore reads as `bash`, which is what the
- * row's tool name says anyway; guessing deeper would mean parsing shell.
- *
- * @param command - the raw command string from the call's arguments.
- * @param limit - how many distinct programs to keep.
- * @returns the program names, possibly empty.
- */
-export function shellPrograms(command: string, limit = PROGRESS_MAX_DETAILS): string[] {
-  const programs: string[] = []
-  for (const segment of command.split(/\|\||&&|[|;\n]/u)) {
-    const tokens = segment.trim().split(/\s+/u).filter(token => token !== '')
-    let index = 0
-    let navigational = false
-    while (index < tokens.length) {
-      const token = tokens[index]!
-      // `cd` names a directory, not a program, and its ARGUMENT would otherwise
-      // be read as one (`cd /w && git status` is a `git` row, not a `w` row).
-      // The segment it opens says nothing about what ran.
-      if (token === 'cd') { navigational = true; break }
-      // A wrapper (`sudo`, `time`, `timeout`) or its flag / env assignment /
-      // numeric argument is not the program either.
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token) || token.startsWith('-') || /^\d+$/u.test(token) || SHELL_WRAPPERS.has(token)) {
-        index += 1
-        continue
-      }
-      break
-    }
-    if (navigational) continue
-    const token = tokens[index]
-    if (token === undefined || token === '' || token.startsWith('-') || token.startsWith('$') || token.startsWith('(')) continue
-    const name = token.split(/[\\/]/u).pop() ?? token
-    if (name !== '' && !programs.includes(name)) programs.push(name)
-    if (programs.length >= limit) break
-  }
-  return programs
-}
-
-/** Leading words that are wrappers rather than the program being run. */
-const SHELL_WRAPPERS: ReadonlySet<string> = new Set([
-  'sudo', 'time', 'nohup', 'env', 'command', 'exec', 'builtin', 'nice', 'xargs', 'cd', 'timeout',
-])
-
-/**
  * Last two path segments, so a row names a file without shipping an absolute
  * path: `…/src/feishu-progress.ts`. A short path is returned untouched.
  */
@@ -2586,7 +2540,7 @@ function shortPath(path: string): string {
  *   two segments. The detailed card keeps the model's own description and the
  *   whole path; a one-line compact row cannot.
  * - **a shell command** (`bash`, `pwsh`): the programs it ran, at most
- *   {@link PROGRESS_MAX_DETAILS} ({@link shellPrograms}).
+ *   {@link shellPrograms}' own limit.
  *
  * Everything else returns undefined: a row that repeats its own tool name is
  * noise, and the compact card is short on room.

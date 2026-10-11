@@ -32,6 +32,24 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 修复：`bash` 行里的「程序名」认错——引号内的 `\|`、heredoc 正文、循环关键字都被当成程序（O27 补丁，`src/shell-programs.ts`（新）/ `src/feishu-streaming.ts`，2026-10-12）
+
+使用者看着真机卡片提出「bash 命令获取不准确」。**没有猜，直接把真实输入捞出来复现**：从会话日志里取出最近 **12 条 `bash` 调用**的原始命令，逐条跑当时的提取函数 —— **6 条是错的**：
+
+| 真实命令（节选） | 当时提取出 | 为什么错 |
+|---|---|---|
+| `grep -n "first.frame\|first_frame" scripts/x.py \| head -6` | `echo / grep / **first_frame"**` | 引号内的 `\|` 是 grep 的「或」，被当成了管道（带引号的名字就是这么漏出来的） |
+| `cat > out/prompt.txt <<'EOF' … EOF` | `cat / **For** / **integrated_multimodal_description:**` | **heredoc 正文**（提示词散文）被逐行当成命令 |
+| `python3 -c "…\nimport sys…"` | `echo / python3 / **import**` | 多行引号里的 Python 被当成命令 |
+| `for i in $(seq 1 90); do … done` | `run_h3.sh / **for** / **do**` | shell 关键字 |
+| 含 `# 注释` / `⚠️` / `2026-10-12` 的命令 | `python3 / **#** / **Qwen-Image-2.1（2026-10-12` | 注释、emoji、日期 |
+
+**根因**：当时的实现是「按 `\| ; && 换行` 硬切 + 取第一个词」——不认引号、不认注释、不认 heredoc、不认关键字。
+
+**改法**：**不再切分，改成解析**（新模块 `src/shell-programs.ts`）：引号/注释/heredoc 正文整体跳过、分隔符只在它们之外生效、`\` 续行留在同一段（否则下一行的 `--flag` 会被当成命令）、候选词必须**长得像个程序**（裸名字）才被采纳，`do`/`then`/`{` 这类**前缀关键字跳过它自己**（`do curl …` 要认的是 `curl`），`for`/`done`/`$(…)`/`cd` 这类**整段跳过**。读不出来的词直接丢掉——**写错一个程序名比不写更糟**（这条写进了模块注释）。
+
+**验证**：12 条真实命令**全部给出合理结果**（`python3` / `git / echo / grep` / `echo / grep / head` / `cat / python3` / `run_h3.sh / curl / echo` …），并把这 6 条**逐字**写进 `tests/shell-programs.spec.ts` 当回归（16 例，含 `splitShellSegments` 的引号/注释/heredoc/续行四条）；`npm run typecheck` 0 error、**1070 tests / 55 files 全绿**、`npm run build` 已产出。**按要求未重启**。
+
 ### 改进：compact 回合过程卡——一步一个元素，工具行标出「碰了什么」（O27，`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-10-11）
 
 使用者反馈「compact 的步骤卡片不够 compact」。**先用真实渲染器量了一遍**（10 步 / 42 次调用 / 3 失败）：卡片只有 **1578 字节**（上限 30KB ⇒ 字节完全不是瓶颈），却渲染成 **17 个元素、16 个都是单行**，可见文本仅 **327 字** —— 平均每个元素装 20 字。每个元素都是一个独立块、两侧各付一次 `vertical_spacing` 4px（坑 58），于是 **64px 纯间距**花在 327 字上。构成是：**5 行纯步标题** + 8 行工具行 + 2 行叙述 + 1 行注入。
