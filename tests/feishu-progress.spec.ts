@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_MAX_STEPS, PROGRESS_NOTE_MAX,
   PROGRESS_RUNNING_TICK_MS, PROGRESS_WRITE_GAP_MS,
-  condenseStepNote, createProgressCards, formatProgressMs, renderProgressCard, type ProgressFacts,
+  condenseStepNote, createProgressCards, formatProgressMs, inlineMarkupBalanced, renderProgressCard, type ProgressFacts,
 } from '../src/feishu-progress.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
 import { translationsFor } from '../src/i18n.ts'
@@ -26,12 +26,24 @@ function mdOf(card: any): string {
   return out.join('\n')
 }
 
-/** Visible markdown lines (inside the folded panel, when there is one). */
+/**
+ * The visible ROWS, flattened: since 2026-10-11 a step's rows share ONE markdown
+ * element (each element pays `vertical_spacing`, 关键坑 58), so an element's
+ * content may hold several lines.
+ */
 function visibleLines(card: any): string[] {
   const elements = card.body.elements as any[]
   const panel = elements.find(el => el.tag === 'collapsible_panel')
   const visible = panel === undefined ? elements : elements.slice(elements.indexOf(panel) + 1)
-  return visible.filter(el => el.tag === 'markdown').map(el => el.content)
+  return visible.filter(el => el.tag === 'markdown').flatMap(el => String(el.content).split('\n'))
+}
+
+/** The visible markdown ELEMENTS (not rows), which is what the spacing pays for. */
+function visibleElements(card: any): string[] {
+  const elements = card.body.elements as any[]
+  const panel = elements.find(el => el.tag === 'collapsible_panel')
+  const visible = panel === undefined ? elements : elements.slice(elements.indexOf(panel) + 1)
+  return visible.filter(el => el.tag === 'markdown').map(el => String(el.content))
 }
 
 /** Every tag in the card JSON, at any depth. */
@@ -290,6 +302,133 @@ describe('renderProgressCard', () => {
   it('keeps the rows close together (measured spacing, not the loose default)', () => {
     const card: any = renderProgressCard(t, facts())
     expect(card.body.vertical_spacing).toBe(PROGRESS_ELEMENT_SPACING)
+  })
+
+  // 2026-10-11: every element is its own block and pays `vertical_spacing` on
+  // both sides (关键坑 58), so a step's rows became ONE element. A measured turn
+  // spent 64px of pure spacing on 327 characters of text.
+  describe('one element per step (②)', () => {
+    it('puts a step header and all of its rows in a single element', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{
+          step: 3,
+          startedAt: 0,
+          endedAt: 3_000,
+          tools: [
+            { name: 'read', startedAt: 0, elapsed: 100 },
+            { name: 'bash', startedAt: 100, elapsed: 200 },
+            { name: 'bash', startedAt: 300, elapsed: 200 },
+          ],
+        }],
+        calls: 3,
+        now: 3_000,
+      }))
+      expect(visibleElements(card)).toEqual([
+        [t.turnCardStep(3, '3.0s'), t.turnCardToolDone('`read`', '100ms'), t.turnCardToolDone('`bash` ×2', '400ms')].join('\n'),
+      ])
+      // The rows are still separate LINES: only the element boundary changed.
+      expect(visibleLines(card)).toHaveLength(3)
+    })
+
+    it('gives each step its own element, so only step boundaries pay spacing', () => {
+      const card: any = renderProgressCard(t, {
+        steps: [0, 1, 2].map(i => ({
+          step: i + 1,
+          startedAt: 0,
+          endedAt: 100,
+          tools: Array.from({ length: 4 }, (_, j) => ({ name: `t${i}_${j}`, startedAt: 0, elapsed: 10 })),
+        })),
+        calls: 12, failed: 0, turnStart: 0, now: 200, failedTurn: false,
+      })
+      expect(visibleElements(card)).toHaveLength(3)
+      expect(visibleLines(card)).toHaveLength(15)
+    })
+
+    it('joins a narration into the step element when its markup is balanced', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, endedAt: 1_000, tools: [{ name: 'read', startedAt: 0, elapsed: 10 }], note: '先看 `card-write.ts` 那段' }],
+        calls: 1, now: 1_000,
+      }))
+      expect(visibleElements(card)).toHaveLength(1)
+    })
+
+    it('keeps a narration with unbalanced markup in its own element', () => {
+      // An odd `**` would pair with the NEXT line's bold run once both live in
+      // one element, rendering the wrong text as bold (关键坑 60).
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, endedAt: 1_000, tools: [{ name: 'read', startedAt: 0, elapsed: 10 }], note: '这条**没闭合' }],
+        calls: 1, now: 1_000,
+      }))
+      expect(visibleElements(card)).toHaveLength(3)
+      expect(visibleLines(card)).toContain(t.turnCardStepNote('这条**没闭合'))
+    })
+  })
+
+  describe('the row names what the call touched', () => {
+    it('renders the file after the tool name', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, endedAt: 1_000, tools: [{ name: 'read', startedAt: 0, elapsed: 400, detail: ['…/src/feishu-progress.ts'] }] }],
+        calls: 1, now: 1_000,
+      }))
+      expect(mdOf(card)).toContain(t.turnCardToolDone('`read` · …/src/feishu-progress.ts', '400ms'))
+    })
+
+    it('names at most three distinct details of a merged run', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{
+          step: 1,
+          startedAt: 0,
+          endedAt: 1_000,
+          tools: [
+            { name: 'bash', startedAt: 0, elapsed: 10, detail: ['npm'] },
+            { name: 'bash', startedAt: 10, elapsed: 10, detail: ['node'] },
+            { name: 'bash', startedAt: 20, elapsed: 10, detail: ['git'] },
+            { name: 'bash', startedAt: 30, elapsed: 10, detail: ['tail'] },
+            { name: 'bash', startedAt: 40, elapsed: 10, detail: ['npm'] },
+          ],
+        }],
+        calls: 5, now: 1_000,
+      }))
+      expect(mdOf(card)).toContain(t.turnCardToolDone('`bash` ×5 · npm / node / git', '50ms'))
+    })
+
+    it('omits the detail entirely when a call has none', () => {
+      const card: any = renderProgressCard(t, facts())
+      expect(mdOf(card)).toContain(t.turnCardToolDone('`read`', '400ms'))
+    })
+
+    it('accumulates names across a run and stops at three', () => {
+      // A single command may name several programs, and a run merges several
+      // commands: the row keeps the FIRST THREE names overall. The first cut of
+      // this capped per call instead, and a three-command run printed five
+      // (`npm / tail / git / node / tail`) — caught by rendering a sample.
+      const card: any = renderProgressCard(t, facts({
+        steps: [{
+          step: 1,
+          startedAt: 0,
+          endedAt: 1_000,
+          tools: [
+            { name: 'bash', startedAt: 0, elapsed: 10, detail: ['npm', 'tail'] },
+            { name: 'bash', startedAt: 10, elapsed: 10, detail: ['git'] },
+            { name: 'bash', startedAt: 20, elapsed: 10, detail: ['node', 'tail'] },
+          ],
+        }],
+        calls: 3, now: 1_000,
+      }))
+      expect(mdOf(card)).toContain(t.turnCardToolDone('`bash` ×3 · npm / tail / git', '30ms'))
+    })
+  })
+
+  describe('inlineMarkupBalanced', () => {
+    it('accepts plain text and balanced runs', () => {
+      expect(inlineMarkupBalanced('普通一句话')).toBe(true)
+      expect(inlineMarkupBalanced('有 `代码` 和 **加粗**')).toBe(true)
+    })
+
+    it('rejects a line that would pair with its neighbour', () => {
+      expect(inlineMarkupBalanced('没闭合的**加粗')).toBe(false)
+      expect(inlineMarkupBalanced('没闭合的 `代码')).toBe(false)
+    })
   })
 })
 

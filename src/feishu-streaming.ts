@@ -35,7 +35,7 @@ import { injectionNotice } from './injection-notice.ts'
 import { pendingProducedCall, settleProducedCall, type ProducedPath } from './produced-files.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
-import { createProgressCards } from './feishu-progress.ts'
+import { createProgressCards, PROGRESS_MAX_DETAILS } from './feishu-progress.ts'
 import type { CardInterleave } from './card-interleave.ts'
 
 /** Minimal logger surface. */
@@ -1591,7 +1591,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // Mirror the call onto the turn progress card (`compact` only). The
         // card opens on this first call and is updated in place from here on.
         if (displayPolicy().turnCard) {
-          progressCards.toolStarted(sessionId, toolName, toolCallId, toolCall.startedAt)
+          progressCards.toolStarted(
+            sessionId,
+            toolName,
+            toolCallId,
+            toolCall.startedAt,
+            // The row's "what" (file / shell programs) is derived HERE because
+            // this is where the arguments are; the card module only renders it.
+            progressToolDetails(toolName, typeof args === 'string' ? args : JSON.stringify(args ?? '')),
+          )
         }
 
         // With tool display off a tool call changes nothing on screen, so it
@@ -2504,6 +2512,105 @@ export function deriveToolSummary(toolName: string, argsRaw: string): string {
   return variant === 'others' && toolName !== '' && !titled
     ? `${toolName} · ${base}`
     : base
+}
+
+/**
+ * Programs a shell command runs, in order, at most `limit`.
+ *
+ * The compact turn card names what a `bash` row actually did, and the honest
+ * short form of a one-liner is the programs it invoked: `npm / node / git` for
+ * `npm run build 2>&1 | tail -5 && node scripts/x.mjs`. Extraction is
+ * deliberately shallow — split on the shell's own separators, drop leading
+ * wrappers and `VAR=` assignments, keep the first word, basename it, dedupe.
+ * A quoted program (`bash -c "…"`) therefore reads as `bash`, which is what the
+ * row's tool name says anyway; guessing deeper would mean parsing shell.
+ *
+ * @param command - the raw command string from the call's arguments.
+ * @param limit - how many distinct programs to keep.
+ * @returns the program names, possibly empty.
+ */
+export function shellPrograms(command: string, limit = PROGRESS_MAX_DETAILS): string[] {
+  const programs: string[] = []
+  for (const segment of command.split(/\|\||&&|[|;\n]/u)) {
+    const tokens = segment.trim().split(/\s+/u).filter(token => token !== '')
+    let index = 0
+    let navigational = false
+    while (index < tokens.length) {
+      const token = tokens[index]!
+      // `cd` names a directory, not a program, and its ARGUMENT would otherwise
+      // be read as one (`cd /w && git status` is a `git` row, not a `w` row).
+      // The segment it opens says nothing about what ran.
+      if (token === 'cd') { navigational = true; break }
+      // A wrapper (`sudo`, `time`, `timeout`) or its flag / env assignment /
+      // numeric argument is not the program either.
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token) || token.startsWith('-') || /^\d+$/u.test(token) || SHELL_WRAPPERS.has(token)) {
+        index += 1
+        continue
+      }
+      break
+    }
+    if (navigational) continue
+    const token = tokens[index]
+    if (token === undefined || token === '' || token.startsWith('-') || token.startsWith('$') || token.startsWith('(')) continue
+    const name = token.split(/[\\/]/u).pop() ?? token
+    if (name !== '' && !programs.includes(name)) programs.push(name)
+    if (programs.length >= limit) break
+  }
+  return programs
+}
+
+/** Leading words that are wrappers rather than the program being run. */
+const SHELL_WRAPPERS: ReadonlySet<string> = new Set([
+  'sudo', 'time', 'nohup', 'env', 'command', 'exec', 'builtin', 'nice', 'xargs', 'cd', 'timeout',
+])
+
+/**
+ * Last two path segments, so a row names a file without shipping an absolute
+ * path: `…/src/feishu-progress.ts`. A short path is returned untouched.
+ */
+function shortPath(path: string): string {
+  const parts = path.split(/[\\/]/u).filter(part => part !== '')
+  if (parts.length <= 2) return path
+  return `…/${parts.slice(-2).join('/')}`
+}
+
+/**
+ * The short "what" a COMPACT tool row carries (`feishu-progress.ts`) — as a LIST,
+ * so a merged run can name the first few across all of its calls rather than
+ * repeating one call's whole list (`npm / tail / git`, not `npm / tail / git /
+ * node / tail`).
+ *
+ * Two kinds, because those are the two where a name alone says nothing:
+ *
+ * - **a file** (read / write / edit): the file it touched, shortened to its last
+ *   two segments. The detailed card keeps the model's own description and the
+ *   whole path; a one-line compact row cannot.
+ * - **a shell command** (`bash`, `pwsh`): the programs it ran, at most
+ *   {@link PROGRESS_MAX_DETAILS} ({@link shellPrograms}).
+ *
+ * Everything else returns undefined: a row that repeats its own tool name is
+ * noise, and the compact card is short on room.
+ *
+ * @param toolName - the tool the call ran.
+ * @param argsRaw - the call's raw arguments JSON.
+ * @returns the names, or undefined when there is nothing short and useful.
+ */
+export function progressToolDetails(toolName: string, argsRaw: string): string[] | undefined {
+  const parsed = parseToolArgs(argsRaw)
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const args = parsed as Record<string, unknown>
+  const variant = classifyToolSummary(toolName)
+  if (variant === 'read' || variant === 'write' || variant === 'edit') {
+    const path = pickToolArg(args, TOOL_SUMMARY_KEYS[variant])
+    if (path === undefined) return undefined
+    const short = shortPath(firstLine(path).trim())
+    return short === '' ? undefined : [short]
+  }
+  if (variant === 'bash' || toolName === 'pwsh') {
+    const programs = shellPrograms(typeof args.command === 'string' ? args.command : '')
+    return programs.length === 0 ? undefined : programs
+  }
+  return undefined
 }
 
 /**

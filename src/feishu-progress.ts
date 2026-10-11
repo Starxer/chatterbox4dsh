@@ -93,6 +93,15 @@ export interface ProgressTool {
   /** Absent while the call is still running. */
   elapsed?: number | undefined
   isError?: boolean | undefined
+  /**
+   * The short names this call touched, already derived by the streaming layer
+   * (`progressToolDetails`): the file a read/write touches, or the programs a
+   * shell command runs. A LIST, so a merged run names the first few across all
+   * of its calls instead of repeating one call's whole list. Rendered right
+   * after the tool name, so a row says what happened rather than only which tool
+   * ran. Absent when the call has nothing short and useful to name.
+   */
+  detail?: readonly string[] | undefined
 }
 
 /** One step as the card renders it. */
@@ -174,6 +183,36 @@ interface Line {
   /** The step section header line, which must stay with its first visible row. */
   header: boolean
   step: number
+  /**
+   * A step's narration: MODEL text. It may join its step's element only when its
+   * own inline markup is balanced — see {@link inlineMarkupBalanced}.
+   */
+  note?: boolean
+}
+
+/**
+ * Distinct details one merged run may name.
+ *
+ * A run of same-named calls (a `bash` run, a `read` run) is one row, and the row
+ * can only carry so much: the first three are what tells the run apart ("it ran
+ * npm, then node, then git") without turning the row into a command line.
+ */
+export const PROGRESS_MAX_DETAILS = 3
+
+/**
+ * Whether one line's inline markup may share a multi-line markdown element.
+ *
+ * Feishu pairs `**` / backticks across the whole element, so a note carrying an
+ * ODD number of them would pair with the next line's markup and render the wrong
+ * thing as bold (关键坑 60). Such a note keeps an element of its own; every other
+ * line on this card is machine-generated and safe to join.
+ *
+ * @param text - one rendered line.
+ * @returns true when the line can be joined with its neighbours.
+ */
+export function inlineMarkupBalanced(text: string): boolean {
+  const count = (token: string): number => text.split(token).length - 1
+  return count('**') % 2 === 0 && count('`') % 2 === 0
 }
 
 /**
@@ -203,9 +242,24 @@ function statusOf(tool: ProgressTool): RunStatus {
   return tool.isError === true ? 'error' : 'done'
 }
 
-/** One line for a run of `count` consecutive same-named calls in the same state. */
-function toolLine(t: Translations, name: string, status: RunStatus, elapsed: number, count: number, now: number): string {
-  const label = `\`${name}\`${count > 1 ? ` ×${count}` : ''}`
+/**
+ * One line for a run of `count` consecutive same-named calls in the same state.
+ *
+ * The row's "what" rides on the label (`✅ \`read\` · src/x.ts · 40ms`) rather
+ * than needing its own template: the templates only take a label and a duration,
+ * and every locale already prints them as `icon label · duration`.
+ */
+function toolLine(
+  t: Translations,
+  name: string,
+  status: RunStatus,
+  elapsed: number,
+  count: number,
+  now: number,
+  details: readonly string[],
+): string {
+  const what = details.length === 0 ? '' : ` · ${details.join(' / ')}`
+  const label = `\`${name}\`${count > 1 ? ` ×${count}` : ''}${what}`
   const ms = status === 'running' ? Math.max(0, now - elapsed) : elapsed
   if (status !== 'running') {
     return status === 'error' ? t.turnCardToolFailed(label, formatProgressMs(ms)) : t.turnCardToolDone(label, formatProgressMs(ms))
@@ -235,25 +289,39 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
     // what the step said BEFORE it decided to call tools, so it reads as the
     // section's preamble rather than as another tool row.
     if (step.note !== undefined && step.note !== '') {
-      lines.push({ text: t.turnCardStepNote(step.note), header: false, step: step.step })
+      lines.push({ text: t.turnCardStepNote(step.note), header: false, step: step.step, note: true })
     }
     // Merge consecutive calls with the same name AND the same state: a `read`
     // run is one row, not ten. A run's elapsed is its own total (sum for
-    // finished calls, `now - first start` for a running one).
+    // finished calls, `now - first start` for a running one), and so is its
+    // "what": a `bash` run that ran three programs names the first three (the
+    // distinct ones — the same file twice is one name).
     let index = 0
     while (index < step.tools.length) {
       const first = step.tools[index]!
       const status = statusOf(first)
       let count = 1
       let elapsed = first.elapsed ?? 0
+      const details: string[] = []
+      // At most PROGRESS_MAX_DETAILS NAMES on the row, first come first served:
+      // a run of three commands that each ran two programs reads `npm / tail /
+      // git`, not the five it happened to touch.
+      const addDetails = (names: readonly string[] | undefined): void => {
+        for (const name of names ?? []) {
+          if (details.length >= PROGRESS_MAX_DETAILS) return
+          if (name !== '' && !details.includes(name)) details.push(name)
+        }
+      }
+      addDetails(first.detail)
       while (index + count < step.tools.length) {
         const next = step.tools[index + count]!
         if (next.name !== first.name || statusOf(next) !== status) break
         elapsed += next.elapsed ?? 0
         count += 1
+        addDetails(next.detail)
       }
       lines.push({
-        text: toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now),
+        text: toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details),
         header: false,
         step: step.step,
       })
@@ -326,7 +394,37 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
     const content = `${truncated ? '…\n' : ''}${body.map(line => line.text).join('\n')}`
     elements.push(foldedPanel(t, t.turnCardOlderRows(hidden.length), [{ tag: 'markdown', content }]))
   }
-  for (const line of visible) elements.push({ tag: 'markdown', content: line.text })
+  // One element per STEP, not one per row (2026-10-11).
+  //
+  // Every Feishu element is its own block and pays `vertical_spacing` on both
+  // sides (关键坑 58), and this card used to render 40 single-line elements: a
+  // measured turn spent 64px of pure spacing on 327 characters of text. Lines
+  // inside ONE element are separated by an ordinary newline instead, so a step
+  // costs one block — and the boundary BETWEEN steps keeps its spacing, which is
+  // what makes the sections readable.
+  //
+  // A step's narration is model text and joins the block only when its inline
+  // markup is balanced; an odd `**` would pair with the next line's (关键坑 60).
+  // It keeps its own element in that case, which costs one block, not a lie.
+  let block: string[] = []
+  let blockStep: number | undefined
+  const flush = (): void => {
+    if (block.length === 0) return
+    elements.push({ tag: 'markdown', content: block.join('\n') })
+    block = []
+    blockStep = undefined
+  }
+  for (const line of visible) {
+    const loneNote = line.note === true && !inlineMarkupBalanced(line.text)
+    if (loneNote || (blockStep !== undefined && line.step !== blockStep)) flush()
+    if (loneNote) {
+      elements.push({ tag: 'markdown', content: line.text })
+      continue
+    }
+    blockStep = line.step
+    block.push(line.text)
+  }
+  flush()
 
   return {
     schema: '2.0',
@@ -386,8 +484,12 @@ export interface ProgressCardsHandle {
   stepInjection(sessionId: string, step: number, notice: string, at: number): void
   /** Whether this turn has a card on screen (used to decide who shows injections). */
   hasCard(sessionId: string): boolean
-  /** `tool/call`: append a running row (and open the card on the first one). */
-  toolStarted(sessionId: string, toolName: string, callId: string, at: number): void
+  /**
+   * `tool/call`: append a running row (and open the card on the first one).
+   * @param detail - the row's short "what" (`progressToolDetail`); omit when the
+   *                 call has nothing short and useful to name.
+   */
+  toolStarted(sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void
   /** `tool/result`: settle the row with that call id (fallback: oldest running). */
   toolFinished(sessionId: string, callId: string, elapsed: number, isError: boolean, at: number): void
   /** `step/end`: close the current section's clock. */
@@ -611,7 +713,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }
   }
 
-  const toolStarted = (sessionId: string, toolName: string, callId: string, at: number): void => {
+  const toolStarted = (sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
     if (turn === undefined) return
@@ -623,7 +725,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       current = { step: facts.steps.length + 1, startedAt: at, tools: [] }
       facts.steps.push(current)
     }
-    current.tools.push({ name: toolName, callId, startedAt: at })
+    current.tools.push({ name: toolName, callId, startedAt: at, ...detail === undefined || detail.length === 0 ? {} : { detail } })
     facts.calls += 1
     facts.now = at
     const entry = cards.get(sessionId)

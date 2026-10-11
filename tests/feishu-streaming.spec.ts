@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
-import { deriveToolSummary, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
+import { deriveToolSummary, progressToolDetails, renderStepCard, shellPrograms, startFeishuStreaming } from '../src/feishu-streaming.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { TranscriptView } from '../src/display-level.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
@@ -112,6 +112,62 @@ describe('renderStepCard tool result/args rendering', () => {
   })
 })
 
+
+describe('progressToolDetails', () => {
+  // The compact turn card names what a row actually touched: a file for the
+  // file tools, the programs for a shell command (2026-10-11).
+  it('names the file of a read / write / edit, shortened to two segments', () => {
+    expect(progressToolDetails('read', JSON.stringify({ path: '/w/repo/src/feishu-progress.ts' }))).toEqual(['…/src/feishu-progress.ts'])
+    expect(progressToolDetails('write', JSON.stringify({ file_path: 'docs/architecture.md' }))).toEqual(['docs/architecture.md'])
+    expect(progressToolDetails('edit', JSON.stringify({ path: 'notes/pitfalls.md' }))).toEqual(['notes/pitfalls.md'])
+  })
+
+  it('keeps a single-segment path untouched', () => {
+    expect(progressToolDetails('read', JSON.stringify({ path: 'README.md' }))).toEqual(['README.md'])
+  })
+
+  it('names the programs a bash command runs, in order', () => {
+    expect(progressToolDetails('bash', JSON.stringify({ command: 'npm run typecheck 2>&1 | tail -5' }))).toEqual(['npm', 'tail'])
+    expect(progressToolDetails('bash', JSON.stringify({ command: 'cd /w && git status --short' }))).toEqual(['git'])
+  })
+
+  it('keeps at most three programs', () => {
+    expect(progressToolDetails('bash', JSON.stringify({ command: 'a; b; c; d; e' }))).toEqual(['a', 'b', 'c'])
+  })
+
+  it('prefers the command over the model description (which the detailed card uses)', () => {
+    expect(progressToolDetails('bash', JSON.stringify({ description: '跑测试', command: 'npm test' }))).toEqual(['npm'])
+  })
+
+  it('says nothing for a tool whose name is the whole story', () => {
+    expect(progressToolDetails('present', JSON.stringify({ files: [{ path: 'a.png' }] }))).toBeUndefined()
+    expect(progressToolDetails('todo_write', JSON.stringify({ todos: [] }))).toBeUndefined()
+    expect(progressToolDetails('bash', JSON.stringify({ command: '' }))).toBeUndefined()
+    expect(progressToolDetails('read', 'not json')).toBeUndefined()
+  })
+})
+
+describe('shellPrograms', () => {
+  it('drops wrappers, env assignments and a wrapper argument', () => {
+    expect(shellPrograms('sudo FOO=1 timeout 5 npm test')).toEqual(['npm'])
+  })
+
+  it('splits on pipes, separators and newlines', () => {
+    expect(shellPrograms('ls | wc -l && echo done')).toEqual(['ls', 'wc', 'echo'])
+    expect(shellPrograms('a\nb')).toEqual(['a', 'b'])
+  })
+
+  it('basenames a program and dedupes it', () => {
+    expect(shellPrograms('/usr/bin/python3 x.py && python3 y.py')).toEqual(['python3'])
+  })
+
+  it('ignores a leading flag, and does not parse a substitution', () => {
+    expect(shellPrograms('-x; ls')).toEqual(['ls'])
+    // `$(…)` is shell parsing, which this deliberately does not do: naming it
+    // "whoami" would be a guess, and a guess on a live card is worse than a gap.
+    expect(shellPrograms('echo $(whoami)')).toEqual(['echo'])
+  })
+})
 
 describe('deriveToolSummary', () => {
   it('bash uses description, falling back to command', () => {
