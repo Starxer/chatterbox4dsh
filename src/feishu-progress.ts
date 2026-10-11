@@ -47,12 +47,16 @@ import { truncateInline } from './text-chunk.ts'
 export const PROGRESS_MAX_ROWS = 40
 
 /**
- * Whole steps kept visible before older ones fold away. Five is what a glance
- * needs ("what is it doing now"); anything older is one tap away inside the
- * folded panel. The row budget stays as the outer bound, because one step can
- * hold dozens of calls on its own.
+ * Whole steps kept visible before older ones fold away.
+ *
+ * **The window is counted in STEPS, not rows** (2026-10-11, at the user's
+ * request): three steps is what a glance needs — the newest one is what the
+ * agent is doing, the two before it are how it got there — and it makes the
+ * card's height predictable whatever a step happens to contain. Older steps are
+ * one tap away inside the folded panel. {@link PROGRESS_MAX_ROWS} stays as the
+ * outer bound, because one step can hold dozens of calls on its own.
  */
-export const PROGRESS_MAX_STEPS = 5
+export const PROGRESS_MAX_STEPS = 3
 
 /** Folded lines carried in the panel body (the panel is collapsed, not free). */
 export const PROGRESS_MAX_FOLDED = 60

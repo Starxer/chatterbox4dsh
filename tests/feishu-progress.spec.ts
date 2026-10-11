@@ -262,7 +262,7 @@ describe('renderProgressCard', () => {
     ])
   })
 
-  it('keeps only the newest five steps visible and folds the older ones', () => {
+  it('keeps only the newest three STEPS visible and folds the older ones', () => {
     const steps = Array.from({ length: 8 }, (_, i) => ({
       step: i + 1,
       startedAt: 0,
@@ -274,11 +274,12 @@ describe('renderProgressCard', () => {
     }))
     const card: any = renderProgressCard(t, { steps, calls: 16, failed: 0, turnStart: 0, now: 200, failedTurn: false })
     const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
-    // Steps 1-3 fold away (their headers included): 3 headers + 6 rows.
-    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(9)))
+    // The window counts STEPS (2026-10-11): steps 6-8 stay, steps 1-5 fold away
+    // with their headers — 5 headers + 10 rows.
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(15)))
     const visible = visibleLines(card)
-    expect(visible[0]).toBe(t.turnCardStep(4, '100ms'))
-    expect(visible.filter(line => line.startsWith('**第'))).toHaveLength(5)
+    expect(visible[0]).toBe(t.turnCardStep(6, '100ms'))
+    expect(visible.filter(line => /\*\*【第 \d+ 步】\*\*/.test(line))).toHaveLength(3)
   })
 
   it('renders only the rows of this segment when one was cut short', () => {
@@ -700,7 +701,7 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
     const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
-    expect(String(mdOf(fresh))).toContain('**第 1 步**')
+    expect(String(mdOf(fresh))).toContain(t.turnCardStep(1, '1.0s…'))
     expect(String(mdOf(fresh))).toContain('`read`')
     expect(String(mdOf(fresh))).toContain('`bash`')
   })
