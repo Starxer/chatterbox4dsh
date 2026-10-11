@@ -14,7 +14,7 @@ import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
-import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
+import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import { hasDeliverables, renderDeliverableElements, type DeliverChat, type DeliverPlan, type DeliverPlanInput, type DeliverRow } from './feishu-deliver.ts'
 import { mergeProducedArtifacts, producedArtifacts } from './produced-files.ts'
@@ -373,7 +373,7 @@ export async function startChannel(
     input: { card: object } | { text: string },
     opts?: { replyInThread?: boolean; replyTo?: string },
   ): Promise<{ messageId?: string }> =>
-    withTimeout(channel.send(to, input, opts), 'send message', OUTBOUND_TIMEOUT_MS)
+    withLinkTimeout(channel.send(to, input, opts), 'send message', OUTBOUND_TIMEOUT_MS)
 
   /**
    * Send a card, first letting the image hydrator inline whatever local paths it

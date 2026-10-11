@@ -45,7 +45,7 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { HarnessConversationService } from './harness.ts'
 import { errorText } from './error-text.ts'
 import { sniffAudioContainer, sniffImageMime, sniffVideoContainer } from './media-sniff.ts'
-import { withTimeout } from './outbound-timeout.ts'
+import { withLinkTimeout } from './outbound-timeout.ts'
 import { FEISHU_MAX_FILE_BYTES, FEISHU_MAX_IMAGE_BYTES, noteDeliveredFile } from './deliver-files.ts'
 
 const execFileAsync = promisify(execFile)
@@ -144,7 +144,7 @@ async function uploadCoverFrame(
     // Bounded like every other outbound call: the SDK's HTTP client is built
     // with `timeout: 0`, so a half-open socket would otherwise hang the whole
     // send (关键坑 29). The catch below already degrades to "no cover".
-    const uploaded = await withTimeout(channel.rawClient.im.v1.image.create({
+    const uploaded = await withLinkTimeout(channel.rawClient.im.v1.image.create({
       data: { image_type: 'message', image: frame },
     }), 'upload cover frame', FILE_SEND_TIMEOUT_MS)
     const key = uploaded?.image_key
@@ -210,7 +210,7 @@ export async function sendWorkspaceFile(deps: SendWorkspaceFileDeps): Promise<Se
   const extractCoverFrame = deps.extractCoverFrame ?? extractCoverFrameWithFfmpeg
   const timeoutMs = deps.timeoutMs ?? FILE_SEND_TIMEOUT_MS
   const send = (input: SendInput) =>
-    withTimeout(channel.send(chatId, input, deps.opts), 'send file', timeoutMs)
+    withLinkTimeout(channel.send(chatId, input, deps.opts), 'send file', timeoutMs)
 
   deps.signal?.throwIfAborted()
 
@@ -406,7 +406,7 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
         beforeSend: async () => {
           if (args.caption === undefined || args.caption.trim() === '') return
           try {
-            await withTimeout(ch.send(chat.chatId, { text: args.caption }, opts), 'send caption', FILE_SEND_TIMEOUT_MS)
+            await withLinkTimeout(ch.send(chat.chatId, { text: args.caption }, opts), 'send caption', FILE_SEND_TIMEOUT_MS)
             captionSent = true
           } catch (error: unknown) {
             throw new Error(`Failed to send caption via Feishu: ${errorText(error, 'unknown Feishu error')}`)

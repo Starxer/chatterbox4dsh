@@ -47,6 +47,23 @@
 
 **验证**：`npm run typecheck` 0 error；**1024 tests / 55 files 全绿**（本批新增 32 例：`tests/outbound-health.spec.ts` 18 例钉住分类口径/计数/复发与恢复/Proxy 透传与「一次调用只记一次」，`tests/runtime.spec.ts` 5 例钉住入站随取随读、可选字段与「通道没有 getter 也不崩」，`tests/client.spec.ts` 9 例钉住两种异常徽章、明细行、健康时不多嘴、未观测提示、脏状态不改 `connecting`，以及轮询节拍/页面关掉即停/配置完成只回调一次）；`npm run build` 产出 `lib/index.js` + `client/client.js`。**另跑了一次一次性真机探针**（真 SDK + 真凭据，跑完即删）：真实 `chat.get` 走通且 `observed` 累加到 2（token 请求也在这条线上），把域名指到一个没人监听的本地端口后 `verdict` 立刻变 `failing`、`lastError = connect ECONNREFUSED`，再答一次即回到 `ok` —— 证明插件确实截到了 SDK 的真实流量，而不是只在单测里自洽。**生效需要重启 dsh**。
 
+### 改进：出站「静默挂起」也看得出来——放弃等待时上报（O26 补完，`src/outbound-timeout.ts` / `src/outbound-health.ts` / `src/index.ts` / 5 个发送模块，2026-10-11）
+
+接上一节留下的空洞：**永不 settle 的请求**。半开连接（对端已经不在了、却没有 FIN/RST）会让一个 HTTP 请求**既不成功也不失败**，而 `outbound-health.ts` 只看「有结局」的请求 ⇒ 表上什么都不留、徽章照样绿，用户那边**一条消息都收不到**。这正是坑 29 实测过的形态（2026-09-21，SDK 的 HTTP client 是 `timeout: 0`）。
+
+**为什么不在健康表里加看门狗**：那必须在模块内拍一个「多久没回应算故障」的阈值 —— 定 20s，30MB 文件上传、带媒体的卡片写入**正常也会超过**；定 120s，更短的挂起漏掉、更慢的上传照样误报。那只是把「谎报正常」换成「谎报故障」。
+
+**改成在已经知道自己在等多久的地方上报**：
+
+- **`src/outbound-timeout.ts`**：新增 `withLinkTimeout`（= `link` 版 `withTimeout`）与 `observeOutboundWaits` 观察者。**预算由调用点自己给**（普通发送 20s、发文件 120s、卡内媒体按整卡预算），所以「本来就是慢」的大文件不会被误判。上报是 **best-effort**：观察者抛错也必须让等待结束 —— 写这条时被自己的测试抓到过一次，原实现里 observer 抛错会让 timer 回调中断、promise **永远不 settle**，正是本模块要防的事。
+- **哪些等待算链路事实**：全部 **18 个真的发飞书请求**的调用点改成 `withLinkTimeout`（`index.ts` 8、`feishu-send-file.ts` 3、`media-upload.ts` 3、`card-images.ts` 3、`channel.ts` 1）。**等在自家管线上的（卡片链 flush、上一张卡 settle）不算**，仍走普通 `withTimeout`/`settleWithin` —— 它们超时说明我们自己的链路卡了，不是飞书。这条边界有测试钉住（发送模块里不许再出现普通 `withTimeout(`，`card-send-barrier.ts` / `feishu-streaming.ts` 里不许出现 `withLinkTimeout(`）。
+- **`src/outbound-health.ts`**：新增 `noteAbandoned(what, ms)`，写入 `no answer within <预算>ms: <调用点>` 并计入 `failing`；**超时不是取消**（请求可能稍后才回来），所以任何一次收到应答都会像别的失败一样把它清掉。
+- **`src/index.ts`**：安装观察者，把 `noteAbandoned` 接到同一个 `OutboundHealth`。
+
+**效果**：网络断得干净时看 reject（上一节），断得不干净时看这里 —— 20 秒（或该调用点自己的预算）之后徽章就变红、明细行写明「按 20000ms 预算放弃了等待 send message」，而不是让你对着一个绿点猜为什么没人回话。
+
+**验证**：`npm run typecheck` 0 error；**1035 tests / 55 files 全绿**（本批新增 11 例：`tests/outbound-safety.spec.ts` 9 例钉住上报内容与预算、及时应答不上报、自家管线不上报、摘掉观察者后不再上报、观察者抛错仍按原消息 reject，以及「哪些等待算链路等待」的三条源码边界；`tests/outbound-health.spec.ts` 2 例钉住 `noteAbandoned` 的计数与迟到应答可清除）；`npm run build` 已产出（**按要求未重启 dsh**）。
+
 ### 新增：本轮「产出物」——一行计数 + 只投产出物形状的那一份（O3 结案，`src/produced-files.ts`（新）/ `src/feishu-streaming.ts` / `src/channel.ts` / `src/config.ts` / `src/i18n.ts` / `src/client/`，2026-10-11）
 
 承接 O3（「飞书这边没有 produced 产物行」）。**先决定不做什么**：WebUI 的 produced 是**成功 `write`/`edit` 改过的文件**，而飞书是聊天不是工作区浏览器 —— 本会话实测 **69 个 produced 路径 vs 3 个 presented**，逐条看全是 `src/`、`tests/`、`docs/` 与 `/tmp` 脚本，**没有一个是用户要拿走的东西**；每轮贴 4–6 行路径只会把答案挤出屏幕。所以**不做 produced 全表**（也因此没去接 `workspace/changes` / `workspaceChanges.summary()` 那条 git 口径的主机服务：全表都不做，它就没有必须接的理由）。

@@ -22,6 +22,7 @@ import type { ConversationMessage } from './conversation.ts'
 import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './channel.ts'
 import { LarkRuntime } from './runtime.ts'
 import { OutboundHealth, wrapHttpInstance } from './outbound-health.ts'
+import { observeOutboundWaits } from './outbound-timeout.ts'
 import { renderTerminalQr } from './provision.ts'
 import { ProvisionManager } from './provision-manager.ts'
 import { registerLarkCommands, formatRelativeTime, handleDisplayCommand, handleHelpCommand, handleModelCommand, handleReasoningCommand, handleApprovalCommand, handleListApprovalsCommand, renderFeishuCommandsOnly, type ApprovalControl, type CommandTranslations, type DisplayControl } from './commands.ts'
@@ -45,7 +46,7 @@ import { isCardContentRejection } from './card-markdown.ts'
 import { createCardInstanceWithRetry, createCardWriter, withCardSafety } from './card-write.ts'
 import { startCardImages } from './card-images.ts'
 import { createMediaUploader } from './media-upload.ts'
-import { OUTBOUND_TIMEOUT_MS, withTimeout } from './outbound-timeout.ts'
+import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
 
 export const name = 'lark-channel'
 export const inject = [
@@ -398,7 +399,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // step-card chain above all — waits forever too (key pitfall 29).
     send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
       // The bound covers the barrier plus the HTTP call it precedes.
-      const sent = await withTimeout(cardBarrier.run(to, pendingCardFlush, () => rawChannelSend(to, input, opts)), 'send card or text', CARD_SEND_TIMEOUT_MS)
+      const sent = await withLinkTimeout(cardBarrier.run(to, pendingCardFlush, () => rawChannelSend(to, input, opts)), 'send card or text', CARD_SEND_TIMEOUT_MS)
       // This path is what every OTHER module posts a card through (todos, jobs,
       // subagent panels, questions). A card that lands here sits after the
       // long-lived compact cards, so their next content must not be written
@@ -428,7 +429,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
      * pitfall 45).
      */
     sendStepCard: (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> =>
-      withTimeout(rawChannelSend(to, input, opts), 'send step card', OUTBOUND_TIMEOUT_MS),
+      withLinkTimeout(rawChannelSend(to, input, opts), 'send step card', OUTBOUND_TIMEOUT_MS),
     /**
      * Register the streaming module's step-card flush. Called once at boot;
      * absent in tests and deployments that do not run the streaming module.
@@ -455,7 +456,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     createCardInstance: async (card: object): Promise<string> => {
       const ch = channelHolder.current
       if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
-      return createCardInstanceWithRetry(() => cardWriter.write(card, payload => withTimeout(ch.rawClient.cardkit.v1.card.create({
+      return createCardInstanceWithRetry(() => cardWriter.write(card, payload => withLinkTimeout(ch.rawClient.cardkit.v1.card.create({
         data: { type: 'card_json', data: JSON.stringify(payload) },
       }).then((r: any) => {
         const cardId = r.data?.card_id as string | undefined
@@ -501,7 +502,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         console.log(`dsh-feishu: [send] topic reply without a root id for chat=${to} — falling back to a top-level message`)
       }
       if (opts?.replyTo !== undefined && opts.replyTo !== '') {
-        return withTimeout(ch.rawClient.im.v1.message.reply({
+        return withLinkTimeout(ch.rawClient.im.v1.message.reply({
           path: { message_id: opts.replyTo },
           data: {
             content,
@@ -520,7 +521,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         : to.startsWith('ou_') ? 'open_id'
         : to.startsWith('on_') ? 'union_id'
         : to.includes('@') ? 'email' : 'user_id'
-      return withTimeout(ch.rawClient.im.v1.message.create({
+      return withLinkTimeout(ch.rawClient.im.v1.message.create({
         params: { receive_id_type: receiveIdType },
         data: {
           receive_id: to,
@@ -550,7 +551,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     updateCardInstance: (cardId: string, card: object, sequence: number): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      const write = (payload: object): Promise<void> => withTimeout(ch.rawClient.cardkit.v1.card.update({
+      const write = (payload: object): Promise<void> => withLinkTimeout(ch.rawClient.cardkit.v1.card.update({
         path: { card_id: cardId },
         data: {
           card: { type: 'card_json', data: JSON.stringify(payload) },
@@ -570,13 +571,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         if (!isCardContentRejection(error) || messageId === undefined) throw error
         console.log(`dsh-feishu: [update] card instance ${cardId} refused; patching message ${messageId} instead`
           + ' so the card does not keep stale content')
-        return cardWriter.write(card, payload => withTimeout(ch.updateCard(messageId, payload), 'patch card'))
+        return cardWriter.write(card, payload => withLinkTimeout(ch.updateCard(messageId, payload), 'patch card'))
       })
     },
     updateCard: (messageId: string, card: object): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
-      return cardWriter.write(card, payload => withTimeout(ch.updateCard(messageId, payload), 'patch card'))
+      return cardWriter.write(card, payload => withLinkTimeout(ch.updateCard(messageId, payload), 'patch card'))
     },
     recallMessage: (messageId: string): Promise<void> => {
       const ch = channelHolder.current
@@ -630,10 +631,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // When apiProxy is missing, both no-op (slash commands fall back to
   // errors explaining no pending approvals / questions).
   // The outbound link's own history — the half a boot verdict cannot see. The
-  // status route reports it beside `runtime.status()`, and the channel's HTTP
-  // instance feeds it (see `src/outbound-health.ts` for the 2026-10-11 outage
-  // that made a boot verdict insufficient).
+  // status route reports it beside `runtime.status()`, and it is fed from both
+  // ends of a request: the channel's HTTP instance records everything that
+  // settles (`src/outbound-health.ts`), and the bounded waits around calls that
+  // leave the machine report the ones that never settle at all. The second half
+  // is the only way a silent half-open connection becomes visible; see
+  // `src/outbound-timeout.ts` for why the budget comes from the call site
+  // rather than a threshold guessed in either module.
   const outboundHealth = new OutboundHealth()
+  observeOutboundWaits({ abandoned: (what, ms) => outboundHealth.noteAbandoned(what, ms) })
   const runtime = new LarkRuntime({
     settings: currentSettings,
     resolveSecret: async ref => (await credentials.resolve(credentialRef(ref)))?.value,

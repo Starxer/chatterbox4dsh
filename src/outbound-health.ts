@@ -15,7 +15,10 @@
  * HTTP call the channel makes goes through the `HttpInstance` handed to
  * `createLarkChannel`, which is {@link wrapHttpInstance}'s proxy around the
  * SDK's own default instance: behaviour is unchanged, but each settled request
- * folds into one {@link OutboundHealth}.
+ * folds into one {@link OutboundHealth}. A request that never settles has no
+ * outcome to fold, so it arrives the other way round — the bounded wait around
+ * it reports the give-up through {@link noteAbandoned}
+ * (`src/outbound-timeout.ts`'s `withLinkTimeout`).
  *
  * Three deliberate limits:
  *
@@ -26,17 +29,18 @@
  *    every rejected card would read as a broken connection.
  * 2. **A cancelled request is not a link fact.** Our own aborts produce
  *    `ERR_CANCELED`; they mean nothing about Feishu.
- * 3. **Unsettled requests are invisible here.** A socket that never answers
- *    leaves the request pending forever, so there is no outcome to record; the
- *    callers' own `withTimeout` bounds the wait (`src/outbound-timeout.ts`) but
- *    nothing reports that timeout. A request watchdog would close this, at the
- *    cost of mis-flagging a legitimately slow upload — see the module notes
- *    before adding one.
+ * 3. **Only waits that leave the machine count as link facts.** The budget a
+ *    give-up is judged against comes from the call site (20s for a send, 120s
+ *    for a file), never from a threshold guessed here — a watchdog inside this
+ *    module would have to flag "no answer within N seconds" and would mis-flag a
+ *    legitimately slow upload. Waits on our own pipeline (a card chain
+ *    flushing, a previous card settling) are not link facts and are not
+ *    reported.
  *
- * The verdict changes only when a request settles, so an idle channel keeps its
- * last known verdict rather than inventing a fresh one. {@link
- * OutboundHealthSnapshot.observed} is what tells an untouched tracker ("nothing
- * has been asked yet") apart from a healthy one.
+ * The verdict changes only when a request settles or a wait gives up, so an idle
+ * channel keeps its last known verdict rather than inventing a fresh one.
+ * {@link OutboundHealthSnapshot.observed} is what tells an untouched tracker
+ * ("nothing has been asked yet") apart from a healthy one.
  *
  * @module @starxer/chatterbox4dsh/outbound-health
  */
@@ -149,6 +153,28 @@ export class OutboundHealth {
     this.lastFailureAt = now
     const reason = errorText(error, '').trim()
     this.lastError = reason === '' ? undefined : truncateInline(reason, OUTBOUND_REASON_CAP)
+  }
+
+  /**
+   * Record a request the CALLER stopped waiting for.
+   *
+   * Distinct from {@link noteRejected} because nothing failed: a timeout here is
+   * not a cancellation, and the request may still complete later (a late answer
+   * clears the verdict exactly like any other). It counts as a failure all the
+   * same — a reply the user never receives is what this module exists to
+   * surface — and it is the ONLY way a silent half-open connection becomes
+   * visible, because a request that never settles leaves no outcome to record.
+   *
+   * @param what - the label the call site gave the wait.
+   * @param ms - the budget it gave up after.
+   * @param now - ms epoch of the give-up; injectable for tests.
+   */
+  noteAbandoned(what: string, ms: number, now: number = Date.now()): void {
+    this.observed += 1
+    this.failures += 1
+    this.consecutive += 1
+    this.lastFailureAt = now
+    this.lastError = truncateInline(`no answer within ${ms}ms: ${what}`, OUTBOUND_REASON_CAP)
   }
 
   /** @returns a copy of the current history, with the verdict derived from it. */

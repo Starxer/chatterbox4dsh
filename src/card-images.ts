@@ -49,7 +49,7 @@ import { isAbsolute, resolve, sep } from 'node:path'
 import type { CardImageMode } from './config.ts'
 import { classifyMedia, sniffAudioFormat, sniffImageMime, sniffVideoContainer, type AudioFormatId } from './media-sniff.ts'
 import { isFeishuImageKey, mapCardMarkdownReferences } from './card-markdown.ts'
-import { withTimeout } from './outbound-timeout.ts'
+import { withLinkTimeout } from './outbound-timeout.ts'
 
 /** Bytes in one megabyte — the size settings are all expressed in MB. */
 export const MB = 1024 * 1024
@@ -491,18 +491,18 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
     const label = kind.kind === 'image' ? 'card image' : 'card media'
     const task = (async (): Promise<ResolvedMedia | undefined> => {
       if (kind.kind === 'image') {
-        const uploaded = await withTimeout(deps.upload(absolutePath), 'upload card image', budget())
+        const uploaded = await withLinkTimeout(deps.upload(absolutePath), 'upload card image', budget())
         return uploaded === undefined ? undefined : { kind: 'image', key: uploaded }
       }
       if (kind.kind === 'video') {
         if (deps.uploadVideo === undefined) return undefined
-        const uploaded = await withTimeout(deps.uploadVideo(absolutePath, kind.container), 'upload card video', budget())
+        const uploaded = await withLinkTimeout(deps.uploadVideo(absolutePath, kind.container), 'upload card video', budget())
         return uploaded === undefined
           ? undefined
           : { kind: 'video', key: uploaded.fileKey, ...(uploaded.coverKey === undefined ? {} : { coverKey: uploaded.coverKey }) }
       }
       if (deps.uploadAudio === undefined) return undefined
-      const uploaded = await withTimeout(deps.uploadAudio(absolutePath, kind.format), 'upload card audio', budget())
+      const uploaded = await withLinkTimeout(deps.uploadAudio(absolutePath, kind.format), 'upload card audio', budget())
       return uploaded === undefined ? undefined : { kind: 'audio', key: uploaded.fileKey }
     })()
       .catch((error: unknown) => {

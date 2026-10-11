@@ -81,6 +81,32 @@ describe('OutboundHealth', () => {
     expect(health.snapshot()).toMatchObject({ verdict: 'failing', failures: 1 })
     expect(health.snapshot().lastError).toContain('EPROTO')
   })
+
+  // A request that never settles leaves no outcome for the wrapper to record:
+  // the hang is only visible from the bounded wait around it (`noteAbandoned`),
+  // which is what keeps a silent half-open connection from reading "healthy".
+  it('treats a give-up as a failure, naming the budget and the call site', () => {
+    const health = new OutboundHealth()
+    health.noteAbandoned('send message', 20_000, 5_000)
+    expect(health.snapshot()).toMatchObject({
+      verdict: 'failing',
+      observed: 1,
+      failures: 1,
+      consecutiveFailures: 1,
+      lastFailureAt: 5_000,
+      lastError: 'no answer within 20000ms: send message',
+    })
+  })
+
+  it('lets a late answer clear a give-up, like any other failure', () => {
+    const health = new OutboundHealth()
+    health.noteAbandoned('send file', 120_000, 1_000)
+    // A timeout is not a cancellation: the request may still come back.
+    health.noteAnswered(2_000)
+    const snapshot = health.snapshot()
+    expect(snapshot).toMatchObject({ verdict: 'ok', consecutiveFailures: 0, failures: 1 })
+    expect(snapshot.lastError).toBe('no answer within 120000ms: send file')
+  })
 })
 
 describe('wrapHttpInstance', () => {

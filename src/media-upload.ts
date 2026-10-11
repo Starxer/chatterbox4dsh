@@ -30,7 +30,7 @@ import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { AudioFormatId } from './media-sniff.ts'
-import { withTimeout } from './outbound-timeout.ts'
+import { withLinkTimeout } from './outbound-timeout.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -177,7 +177,7 @@ export function createMediaUploader(deps: MediaUploaderDeps): MediaUploader {
 
   /** Upload one image buffer as a message image and return its key. */
   const uploadImageBuffer = async (image: Buffer): Promise<string | undefined> => {
-    const uploaded = await withTimeout(
+    const uploaded = await withLinkTimeout(
       client().rawClient.im.v1.image.create({ data: { image_type: 'message', image } }),
       'upload card image',
       MEDIA_UPLOAD_TIMEOUT_MS,
@@ -209,7 +209,7 @@ export function createMediaUploader(deps: MediaUploaderDeps): MediaUploader {
           uploadPath = temp
         }
         const durationMs = await probe(uploadPath)
-        const uploaded = await withTimeout(
+        const uploaded = await withLinkTimeout(
           client().rawClient.im.v1.file.create({
             data: {
               file_type: 'mp4',
@@ -255,7 +255,7 @@ export function createMediaUploader(deps: MediaUploaderDeps): MediaUploader {
           uploadPath = temp
         }
         const durationMs = await probe(uploadPath)
-        const uploaded = await withTimeout(
+        const uploaded = await withLinkTimeout(
           client().rawClient.im.v1.file.create({
             data: {
               file_type: 'opus',
