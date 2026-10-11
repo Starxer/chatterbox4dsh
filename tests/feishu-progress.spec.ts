@@ -410,10 +410,10 @@ describe('renderProgressCard', () => {
   describe('the row names what the call touched', () => {
     it('renders the file after the tool name', () => {
       const card: any = renderProgressCard(t, facts({
-        steps: [{ step: 1, startedAt: 0, endedAt: 1_000, tools: [{ name: 'read', startedAt: 0, elapsed: 400, detail: ['…/src/feishu-progress.ts'] }] }],
+        steps: [{ step: 1, startedAt: 0, endedAt: 1_000, tools: [{ name: 'read', startedAt: 0, elapsed: 400, detail: ['feishu-progress.ts'] }] }],
         calls: 1, now: 1_000,
       }))
-      expect(mdOf(card)).toContain(t.turnCardToolDone('`read` · …/src/feishu-progress.ts', '400ms'))
+      expect(mdOf(card)).toContain(t.turnCardToolDone('`read` · feishu-progress.ts', '400ms'))
     })
 
     it('names at most three distinct details of a merged run', () => {

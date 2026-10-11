@@ -116,14 +116,28 @@ describe('renderStepCard tool result/args rendering', () => {
 describe('progressToolDetails', () => {
   // The compact turn card names what a row actually touched: a file for the
   // file tools, the programs for a shell command (2026-10-11).
-  it('names the file of a read / write / edit, shortened to two segments', () => {
-    expect(progressToolDetails('read', JSON.stringify({ path: '/w/repo/src/feishu-progress.ts' }))).toEqual(['…/src/feishu-progress.ts'])
-    expect(progressToolDetails('write', JSON.stringify({ file_path: 'docs/architecture.md' }))).toEqual(['docs/architecture.md'])
-    expect(progressToolDetails('edit', JSON.stringify({ path: 'notes/pitfalls.md' }))).toEqual(['notes/pitfalls.md'])
+  it('names the BARE file of a read / write / edit, with no directory', () => {
+    // 2026-10-12, the user's call: `…/src/feishu-progress.ts` spent the row's
+    // width on a directory; the file is what changed.
+    expect(progressToolDetails('read', JSON.stringify({ path: '/w/repo/src/feishu-progress.ts' }))).toEqual(['feishu-progress.ts'])
+    expect(progressToolDetails('write', JSON.stringify({ file_path: 'docs/architecture.md' }))).toEqual(['architecture.md'])
+    expect(progressToolDetails('edit', JSON.stringify({ path: 'notes/pitfalls.md' }))).toEqual(['pitfalls.md'])
+    // A same-named file in another directory reads the same: the row points at a
+    // call, it does not identify the file on disk.
+    expect(progressToolDetails('edit', JSON.stringify({ path: 'src/client/client.ts' }))).toEqual(['client.ts'])
+  })
+
+  it('takes the bare name from a Windows path too', () => {
+    expect(progressToolDetails('read', JSON.stringify({ path: 'C:\\w\\repo\\src\\index.ts' }))).toEqual(['index.ts'])
   })
 
   it('keeps a single-segment path untouched', () => {
     expect(progressToolDetails('read', JSON.stringify({ path: 'README.md' }))).toEqual(['README.md'])
+  })
+
+  it('says nothing for a path that names no file', () => {
+    expect(progressToolDetails('read', JSON.stringify({ path: 'src/' }))).toBeUndefined()
+    expect(progressToolDetails('read', JSON.stringify({ path: '   ' }))).toBeUndefined()
   })
 
   it('names the programs a bash command runs, in order', () => {

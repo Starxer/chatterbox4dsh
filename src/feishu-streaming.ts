@@ -2519,13 +2519,18 @@ export function deriveToolSummary(toolName: string, argsRaw: string): string {
 }
 
 /**
- * Last two path segments, so a row names a file without shipping an absolute
- * path: `…/src/feishu-progress.ts`. A short path is returned untouched.
+ * A file path reduced to its BARE file name: what the call touched, not where
+ * it lives.
+ *
+ * The user's call (2026-10-12): the compact row is read by scanning, and the
+ * directory in `…/src/feishu-progress.ts` is width spent on a fact the row is
+ * not about. A path that names no file — empty, or ending in a separator —
+ * yields `''`, so the row says nothing rather than naming a directory.
  */
-function shortPath(path: string): string {
+function bareFileName(path: string): string {
+  if (path === '' || /[\\/]$/u.test(path)) return ''
   const parts = path.split(/[\\/]/u).filter(part => part !== '')
-  if (parts.length <= 2) return path
-  return `…/${parts.slice(-2).join('/')}`
+  return parts.length === 0 ? '' : parts[parts.length - 1]!
 }
 
 /**
@@ -2536,9 +2541,12 @@ function shortPath(path: string): string {
  *
  * Two kinds, because those are the two where a name alone says nothing:
  *
- * - **a file** (read / write / edit): the file it touched, shortened to its last
- *   two segments. The detailed card keeps the model's own description and the
- *   whole path; a one-line compact row cannot.
+ * - **a file** (read / write / edit): the file's BARE name (`feishu-progress.ts`).
+ *   The detailed card keeps the model's own description and the whole path; this
+ *   row is one line on a card read by scanning, and the directory is not the
+ *   part that changed. Two files of the same name in different directories
+ *   therefore read the same here — the row is a pointer to the call, not an
+ *   identity for the file.
  * - **a shell command** (`bash`, `pwsh`): the programs it ran, at most
  *   {@link shellPrograms}' own limit.
  *
@@ -2557,7 +2565,7 @@ export function progressToolDetails(toolName: string, argsRaw: string): string[]
   if (variant === 'read' || variant === 'write' || variant === 'edit') {
     const path = pickToolArg(args, TOOL_SUMMARY_KEYS[variant])
     if (path === undefined) return undefined
-    const short = shortPath(firstLine(path).trim())
+    const short = bareFileName(firstLine(path).trim())
     return short === '' ? undefined : [short]
   }
   if (variant === 'bash' || toolName === 'pwsh') {
