@@ -276,6 +276,20 @@ function toolLine(
   return t.turnCardToolRunning(label, text)
 }
 
+/**
+ * Markdown the card's rows carry, so the shape is one decision in one place
+ * (chosen by the user on a rendered card, 2026-10-12).
+ *
+ * - a tool call is an ITEM of an unordered list: the run of calls under one step
+ *   reads as one list, which is what makes them belong to that step;
+ * - a step's narration ("reply") is a QUOTE: it is the model talking BETWEEN the
+ *   calls, and a quote separates it from the tool lines without another heading;
+ * - the step's own line is the list's title, marked by the icon in
+ *   `Translations.turnCardStep`.
+ */
+export const PROGRESS_TOOL_MARKER = '- '
+export const PROGRESS_QUOTE_MARKER = '> '
+
 /** Flatten the facts into ordered lines. */
 function buildLines(t: Translations, facts: ProgressFacts): Line[] {
   const lines: Line[] = []
@@ -293,7 +307,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
     // what the step said BEFORE it decided to call tools, so it reads as the
     // section's preamble rather than as another tool row.
     if (step.note !== undefined && step.note !== '') {
-      lines.push({ text: t.turnCardStepNote(step.note), header: false, step: step.step, note: true })
+      lines.push({ text: `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote(step.note)}`, header: false, step: step.step, note: true })
     }
     // Merge consecutive calls with the same name AND the same state: a `read`
     // run is one row, not ten. A run's elapsed is its own total (sum for
@@ -325,7 +339,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
         addDetails(next.detail)
       }
       lines.push({
-        text: toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details),
+        text: `${PROGRESS_TOOL_MARKER}${toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details)}`,
         header: false,
         step: step.step,
       })

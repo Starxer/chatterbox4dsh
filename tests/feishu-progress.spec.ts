@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_MAX_STEPS, PROGRESS_NOTE_MAX,
   PROGRESS_RUNNING_TICK_MS, PROGRESS_WRITE_GAP_MS,
+  PROGRESS_QUOTE_MARKER, PROGRESS_TOOL_MARKER,
   condenseStepNote, createProgressCards, formatProgressMs, inlineMarkupBalanced, renderProgressCard, type ProgressFacts,
 } from '../src/feishu-progress.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
@@ -229,8 +230,8 @@ describe('renderProgressCard', () => {
     const lines = visibleLines(card)
     expect(lines).toEqual([
       t.turnCardStep(2, '3.0s'),
-      t.turnCardStepNote('我先看一下流式卡片那段代码'),
-      t.turnCardToolDone('`read`', '200ms'),
+      `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('我先看一下流式卡片那段代码')}`,
+      `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`read`', '200ms')}`,
     ])
   })
 
@@ -257,8 +258,8 @@ describe('renderProgressCard', () => {
     expect(visibleLines(card)).toEqual([
       t.turnCardStep(1, '2.0s'),
       '📥 注入上下文 · AGENTS.md（已更新）',
-      t.turnCardStepNote('我看一下'),
-      t.turnCardToolDone('`bash`', '100ms'),
+      `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('我看一下')}`,
+      `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`bash`', '100ms')}`,
     ])
   })
 
@@ -279,7 +280,8 @@ describe('renderProgressCard', () => {
     expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(15)))
     const visible = visibleLines(card)
     expect(visible[0]).toBe(t.turnCardStep(6, '100ms'))
-    expect(visible.filter(line => line.startsWith('**第'))).toHaveLength(3)
+    const titles = [6, 7, 8].map(n => t.turnCardStep(n, '100ms'))
+    expect(visible.filter(line => titles.includes(line))).toHaveLength(3)
   })
 
   it('renders only the rows of this segment when one was cut short', () => {
@@ -325,7 +327,11 @@ describe('renderProgressCard', () => {
         now: 3_000,
       }))
       expect(visibleElements(card)).toEqual([
-        [t.turnCardStep(3, '3.0s'), t.turnCardToolDone('`read`', '100ms'), t.turnCardToolDone('`bash` ×2', '400ms')].join('\n'),
+        [
+          t.turnCardStep(3, '3.0s'),
+          `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`read`', '100ms')}`,
+          `${PROGRESS_TOOL_MARKER}${t.turnCardToolDone('`bash` ×2', '400ms')}`,
+        ].join('\n'),
       ])
       // The rows are still separate LINES: only the element boundary changed.
       expect(visibleLines(card)).toHaveLength(3)
@@ -361,7 +367,7 @@ describe('renderProgressCard', () => {
         calls: 1, now: 1_000,
       }))
       expect(visibleElements(card)).toHaveLength(3)
-      expect(visibleLines(card)).toContain(t.turnCardStepNote('这条**没闭合'))
+      expect(visibleLines(card)).toContain(`${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote('这条**没闭合')}`)
     })
   })
 
