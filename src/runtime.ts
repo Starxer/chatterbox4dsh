@@ -1,13 +1,33 @@
 import { connectionFingerprint, resolveRuntimeConfig } from './config.ts'
 import type { RuntimeConfig, SettingsConfig } from './config.ts'
-import type { LarkChannel } from '@larksuiteoapi/node-sdk'
+import type { LarkChannel, WSConnectionState } from '@larksuiteoapi/node-sdk'
+
+/**
+ * The inbound half of the link, read live from the channel.
+ *
+ * The snapshot below is a BOOT verdict: it says the WebSocket handshake
+ * succeeded once, and nothing about now. A dropped long connection leaves it at
+ * `connected` forever, which is the same lie the outbound half told during the
+ * 2026-10-11 TLS outage — so both halves are reported, and the surface decides
+ * what a mismatch means.
+ */
+export interface InboundStatus {
+  /** WebSocket lifecycle as the channel reports it. */
+  state: WSConnectionState
+  /** Consecutive reconnect attempts in the current loop; 0 while connected. */
+  reconnectAttempts: number
+  /** ms epoch of the most recent connect attempt. */
+  lastConnectTime?: number
+  /** ms epoch of the next scheduled reconnect attempt. */
+  nextConnectTime?: number
+}
 
 export type RuntimeStatus =
-  | { state: 'unconfigured'; message: string }
-  | { state: 'connecting' }
-  | { state: 'connected' }
-  | { state: 'error'; message: string }
-  | { state: 'stopped' }
+  | { state: 'unconfigured'; message: string; inbound?: InboundStatus }
+  | { state: 'connecting'; inbound?: InboundStatus }
+  | { state: 'connected'; inbound?: InboundStatus }
+  | { state: 'error'; message: string; inbound?: InboundStatus }
+  | { state: 'stopped'; inbound?: InboundStatus }
 
 export interface LarkRuntimeStart {
   stop: () => Promise<void>
@@ -32,8 +52,26 @@ export class LarkRuntime {
 
   constructor(private readonly deps: LarkRuntimeDependencies) {}
 
+  /**
+   * The current status, plus the live inbound state of the channel it names.
+   *
+   * The inbound read is optional by construction: a stub channel in a test (or
+   * an SDK that stops exposing the getter) must not break `/status` — the boot
+   * verdict is still returned, just without the second half.
+   */
   status(): RuntimeStatus {
-    return { ...this.snapshot }
+    const base: RuntimeStatus = { ...this.snapshot }
+    const status = this.current?.start.channel.getConnectionStatus?.()
+    if (status === undefined) return base
+    return {
+      ...base,
+      inbound: {
+        state: status.state,
+        reconnectAttempts: status.reconnectAttempts,
+        ...status.lastConnectTime === undefined ? {} : { lastConnectTime: status.lastConnectTime },
+        ...status.nextConnectTime === undefined ? {} : { nextConnectTime: status.nextConnectTime },
+      },
+    }
   }
 
   reconcile(): Promise<void> {

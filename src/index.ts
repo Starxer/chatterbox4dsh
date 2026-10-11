@@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
-import { createLarkChannel } from '@larksuiteoapi/node-sdk'
+import { createLarkChannel, defaultHttpInstance } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
 import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
@@ -21,6 +21,7 @@ import { HarnessConversationService, TurnDroppedError, type BusyMode } from './h
 import type { ConversationMessage } from './conversation.ts'
 import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './channel.ts'
 import { LarkRuntime } from './runtime.ts'
+import { OutboundHealth, wrapHttpInstance } from './outbound-health.ts'
 import { renderTerminalQr } from './provision.ts'
 import { ProvisionManager } from './provision-manager.ts'
 import { registerLarkCommands, formatRelativeTime, handleDisplayCommand, handleHelpCommand, handleModelCommand, handleReasoningCommand, handleApprovalCommand, handleListApprovalsCommand, renderFeishuCommandsOnly, type ApprovalControl, type CommandTranslations, type DisplayControl } from './commands.ts'
@@ -628,6 +629,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // the cardChannel adapter so a single cardAction dispatcher feeds both.
   // When apiProxy is missing, both no-op (slash commands fall back to
   // errors explaining no pending approvals / questions).
+  // The outbound link's own history — the half a boot verdict cannot see. The
+  // status route reports it beside `runtime.status()`, and the channel's HTTP
+  // instance feeds it (see `src/outbound-health.ts` for the 2026-10-11 outage
+  // that made a boot verdict insufficient).
+  const outboundHealth = new OutboundHealth()
   const runtime = new LarkRuntime({
     settings: currentSettings,
     resolveSecret: async ref => (await credentials.resolve(credentialRef(ref)))?.value,
@@ -661,7 +667,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // the Turn Complete footer) goes straight to the SDK channel, so the
         // card adapter never sees it. Wrapping the factory puts the payload
         // safety in front of those too — see `card-write.ts`.
-        options => withCardSafety(createLarkChannel(options), cardWriter),
+        //
+        // `httpInstance` is the SDK's own default instance behind a recording
+        // proxy: passing the default explicitly is what makes the outbound
+        // health reading depend on an instance we instrumented rather than on
+        // the SDK's fallback staying the same object.
+        options => withCardSafety(createLarkChannel({
+          ...options,
+          httpInstance: wrapHttpInstance(defaultHttpInstance, outboundHealth),
+        }), cardWriter),
         ctx.logger,
         console,
         message => executeSlashCommand(message, bridge, commands, bridgeHolder, sessionController, agents, sandboxPolicy, permissionHandle, llm, defaultModel, cardChannel,
@@ -1231,10 +1245,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // credentials services (the client page uses `ctx.configForms` and
   // `remote.credentials`); the plugin's own HTTP route carries only the two
   // facts with no native equivalent — live provisioning and connection state.
+  //
+  // Connection state is BOTH halves: `runtime.status()` carries the boot
+  // verdict plus the live inbound WebSocket state, and `outbound` carries what
+  // the requests themselves have been doing since.
   const provisionApi = {
     provision: () => provisionManager.start(),
     provisionStatus: () => provisionManager.status(),
-    runtimeStatus: () => runtime.status(),
+    runtimeStatus: () => ({ ...runtime.status(), outbound: outboundHealth.snapshot() }),
   }
 
   // Persist the plugin's `locale` field (used by `/lang`). Passing `'auto'`

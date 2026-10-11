@@ -10,9 +10,12 @@
  *
  * - the first subscriber starts the status read, so a browser that never opens
  *   the plugin's detail page never touches the route;
- * - a provisioning run polls on a fixed cadence until it reaches a terminal
- *   phase, and the last subscriber leaving stops the poll as well;
- * - {@link dispose} stops it unconditionally.
+ * - the status then keeps being re-read while an entry is mounted — 2s while a
+ *   provisioning run is in flight, {@link CHANNEL_STATUS_POLL_MS} otherwise —
+ *   because a health indicator sampled only at page open cannot report an
+ *   outage that starts afterwards (2026-10-11);
+ * - the last subscriber leaving stops the poll, and {@link dispose} stops it
+ *   unconditionally.
  */
 
 import type { Observable } from './config-form-types.ts'
@@ -24,6 +27,17 @@ export const CHANNEL_STATUS_PATH = '/dsh-feishu/provision'
 /** Poll interval while the scan-to-configure flow is in flight. */
 const PROVISION_POLL_MS = 2_000
 
+/**
+ * Poll interval for the live channel status while nothing is being configured.
+ *
+ * Slow on purpose: the read is a loopback JSON GET, but what it reports (the
+ * outbound link's verdict and the long connection's state) changes on the order
+ * of seconds at worst, and a page left open all day should not hammer the host
+ * for a badge. Bounded by the mounted entries, so it costs nothing when the
+ * detail page is closed.
+ */
+const CHANNEL_STATUS_POLL_MS = 10_000
+
 /** Bound on one channel-status request; a hung request must not pin a pending promise. */
 const CHANNEL_STATUS_TIMEOUT_MS = 10_000
 
@@ -32,10 +46,46 @@ export type RuntimeState = 'unconfigured' | 'connecting' | 'connected' | 'error'
 /** Scan-to-configure lifecycle. */
 export type ProvisionPhase = 'idle' | 'waiting' | 'configuring' | 'done' | 'error'
 
+/**
+ * Inbound half of the link: the long connection's lifecycle, read live from the
+ * channel. Present only once the channel exists.
+ *
+ * The union is duplicated from the SDK rather than imported: the client half is
+ * bundled on its own and must not pull host modules in (the same reason the
+ * other client unions here are local).
+ */
+export interface InboundStatus {
+  state: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
+  reconnectAttempts: number
+  lastConnectTime?: number
+  nextConnectTime?: number
+}
+
+/**
+ * Outbound half of the link: what the channel's own requests have been doing.
+ *
+ * `verdict` is `ok` until a request fails to reach an answer and back to `ok`
+ * once one does, so a channel that cannot deliver anything no longer reports as
+ * plainly connected. `observed === 0` means nothing has been sent yet — not that
+ * anything was healthy.
+ */
+export interface OutboundHealth {
+  verdict: 'ok' | 'failing'
+  observed: number
+  answered: number
+  failures: number
+  consecutiveFailures: number
+  lastAnsweredAt?: number
+  lastFailureAt?: number
+  lastError?: string
+}
+
 /** Feishu connection state as the runtime reports it. */
 export interface RuntimeStatus {
   state: RuntimeState
   message?: string
+  inbound?: InboundStatus
+  outbound?: OutboundHealth
 }
 
 /** Scan-to-configure state as the provision manager reports it. */
@@ -110,6 +160,14 @@ export class LarkChannelStatusController {
   private noticeKey: string | undefined
   private noticeDetail: string | undefined
   private timer: ReturnType<typeof setInterval> | undefined
+  /** Interval the live timer was armed with, so a retune only re-arms on change. */
+  private pollInterval: number | undefined
+  /**
+   * True from the moment a status read shows a scan-to-configure run moving
+   * until a poll observes it leave those phases. What makes the completion
+   * callback fire ONCE, now that the status poll outlives the run.
+   */
+  private provisionWasActive = false
   private subscribers = 0
   private disposed = false
 
@@ -151,7 +209,7 @@ export class LarkChannelStatusController {
       if (!response.ok) throw new Error(value.error ?? this.t('provisionFailed'))
       this.adoptStatus(value)
       this.loading = false
-      this.beginPolling()
+      this.retunePolling()
     } catch (error) {
       this.noticeDetail = messageOf(error)
       this.noticeKey = undefined
@@ -183,10 +241,16 @@ export class LarkChannelStatusController {
     }
   }
 
-  /** Read the status once, then resume polling when a run is already in flight. */
+  /**
+   * Read the status once, then keep reading it while an entry stays mounted.
+   *
+   * The read alone is not enough: a health indicator that is only sampled when
+   * the page opens cannot report an outage that starts afterwards — the
+   * 2026-10-11 TLS failure stayed invisible exactly that way.
+   */
   private async activate(): Promise<void> {
     await this.refreshStatus(false)
-    if (!this.disposed && isProvisionActive(this.provision.phase)) this.beginPolling()
+    this.retunePolling()
   }
 
   /**
@@ -207,11 +271,16 @@ export class LarkChannelStatusController {
       }
       // A notice raised by a refused provisioning *start* is deliberately kept:
       // only a new attempt or a successful run replaces it.
-      const phase = this.provision.phase
-      if (polling && !isProvisionActive(phase)) {
-        this.stopPolling()
-        if (phase === 'done') this.deps.onProvisionCompleted?.()
+      //
+      // The completion callback fires on the ACTIVE → terminal transition a poll
+      // observes, never on a later tick that happens to read the same terminal
+      // phase: it re-reads the credential badge, and the status poll now runs
+      // for as long as the page is open.
+      if (polling && this.provisionWasActive && !isProvisionActive(this.provision.phase)) {
+        this.provisionWasActive = false
+        if (this.provision.phase === 'done') this.deps.onProvisionCompleted?.()
       }
+      if (polling) this.retunePolling()
     } catch (error) {
       this.statusFailed = true
       this.noticeKey = 'loadFailed'
@@ -226,21 +295,33 @@ export class LarkChannelStatusController {
   private adoptStatus(value: ChannelStatusPayload): void {
     if (value.runtime !== undefined) this.runtime = value.runtime
     if (value.provision !== undefined) this.provision = value.provision
+    if (isProvisionActive(this.provision.phase)) this.provisionWasActive = true
     this.publish()
   }
 
-  /** Begin polling the channel status route on the fixed cadence. */
-  private beginPolling(): void {
-    if (this.disposed) return
+  /**
+   * Keep the status poll running while an entry is mounted, at the cadence the
+   * current phase deserves: {@link PROVISION_POLL_MS} while a scan-to-configure
+   * run is moving, {@link CHANNEL_STATUS_POLL_MS} otherwise.
+   *
+   * Re-arms only when the interval actually changes, so a steady state does not
+   * restart the timer on every tick.
+   */
+  private retunePolling(): void {
+    if (this.disposed || this.subscribers === 0) return
+    const interval = isProvisionActive(this.provision.phase) ? PROVISION_POLL_MS : CHANNEL_STATUS_POLL_MS
+    if (this.timer !== undefined && this.pollInterval === interval) return
     this.stopPolling()
-    this.timer = setInterval(() => { void this.refreshStatus(true) }, PROVISION_POLL_MS)
+    this.pollInterval = interval
+    this.timer = setInterval(() => { void this.refreshStatus(true) }, interval)
   }
 
-  /** Stop any provisioning poll. */
+  /** Stop any status poll. */
   private stopPolling(): void {
     if (this.timer === undefined) return
     clearInterval(this.timer)
     this.timer = undefined
+    this.pollInterval = undefined
   }
 
   /** Drop any staged notice (a new attempt invalidates the previous one). */

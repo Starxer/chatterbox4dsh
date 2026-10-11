@@ -45,6 +45,30 @@ export type LarkDetailProps = PluginDetailProps & Omit<LarkChannelStatusFace, 'h
 type StatusTone = 'connected' | 'pending' | 'error' | 'idle'
 
 /**
+ * Which half of the link is broken, if either.
+ *
+ * A boot verdict says the WebSocket handshake succeeded ONCE; it says nothing
+ * about either direction now. So a channel the runtime calls connected is still
+ * reported as broken when the requests cannot leave (outbound) or the long
+ * connection is no longer up (inbound) — the state that was missing during the
+ * 2026-10-11 TLS outage, when the badge read 已连接 while nothing could be sent.
+ *
+ * Only a `connected` verdict is second-guessed: `connecting`, `error` and the
+ * rest already describe themselves, and a stale outbound failure from an
+ * earlier channel must not repaint them.
+ *
+ * @param state - the channel status snapshot.
+ * @returns the broken half, or undefined while the link looks intact.
+ */
+function linkTrouble(state: LarkChannelStatusState): 'outbound' | 'inbound' | undefined {
+  if (state.runtime.state !== 'connected') return undefined
+  if (state.runtime.outbound?.verdict === 'failing') return 'outbound'
+  const inbound = state.runtime.inbound?.state
+  if (inbound === 'reconnecting' || inbound === 'failed' || inbound === 'idle') return 'inbound'
+  return undefined
+}
+
+/**
  * Connection state beside a detail page's title.
  * @param props - the open subject, the status snapshot, and locale copy.
  * @returns the status pill, or null for a subject that is not this plugin's.
@@ -105,6 +129,8 @@ function LarkChannelSectionBody(props: LarkDetailProps): JSX.Element {
   const { t } = props
   const state = props.useChannelStatus(snapshot => snapshot)
   const provision = state.provision
+  const trouble = linkTrouble(state)
+  const detail = linkDetail(t, state)
   return <section className="dsh-feishu-detail-section" aria-labelledby="dsh-feishu-connection-title">
     <div className="dsh-feishu-detail-head">
       <h4 id="dsh-feishu-connection-title">{t('connectionTitle')}</h4>
@@ -124,8 +150,41 @@ function LarkChannelSectionBody(props: LarkDetailProps): JSX.Element {
       ? <p className="dsh-feishu-detail dsh-feishu-error">{t('provisionFailed')}{provision.message !== undefined ? `: ${provision.message}` : ''}</p>
       : null}
     {state.runtime.message !== undefined ? <p className="dsh-feishu-detail">{state.runtime.message}</p> : null}
+    {detail !== undefined
+      ? <p className={trouble === undefined ? 'dsh-feishu-detail' : 'dsh-feishu-detail dsh-feishu-error'}>{detail}</p>
+      : null}
     {state.notice !== '' ? <p className="dsh-feishu-detail dsh-feishu-error" role="status">{state.notice}</p> : null}
   </section>
+}
+
+/**
+ * The sentence behind a bad pill: which half broke, how badly, and the first
+ * concrete reason. Numbers and the peer's own wording are not translated — the
+ * reason is a diagnostic, and paraphrasing it would lose the code an operator
+ * needs.
+ *
+ * @param t - the dictionary translator.
+ * @param state - the channel status snapshot.
+ * @returns the line to render, or undefined while there is nothing to explain.
+ */
+function linkDetail(t: (key: string) => string, state: LarkChannelStatusState): string | undefined {
+  const trouble = linkTrouble(state)
+  if (trouble === 'outbound') {
+    const outbound = state.runtime.outbound
+    if (outbound === undefined) return undefined
+    const reason = outbound.lastError === undefined ? '' : ` · ${outbound.lastError}`
+    return `${t('outboundFailures')}: ${outbound.consecutiveFailures}${reason}`
+  }
+  if (trouble === 'inbound') {
+    const inbound = state.runtime.inbound
+    if (inbound === undefined) return undefined
+    const label = inbound.state === 'reconnecting' ? t('statusConnecting') : t('statusOffline')
+    return `${t('inboundState')}: ${label} · ${t('inboundRetries')} ${inbound.reconnectAttempts}`
+  }
+  // Nothing has been sent yet, so there is no verdict to trust: saying so beats
+  // implying the link was exercised.
+  if (state.runtime.state === 'connected' && state.runtime.outbound?.observed === 0) return t('outboundUnobserved')
+  return undefined
 }
 
 /** One read-only status pill: a tone dot plus its localized label. */
@@ -142,12 +201,19 @@ function StatusPill({ t, state }: { t: (key: string) => string; state: LarkChann
  *
  * `loading` wins over the reported state: before the first read settles the
  * runtime still holds its initial `connecting`, and claiming the channel is
- * connecting while nothing has been asked would be a guess.
+ * connecting while nothing has been asked would be a guess. A broken half of
+ * the link is named on top of the connected verdict for the same reason — the
+ * verdict is the boot fact, not the live one.
  */
 function statusLabelKey(state: LarkChannelStatusState): string {
   if (state.loading) return 'statusReading'
   switch (state.runtime.state) {
-    case 'connected': return 'statusConnected'
+    case 'connected': {
+      const trouble = linkTrouble(state)
+      if (trouble === 'outbound') return 'statusOutboundFailing'
+      if (trouble === 'inbound') return 'statusInboundFailing'
+      return 'statusConnected'
+    }
     case 'connecting': return 'statusConnecting'
     case 'unconfigured': return 'statusUnconfigured'
     case 'stopped': return 'statusStopped'
@@ -159,7 +225,7 @@ function statusLabelKey(state: LarkChannelStatusState): string {
 function statusTone(state: LarkChannelStatusState): StatusTone {
   if (state.loading || state.runtime.state === 'connecting') return 'pending'
   switch (state.runtime.state) {
-    case 'connected': return 'connected'
+    case 'connected': return linkTrouble(state) === undefined ? 'connected' : 'error'
     case 'error': return 'error'
     default: return 'idle'
   }
@@ -169,7 +235,7 @@ function statusTone(state: LarkChannelStatusState): StatusTone {
 function statusDot(state: LarkChannelStatusState): StateDotState {
   if (state.loading) return 'ongoing'
   switch (state.runtime.state) {
-    case 'connected': return 'done'
+    case 'connected': return linkTrouble(state) === undefined ? 'done' : 'error'
     case 'connecting': return 'ongoing'
     case 'error': return 'error'
     case 'unconfigured': return 'warning'

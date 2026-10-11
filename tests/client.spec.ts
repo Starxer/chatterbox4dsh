@@ -11,7 +11,8 @@ import {
   type LarkSettingsValues,
 } from '../src/client/LarkSettingsCardController.ts'
 import { DELIVER_DOC_MAX_MB as HOST_DELIVER_DOC_MAX_MB } from '../src/config.ts'
-import type { LarkChannelStatusFace, LarkChannelStatusState, ProvisionState, RuntimeStatus } from '../src/client/LarkChannelStatusController.ts'
+import type { LarkChannelStatusFace, LarkChannelStatusState, ProvisionPhase, ProvisionState, RuntimeStatus } from '../src/client/LarkChannelStatusController.ts'
+import { LarkChannelStatusController } from '../src/client/LarkChannelStatusController.ts'
 import { SnapshotStore } from '../src/client/snapshot-store.ts'
 import type {
   PluginPackageRef, PluginRowRef, PluginsSubject,
@@ -618,6 +619,84 @@ describe('Lark plugin detail entries', () => {
     expect(await screen.findByText('statusConnected')).toBeTruthy()
   })
 
+  // The badge used to be a boot verdict: `connected` once the WebSocket
+  // handshake succeeded, forever. On 2026-10-11 that read 已连接 for eight
+  // minutes while every outbound TLS handshake died (SSL alert 112), so the one
+  // surface an operator would check said the channel was fine.
+  it('reports a failing outbound link instead of a plain connected channel', async () => {
+    stubStatus({
+      state: 'connected',
+      outbound: {
+        verdict: 'failing',
+        observed: 6,
+        answered: 0,
+        failures: 6,
+        consecutiveFailures: 4,
+        lastError: 'write EPROTO … SSL alert number 112',
+      },
+    })
+    const harness = mount(createForm())
+
+    renderDetail(harness, 'plugins.detail.badge', BUNDLE)
+    expect(await screen.findByText('statusOutboundFailing')).toBeTruthy()
+    cleanup()
+
+    renderDetail(harness, 'plugins.detail.section', BUNDLE)
+    const detail = await screen.findByText(/outboundFailures/)
+    expect(detail.textContent).toContain('4')
+    expect(detail.textContent).toContain('SSL alert number 112')
+  })
+
+  it('reports a dropped long connection instead of a plain connected channel', async () => {
+    stubStatus({ state: 'connected', inbound: { state: 'reconnecting', reconnectAttempts: 3 } })
+    const harness = mount(createForm())
+
+    renderDetail(harness, 'plugins.detail.badge', BUNDLE)
+    expect(await screen.findByText('statusInboundFailing')).toBeTruthy()
+    cleanup()
+
+    renderDetail(harness, 'plugins.detail.section', BUNDLE)
+    const detail = await screen.findByText(/inboundState/)
+    expect(detail.textContent).toContain('3')
+  })
+
+  it('leaves a healthy link reported as connected', async () => {
+    stubStatus({
+      state: 'connected',
+      inbound: { state: 'connected', reconnectAttempts: 0 },
+      outbound: { verdict: 'ok', observed: 12, answered: 12, failures: 0, consecutiveFailures: 0 },
+    })
+    const harness = mount(createForm())
+    renderDetail(harness, 'plugins.detail.section', BUNDLE)
+
+    expect(await screen.findByText('statusConnected')).toBeTruthy()
+    expect(screen.queryByText(/outboundFailures/)).toBeNull()
+    expect(screen.queryByText('outboundUnobserved')).toBeNull()
+  })
+
+  it('reports an unexercised link as unobserved rather than healthy', async () => {
+    stubStatus({
+      state: 'connected',
+      inbound: { state: 'connected', reconnectAttempts: 0 },
+      outbound: { verdict: 'ok', observed: 0, answered: 0, failures: 0, consecutiveFailures: 0 },
+    })
+    const harness = mount(createForm())
+    renderDetail(harness, 'plugins.detail.section', BUNDLE)
+
+    // The pill still carries the boot verdict; the section says what is missing.
+    expect(await screen.findByText('statusConnected')).toBeTruthy()
+    expect(screen.getByText('outboundUnobserved')).toBeTruthy()
+  })
+
+  it('does not let a stale outbound failure repaint a connecting channel', async () => {
+    stubStatus({ state: 'connecting', outbound: { verdict: 'failing', observed: 3, answered: 0, failures: 3, consecutiveFailures: 3 } })
+    const harness = mount(createForm())
+    renderDetail(harness, 'plugins.detail.badge', BUNDLE)
+
+    expect(await screen.findByText('statusConnecting')).toBeTruthy()
+    expect(screen.queryByText('statusOutboundFailing')).toBeNull()
+  })
+
   it('renders nothing for an official item or another package', async () => {
     stubStatus()
     const harness = mount(createForm())
@@ -722,5 +801,90 @@ describe('Lark plugin detail entries', () => {
     harness.disposeGate()
     // Each `slots.inject` disposer is what Cordis runs when the gate closes.
     expect(harness.ctx.slots.inject).toHaveBeenCalledTimes(4)
+  })
+})
+
+/**
+ * The status route used to be read ONCE per page mount, so an outage that
+ * started while the detail page was open stayed invisible (2026-10-11). These
+ * cases pin the cadence, its bound (the mounted entries), and the one callback
+ * whose "fires once" guarantee used to come from stopping the poll.
+ */
+describe('LarkChannelStatusController polling', () => {
+  /** Stub the route with a provision state the test can move between reads. */
+  function stubMutableStatus(runtime: RuntimeStatus, provision: () => ProvisionState) {
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      void init
+      return new Response(JSON.stringify({ runtime, provision: provision() }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetch)
+    return fetch
+  }
+
+  it('keeps re-reading the status while an entry is mounted, and stops when it leaves', async () => {
+    vi.useFakeTimers()
+    const fetch = stubMutableStatus({ state: 'connected' }, () => ({ phase: 'idle' }))
+    const controller = new LarkChannelStatusController(t)
+    const release = controller.face().hooks.channelStatus.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+
+    const afterFirst = fetch.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fetch.mock.calls.length).toBeGreaterThan(afterFirst)
+
+    release()
+    const afterRelease = fetch.mock.calls.length
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetch.mock.calls.length).toBe(afterRelease)
+    controller.dispose()
+  })
+
+  it('polls a moving scan-to-configure run faster than an idle channel', async () => {
+    vi.useFakeTimers()
+    let phase: ProvisionPhase = 'waiting'
+    const fetch = stubMutableStatus({ state: 'unconfigured' }, () => ({ phase }))
+    const controller = new LarkChannelStatusController(t)
+    const release = controller.face().hooks.channelStatus.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+
+    const afterFirst = fetch.mock.calls.length
+    await vi.advanceTimersByTimeAsync(4_000)
+    const duringRun = fetch.mock.calls.length - afterFirst
+    expect(duringRun).toBe(2)
+
+    // A finished run drops back to the slow cadence rather than staying at 2s.
+    phase = 'done'
+    await vi.advanceTimersByTimeAsync(2_000)
+    const afterFinish = fetch.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fetch.mock.calls.length).toBe(afterFinish + 1)
+
+    release()
+    controller.dispose()
+  })
+
+  it('reports a finished scan-to-configure run exactly once', async () => {
+    vi.useFakeTimers()
+    let phase: ProvisionPhase = 'waiting'
+    stubMutableStatus({ state: 'connected' }, () => ({ phase }))
+    const completed = vi.fn()
+    const controller = new LarkChannelStatusController(t, { onProvisionCompleted: completed })
+    const release = controller.face().hooks.channelStatus.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+
+    phase = 'done'
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(completed).toHaveBeenCalledTimes(1)
+
+    // Every later poll keeps reading the same terminal phase: the callback
+    // re-reads the credential badge, so it must not fire again.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(completed).toHaveBeenCalledTimes(1)
+
+    release()
+    controller.dispose()
   })
 })

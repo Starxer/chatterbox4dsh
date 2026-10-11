@@ -945,6 +945,16 @@ function LarkSettingsCard(props) {
 const CHANNEL_STATUS_PATH = "/dsh-feishu/provision";
 /** Poll interval while the scan-to-configure flow is in flight. */
 const PROVISION_POLL_MS = 2e3;
+/**
+* Poll interval for the live channel status while nothing is being configured.
+*
+* Slow on purpose: the read is a loopback JSON GET, but what it reports (the
+* outbound link's verdict and the long connection's state) changes on the order
+* of seconds at worst, and a page left open all day should not hammer the host
+* for a badge. Bounded by the mounted entries, so it costs nothing when the
+* detail page is closed.
+*/
+const CHANNEL_STATUS_POLL_MS = 1e4;
 /** Bound on one channel-status request; a hung request must not pin a pending promise. */
 const CHANNEL_STATUS_TIMEOUT_MS = 1e4;
 /** Whether a provisioning run is still moving and therefore worth polling. */
@@ -963,6 +973,14 @@ var LarkChannelStatusController = class {
 	noticeKey;
 	noticeDetail;
 	timer;
+	/** Interval the live timer was armed with, so a retune only re-arms on change. */
+	pollInterval;
+	/**
+	* True from the moment a status read shows a scan-to-configure run moving
+	* until a poll observes it leave those phases. What makes the completion
+	* callback fire ONCE, now that the status poll outlives the run.
+	*/
+	provisionWasActive = false;
 	subscribers = 0;
 	disposed = false;
 	/**
@@ -1006,7 +1024,7 @@ var LarkChannelStatusController = class {
 			if (!response.ok) throw new Error(value.error ?? this.t("provisionFailed"));
 			this.adoptStatus(value);
 			this.loading = false;
-			this.beginPolling();
+			this.retunePolling();
 		} catch (error) {
 			this.noticeDetail = messageOf(error);
 			this.noticeKey = void 0;
@@ -1035,10 +1053,16 @@ var LarkChannelStatusController = class {
 			if (this.subscribers === 0) this.stopPolling();
 		};
 	};
-	/** Read the status once, then resume polling when a run is already in flight. */
+	/**
+	* Read the status once, then keep reading it while an entry stays mounted.
+	*
+	* The read alone is not enough: a health indicator that is only sampled when
+	* the page opens cannot report an outage that starts afterwards — the
+	* 2026-10-11 TLS failure stayed invisible exactly that way.
+	*/
 	async activate() {
 		await this.refreshStatus(false);
-		if (!this.disposed && isProvisionActive(this.provision.phase)) this.beginPolling();
+		this.retunePolling();
 	}
 	/**
 	* Read the channel status route once.
@@ -1059,11 +1083,11 @@ var LarkChannelStatusController = class {
 				this.noticeKey = void 0;
 				this.noticeDetail = void 0;
 			}
-			const phase = this.provision.phase;
-			if (polling && !isProvisionActive(phase)) {
-				this.stopPolling();
-				if (phase === "done") this.deps.onProvisionCompleted?.();
+			if (polling && this.provisionWasActive && !isProvisionActive(this.provision.phase)) {
+				this.provisionWasActive = false;
+				if (this.provision.phase === "done") this.deps.onProvisionCompleted?.();
 			}
+			if (polling) this.retunePolling();
 		} catch (error) {
 			this.statusFailed = true;
 			this.noticeKey = "loadFailed";
@@ -1077,21 +1101,33 @@ var LarkChannelStatusController = class {
 	adoptStatus(value) {
 		if (value.runtime !== void 0) this.runtime = value.runtime;
 		if (value.provision !== void 0) this.provision = value.provision;
+		if (isProvisionActive(this.provision.phase)) this.provisionWasActive = true;
 		this.publish();
 	}
-	/** Begin polling the channel status route on the fixed cadence. */
-	beginPolling() {
-		if (this.disposed) return;
+	/**
+	* Keep the status poll running while an entry is mounted, at the cadence the
+	* current phase deserves: {@link PROVISION_POLL_MS} while a scan-to-configure
+	* run is moving, {@link CHANNEL_STATUS_POLL_MS} otherwise.
+	*
+	* Re-arms only when the interval actually changes, so a steady state does not
+	* restart the timer on every tick.
+	*/
+	retunePolling() {
+		if (this.disposed || this.subscribers === 0) return;
+		const interval = isProvisionActive(this.provision.phase) ? PROVISION_POLL_MS : CHANNEL_STATUS_POLL_MS;
+		if (this.timer !== void 0 && this.pollInterval === interval) return;
 		this.stopPolling();
+		this.pollInterval = interval;
 		this.timer = setInterval(() => {
 			this.refreshStatus(true);
-		}, PROVISION_POLL_MS);
+		}, interval);
 	}
-	/** Stop any provisioning poll. */
+	/** Stop any status poll. */
 	stopPolling() {
 		if (this.timer === void 0) return;
 		clearInterval(this.timer);
 		this.timer = void 0;
+		this.pollInterval = void 0;
 	}
 	/** Drop any staged notice (a new attempt invalidates the previous one). */
 	clearNotice() {
@@ -2349,6 +2385,28 @@ function isLarkSubject(subject) {
 //#endregion
 //#region src/client/LarkPluginDetail.tsx
 /**
+* Which half of the link is broken, if either.
+*
+* A boot verdict says the WebSocket handshake succeeded ONCE; it says nothing
+* about either direction now. So a channel the runtime calls connected is still
+* reported as broken when the requests cannot leave (outbound) or the long
+* connection is no longer up (inbound) — the state that was missing during the
+* 2026-10-11 TLS outage, when the badge read 已连接 while nothing could be sent.
+*
+* Only a `connected` verdict is second-guessed: `connecting`, `error` and the
+* rest already describe themselves, and a stale outbound failure from an
+* earlier channel must not repaint them.
+*
+* @param state - the channel status snapshot.
+* @returns the broken half, or undefined while the link looks intact.
+*/
+function linkTrouble(state) {
+	if (state.runtime.state !== "connected") return void 0;
+	if (state.runtime.outbound?.verdict === "failing") return "outbound";
+	const inbound = state.runtime.inbound?.state;
+	if (inbound === "reconnecting" || inbound === "failed" || inbound === "idle") return "inbound";
+}
+/**
 * Connection state beside a detail page's title.
 * @param props - the open subject, the status snapshot, and locale copy.
 * @returns the status pill, or null for a subject that is not this plugin's.
@@ -2406,6 +2464,8 @@ function LarkChannelSectionBody(props) {
 	const { t } = props;
 	const state = props.useChannelStatus((snapshot) => snapshot);
 	const provision = state.provision;
+	const trouble = linkTrouble(state);
+	const detail = linkDetail(t, state);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 		className: "dsh-feishu-detail-section",
 		"aria-labelledby": "dsh-feishu-connection-title",
@@ -2455,6 +2515,10 @@ function LarkChannelSectionBody(props) {
 				className: "dsh-feishu-detail",
 				children: state.runtime.message
 			}) : null,
+			detail !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: trouble === void 0 ? "dsh-feishu-detail" : "dsh-feishu-detail dsh-feishu-error",
+				children: detail
+			}) : null,
 			state.notice !== "" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 				className: "dsh-feishu-detail dsh-feishu-error",
 				role: "status",
@@ -2462,6 +2526,32 @@ function LarkChannelSectionBody(props) {
 			}) : null
 		]
 	});
+}
+/**
+* The sentence behind a bad pill: which half broke, how badly, and the first
+* concrete reason. Numbers and the peer's own wording are not translated — the
+* reason is a diagnostic, and paraphrasing it would lose the code an operator
+* needs.
+*
+* @param t - the dictionary translator.
+* @param state - the channel status snapshot.
+* @returns the line to render, or undefined while there is nothing to explain.
+*/
+function linkDetail(t, state) {
+	const trouble = linkTrouble(state);
+	if (trouble === "outbound") {
+		const outbound = state.runtime.outbound;
+		if (outbound === void 0) return void 0;
+		const reason = outbound.lastError === void 0 ? "" : ` · ${outbound.lastError}`;
+		return `${t("outboundFailures")}: ${outbound.consecutiveFailures}${reason}`;
+	}
+	if (trouble === "inbound") {
+		const inbound = state.runtime.inbound;
+		if (inbound === void 0) return void 0;
+		const label = inbound.state === "reconnecting" ? t("statusConnecting") : t("statusOffline");
+		return `${t("inboundState")}: ${label} · ${t("inboundRetries")} ${inbound.reconnectAttempts}`;
+	}
+	if (state.runtime.state === "connected" && state.runtime.outbound?.observed === 0) return t("outboundUnobserved");
 }
 /** One read-only status pill: a tone dot plus its localized label. */
 function StatusPill({ t, state }) {
@@ -2481,12 +2571,19 @@ function StatusPill({ t, state }) {
 *
 * `loading` wins over the reported state: before the first read settles the
 * runtime still holds its initial `connecting`, and claiming the channel is
-* connecting while nothing has been asked would be a guess.
+* connecting while nothing has been asked would be a guess. A broken half of
+* the link is named on top of the connected verdict for the same reason — the
+* verdict is the boot fact, not the live one.
 */
 function statusLabelKey(state) {
 	if (state.loading) return "statusReading";
 	switch (state.runtime.state) {
-		case "connected": return "statusConnected";
+		case "connected": {
+			const trouble = linkTrouble(state);
+			if (trouble === "outbound") return "statusOutboundFailing";
+			if (trouble === "inbound") return "statusInboundFailing";
+			return "statusConnected";
+		}
 		case "connecting": return "statusConnecting";
 		case "unconfigured": return "statusUnconfigured";
 		case "stopped": return "statusStopped";
@@ -2497,7 +2594,7 @@ function statusLabelKey(state) {
 function statusTone(state) {
 	if (state.loading || state.runtime.state === "connecting") return "pending";
 	switch (state.runtime.state) {
-		case "connected": return "connected";
+		case "connected": return linkTrouble(state) === void 0 ? "connected" : "error";
 		case "error": return "error";
 		default: return "idle";
 	}
@@ -2506,7 +2603,7 @@ function statusTone(state) {
 function statusDot(state) {
 	if (state.loading) return "ongoing";
 	switch (state.runtime.state) {
-		case "connected": return "done";
+		case "connected": return linkTrouble(state) === void 0 ? "done" : "error";
 		case "connecting": return "ongoing";
 		case "error": return "error";
 		case "unconfigured": return "warning";
@@ -2568,6 +2665,12 @@ const dictionaries = {
 		statusUnconfigured: "未配置",
 		statusOffline: "未连接",
 		statusStopped: "已停止",
+		statusOutboundFailing: "已连接 · 出站异常",
+		statusInboundFailing: "已连接 · 长连接断开",
+		outboundFailures: "出站请求连续失败",
+		outboundUnobserved: "尚未观测到出站请求",
+		inboundState: "长连接",
+		inboundRetries: "重连次数",
 		application: "应用凭据",
 		appId: "App ID",
 		domain: "平台",
@@ -2658,6 +2761,12 @@ const dictionaries = {
 		statusUnconfigured: "Not configured",
 		statusOffline: "Not connected",
 		statusStopped: "Stopped",
+		statusOutboundFailing: "Connected · outbound failing",
+		statusInboundFailing: "Connected · long connection down",
+		outboundFailures: "Consecutive outbound failures",
+		outboundUnobserved: "No outbound request observed yet",
+		inboundState: "Long connection",
+		inboundRetries: "Reconnect attempts",
 		application: "Application credentials",
 		appId: "App ID",
 		domain: "Platform",

@@ -132,4 +132,76 @@ describe('LarkRuntime', () => {
     await runtime.reconcile()
     expect(runtime.status()).toEqual({ state: 'error', message: 'disconnect failed' })
   })
+
+  // The snapshot is a BOOT verdict: it says the WebSocket handshake succeeded
+  // once and never revisits that. A dropped long connection therefore keeps
+  // reading `connected` unless the live state is reported beside it — the same
+  // blind spot the outbound half had during the 2026-10-11 TLS outage.
+  describe('live inbound state', () => {
+    function runtimeWithInbound(getConnectionStatus: () => unknown): LarkRuntime {
+      return new LarkRuntime({
+        settings: () => resolveSettingsConfig({ appId: 'id' }),
+        resolveSecret: async () => 'secret',
+        start: async () => ({
+          stop: async () => undefined,
+          channel: { getConnectionStatus } as unknown as LarkChannel,
+        }),
+      })
+    }
+
+    it('reports the channel lifecycle beside the boot verdict', async () => {
+      const runtime = runtimeWithInbound(() => ({
+        state: 'reconnecting',
+        reconnectAttempts: 3,
+        lastConnectTime: 1_700_000_000_000,
+        nextConnectTime: 1_700_000_030_000,
+      }))
+      await runtime.reconcile()
+
+      expect(runtime.status()).toMatchObject({
+        state: 'connected',
+        inbound: {
+          state: 'reconnecting',
+          reconnectAttempts: 3,
+          lastConnectTime: 1_700_000_000_000,
+          nextConnectTime: 1_700_000_030_000,
+        },
+      })
+    })
+
+    it('reads the state on every call rather than caching the first one', async () => {
+      let state = 'connected'
+      const runtime = runtimeWithInbound(() => ({ state, reconnectAttempts: 0 }))
+      await runtime.reconcile()
+      expect(runtime.status().inbound?.state).toBe('connected')
+
+      state = 'failed'
+      expect(runtime.status().inbound?.state).toBe('failed')
+    })
+
+    it('omits the optional timestamps the channel did not report', async () => {
+      const runtime = runtimeWithInbound(() => ({ state: 'connected', reconnectAttempts: 0 }))
+      await runtime.reconcile()
+      expect(runtime.status().inbound).toEqual({ state: 'connected', reconnectAttempts: 0 })
+    })
+
+    it('keeps the boot verdict when the channel exposes no getter', async () => {
+      // A stub channel, or an SDK that stops offering the getter, must not take
+      // `/status` down with it.
+      const runtime = new LarkRuntime({
+        settings: () => resolveSettingsConfig({ appId: 'id' }),
+        resolveSecret: async () => 'secret',
+        start: async () => fakeStart(async () => undefined),
+      })
+      await runtime.reconcile()
+      expect(runtime.status()).toEqual({ state: 'connected' })
+    })
+
+    it('drops the inbound half once the channel is gone', async () => {
+      const runtime = runtimeWithInbound(() => ({ state: 'connected', reconnectAttempts: 0 }))
+      await runtime.reconcile()
+      await runtime.dispose()
+      expect(runtime.status()).toEqual({ state: 'stopped' })
+    })
+  })
 })
