@@ -174,8 +174,9 @@ describe('renderProgressCard', () => {
     const md = mdOf(card)
     expect(md).toContain(t.turnCardToolRunning('`bash`', '2.4s'))
     expect(md).toContain(t.turnCardToolFailed('`edit`', '50ms'))
-    // The section header of a step that is still running carries the same `…`.
-    expect(md).toContain(t.turnCardStep(1, '3.4s…'))
+    // The section header of a step that is still running carries the same `…`,
+    // and the running call lights it (`🔧 工具调用中`).
+    expect(md).toContain(t.turnCardStep(1, '3.4s…', t.turnCardPhaseTool))
   })
 
   it('shows the newest rows and folds the older ones, keeping the step headers', () => {
@@ -407,6 +408,57 @@ describe('renderProgressCard', () => {
     })
   })
 
+  describe('the live light on the step that is still running', () => {
+    it('names what the model is doing, between the step number and the clock', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, tools: [], phase: 'thinking' }],
+        calls: 0, endedAt: undefined, now: 4_800,
+      }))
+      expect(visibleLines(card)).toContain(t.turnCardStep(1, '4.8s…', t.turnCardPhaseThinking))
+      // The heading stays plain: the light rides the title line, never its own row.
+      expect(visibleLines(card).filter(line => line.includes(t.turnCardPhaseThinking))).toHaveLength(1)
+    })
+
+    it('has one word per phase the stream can be in', () => {
+      const light = (phase: 'awaiting' | 'thinking' | 'replying'): string => visibleLines(renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, tools: [], phase }],
+        calls: 0, endedAt: undefined, now: 0,
+      })))[0]!
+      expect(light('awaiting')).toContain(t.turnCardPhaseAwaiting)
+      expect(light('thinking')).toContain(t.turnCardPhaseThinking)
+      expect(light('replying')).toContain(t.turnCardPhaseReplying)
+    })
+
+    it('drops the light as soon as the step ended, whatever phase it reached', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, endedAt: 4_000, tools: [], phase: 'replying' }],
+        calls: 0, now: 4_500,
+      }))
+      expect(visibleLines(card)).toContain(t.turnCardStep(1, '4.0s'))
+      expect(mdOf(card)).not.toContain(t.turnCardPhaseReplying)
+    })
+
+    it('lets a tool that has not returned outrank the phase the stream last reported', () => {
+      // The deltas that carry a tool call report `replying`; saying so for the
+      // whole tool run would name a phase this step already left.
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, tools: [{ name: 'bash', startedAt: 100 }], phase: 'replying' }],
+        calls: 1, endedAt: undefined, now: 1_100,
+      }))
+      const header = visibleLines(card)[0]!
+      expect(header).toContain(t.turnCardPhaseTool)
+      expect(header).not.toContain(t.turnCardPhaseReplying)
+    })
+
+    it('shows no light at all before the first frame of the step', () => {
+      const card: any = renderProgressCard(t, facts({
+        steps: [{ step: 1, startedAt: 0, tools: [] }],
+        calls: 0, endedAt: undefined, now: 10,
+      }))
+      expect(visibleLines(card)).toEqual([t.turnCardStep(1, '10ms…')])
+    })
+  })
+
   describe('the row names what the call touched', () => {
     it('renders the file after the tool name', () => {
       const card: any = renderProgressCard(t, facts({
@@ -578,6 +630,71 @@ describe('createProgressCards', () => {
     const card = (channel.updateCardInstance.mock.calls[0] as any)[1]
     expect(mdOf(card)).toContain(t.turnCardStepNote('第二句'))
     expect(mdOf(card)).not.toContain('第一句')
+  })
+
+  it('records the live phase before any card exists, and renders it into the first one', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.stepPhase('s1', 1, 'thinking', 20)
+    await vi.advanceTimersByTimeAsync(0)
+    // A phase is not a reason to open a card (it says nothing on its own).
+    expect(channel.createCardInstance).not.toHaveBeenCalled()
+    cards.toolStarted('s1', 'read', 'c1', 100)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    // While the call runs the tool outranks the phase; once it settles, the
+    // phase recorded before the card existed is what the header shows.
+    cards.toolFinished('s1', 'c1', 400, false, 500)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const card = (channel.updateCardInstance.mock.calls[0] as any)[1]
+    expect(mdOf(card)).toContain(t.turnCardStep(1, '500ms…', t.turnCardPhaseThinking))
+  })
+
+  it('repaints once per phase CHANGE, and clears the light when the step ends', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 10)
+    cards.toolFinished('s1', 'c1', 400, false, 500)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.sendCardByReference).toHaveBeenCalledTimes(1)
+    // Frames arrive per token; only a transition is worth a write.
+    cards.stepPhase('s1', 1, 'awaiting', 600)
+    cards.stepPhase('s1', 1, 'awaiting', 610)
+    cards.stepPhase('s1', 1, 'thinking', 700)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    expect(mdOf((channel.updateCardInstance.mock.calls[0] as any)[1]))
+      .toContain(t.turnCardStep(1, '700ms…', t.turnCardPhaseThinking))
+
+    cards.stepEnded('s1', 800)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const settled = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
+    expect(settled).toContain(t.turnCardStep(1, '800ms'))
+    expect(settled).not.toContain(t.turnCardPhaseThinking)
+  })
+
+  it('ignores a phase for a step that already ended, or one it never saw', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 10)
+    await vi.advanceTimersByTimeAsync(0)
+    const before = channel.updateCardInstance.mock.calls.length
+    cards.stepEnded('s1', 500)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const settled = channel.updateCardInstance.mock.calls.length
+    // A late frame must not relight a settled header, and a step number this
+    // turn never opened must not conjure a section out of a phase.
+    cards.stepPhase('s1', 1, 'replying', 600)
+    cards.stepPhase('s1', 9, 'thinking', 610)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS * 2)
+    expect(channel.updateCardInstance.mock.calls.length).toBe(settled)
+    expect(settled).toBeGreaterThan(before)
   })
 
   it('opens the card lazily on the first tool call, not on step/start', async () => {
@@ -787,7 +904,7 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
     const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
-    expect(String(mdOf(fresh))).toContain(t.turnCardStep(1, '1.0s…'))
+    expect(String(mdOf(fresh))).toContain(t.turnCardStep(1, '1.0s…', t.turnCardPhaseTool))
     expect(String(mdOf(fresh))).toContain('`read`')
     expect(String(mdOf(fresh))).toContain('`bash`')
   })

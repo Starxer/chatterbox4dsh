@@ -22,6 +22,13 @@
  *   and a tapped `interactive_container` row stops delivering row callbacks
  *   (关键坑 55). This card's entire model is "one message, many updates", so
  *   anything tappable would break it.
+ * - **The step that is still running carries a live light.** The step header is
+ *   the only line of this card about the PRESENT (the rows below it are what
+ *   already happened), so that is where "what the model is doing right now" read
+ *   belongs: `▸ **第 2 步** · 🧠 思考中 · 4.8s…`. The phase comes from the transient
+ *   `agent/assistant-stream` frames — the module's only live signal — and a tool
+ *   still waiting for its result outranks it. Frames arrive per token, but only
+ *   a PHASE CHANGE repaints, so a long reasoning phase costs one write.
  * - **One card per turn, per session.** A CardKit card entity may only be sent
  *   once and is only operable for 14 days, and this card's lifetime is one turn,
  *   so nothing here is reused across turns and nothing is persisted: after a
@@ -62,9 +69,10 @@ export const PROGRESS_MAX_STEPS = 3
 export const PROGRESS_MAX_FOLDED = 60
 
 /**
- * How often a still-running tool repaints its elapsed clock. A tool that finishes
- * sooner never pays for a tick: the timer is dropped as soon as the last running
- * row settles, and what is left goes through the normal write throttle.
+ * How often a still-running step repaints its elapsed clock. A step that settles
+ * sooner never pays for a tick: the timer is dropped as soon as nothing on the
+ * card is live any more (no tool waiting for its result and no stream frame
+ * pending), and the repaint itself goes through the normal write throttle.
  */
 export const PROGRESS_RUNNING_TICK_MS = 30_000
 
@@ -108,6 +116,18 @@ export interface ProgressTool {
   detail?: readonly string[] | undefined
 }
 
+/**
+ * What the model is doing in a step that has not ended yet, as far as the
+ * transient assistant stream can tell. `undefined` means "nothing observed"
+ * (`StepLivePhase.none`: `step/start` landed but no request frame did), which is
+ * NOT the same as thinking — the same distinction the step card's placeholder
+ * makes.
+ *
+ * Deliberately its own type instead of the streaming module's: this module must
+ * not import from the layer that drives it.
+ */
+export type ProgressPhase = 'awaiting' | 'thinking' | 'replying'
+
 /** One step as the card renders it. */
 export interface ProgressStep {
   step: number
@@ -115,6 +135,12 @@ export interface ProgressStep {
   /** Absent while the step is still running. */
   endedAt?: number | undefined
   tools: ProgressTool[]
+  /**
+   * Live phase of this step's model call, set by {@link ProgressCardsHandle.stepPhase}.
+   * Only ever rendered while the step is still open: a finished step's header
+   * must not keep claiming the model is thinking.
+   */
+  phase?: ProgressPhase | undefined
   /**
    * The step's own narration, when it had one: the assistant text of a step that
    * went on to call tools, i.e. PROCESS rather than the turn's answer (WebUI
@@ -296,13 +322,44 @@ function toolLine(
  */
 export const PROGRESS_QUOTE_MARKER = '> '
 
+/**
+ * The live light of one step: what the model is doing RIGHT NOW.
+ *
+ * A tool waiting for its result outranks the stream phase. The frames that carry
+ * a tool call's deltas report `replying` (the model is emitting markup, not
+ * prose), and without this rule the header would keep saying `✍️ 回复中` for the
+ * whole tool run — the one thing the light must never do is name a phase the
+ * step has already left.
+ *
+ * @param t - translations for the active locale.
+ * @param step - the step whose light is being rendered.
+ * @returns the light text, or `''` when the step observed nothing yet.
+ */
+export function stepLight(t: Translations, step: ProgressStep): string {
+  if (step.tools.some(tool => tool.elapsed === undefined)) return t.turnCardPhaseTool
+  switch (step.phase) {
+    case 'awaiting': return t.turnCardPhaseAwaiting
+    case 'thinking': return t.turnCardPhaseThinking
+    case 'replying': return t.turnCardPhaseReplying
+    default: return ''
+  }
+}
+
 /** Flatten the facts into ordered lines. */
 function buildLines(t: Translations, facts: ProgressFacts): Line[] {
   const lines: Line[] = []
   for (const step of facts.steps) {
     const end = step.endedAt ?? facts.now
     const stepElapsed = `${formatProgressMs(end - step.startedAt)}${step.endedAt === undefined ? '…' : ''}`
-    lines.push({ text: t.turnCardStep(step.step, stepElapsed), header: true, step: step.step })
+    // Only a step that is STILL open gets a light: the moment `step/end` lands,
+    // what the model was doing is history and the header goes back to naming the
+    // step and its clock.
+    const light = step.endedAt === undefined ? stepLight(t, step) : ''
+    lines.push({
+      text: t.turnCardStep(step.step, stepElapsed, light === '' ? undefined : light),
+      header: true,
+      step: step.step,
+    })
     // Injection notices are the preamble of the request this step sends, so they
     // read first — above the narration and above the tool rows.
     for (const notice of step.injections ?? []) {
@@ -508,6 +565,20 @@ export interface ProgressCardsHandle {
   /** `step/start`: open a new section. */
   stepStarted(sessionId: string, step: number, at: number): void
   /**
+   * `agent/assistant-stream`: what the model is doing in the open step.
+   *
+   * This is the cards' ONLY live signal — no token delta is a durable session
+   * event any more — so without it the running step's header can say nothing but
+   * how long it has been running. Call it on every phase CHANGE (the streaming
+   * layer already dedupes frames); an unchanged phase is dropped here too, so a
+   * per-token caller would still cost one write per phase.
+   *
+   * @param phase - the new phase, or `undefined` when the attempt was abandoned
+   *                and DSH is about to retry (the light goes out until the retry
+   *                publishes its own `start`).
+   */
+  stepPhase(sessionId: string, step: number, phase: ProgressPhase | undefined, at: number): void
+  /**
    * Assistant text of a step that went on to call tools: the step's narration,
    * rendered as one row under its header instead of as a card of its own.
    */
@@ -592,22 +663,27 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       })
   }
 
-  /** Whether any row of these facts is still waiting for its result. */
-  const hasRunningTool = (facts: ProgressFacts): boolean =>
-    facts.steps.some(step => step.tools.some(tool => tool.elapsed === undefined))
+  /**
+   * Whether anything on these facts is still expected to change on its own: a
+   * tool waiting for its result, or a step whose model call is still streaming
+   * (its light and its clock both go stale without a repaint).
+   */
+  const hasLiveStep = (facts: ProgressFacts): boolean =>
+    facts.steps.some(step => step.endedAt === undefined
+      && (step.tools.some(tool => tool.elapsed === undefined) || step.phase !== undefined))
 
   /**
-   * Repaint while a tool is still running. Without it the card keeps whatever
+   * Repaint while a step is still live. Without it the card keeps whatever
    * elapsed time the row had when it was written — usually `0ms`, because the
-   * card is written the moment the call starts. A call that settles before the
-   * first tick clears the timer, so fast tools cost nothing.
+   * card is written the moment the call starts. A step that settles before the
+   * first tick clears the timer, so fast work costs nothing.
    */
   const armRunningTick = (entry: CardEntry): void => {
     if (entry.runningTick !== undefined || entry.dead) return
     entry.runningTick = setTimeout(() => {
       entry.runningTick = undefined
       if (stopped || entry.dead) return
-      if (!hasRunningTool(entry.facts)) return
+      if (!hasLiveStep(entry.facts)) return
       entry.facts.now = Date.now()
       // Straight to the write: this repaint is the point of the timer, so it
       // must not wait for another event to trigger the throttle.
@@ -616,10 +692,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }, PROGRESS_RUNNING_TICK_MS)
   }
 
-  /** Cancel the running tick once nothing is running any more. */
+  /** Cancel the running tick once nothing is live any more. */
   const disarmRunningTick = (entry: CardEntry): void => {
     if (entry.runningTick === undefined) return
-    if (hasRunningTool(entry.facts)) return
+    if (hasLiveStep(entry.facts)) return
     clearTimeout(entry.runningTick)
     entry.runningTick = undefined
   }
@@ -749,6 +825,34 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }
   }
 
+  /**
+   * Record what the model is doing in the open step.
+   *
+   * Stored on the facts even when no card exists yet (the first tool call opens
+   * the card from these facts), and dropped for a step that already ended — a
+   * late frame must not relight a settled header. Unlike a narration, a phase
+   * never opens a section of its own: "thinking" with no step around it would be
+   * a row about nothing.
+   */
+  const stepPhase = (sessionId: string, step: number, phase: ProgressPhase | undefined, at: number): void => {
+    if (stopped) return
+    const turn = turns.get(sessionId)
+    if (turn === undefined) return
+    const facts = turn.facts
+    const target = facts.steps.find(candidate => candidate.step === step)
+    if (target === undefined || target.endedAt !== undefined) return
+    // A per-token caller must not repaint per token: only a real transition is
+    // worth a write (the streaming layer already drops repeat frames).
+    if (target.phase === phase) return
+    target.phase = phase
+    facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry === undefined) return
+    entry.facts = facts
+    schedule(entry)
+    armRunningTick(entry)
+  }
+
   const toolStarted = (sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
@@ -841,6 +945,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     if (entry !== undefined) {
       entry.facts = facts
       schedule(entry)
+      // The step just closed: nothing on this card is live any more unless the
+      // next one has already started, so drop the timer instead of letting it
+      // fire once for nothing.
+      disarmRunningTick(entry)
     }
   }
 
@@ -988,7 +1096,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     turns.clear()
   }
 
-  return { beginTurn, stepStarted, stepNote, stepInjection, hasCard, toolStarted, toolFinished, stepEnded, finish, stop }
+  return { beginTurn, stepStarted, stepNote, stepPhase, stepInjection, hasCard, toolStarted, toolFinished, stepEnded, finish, stop }
 }
 
 /** The card's title, for the plain-text fallback. */

@@ -2007,6 +2007,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * must not undo `replying`), and it only repaints a card that still has no
    * content, so a settled step is untouched. A `committed` end needs no action:
    * the durable `assistant/message` that follows settles the card.
+   *
+   * The same phase is handed to the turn progress card (`compact`), whose
+   * running step shows it as its live light — that card always has content, so it
+   * is NOT part of the "content-free only" rule above.
    */
   const handleAssistantStream = (rawPayload: unknown): void => {
     try {
@@ -2037,6 +2041,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         state.livePhase = 'none'
       } else {
         return
+      }
+      // The same phase is what the COMPACT turn card's running step shows
+      // (`stepPhase`): its header is the only line of that card about the
+      // present, and this frame is the only live signal the module ever gets.
+      // Pushed on transitions only — the branches above already return on a
+      // repeat frame, and `stepPhase` drops an unchanged phase as well.
+      if (displayPolicy().turnCard) {
+        progressCards.stepPhase(
+          sessionId,
+          state.stepNumber,
+          state.livePhase === 'none' ? undefined : state.livePhase,
+          Date.now(),
+        )
       }
       // Only a content-free card shows the phase, and only once it exists: while
       // the first send is still pending, that send rebuilds from state anyway.

@@ -32,6 +32,36 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 新增：`compact` 过程卡上「正在跑的那一步」带状态灯（`src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-10-12）
+
+`compact` 的回合过程卡此前只能告诉你「这一步跑了多久」，看不出**现在在干什么**——一步刚开始、还没调工具时，表头只有一个往上走的 `4.8s…`。现在**正在跑的那一步**在这条表头里带一个灯，插在**步号与耗时之间**：
+
+```
+▸ **第 2 步** · 🧠 思考中 · 4.8s…
+> ⏳ `bash` · npm · 1.2s…
+```
+
+**为什么挂在表头**：这张卡上只有表头是「描述现在」的，它下面的行全是已经发生过的事。
+
+**四种状态**（信号来自插件本来就在消费的**瞬时** `agent/assistant-stream` 帧——`compact` 的步骤卡不发出来，这是这条链路上唯一的实时信号）：
+
+| 灯 | 判据 |
+|---|---|
+| 📡 等待输出 | 请求已发出、还没吐第一个 token |
+| 🧠 思考中 | 推理在流 |
+| ✍️ 回复中 | 正文在流 |
+| 🔧 工具调用中 | **该步还有工具行没结算**（优先于上面三个） |
+
+前三个正是步骤卡占位标题用的那三个相位（同一个相位在同一个聊天里只有一个名字）。**「等待输出」单列**是因为 `step/start` 之后到第一个 token 之间说「思考中」没有证据（与步骤卡占位卡的判据一致）。**工具优先**是因为带着 tool-call 的那几帧报的是 `replying`——不这么判，整段工具调用期间表头都会在说一个这一步已经离开的相位。
+
+**代价与边界**：帧按 token 到，但只有**相位变化**才写（`stepPhase()` 内部再去重一次），仍走既有的 900ms 合并窗口；30 秒一次的时钟重绘判据从「有工具在跑」扩成「这一步还活着（有工具没结算 **或** 有相位）」，所以思考期间表头时钟也是活的，最多 30 秒一次写。灯**只在步骤还没结束时渲染**（`endedAt === undefined`）：`step/end` 一落地就消失，晚到的帧也被丢掉，已结算的表头不会被重新点亮。`compact` 之外的档位不受影响（那些档的过程卡不存在，相位仍只出现在步骤卡占位上）。
+
+**形状是选出来的**：按坑 63/65 的老规矩，先用真实渲染器 `renderProgressCard` 渲染了 5 张样板（A 文字后缀 / A2 灯在时钟前 / B 工具态 / D 三灯条 / E 仅图标）发给人眼选，**A2** 为推荐形状。
+
+**验证**：`npm run typecheck` 0 error；**1117 tests / 57 files 全绿**（本批新增 10 例：渲染侧 5 例——灯的位置与相位措辞、三相位逐个、步骤结束即消失、工具优先于相位、无帧时无灯；控制器侧 3 例——相位先于卡片到达仍进首次渲染、**相位变化才写**且 `step/end` 清灯、已结束的步与没见过的步号一律忽略；流式接线 2 例——`compact` 下相位落到过程卡、其他档位零影响；另有 3 条既有断言改为带灯的表头）；`npm run build` 已产出（`client/client.js` 未变，纯宿主侧）。
+
+**English**: The `compact` turn progress card used to say how long the running step had been going and nothing about what it was doing. The step that is still running now carries a light in its header, between the step number and the clock (`▸ **Step 2** · 🧠 thinking · 4.8s…`), because the header is the only line of that card that describes the present. Four states come from the transient `agent/assistant-stream` frames the plugin already consumes (the only live signal on this path, since `compact` posts no step card for tool work): 📡 awaiting output (request out, no token yet), 🧠 thinking, ✍️ replying, and 🔧 calling tools, which outranks the phase while one of that step's calls has not returned — the frames carrying a tool call report `replying`, so without that rule the header would name a phase the step has already left for the whole tool run. `awaiting output` is its own state because claiming "thinking" between `step/start` and the first token has no evidence (the same rule as the step card's placeholder). Frames arrive per token but only a phase CHANGE writes (deduplicated again inside `stepPhase`), still inside the existing 900ms coalescing window, and the 30-second clock repaint now treats a step as live while it has a phase, not only while a tool runs. The light renders only while the step is open (`endedAt === undefined`), so it is gone the moment `step/end` lands and a late frame cannot relight a settled header. The other levels are untouched. The shape was picked by eye from five real-renderer samples (pitfalls 63/65); A2 is the recommended one. typecheck clean, **1117 tests across 57 files** green (10 new), artifacts rebuilt.
+
 ### 新增：`/subagents` —— 手动打开子代理面板（TODO O2，`src/feishu-subagents.ts` / `src/index.ts` / `src/commands.ts` / `src/i18n.ts`，2026-10-12）
 
 面板此前**只能自动出现**（名册完全来自本进程的事件流：`subagent/catalog` + 宿主 `subagent/start`·`end`），于是**重启后看不见之前跑过的子代理**，也不能主动查一眼「现在有哪些、在跑什么」。WebUI 侧对应的是会话头部的**血缘视图**（`ui-subagent`，数据来自投影 ⇒ 打开即最新），所以这个手动入口也必须**打开即权威**，而不是只回放本进程见过的事件。

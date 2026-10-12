@@ -212,8 +212,13 @@ export interface Translations {
   turnCardTitleDone: (calls: number, failed: number, elapsed: string) => string
   /** Title when the turn ended in an error (the reason rides the failure card). */
   turnCardTitleFailed: (calls: number, elapsed: string) => string
-  /** Section header of one step, e.g. `**第 2 步** · 8.9s`. */
-  turnCardStep: (step: number, elapsed: string) => string
+  /**
+   * Section header of one step, e.g. `**第 2 步** · 8.9s`. `light` is the live
+   * phase of a step that is STILL RUNNING and is inserted between the step number
+   * and the clock (`**第 2 步** · 🧠 思考中 · 8.9s…`); it is absent for a step that
+   * ended, which is exactly what the callers pass.
+   */
+  turnCardStep: (step: number, elapsed: string, light?: string) => string
   /**
    * The step's own narration — the assistant text of a step that went on to call
    * tools, i.e. process rather than answer. Already collapsed to one line.
@@ -232,6 +237,20 @@ export interface Translations {
   turnCardToolFailed: (label: string, elapsed: string) => string
   /** Header of the folded panel holding the rows that no longer fit. */
   turnCardOlderRows: (rows: number) => string
+  /**
+   * The live light on the step that is still running: what the model is doing
+   * RIGHT NOW, as the step header's suffix (`▸ **第 2 步** · 🧠 思考中 · 4.8s…`).
+   *
+   * Three phases plus the tool state, one per line the stream can be in. The
+   * wording deliberately reuses the content-free step card's placeholder titles
+   * (`stepAwaitingTitle` / `stepThinkingTitle` / `stepReplyingTitle`), so one
+   * phase of one turn never has two names in one chat.
+   */
+  turnCardPhaseAwaiting: string
+  turnCardPhaseThinking: string
+  turnCardPhaseReplying: string
+  /** One of that step's tool calls has not returned yet (wins over the phase). */
+  turnCardPhaseTool: string
 
   // ---- Context injections (injection-notice.ts) ----
   // One line per injected context message, carried at the TOP of the step card
@@ -790,13 +809,17 @@ export const zh = {
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
-  turnCardStep: (step, elapsed) => `▸ **第 ${step} 步** · ${elapsed}`,
+  turnCardStep: (step, elapsed, light) => `▸ **第 ${step} 步**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: '执行中',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
   turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
   turnCardOlderRows: rows => `**更早的 ${rows} 行**`,
+  turnCardPhaseAwaiting: '📡 等待输出',
+  turnCardPhaseThinking: '🧠 思考中',
+  turnCardPhaseReplying: '✍️ 回复中',
+  turnCardPhaseTool: '🔧 工具调用中',
 
   // 上下文注入提示行（injection-notice.ts）：只报来源，不显示注入内容。
   injectionContext: '📥 注入上下文',
@@ -1284,13 +1307,17 @@ export const en: Translations = {
     `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) =>
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
-  turnCardStep: (step, elapsed) => `▸ **Step ${step}** · ${elapsed}`,
+  turnCardStep: (step, elapsed, light) => `▸ **Step ${step}**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: 'running',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
   turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
   turnCardOlderRows: rows => `**${rows} earlier ${rows === 1 ? 'row' : 'rows'}**`,
+  turnCardPhaseAwaiting: '📡 awaiting output',
+  turnCardPhaseThinking: '🧠 thinking',
+  turnCardPhaseReplying: '✍️ replying',
+  turnCardPhaseTool: '🔧 calling tools',
 
   // Context-injection notices (injection-notice.ts): attribution only, never the
   // injected content.

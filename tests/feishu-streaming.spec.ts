@@ -2289,6 +2289,52 @@ describe('level + injection wiring through session events', () => {
     h.streaming.stop()
   })
 
+  it('shows the stream phase on the running step of the turn card (compact)', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    h.emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    // The phase signal is the transient stream; the turn card's running step is
+    // the only place the user can see it (the step card is not posted at all
+    // under `compact`).
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    await tick(1_100)
+    expect(mdOf(lastCard(ch))).toContain(t.turnCardPhaseAwaiting)
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '让我想想' },
+    })
+    await tick(1_100)
+    const md = mdOf(lastCard(ch))
+    expect(md).toContain(t.turnCardPhaseThinking)
+    expect(md).not.toContain(t.turnCardPhaseAwaiting)
+    h.streaming.stop()
+  })
+
+  it('keeps the turn card untouched by stream frames at the other levels', async () => {
+    const ch = levelChannel()
+    const h = stepHarness(ch)
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    h.emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: 'chain' },
+    })
+    await tick(1_100)
+    // No turn card exists at this level, so the phase has nowhere to land: the
+    // step card's own placeholder is the only thing that names it.
+    const cards = (ch.createCardInstance as any).mock.calls.map((call: any[]) => JSON.stringify(call[0]))
+    expect(cards.some((json: string) => json.includes(t.turnCardPhaseAwaiting))).toBe(false)
+    expect(cards.some((json: string) => json.includes(t.turnCardPhaseThinking))).toBe(false)
+    h.streaming.stop()
+  })
+
   it('keeps the section chrome on the detailed step card', async () => {
     const ch = levelChannel()
     const h = stepHarness(ch)
@@ -2428,7 +2474,7 @@ describe('turn progress card wiring', () => {
     const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
       .find(card => String(card.header.title.content).includes('本回合'))
     expect(mdOf(opened)).toContain('⏳ `bash`')
-    expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…'))
+    expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…', t.turnCardPhaseTool))
 
     emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
     // The answer opens a step card of its own — carrying the text and NOTHING
