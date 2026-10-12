@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  mergeSubagentPanelRows,
+  parseHostSubagentEntries,
   parseSubagentLifecycle,
   renderSubagentPanelCard,
   startFeishuSubagents,
@@ -44,11 +46,25 @@ function catalog(childId: string, overrides: Record<string, unknown> = {}) {
   return { type: 'subagent/catalog', data: { childId, childCreatedAt: 1_000, mode: 'one-shot', label: `task ${childId}`, ...overrides } }
 }
 
-function buildHarness(options: { chats?: Record<string, ConversationMessage>; debounceMs?: number; refreshMs?: number; routes?: Record<string, { provider?: string; model?: string }> } = {}) {
+/** One row of the Host's own catalog service, as `listChildren` resolves it. */
+function hostChild(id: string, overrides: Record<string, unknown> = {}) {
+  return { id, createdAt: 1_000, mode: 'one-shot', label: `catalog ${id}`, ...overrides }
+}
+
+/** A stub of the Host's subagent catalog service. */
+function catalogService(overrides: { listChildren?: unknown; listDescendants?: unknown } = {}) {
+  return {
+    listChildren: overrides.listChildren ?? (async () => []),
+    listDescendants: overrides.listDescendants ?? (async () => []),
+  }
+}
+
+function buildHarness(options: { chats?: Record<string, ConversationMessage>; debounceMs?: number; refreshMs?: number; routes?: Record<string, { provider?: string; model?: string }>; subagents?: unknown; running?: Record<string, boolean>; catalogTimeoutMs?: number } = {}) {
   const listeners = new Map<string, Set<(...args: any[]) => void>>()
   const optionsSeen: Array<{ name: string; options: unknown }> = []
   const sent: Array<{ to: string; card: any; opts: any }> = []
   const warns: string[] = []
+  const infos: string[] = []
   const chats = options.chats ?? {
     'session-1': { chatId: 'oc_1', chatType: 'p2p' as const, threadId: 'omt_1', rootId: 'om_root' },
   }
@@ -63,8 +79,12 @@ function buildHarness(options: { chats?: Record<string, ConversationMessage>; de
       optionsSeen.push({ name, options: opts })
       return () => { set.delete(listener) }
     },
+    // Read through `ctx.get`, never injected (关键坑 2): `undefined` is how a
+    // composition without the catalog service looks to the plugin.
+    get: (name: string) => name === 'subagents' ? options.subagents : undefined,
   }
-  const stop = startFeishuSubagents({
+  const running = options.running ?? {}
+  const handle = startFeishuSubagents({
     ctx: ctx as never,
     channel: {
       send: async (to, input, opts) => {
@@ -74,7 +94,7 @@ function buildHarness(options: { chats?: Record<string, ConversationMessage>; de
     },
     bridgeHolder: { current: { resolveChat: sessionId => chats[sessionId] } },
     logger: {
-      info: () => undefined,
+      info: (message: string) => { infos.push(message); return undefined },
       warn: (message: string) => { warns.push(message); return undefined },
       error: () => undefined,
     },
@@ -82,15 +102,27 @@ function buildHarness(options: { chats?: Record<string, ConversationMessage>; de
     // The host's "what is this child actually running" reader. Tests pass a map;
     // production reads the live session's cached `request/context` fold.
     readChildRoute: id => options.routes?.[id],
+    agents: { get: (id: string) => (id in running ? { status: running[id] ? 'running' : 'idle' } : undefined) },
+    ...(options.catalogTimeoutMs === undefined ? {} : { catalogTimeoutMs: options.catalogTimeoutMs }),
     debounceMs: options.debounceMs ?? 0,
     refreshMs: options.refreshMs ?? 0,
   })
+  const stop = handle.dispose
   return {
+    handle,
     stop,
     sent,
     warns,
+    infos,
     ctx,
     optionsSeen,
+    /** Open the manual panel for the chat bound to `session-1`. */
+    open: (scope: 'children' | 'tree' = 'children') => handle.open(chats['session-1']!, { scope, sessionId: 'session-1' }),
+    /** Forget the cards the AUTOMATIC panel posted, so a test reads one card. */
+    async forgetSent(): Promise<void> {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      sent.length = 0
+    },
     sessionEvent: (sessionId: string, event: unknown) => {
       for (const listener of [...(listeners.get('session/event') ?? [])]) listener({ id: sessionId }, event)
     },
@@ -432,5 +464,229 @@ describe('startFeishuSubagents', () => {
     h.lifecycle('subagent/end', { id: 'child-1', runId: 'r1', stopReason: 'completed' })
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.sent).toHaveLength(0)
+  })
+})
+
+describe('parseHostSubagentEntries', () => {
+  it('keeps BOTH modes, unlike the list_agents tool that drops one-shot children', () => {
+    const entries = parseHostSubagentEntries([
+      hostChild('one', { mode: 'one-shot' }),
+      hostChild('two', { mode: 'continuable', label: 'kept going' }),
+    ])
+    expect(entries.map(entry => entry.mode)).toEqual(['one-shot', 'continuable'])
+    expect(entries[1]!.label).toBe('kept going')
+  })
+
+  it('reads the position a descendants row carries, defaulting a children row to depth 1', () => {
+    expect(parseHostSubagentEntries([
+      { kind: 'child', id: 'kid', mode: 'continuable', label: '', parentId: 'root', depth: 2 },
+      hostChild('direct'),
+    ])).toEqual([
+      { id: 'kid', mode: 'continuable', label: '', parentId: 'root', depth: 2, diagnostic: undefined },
+      { id: 'direct', mode: 'one-shot', label: 'catalog direct', parentId: undefined, depth: 1, diagnostic: undefined },
+    ])
+  })
+
+  it('keeps a diagnostic row, whose mode the Host could not name', () => {
+    expect(parseHostSubagentEntries([{ kind: 'diagnostic', id: 'broken', reason: 'corrupt', parentId: 'root', depth: 1 }])).toEqual([
+      { id: 'broken', mode: 'unknown', label: '', parentId: 'root', depth: 1, diagnostic: 'corrupt' },
+    ])
+  })
+
+  it('drops anything unusable instead of throwing', () => {
+    expect(parseHostSubagentEntries(undefined)).toEqual([])
+    expect(parseHostSubagentEntries([null, 'x', {}, { id: '' }, { id: 7 }])).toEqual([])
+  })
+})
+
+describe('mergeSubagentPanelRows', () => {
+  const rosterRow = (overrides: Partial<SubagentPanelRow> = {}): SubagentPanelRow => row(overrides)
+
+  it('takes identity from the catalog and the run from the roster', () => {
+    const merged = mergeSubagentPanelRows(
+      [{ id: 'child-1', mode: 'continuable', label: 'catalog label', parentId: undefined, depth: 1, diagnostic: undefined }],
+      [rosterRow({ label: 'roster label', mode: 'one-shot', model: 'deepseek/deepseek-chat', epochMs: 4_200, state: 'inactive', stopReason: 'completed' })],
+      () => false,
+    )
+    expect(merged).toHaveLength(1)
+    // Identity: the catalog's label and mode win (it survives a restart).
+    expect(merged[0]!.label).toBe('catalog label')
+    expect(merged[0]!.mode).toBe('continuable')
+    // The run: only the roster ever observed these.
+    expect(merged[0]!.model).toBe('deepseek/deepseek-chat')
+    expect(merged[0]!.epochMs).toBe(4_200)
+    expect(merged[0]!.stopReason).toBe('completed')
+    expect(merged[0]!.catalogOnly).toBeUndefined()
+  })
+
+  it('keeps a roster row the catalog did not list', () => {
+    const merged = mergeSubagentPanelRows([], [rosterRow({ id: 'only-mine' })], () => true)
+    expect(merged.map(entry => entry.id)).toEqual(['only-mine'])
+    expect(merged[0]!.catalogOnly).toBeUndefined()
+  })
+
+  it('states a catalog-only row from the live registry and claims no duration', () => {
+    const merged = mergeSubagentPanelRows(
+      [
+        { id: 'idle-1', mode: 'continuable', label: 'not working', parentId: undefined, depth: 1, diagnostic: undefined },
+        { id: 'busy-1', mode: 'continuable', label: 'working', parentId: undefined, depth: 1, diagnostic: undefined },
+      ],
+      [],
+      id => id === 'busy-1',
+    )
+    expect(merged.map(entry => [entry.id, entry.state, entry.catalogOnly])).toEqual([
+      ['idle-1', 'inactive', true],
+      ['busy-1', 'running', true],
+    ])
+  })
+})
+
+describe('/subagents — the manual panel', () => {
+  it('answers with one line, never an empty table card', async () => {
+    const h = buildHarness({ subagents: catalogService() })
+    await expect(h.open()).resolves.toEqual({ kind: 'text', text: zh.subagentCommandEmpty })
+    expect(h.sent).toHaveLength(0)
+    h.stop()
+  })
+
+  it('lists a child this process never saw created', async () => {
+    // The catalog is the only source for a child that started before this
+    // process did, so it must appear even with an empty roster.
+    const h = buildHarness({
+      subagents: catalogService({ listChildren: async () => [hostChild('pre-1', { mode: 'continuable', label: 'from an earlier boot' })] }),
+    })
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain('`from an earlier boot`')
+    expect(text).toContain('`pre-1`')
+    // Nobody watched it settle: the duration is not invented, and the state
+    // does not claim an outcome.
+    expect(text).toContain(zh.subagentStatusNotRunning)
+    expect(text).toContain(zh.subagentModeContinuable)
+    // Topic coordinates come from the command's own chat (关键坑 25/31).
+    expect(h.sent.at(-1)!.to).toBe('oc_1')
+    expect(h.sent.at(-1)!.opts).toEqual({ replyInThread: true, replyTo: 'om_root' })
+    h.stop()
+  })
+
+  it('merges both sources on one row: identity from the catalog, the run from the roster', async () => {
+    const h = buildHarness({
+      routes: { 'child-1': { provider: 'cpa-codex', model: 'gpt-6.1-sol' } },
+      subagents: catalogService({
+        listChildren: async () => [hostChild('child-1', { mode: 'continuable', label: 'catalog label' })],
+      }),
+    })
+    h.sessionEvent('session-1', catalog('child-1', { label: 'roster label' }))
+    h.lifecycle('subagent/end', { id: 'child-1', runId: 'r1', stopReason: 'completed' })
+    await h.forgetSent()
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain('`catalog label`')
+    expect(text).not.toContain('`roster label`')
+    // Model and outcome came from the run this process observed.
+    expect(text).toContain('`cpa-codex/gpt-6.1-sol`')
+    expect(text).toContain(zh.subagentStatusCompleted)
+    // …and it is a normal row, so the duration cell is a real number.
+    expect(text).toContain(zh.subagentPanelSource)
+    h.stop()
+  })
+
+  it('draws the whole subtree for `tree`, with each child under its own parent', async () => {
+    const listed: string[] = []
+    const h = buildHarness({
+      subagents: catalogService({
+        listChildren: async () => { listed.push('children'); return [hostChild('kid-1')] },
+        listDescendants: async () => {
+          listed.push('descendants')
+          return [
+            { kind: 'child', id: 'kid-1', mode: 'continuable', label: 'first kid', parentId: 'session-1', depth: 1, activity: 'inactive', hasChildren: true },
+            { kind: 'child', id: 'grand-1', mode: 'continuable', label: 'nested kid', parentId: 'kid-1', depth: 2, activity: 'inactive', hasChildren: false },
+          ]
+        },
+      }),
+    })
+    await expect(h.open('tree')).resolves.toMatchObject({ kind: 'card' })
+    expect(listed).toEqual(['descendants'])
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain('| `first kid` |')
+    // A drawn connector, not an indent: the Host's parent/depth drive the tree.
+    expect(text).toContain('└─ `nested kid`')
+    h.stop()
+  })
+
+  it('names a row the Host could not describe', async () => {
+    const h = buildHarness({
+      subagents: catalogService({ listChildren: async () => [{ kind: 'diagnostic', id: 'broken', reason: 'corrupt', parentId: 'session-1', depth: 1 }] }),
+    })
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain(zh.subagentDiagnostic('corrupt'))
+    expect(text).toContain(zh.subagentModeUnknown)
+    h.stop()
+  })
+
+  it('falls back to this process\'s roster when the composition has no catalog service', async () => {
+    const h = buildHarness({ subagents: undefined })
+    h.sessionEvent('session-1', catalog('child-1', { label: 'from the event stream' }))
+    await h.forgetSent()
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    expect(markdownOf(h.sent.at(-1)!.card)).toContain('`from the event stream`')
+    // An absent optional service is not a failure to warn about.
+    expect(h.warns).toHaveLength(0)
+    expect(h.infos.join('\n')).toContain('no subagent catalog service')
+    h.stop()
+  })
+
+  it('falls back to the roster and warns when the catalog read never settles', async () => {
+    const h = buildHarness({
+      catalogTimeoutMs: 5,
+      subagents: catalogService({
+        listChildren: () => new Promise(() => undefined),
+        listDescendants: () => new Promise(() => undefined),
+      }),
+    })
+    h.sessionEvent('session-1', catalog('child-1', { label: 'roster only' }))
+    await h.forgetSent()
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    expect(markdownOf(h.sent.at(-1)!.card)).toContain('`roster only`')
+    expect(h.warns.some(line => line.includes('subagent children catalog read failed'))).toBe(true)
+    // Only the message is ever logged, never the error object itself (硬规则 2).
+    expect(h.warns.join('\n')).not.toContain('app_secret')
+    h.stop()
+  })
+
+  it('answers "unchanged" instead of reposting an identical card', async () => {
+    const h = buildHarness({ subagents: catalogService({ listChildren: async () => [hostChild('child-1')] }) })
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    expect(h.sent).toHaveLength(1)
+    await expect(h.open()).resolves.toEqual({ kind: 'text', text: zh.subagentCommandUnchanged })
+    expect(h.sent).toHaveLength(1)
+    // A different snapshot earns a fresh card again.
+    h.sessionEvent('session-1', catalog('child-2'))
+    await h.forgetSent()
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    h.stop()
+  })
+
+  it('carries no buttons: the panel is send-only (关键坑 11 / 57)', async () => {
+    const h = buildHarness({ subagents: catalogService({ listChildren: async () => [hostChild('child-1')] }) })
+    await h.open()
+    expect(JSON.stringify(h.sent.at(-1)!.card)).not.toContain('behaviors')
+    expect(JSON.stringify(h.sent.at(-1)!.card)).not.toContain('"tag":"button"')
+    h.stop()
+  })
+
+  it('leaves the automatic panel on its own data source', async () => {
+    // The automatic card is posted from the roster alone (关键坑 37/57): a child
+    // only the catalog knows must not leak into it, and the manual open reads
+    // the roster without mutating it.
+    const h = buildHarness({ subagents: catalogService({ listChildren: async () => [hostChild('ghost')] }) })
+    h.sessionEvent('session-1', catalog('child-1'))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(markdownOf(h.sent.at(-1)!.card)).not.toContain('`ghost`')
+    await h.forgetSent()
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    expect(markdownOf(h.sent.at(-1)!.card)).toContain('`ghost`')
+    h.stop()
   })
 })

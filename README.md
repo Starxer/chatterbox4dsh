@@ -164,6 +164,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/queue <内容>` | /steer 的共轭：强制把消息排队为新轮（即使处于 steer 模式）；空闲时回退为发新消息 |
 | `/busy [queue\|steer]` | 设置运行中（busy）的 Enter 行为：排队发送（默认）或插话发送，**持久化** |
 | `/permission [模式]` | 查看/切换会话权限（沙箱）模式；无参发交互式选择卡片 |
+| `/subagents [tree]` | **手动打开本会话的子代理面板**：数据 = **宿主目录**（`subagents.listChildren`，哪些子代理存在、怎么嵌套）∪ **本进程事件名册**（模型、每轮耗时、结算原因）；只有目录信息的行耗时写 `—`。`tree` 用 `listDescendants` 列整棵子树（同样画成树）。没有子代理时**回一行文字**、不发空表卡；与上次手动打开的快照相同时回「面板没有变化」而不是重复发卡。**卡片不带按钮**（面板是只发不更新，加按钮会踩坑 11/57）；读取宿主目录**有界**（5s），超时/失败退回名册 |
 | `/approve` `/deny` `/approvals` | 处理工具审批 |
 | `/help` | 卡片列出所有可用命令（分组：chatterbox4dsh 插件 / DSH 内置） |
 
@@ -182,6 +183,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | `/queue <text>` | The counterpart of `/steer`: force the message to queue as a new turn (even in steer mode); falls back to a new message when idle |
 | `/busy [queue\|steer]` | Set what Enter does while busy: queue (default) or steer, **persisted** |
 | `/permission [mode]` | View / switch the session permission (sandbox) mode; no args sends an interactive card |
+| `/subagents [tree]` | **Open this session's subagent panel on demand**: the data is the **Host catalog** (`subagents.listChildren` — which children exist and how they nest) unioned with **this process's event roster** (model, per-run duration, outcome); a catalog-only row claims no duration (`—`). `tree` reads `listDescendants` and draws the whole subtree the same way. With no subagents it answers in **one line of text** instead of an empty table card, and when the snapshot is identical to the last manual open it says so rather than posting a duplicate. The card carries **no buttons** (the panel is send-only; buttons would break it — pitfalls 11/57), and the catalog read is **bounded** (5s) with a fallback to the roster |
 | `/approve` `/deny` `/approvals` | Handle tool approvals |
 | `/help` | A card listing every command (grouped: chatterbox4dsh plugin / DSH built-in) |
 

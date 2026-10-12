@@ -620,6 +620,22 @@ export interface Translations {
   subagentModeOneShot: string
   subagentModeContinuable: string
   subagentModeUnknown: string
+  /**
+   * A child known only from the Host catalog: nobody in this process ever saw
+   * it settle, so "not running" is the fact and "ended" would invent one.
+   */
+  subagentStatusNotRunning: string
+  /** Why the Host could not describe a catalog row (`corrupt` / `unsupported` / `unavailable`). */
+  subagentDiagnostic: (reason: string) => string
+  /** `/subagents`: the command's own description, as `/help` lists it. */
+  subagentsCommandDescription: string
+  subagentCommandUsage: string
+  subagentCommandEmpty: string
+  /** The snapshot matches the one this chat was last shown — no second card. */
+  subagentCommandUnchanged: string
+  subagentCommandFailed: string
+  /** Source line under the header of a manually opened panel. */
+  subagentPanelSource: string
 
   /** Shared by both panels: how many older roster entries a card left out. */
   panelMoreRows: (count: number) => string
@@ -1106,6 +1122,14 @@ export const zh = {
   subagentModeOneShot: '一次性',
   subagentModeContinuable: '可续谈',
   subagentModeUnknown: '未知',
+  subagentStatusNotRunning: '未运行',
+  subagentDiagnostic: reason => ({ corrupt: '目录损坏', unsupported: '模式不支持', unavailable: '目录不可读' })[reason] ?? '目录异常',
+  subagentsCommandDescription: '查看本会话的子代理面板（加 `tree` 看整棵子树）',
+  subagentCommandUsage: '⚠️ 用法：`/subagents [tree]`',
+  subagentCommandEmpty: '当前没有子代理',
+  subagentCommandUnchanged: '面板没有变化',
+  subagentCommandFailed: '子代理面板失败',
+  subagentPanelSource: '来源：宿主目录 + 本进程事件',
 
   panelMoreRows: count => `另有 ${count} 条更早的记录未列出`,
 } as const satisfies Translations
@@ -1595,6 +1619,14 @@ export const en: Translations = {
   subagentModeOneShot: 'one-shot',
   subagentModeContinuable: 'continuable',
   subagentModeUnknown: 'unknown',
+  subagentStatusNotRunning: 'Not running',
+  subagentDiagnostic: reason => ({ corrupt: 'corrupt catalog', unsupported: 'unsupported mode', unavailable: 'catalog unreadable' })[reason] ?? 'catalog anomaly',
+  subagentsCommandDescription: 'Show this session\'s subagent panel (`tree` for the whole subtree)',
+  subagentCommandUsage: '⚠️ Usage: `/subagents [tree]`',
+  subagentCommandEmpty: 'No subagents',
+  subagentCommandUnchanged: 'The panel has not changed',
+  subagentCommandFailed: 'subagent panel failed',
+  subagentPanelSource: 'Sources: host catalog + this process\'s events',
 
   panelMoreRows: count => `${count} older entries not shown`,
 }

@@ -35,13 +35,28 @@
  * event for lack of a local child session and is therefore not listed; the
  * lifecycle event alone carries no chat attribution.
  *
+ * ## The manual panel (`/subagents`)
+ *
+ * {@link startFeishuSubagents} also exposes an on-demand panel, which reads a
+ * SECOND fact source: the Host's own subagent catalog service
+ * (`ctx.get('subagents')`, read and NEVER injected — 关键坑 2). That catalog is
+ * the authority on WHICH children exist and how they nest, while the in-process
+ * roster is the only place run durations and settlement reasons live, so a row
+ * is filled from both: id / label / mode / depth from the catalog, model /
+ * duration / outcome from the roster, state from whichever knows it. A child
+ * that existed before this process started (or whose catalog was the only
+ * record left) therefore shows up in the manual panel too — with the duration
+ * cell honestly blank, because a catalog records when a child was created, not
+ * how long its runs took.
+ *
  * @module @starxer/chatterbox4dsh/feishu-subagents
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { conversationKey, type ConversationMessage } from './conversation.ts'
-import { createPanelSender, formatDuration, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
+import { createPanelSender, formatDuration, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, replyOptsForChat, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
 import type { Translations } from './i18n.ts'
+import { withTimeout } from './outbound-timeout.ts'
 
 /** How a child was created, as recorded in the parent's catalog. */
 export type SubagentMode = 'one-shot' | 'continuable' | 'unknown'
@@ -80,6 +95,15 @@ export interface SubagentPanelRow {
   stopReason: string | undefined
   /** Epoch ms the row last became inactive; drives roster pruning. */
   settledAt: number | undefined
+  /**
+   * True when the row exists only because the Host's catalog says so — this
+   * process never observed one of its runs. Two cells differ then: the duration
+   * is unknown (a catalog records creation, never run length) and "not running"
+   * is the honest state. Rows the roster knows leave it undefined.
+   */
+  catalogOnly?: boolean
+  /** Why the Host could not describe this catalog row (`corrupt` / `unsupported` / `unavailable`). */
+  diagnostic?: string
 }
 
 /** One chat's roster. */
@@ -127,11 +151,81 @@ export interface FeishuSubagentsDeps {
    * (reported 2026-10-12). Pure memory, no I/O: `sessions.get(id)?.requestContext()`.
    */
   readChildRoute?: (sessionId: string) => { provider?: string; model?: string } | undefined
+  /**
+   * The live Agent registry, read the same way the Host's own `list_agents`
+   * tool reads it: a child is running iff `agents.get(id)?.status` is. Used
+   * only for rows the in-process roster never observed.
+   */
+  agents?: { get(id: string): { status?: string } | undefined }
+  /** Test seam: budget for one Host catalog read. Production omits it. */
+  catalogTimeoutMs?: number
   /** Test seam: coalescing window. Production omits it. */
   debounceMs?: number
   /** Test seam: non-urgent refresh floor. Production omits it. */
   refreshMs?: number
 }
+
+/** How much of the subtree one manual panel request covers. */
+export type SubagentPanelScope = 'children' | 'tree'
+
+/** One manual panel request: which chat, which session, how deep. */
+export interface SubagentPanelRequest {
+  scope: SubagentPanelScope
+  /**
+   * The session whose catalog is read. Resolved by the CALLER through the
+   * bridge's own `resolveSessionIdFor`, so this module never grows a second
+   * idea of what a chat's session is (关键坑 25/31).
+   */
+  sessionId: string
+}
+
+/** What a manual open did: a fresh card, or the text to echo instead. */
+export type SubagentOpenResult =
+  | { kind: 'card'; messageId?: string }
+  | { kind: 'text'; text: string }
+
+/** The handle returned by {@link startFeishuSubagents}. */
+export interface SubagentPanelHandle {
+  /**
+   * Post this chat's subagent panel on demand. Never rejects for a missing
+   * service or a failed catalog read — both fall back to the in-process roster.
+   */
+  open(chat: ConversationMessage, request: SubagentPanelRequest): Promise<SubagentOpenResult>
+  /** Unsubscribe everything and drop the pending timers. */
+  dispose(): void
+}
+
+/**
+ * The Host's subagent catalog service, reduced to the two reads this module
+ * makes. The payload stays `unknown`: the rows are normalized by
+ * {@link parseHostSubagentEntries}, which is also where the shapes of the two
+ * scopes are folded together.
+ */
+interface SubagentsServiceLike {
+  listChildren(sessionId: string, signal?: AbortSignal): Promise<unknown>
+  listDescendants(sessionId: string, signal?: AbortSignal): Promise<unknown>
+}
+
+/** One catalog row, normalized across both scopes. */
+export interface HostSubagentEntry {
+  id: string
+  mode: SubagentMode
+  label: string
+  /** Parent session id for a nested row; `undefined` for a direct child. */
+  parentId: string | undefined
+  /** Edge distance from the requested root; direct children are `1`. */
+  depth: number
+  /** Host diagnostic reason, when the row is a diagnostic rather than a child. */
+  diagnostic: string | undefined
+}
+
+/**
+ * Budget for one Host catalog read. The read walks parent catalogs through the
+ * session query service, so it is a promise that could outlive the chat that
+ * asked for it — bounded here (硬规则 2 / 关键坑 29). Generous: it exists to
+ * break a hang, not to enforce a latency budget.
+ */
+export const CATALOG_READ_TIMEOUT_MS = 5_000
 
 /**
  * One route as the model cell shows it: `provider/model`, or whichever half is
@@ -181,9 +275,130 @@ function toMode(value: unknown): SubagentMode {
   return value === 'one-shot' || value === 'continuable' ? value : 'unknown'
 }
 
+/**
+ * Normalize one catalog read — children or descendants — into a single shape.
+ *
+ * Two deliberate differences from the Host's `list_agents` TOOL, which projects
+ * the same service rows:
+ *
+ * 1. **No mode filtering.** That tool drops one-shot children because
+ *    `send_message` cannot continue them; a read-only panel has no such
+ *    constraint, so the RAW rows are read and one-shot children are listed too.
+ * 2. **`activity` is not trusted.** The tool recomputes status from the live
+ *    Agent registry (`agents.get(id)?.status`), because a descendant row's
+ *    `activity` is only "a resident Session was observed during the walk".
+ *    {@link mergeSubagentPanelRows} does the same, from the registry.
+ *
+ * @param raw - whatever the Host's service resolved to.
+ * @returns the usable rows, in the order the Host returned them.
+ */
+export function parseHostSubagentEntries(raw: unknown): HostSubagentEntry[] {
+  if (!Array.isArray(raw)) return []
+  const entries: HostSubagentEntry[] = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    if (typeof record.id !== 'string' || record.id === '') continue
+    const parent = typeof record.parentId === 'string' && record.parentId !== '' ? record.parentId : undefined
+    const depth = typeof record.depth === 'number' && Number.isFinite(record.depth) && record.depth > 0
+      ? Math.floor(record.depth)
+      : 1
+    const diagnostic = record.kind === 'diagnostic' && typeof record.reason === 'string' ? record.reason : undefined
+    entries.push({
+      id: record.id,
+      // A diagnostic row describes a child the Host could not read, so its
+      // mode is by definition not one it could name.
+      mode: diagnostic === undefined ? toMode(record.mode) : 'unknown',
+      label: typeof record.label === 'string' ? record.label : '',
+      parentId: parent,
+      depth,
+      diagnostic,
+    })
+  }
+  return entries
+}
+
+/** The observation half of a roster row: what only this process can know. */
+function observationOf(row: SubagentPanelRow): Pick<SubagentPanelRow, 'model' | 'state' | 'epochStart' | 'epochMs' | 'stopReason' | 'settledAt'> {
+  return {
+    model: row.model,
+    state: row.state,
+    epochStart: row.epochStart,
+    epochMs: row.epochMs,
+    stopReason: row.stopReason,
+    settledAt: row.settledAt,
+  }
+}
+
+/**
+ * Merge the Host catalog with this process's roster into the rows one panel
+ * card shows, keyed by child session id.
+ *
+ * One rule per fact, and no guessing: the catalog owns identity (id, label,
+ * mode, depth, parent) because it is the only source that survives a restart;
+ * the roster owns the run (model, duration, stop reason, state) because a
+ * catalog records WHEN a child was created and never how long it ran. A row
+ * only the catalog knows gets its state computed from the live Agent registry —
+ * the same reading the Host's own tool uses — and is marked `catalogOnly` so
+ * the card renders an honest `—` and "not running" instead of inventing a
+ * duration. A row only the roster knows is kept verbatim, so the panel still
+ * answers when the catalog service is absent or its read fails.
+ *
+ * @param host - normalized catalog rows (possibly empty).
+ * @param roster - this chat's roster rows.
+ * @param isRunning - reads the live Agent registry for one child id.
+ * @returns the merged rows, catalog order first.
+ */
+export function mergeSubagentPanelRows(
+  host: readonly HostSubagentEntry[],
+  roster: readonly SubagentPanelRow[],
+  isRunning: (id: string) => boolean,
+): SubagentPanelRow[] {
+  const known = new Map(roster.map(row => [row.id, row]))
+  const merged: SubagentPanelRow[] = []
+  const listed = new Set<string>()
+  for (const entry of host) {
+    const observed = known.get(entry.id)
+    listed.add(entry.id)
+    const identity = {
+      id: entry.id,
+      // Descendant rows carry no creation time; 0 keeps the Host's own
+      // pre-order, which is stable under the tree's sort.
+      createdAt: observed?.createdAt ?? 0,
+      mode: entry.mode,
+      label: entry.label,
+      depth: entry.depth,
+      parentId: entry.parentId,
+      ...entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic },
+    }
+    merged.push(observed === undefined
+      ? {
+          ...identity,
+          // No run was ever observed: no route, no duration, no outcome. The
+          // state comes from the registry; everything else stays empty so the
+          // card renders `—` rather than a fabricated number.
+          model: '',
+          state: isRunning(entry.id) ? 'running' : 'inactive',
+          epochStart: 0,
+          epochMs: undefined,
+          stopReason: undefined,
+          settledAt: undefined,
+          catalogOnly: true,
+        }
+      : { ...identity, ...observationOf(observed) })
+  }
+  for (const row of roster) {
+    if (!listed.has(row.id)) merged.push(row)
+  }
+  return merged
+}
+
 /** Status icon and localized label for one row. */
 function subagentPresentation(row: SubagentPanelRow, t: Translations): { icon: string; text: string } {
   if (row.state === 'running') return { icon: '🔄', text: t.subagentStatusRunning }
+  // Nobody in this process watched this child settle, so "ended" would claim
+  // an outcome nobody reported: the honest state is "not running".
+  if (row.catalogOnly === true) return { icon: '⏹️', text: t.subagentStatusNotRunning }
   switch (row.stopReason) {
     case 'completed': return { icon: '✅', text: t.subagentStatusCompleted }
     case 'max-tokens': return { icon: '⚠️', text: t.subagentStatusMaxTokens }
@@ -280,6 +495,16 @@ export function subagentRosterSignature(rows: readonly SubagentPanelRow[]): stri
     .join('\u0002')
 }
 
+/** Optional, caller-owned decoration of the panel card. */
+export interface SubagentPanelCardOptions {
+  /**
+   * One notation line under the header naming where the rows came from. Only
+   * the MANUAL panel passes it: it merges two sources, and an automatic card
+   * is posted from one.
+   */
+  source?: string
+}
+
 /**
  * Render the subagent panel card: one row per known subagent.
  *
@@ -287,9 +512,11 @@ export function subagentRosterSignature(rows: readonly SubagentPanelRow[]): stri
  * @param t - the active locale's strings.
  * @param now - epoch ms used for a running row's elapsed time, so the caller
  *   owns the clock and the output stays testable.
+ * @param options - optional header decoration; omitted by the automatic panel,
+ *   whose card is byte-identical to what it always rendered.
  * @returns the Card JSON 2.0 object.
  */
-export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Translations, now: number): object {
+export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Translations, now: number, options: SubagentPanelCardOptions = {}): object {
   // Depth-first order puts every child directly under its parent, which is what
   // makes the connectors below mean something.
   const ordered = treeOrder(rows)
@@ -306,7 +533,10 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
     const elapsed = row.state === 'running'
       ? now - row.epochStart
       : row.epochMs ?? (row.settledAt ?? now) - row.epochStart
-    const label = row.label.trim()
+    // A catalog-only row has no run to measure: the catalog records when the
+    // child was created, never how long an epoch took. `—` is the truth.
+    const duration = row.catalogOnly === true ? '—' : formatDuration(elapsed)
+    const label = row.diagnostic !== undefined ? t.subagentDiagnostic(row.diagnostic) : row.label.trim()
     return [
       `${status.icon} ${status.text}`,
       // The connector stays OUTSIDE the code span: `tableCell` collapses all
@@ -316,11 +546,18 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
       row.model === '' ? '—' : tableCell(row.model, { code: true, max: 32 }),
       tableCell(row.id, { code: true, max: 14 }),
       modePresentation(row.mode, t),
-      formatDuration(elapsed),
+      duration,
     ]
   })
   const running = ordered.filter(row => row.state === 'running').length
-  const lines = [`**${t.subagentPanelSummary(running, ordered.length)}**`, '', renderTable(headers, body)]
+  // The source line lives INSIDE the one markdown element: a second element
+  // would pay another round of container spacing for one line (关键坑 58).
+  const lines = [
+    `**${t.subagentPanelSummary(running, ordered.length)}**`,
+    ...options.source === undefined ? [] : [`_${options.source}_`],
+    '',
+    renderTable(headers, body),
+  ]
   if (ordered.length > shown.length) lines.push('', `_${t.panelMoreRows(ordered.length - shown.length)}_`)
   return {
     schema: '2.0',
@@ -332,16 +569,22 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
 
 /**
  * Keep one subagent panel per chat: subscribe to the parent sessions' catalog
- * events and to the subagent lifecycle fan-out.
+ * events and to the subagent lifecycle fan-out, and expose the on-demand panel
+ * behind `/subagents`.
  *
  * @param deps - context, channel, bridge, logger, and locale reader.
- * @returns a disposer that unsubscribes everything and drops pending timers.
+ * @returns the panel handle; `dispose()` unsubscribes everything and drops the
+ *   pending timers.
  */
-export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
+export function startFeishuSubagents(deps: FeishuSubagentsDeps): SubagentPanelHandle {
   const { ctx, channel, bridgeHolder, logger, getTranslations } = deps
   const rosters = new Map<string, SubagentRoster>()
   /** child id → where it lives; also the attribution table for grandchildren. */
   const children = new Map<string, ChildRef>()
+  /** chat → signature of the snapshot its last MANUAL open posted. */
+  const manualSignatures = new Map<string, string>()
+  /** Whether the absent-catalog-service note was already logged. */
+  let missingCatalogNoted = false
 
   const warn = (message: string, error: unknown): void => {
     // Never log the error object itself: the SDK's errors carry the request
@@ -556,12 +799,102 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
     }
   }, { global: true })
 
-  return () => {
-    disposeCatalog()
-    disposeStart()
-    disposeEnd()
-    panel.dispose()
-    rosters.clear()
-    children.clear()
+  /**
+   * The Host's subagent catalog service, read through `ctx.get` and NEVER added
+   * to `inject`: a composition without `@deepseek-ai/dsh-subagent` must still
+   * boot (关键坑 2) — it just gets the roster-only panel. `get` is called
+   * optionally so a context that does not carry the accessor at all degrades
+   * the same way instead of throwing.
+   */
+  const catalogService = (): SubagentsServiceLike | undefined => {
+    const holder = ctx as unknown as { get?: (name: string) => unknown }
+    const service = holder.get?.('subagents')
+    if (service === undefined || service === null) {
+      if (!missingCatalogNoted) {
+        missingCatalogNoted = true
+        logger.info('dsh-feishu: no subagent catalog service in this composition; /subagents falls back to this process\'s roster')
+      }
+      return undefined
+    }
+    return service as SubagentsServiceLike
+  }
+
+  /**
+   * Read the catalog for one scope, bounded (硬规则 2 / 关键坑 29) and
+   * best-effort: an absent service, a throw, and a read that never settles all
+   * end the same way — an empty catalog, so the caller falls back to the
+   * in-process roster instead of failing the command.
+   */
+  const readCatalog = async (scope: SubagentPanelScope, sessionId: string): Promise<HostSubagentEntry[]> => {
+    const service = catalogService()
+    if (service === undefined) return []
+    const budget = deps.catalogTimeoutMs ?? CATALOG_READ_TIMEOUT_MS
+    // Forward the signal so a read abandoned by the budget below also stops
+    // inside the Host rather than walking catalogs nobody is waiting for.
+    const controller = new AbortController()
+    try {
+      const pending = scope === 'tree'
+        ? service.listDescendants(sessionId, controller.signal)
+        : service.listChildren(sessionId, controller.signal)
+      return parseHostSubagentEntries(await withTimeout(pending, `subagent ${scope} catalog read`, budget))
+    } catch (error: unknown) {
+      controller.abort()
+      warn(`subagent ${scope} catalog read failed`, error)
+      return []
+    }
+  }
+
+  /** Is this child working right now? Read the way the Host's tool reads it. */
+  const childIsRunning = (id: string): boolean => {
+    try {
+      return deps.agents?.get(id)?.status === 'running'
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Post this chat's panel on demand (`/subagents`).
+   *
+   * Merges the Host catalog (authoritative on identity, and the only source
+   * for a child that started before this process did) with this process's
+   * roster (the only source for a run's model, duration and outcome). Both
+   * paths answer: an empty result is a one-line text, never an empty table
+   * card, and a snapshot identical to the one this chat was last shown answers
+   * with a line instead of a duplicate card. The automatic panel's own
+   * de-duplication is untouched — this is a separate table.
+   */
+  const open = async (chat: ConversationMessage, request: SubagentPanelRequest): Promise<SubagentOpenResult> => {
+    const t = getTranslations()
+    const key = conversationKey(chat)
+    const rosterRows = [...(rosters.get(key)?.rows.values() ?? [])]
+    const host = await readCatalog(request.scope, request.sessionId)
+    const rows = mergeSubagentPanelRows(host, rosterRows, childIsRunning)
+    if (rows.length === 0) return { kind: 'text', text: t.subagentCommandEmpty }
+    const signature = subagentRosterSignature(rows)
+    if (manualSignatures.get(key) === signature) {
+      return { kind: 'text', text: t.subagentCommandUnchanged }
+    }
+    manualSignatures.set(key, signature)
+    const card = renderSubagentPanelCard(rows, t, Date.now(), { source: t.subagentPanelSource })
+    // Same topic discipline as the automatic panel: the coordinates come from
+    // the chat the command ran in (关键坑 25/31).
+    const sent = await channel.send(chat.chatId, { card }, replyOptsForChat(chat))
+    return sent.messageId === undefined
+      ? { kind: 'card' }
+      : { kind: 'card', messageId: sent.messageId }
+  }
+
+  return {
+    open,
+    dispose: () => {
+      disposeCatalog()
+      disposeStart()
+      disposeEnd()
+      panel.dispose()
+      rosters.clear()
+      children.clear()
+      manualSignatures.clear()
+    },
   }
 }

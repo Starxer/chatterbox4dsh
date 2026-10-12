@@ -34,7 +34,7 @@ import { startFeishuApprovals, type PendingApprovalView } from './feishu-approva
 import { createCardInterleave } from './card-interleave.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
-import { startFeishuSubagents } from './feishu-subagents.ts'
+import { startFeishuSubagents, type SubagentPanelHandle } from './feishu-subagents.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
@@ -226,6 +226,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let busyHandle: FeishuBusyHandle | undefined = undefined
   let displayHandle: FeishuDisplayHandle | undefined = undefined
   let sessionHandle: FeishuSessionHandle | undefined = undefined
+  /** `/subagents`: the on-demand subagent panel (Host catalog ∪ this roster). */
+  let subagentsPanel: SubagentPanelHandle | undefined = undefined
   /** `present` deliverable delivery (planning + auto-send + confirm taps). */
   let deliverHandle: FeishuDeliverHandle | undefined = undefined
   /** Card-action subscription that settles the `/new` confirmation card. */
@@ -689,6 +691,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         busyHandle,
         modelSelectHandle !== undefined ? { cardByMessage: modelSelectHandle.cardByMessage, sequenceByCard: modelSelectHandle.sequenceByCard } : undefined,
         onboardingHandle, workspaceRegistry, agentPresets, approvalControl, showReasoningControl, displayControl, displayHandle, sessionHandle,
+        subagentsPanel,
         { current: currentLocale, set: setPluginLocale },
         permissionPresets, cardTopics),
         attachments,
@@ -905,7 +908,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // The subagent roster panel. Independent of the questions/approvals seams:
     // it needs the session-event fan-out (parent catalogs), the Host's
     // subagent lifecycle events, and the bridge's session → chat lookup.
-    stopSubagents = startFeishuSubagents({
+    stopSubagents = (subagentsPanel = startFeishuSubagents({
       ctx,
       channel: cardChannel,
       bridgeHolder,
@@ -918,7 +921,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         const route = sessions?.get(sessionId as never)?.requestContext?.()
         return route === undefined ? undefined : { provider: route.provider, model: route.model }
       },
-    })
+      // `/subagents` states catalog-only rows from the live Agent registry, the
+      // same reading the Host's own `list_agents` tool uses.
+      agents,
+    })).dispose
     // Read optional: the abstract background-job registry. `ctx.get` keeps it
     // out of `inject`, so a composition without it still boots (关键坑 2) — it
     // just gets no job cards. Only jobs whose owning session is bound to a
@@ -1564,6 +1570,7 @@ async function executeSlashCommand(
   display?: DisplayControl,
   displayCard?: FeishuDisplayHandle,
   sessionCard?: FeishuSessionHandle,
+  subagentsPanel?: SubagentPanelHandle,
   localeControl?: {
     current: () => { id: LocaleId; plugin: 'zh' | 'en' | 'auto'; dsh: string | undefined }
     set: (value: 'zh' | 'en' | 'auto') => Promise<void>
@@ -1731,6 +1738,32 @@ async function executeSlashCommand(
   }
   if (parsed.name === 'detach') {
     return await handleDetachDirect(parsed.rawInput.trim(), bridge)
+  }
+  // /subagents posts THIS chat's subagent panel on demand: the Host catalog
+  // (which children exist and how they nest) unioned with this process's
+  // roster (model, duration, outcome). It needs no live agent — only the
+  // session the bridge already binds to this chat — so it works right after a
+  // restart, like /status and /session.
+  if (parsed.name === 'subagents') {
+    if (subagentsPanel === undefined) {
+      return { kind: 'error', text: '⚠️ 子代理面板不可用。' }
+    }
+    const t = translationsFor(localeControl?.current().id ?? 'zh')
+    const arg = parsed.rawInput.trim().toLowerCase()
+    if (arg !== '' && arg !== 'tree') {
+      return { kind: 'error', text: t.subagentCommandUsage }
+    }
+    try {
+      const outcome = await subagentsPanel.open(chatMessage, {
+        scope: arg === 'tree' ? 'tree' : 'children',
+        sessionId: bridge.resolveSessionIdFor(chatMessage),
+      })
+      // A card was already posted by the handle; an empty or unchanged panel
+      // answers with one line of text instead.
+      return outcome.kind === 'text' ? { kind: 'success', text: outcome.text } : { kind: 'consumed' }
+    } catch (error: unknown) {
+      return { kind: 'error', text: `⚠️ ${t.subagentCommandFailed}: ${error instanceof Error ? error.message : String(error)}` }
+    }
   }
   // /stop cancels the running agent — mirrors the WebUI stop button. The
   // bridge both bumps the per-chat stop generation (so a message queued behind

@@ -6,6 +6,7 @@ import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
 import { type TranscriptView } from './display-level.ts'
+import { zh } from './i18n.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -755,6 +756,7 @@ const FEISHU_INTERCEPTED_COMMANDS: Array<{ name: string; description: string; hi
   { name: 'steer', description: '把一条消息注入当前运行中的 turn（运行中插话，/queue 的共轭）', hint: '<内容>' },
   { name: 'queue', description: '把一条消息排队为新一轮运行（/steer 的共轭）', hint: '<内容>' },
   { name: 'permission', description: '切换本会话的权限（沙箱）模式', hint: '[read-only|workspace-write|danger-full-access]' },
+  { name: 'subagents', description: zh.subagentsCommandDescription, hint: '[tree]' },
   { name: 'lang', description: '切换语言（中文 / English，或跟随 DSH）', hint: '[zh|en|auto]' },
 ]
 export { FEISHU_INTERCEPTED_COMMANDS }
@@ -830,6 +832,7 @@ export function renderFeishuCommandsOnly(t: CommandTranslations): string {
     { name: 'queue', description: '把一条消息排队为新一轮运行（/steer 的共轭）', hint: '<内容>' },
     { name: 'stop', description: '停止当前运行中的 agent（同 WebUI 停止按钮），并丢弃排队中的消息' },
     { name: 'permission', description: '切换本会话的权限（沙箱）模式', hint: '[read-only|workspace-write|danger-full-access]' },
+    { name: 'subagents', description: zh.subagentsCommandDescription, hint: '[tree]' },
     { name: 'approvals', description: t.approvalsDescription },
     { name: 'approve', description: t.approveDescription, hint: '[shortCode]' },
     { name: 'deny', description: t.denyDescription, hint: '[shortCode]' },
