@@ -426,7 +426,7 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
   const title = running
-    ? t.turnCardTitleRunning(facts.calls, total)
+    ? t.turnCardTitleRunning(total)
     : facts.failedTurn
       ? t.turnCardTitleFailed(facts.calls, total)
       : t.turnCardTitleDone(facts.calls, facts.failed, total)
@@ -1103,7 +1103,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
 function renderTitle(t: Translations, facts: ProgressFacts): string {
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
-  if (facts.endedAt === undefined) return t.turnCardTitleRunning(facts.calls, total)
+  if (facts.endedAt === undefined) return t.turnCardTitleRunning(total)
   if (facts.failedTurn) return t.turnCardTitleFailed(facts.calls, total)
   return t.turnCardTitleDone(facts.calls, facts.failed, total)
 }

@@ -6,6 +6,12 @@ import type { TranscriptView } from '../src/display-level.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
 
 const t = translationsFor('zh')
+/**
+ * The running compact turn progress card, told apart from a step card by its
+ * title: `深度求索中 · 1.2s` while running, `⚙️ 本回合 · …` once settled.
+ */
+const TURN_RUNNING = t.turnCardTitleRunning('')
+const isTurnCardTitle = (title: string): boolean => title.includes(TURN_RUNNING) || title.includes('本回合')
 
 function codeBlocksOf(card: any): string[] {
   return card.body.elements
@@ -2179,7 +2185,7 @@ describe('level + injection wiring through session events', () => {
     // narration as a row. No step card was posted for the narration.
     expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
     const card = lastCard(ch)
-    expect(String(card.header.title.content)).toContain('本回合')
+    expect(isTurnCardTitle(String(card.header.title.content))).toBe(true)
     expect(mdOf(card)).toContain(t.turnCardStepNote('我先看一下那段代码'))
     h.streaming.stop()
   })
@@ -2208,7 +2214,7 @@ describe('level + injection wiring through session events', () => {
     expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
     const card = lastCard(ch)
     const md = mdOf(card)
-    expect(String(card.header.title.content)).toContain('本回合')
+    expect(isTurnCardTitle(String(card.header.title.content))).toBe(true)
     expect(md).toContain('@deepseek-ai/dsh-system-prompt')
     expect(md).toContain(t.turnCardStepNote('narration'))
     h.streaming.stop()
@@ -2363,7 +2369,7 @@ describe('level + injection wiring through session events', () => {
     // work never opens a step card of its own under `compact`.
     expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
     const card = lastCard(ch)
-    expect(String(card.header.title.content)).toContain('本回合')
+    expect(isTurnCardTitle(String(card.header.title.content))).toBe(true)
     h.streaming.stop()
   })
 
@@ -2458,7 +2464,7 @@ describe('turn progress card wiring', () => {
   const progressRenders = (ch: StepChannel): any[] =>
     (ch.updateCardInstance?.mock.calls ?? [])
       .map(call => call[1] as any)
-      .filter(card => String(card.header?.title?.content ?? '').includes('本回合'))
+      .filter(card => isTurnCardTitle(String(card.header?.title?.content ?? '')))
 
   it('mirrors the whole turn onto one card at the compact level', async () => {
     const ch = channel()
@@ -2469,10 +2475,10 @@ describe('turn progress card wiring', () => {
     await tick(300)
     // The ONE card so far is the progress card: a tool-only step posts no step
     // card at this level (the whole point of the merge).
-    expect(titles(ch).some(title => title.includes('本回合'))).toBe(true)
-    expect(titles(ch).filter(title => !title.includes('本回合'))).toEqual([])
+    expect(titles(ch).some(isTurnCardTitle)).toBe(true)
+    expect(titles(ch).filter(title => !isTurnCardTitle(title))).toEqual([])
     const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
-      .find(card => String(card.header.title.content).includes('本回合'))
+      .find(card => isTurnCardTitle(String(card.header.title.content)))
     expect(mdOf(opened)).toContain('⏳ `bash`')
     expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…', t.turnCardPhaseTool))
 
@@ -2481,9 +2487,9 @@ describe('turn progress card wiring', () => {
     // about the tools, which live on the turn card.
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await vi.waitFor(() => { expect(titles(ch).some(title => !title.includes('本回合'))).toBe(true) })
+    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
     const answer = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
-      .find(card => !String(card.header.title.content).includes('本回合'))
+      .find(card => !isTurnCardTitle(String(card.header.title.content)))
     expect(mdOf(answer)).toContain('the answer')
     expect(mdOf(answer)).not.toContain('工具调用')
     expect(mdOf(answer)).not.toContain('`bash`')
@@ -2503,7 +2509,7 @@ describe('turn progress card wiring', () => {
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
     await tick(200)
-    expect(titles(ch).some(title => title.includes('本回合'))).toBe(false)
+    expect(titles(ch).some(isTurnCardTitle)).toBe(false)
     streaming.stop()
   })
 
@@ -2517,7 +2523,7 @@ describe('turn progress card wiring', () => {
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
     await tick(200)
-    expect(titles(ch).some(title => title.includes('本回合'))).toBe(false)
+    expect(titles(ch).some(isTurnCardTitle)).toBe(false)
     streaming.stop()
   })
 
@@ -2531,7 +2537,7 @@ describe('turn progress card wiring', () => {
     emit('step/end', {})
     emit('turn/end', { reason: { kind: 'completed' } })
     await tick(200)
-    expect(titles(ch).some(title => title.includes('本回合'))).toBe(false)
+    expect(titles(ch).some(isTurnCardTitle)).toBe(false)
     streaming.stop()
   })
 })

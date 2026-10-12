@@ -118,10 +118,18 @@ describe('renderProgressCard', () => {
   it('opens grey while the turn runs and names the step and its tool', () => {
     const card: any = renderProgressCard(t, facts({ endedAt: undefined, now: 5_000 }))
     expect(card.header.template).toBe('grey')
-    expect(card.header.title.content).toBe(t.turnCardTitleRunning(1, '5.0s'))
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('5.0s'))
     const md = mdOf(card)
     expect(md).toContain(t.turnCardStep(1, '5.0s'))
     expect(md).toContain(t.turnCardToolDone('`read`', '400ms'))
+  })
+
+  it('titles a running turn with the live wording, and without the tool count', () => {
+    const card: any = renderProgressCard(t, facts({ calls: 3, endedAt: undefined, now: 3_400 }))
+    // The count is readable from the rows below, and the running step's header
+    // carries the live phase: the title only has to say the turn is still going.
+    expect(card.header.title.content).toBe('深度求索中 · 3.4s')
+    expect(card.header.title.content).not.toContain('3 个工具')
   })
 
   it('freezes green with the totals once the turn ended', () => {
@@ -707,7 +715,7 @@ describe('createProgressCards', () => {
     await vi.waitFor(() => expect(channel.sendCardByReference).toHaveBeenCalledTimes(1))
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const card = (channel.createCardInstance.mock.calls[0] as any)[0]
-    expect(card.header.title.content).toBe(t.turnCardTitleRunning(1, '100ms'))
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('100ms'))
   })
 
   it('opens a NEW card for the next turn and never reuses the entity', async () => {
@@ -749,7 +757,7 @@ describe('createProgressCards', () => {
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
     // The single write carried the LATEST state, not the first event.
     const card = (channel.updateCardInstance.mock.calls[0] as any)[1]
-    expect(card.header.title.content).toBe(t.turnCardTitleRunning(2, '700ms'))
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('700ms'))
     expect(mdOf(card)).toContain(t.turnCardToolFailed('`bash`', '100ms'))
     // CardKit needs a monotonically increasing sequence per card instance.
     expect((channel.updateCardInstance.mock.calls[0] as any)[2]).toBe(1)
@@ -879,7 +887,7 @@ describe('createProgressCards', () => {
     // The first card was left exactly as it was.
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
     // …and the turn's totals still count everything.
-    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning(2, '400ms'))
+    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning('400ms'))
   })
 
   it('keeps a running step in the new segment so its later rows still show', async () => {

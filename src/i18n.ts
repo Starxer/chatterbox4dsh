@@ -206,8 +206,16 @@ export interface Translations {
   // One card per turn, `compact` level only: the turn's tool activity merged
   // into a single card updated in place. Durations arrive already formatted
   // (`3.2s`) because they read the same in both languages.
-  /** Title while the turn is still running, e.g. `⚙️ 本回合进行中 · 5 个工具 · 12.3s`. */
-  turnCardTitleRunning: (calls: number, elapsed: string) => string
+  /**
+   * Title while the turn is still running, e.g. `深度求索中 · 12.3s`.
+   *
+   * Deliberately NOT the settled title with a different word: this card is
+   * scanned while the model works, and the tool count it used to carry is
+   * already readable from the rows below (the running STEP's header carries the
+   * live phase). What the title has to say is that the turn is still going, and
+   * how long it has been going.
+   */
+  turnCardTitleRunning: (elapsed: string) => string
   /** Title once the turn ended normally. */
   turnCardTitleDone: (calls: number, failed: number, elapsed: string) => string
   /** Title when the turn ended in an error (the reason rides the failure card). */
@@ -805,7 +813,7 @@ export const zh = {
     `🔧 ${calls} 个工具调用${failed > 0 ? ` · ${failed} 个失败` : ''}`,
 
   // 回合过程卡（feishu-progress.ts）：简洁档把整轮的工具活动合并到一张卡上。
-  turnCardTitleRunning: (calls, elapsed) => `⚙️ 本回合进行中 · ${calls} 个工具 · ${elapsed}`,
+  turnCardTitleRunning: elapsed => `深度求索中 · ${elapsed}`,
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
@@ -1301,8 +1309,9 @@ export const en: Translations = {
 
   // Turn progress card (feishu-progress.ts): `compact` merges the whole turn's
   // tool activity onto one card.
-  turnCardTitleRunning: (calls, elapsed) =>
-    `⚙️ Turn running · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
+  // `深度求索中` is the Chinese name of DeepSeek read as "DeepSeek is at work";
+  // the English locale keeps the same pun in verb form.
+  turnCardTitleRunning: elapsed => `DeepSeeking · ${elapsed}`,
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) =>
