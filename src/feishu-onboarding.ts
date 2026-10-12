@@ -567,7 +567,7 @@ function renderWorkspaceBrowser(
   state: BrowseState,
   listing: DirectoryListing,
   t: Translations,
-  options?: { canCreateFolder?: boolean; notice?: string },
+  options?: { notice?: string },
 ): object {
   const visible = listing.entries.filter(entry => state.hidden || !entry.hidden)
   const totalPages = Math.max(1, Math.ceil(visible.length / BROWSE_PAGE_SIZE))
@@ -621,16 +621,16 @@ function renderWorkspaceBrowser(
     elements.push({ tag: 'markdown', content: t.onboardingBrowseTruncated })
   }
 
-  // Create a folder in THIS level. Hidden unless the mounted backend really has
-  // `createDirectory` (the `native` chooser and the plugin's own read-only
-  // listing do not), because a button that can only fail is worse than none.
+  // Create a folder in THIS level. No gate: `resolveDirectoryCreator` uses DSH's
+  // `browse` backend when it is mounted and the plugin's own `mkdir` otherwise,
+  // so the button works whatever the mounted CHOOSER is (the `native` one only
+  // means the OS dialog is unavailable — not that the filesystem is read-only).
   // The form shape is the one the workspace picker already proved: `input` +
   // a `form_action_type: 'submit'` button, no label field (a card input cannot
   // be prefilled and has no completion — docs/feishu-capabilities.md §2.2.2).
-  if (options?.canCreateFolder === true) {
-    elements.push({
-      tag: 'form',
-      name: 'browse_new_folder',
+  elements.push({
+    tag: 'form',
+    name: 'browse_new_folder',
       elements: [
         {
           tag: 'input',
@@ -643,11 +643,10 @@ function renderWorkspaceBrowser(
           type: 'default',
           name: 'mkdir',
           form_action_type: 'submit',
-          behaviors: [{ type: 'callback', value: { kind: 'browse-mkdir' } }],
-        },
-      ],
-    })
-  }
+        behaviors: [{ type: 'callback', value: { kind: 'browse-mkdir' } }],
+      },
+    ],
+  })
 
   elements.push({ tag: 'hr' })
   elements.push({
@@ -995,17 +994,35 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
   }
 
   /**
-   * The mounted backend's `createDirectory`, or undefined when it cannot create
-   * — the `native` chooser (an OS dialog on the host display) and the plugin's
-   * own read-only listing have no such method. The browser HIDES the button in
-   * that case rather than offering one that can only fail.
+   * How to create a child folder of the level being browsed.
+   *
+   * DSH's `browse` backend owns `createDirectory` (single segment, non-recursive,
+   * `directory-exists`), so it is used when it is mounted. The `native` backend
+   * (an OS chooser on the host display) has no such method — but that says
+   * something about the CHOOSER, not about the filesystem: this plugin already
+   * lists levels itself when `browse` is absent ({@link resolveDirectoryLister})
+   * and already creates directories itself for the `/new` flow, so hiding the
+   * button there only removed the feature (reported 2026-10-12 on a host whose
+   * `DISPLAY` is set). The fallback mirrors the backend's contract exactly: one
+   * non-blank path segment, non-recursive `mkdir`, `EEXIST` = "already there".
    */
-  function resolveDirectoryCreator(): ((path: string, name: string) => Promise<string>) | undefined {
+  function resolveDirectoryCreator(): (path: string, name: string) => Promise<string> {
     const capability = getDirectoryPicker?.()?.capability()
-    if (capability === undefined || capability.kind !== 'browse') return undefined
-    const create = capability.createDirectory
-    if (create === undefined) return undefined
-    return (path: string, name: string) => create.call(capability, path, name)
+    if (capability !== undefined && capability.kind === 'browse' && capability.createDirectory !== undefined) {
+      const create = capability.createDirectory
+      return (path: string, name: string) => create.call(capability, path, name)
+    }
+    return async (path: string, name: string) => {
+      const target = join(path, name)
+      await mkdir(target)
+      return target
+    }
+  }
+
+  /** A usable folder name: one non-blank path segment, no separators. Mirrors
+   *  the fence DSH's own `createDirectory` puts on the wire. */
+  function isUsableFolderName(name: string): boolean {
+    return name.trim() !== '' && name !== '.' && name !== '..' && !/[/\\]/u.test(name)
   }
 
   /**
@@ -1042,7 +1059,6 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     browseState.set(action.chatMessage.chatId, state)
     logger.info(`dsh-feishu: browse ${action.kind} → ${state.path} page=${state.page} entries=${listing.entries.length} hidden=${state.hidden}`)
     await sendCard(action.chatMessage, renderWorkspaceBrowser(state, listing, getTranslations(), {
-      canCreateFolder: resolveDirectoryCreator() !== undefined,
       ...(overrides?.notice !== undefined ? { notice: overrides.notice } : {}),
     }), { navigation: true })
   }
@@ -1296,7 +1312,11 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
           // non-recursive, `directory-exists` when it is already there.
           const state = browseState.get(action.chatMessage.chatId)
           const create = resolveDirectoryCreator()
-          if (state === undefined || create === undefined || action.value === undefined) break
+          if (state === undefined || action.value === undefined) break
+          if (!isUsableFolderName(action.value)) {
+            await refreshBrowser(action, { notice: getTranslations().onboardingBrowseNewFolderInvalid(action.value) })
+            break
+          }
           try {
             const created = await create(state.path, action.value)
             logger.info(`dsh-feishu: created directory ${created}`)

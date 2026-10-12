@@ -264,9 +264,12 @@ describe('feishu-onboarding', () => {
     const handle = startFeishuOnboarding(d)
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
     const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
-    // No dropdown / form, and the entries are not buttons: each row is a
-    // borderless interactive_container whose markdown shows the full name.
-    expect(card.body.elements.some((el: any) => el.tag === 'form')).toBe(false)
+    // The only form on the browser card is the new-folder one (the entries are
+    // not buttons): each row is a borderless interactive_container whose
+    // markdown shows the full name.
+    const forms = card.body.elements.filter((el: any) => el.tag === 'form')
+    expect(forms).toHaveLength(1)
+    expect(forms[0].name).toBe('browse_new_folder')
     const rows = card.body.elements
       .filter((el: any) => el.tag === 'interactive_container' && el.behaviors[0].value.kind === 'browse-enter'
         && String(el.behaviors[0].value.value).startsWith('/g/'))
@@ -890,17 +893,43 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
     handle.dispose()
   })
 
-  it('hides the new-folder form when the mounted backend cannot create directories', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o17-gate-'))
+  it('offers the new-folder form even when the backend cannot create (native chooser)', async () => {
+    // The `native` backend has no createDirectory — that says something about the
+    // CHOOSER, not about the filesystem: the plugin lists levels itself in this
+    // case and creates the folder itself too, mirroring the backend's contract.
+    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o17-native-'))
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
-    d.getDirectoryPicker = () => realPicker(root).picker // no createDirectory
+    d.getDirectoryPicker = () => ({ capability: () => ({ kind: 'native' }) })
     const handle = startFeishuOnboarding(d)
     try {
+      // `browse-open` falls back to the plugin's own listing, rooted at the real
+      // home directory; navigate to the temp root from there.
       await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'browse-open' }) } })
-      const card = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
-      expect(card).not.toContain('browse-mkdir')
-      expect(card).not.toContain('新建文件夹')
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('新建文件夹')
+
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-enter', value: root }) },
+      })
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-mkdir' }) },
+        raw: { action: { form_value: { new_folder: 'made-by-plugin' } } },
+      })
+      expect((await stat(join(root, 'made-by-plugin'))).isDirectory()).toBe(true)
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain(join(root, 'made-by-plugin'))
+
+      // A separator is refused before anything touches the disk.
+      await fire(handlers, {
+        chatId: 'oc_1',
+        messageId: 'm-ref',
+        action: { value: JSON.stringify({ kind: 'browse-mkdir' }) },
+        raw: { action: { form_value: { new_folder: 'a/b' } } },
+      })
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('不是合法的文件夹名')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

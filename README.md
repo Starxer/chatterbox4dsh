@@ -154,7 +154,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | 命令 | 说明 |
 |---|---|
 | `/model [list\|<provider>/<model>]` | 查看/列出/切换模型 |
-| `/new [--workspace <path>] [--preset <id>]` | 新建会话（可指定工作区和 preset）。卡片流程：工作区可选可浏览、**能在当前层新建文件夹**（后端是 `browse` 时）；输入一个**还不存在**的路径会**先问再建**（确认卡上还会列出隔壁有哪些目录，点一下就改用那个），**确认之前不在磁盘上留任何东西**——工作区的注册与目录的新建都发生在最后一步「创建会话」 |
+| `/new [--workspace <path>] [--preset <id>]` | 新建会话（可指定工作区和 preset）。卡片流程：工作区可选可浏览、**能在当前层新建文件夹**（宿主挂载了 `browse` 后端就走它，否则插件自己 `mkdir`，所以任何后端下都能用）；输入一个**还不存在**的路径会**先问再建**（确认卡上还会列出隔壁有哪些目录，点一下就改用那个），**确认之前不在磁盘上留任何东西**——工作区的注册与目录的新建都发生在最后一步「创建会话」 |
 | `/session [N\|list]` | 无参：交互式会话管理面板；`list`：表格；`N`：按下标快速切换 |
 | `/status` | 展示会话状态（token/TTFT/吞吐量/缓存命中率/权限模式/Enter while busy 等） |
 | `/reasoning [off\|low\|high\|max]` | 设置推理强度（`show on\|off` 切换思考过程显示） |
@@ -172,7 +172,7 @@ npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 | Command | Description |
 |---|---|
 | `/model [list\|<provider>/<model>]` | View / list / switch models |
-| `/new [--workspace <path>] [--preset <id>]` | Create a session (optionally with a workspace and preset). In the card flow the workspace can be browsed and a folder can be **created in the current level** (when the mounted backend is `browse`); a path that **does not exist yet** is **confirmed first** (and the card lists what is next door, one tap away), and **nothing is written to disk until then** — both the folder and the workspace registration happen at the final "create session" step |
+| `/new [--workspace <path>] [--preset <id>]` | Create a session (optionally with a workspace and preset). In the card flow the workspace can be browsed and a folder can be **created in the current level** (through DSH's `browse` backend when it is mounted, otherwise the plugin does the `mkdir` itself, so it works under any backend); a path that **does not exist yet** is **confirmed first** (and the card lists what is next door, one tap away), and **nothing is written to disk until then** — both the folder and the workspace registration happen at the final "create session" step |
 | `/session [N\|list]` | No args: interactive session panel; `list`: table; `N`: switch by index |
 | `/status` | Session status (tokens / TTFT / throughput / cache hit rate / permission mode / Enter while busy) |
 | `/reasoning [off\|low\|high\|max]` | Set the reasoning effort (`show on\|off` toggles reasoning display) |
