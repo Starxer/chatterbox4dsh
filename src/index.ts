@@ -911,6 +911,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
       getTranslations: () => translationsFor(currentLocale().id),
+      // The live session's own cached fold of its `request/context` events. DSH
+      // appends that event only when the route CHANGES, so a resumed subagent
+      // emits none and the panel would otherwise show `—` forever (关键坑 67).
+      readChildRoute: (sessionId) => {
+        const route = sessions?.get(sessionId as never)?.requestContext?.()
+        return route === undefined ? undefined : { provider: route.provider, model: route.model }
+      },
     })
     // Read optional: the abstract background-job registry. `ctx.get` keeps it
     // out of `inject`, so a composition without it still boots (关键坑 2) — it

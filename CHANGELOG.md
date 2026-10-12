@@ -32,6 +32,31 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 修复：子代理面板的「模型」列对**被恢复**的子代理永远是 `—`（`src/feishu-subagents.ts` / `src/index.ts`，2026-10-12）
+
+使用者报「另外一个会话运行完的卡片仍然是 `-`」。查下来是**真 bug，而且上游代码就是证据**：DSH **只在路线发生变化时**才追加 `request/context`——
+
+```ts
+// packages/core/agent-loop/src/agent.ts
+const previousContext = session.requestContext()
+if (previousContext?.provider !== requestContext.provider
+  || previousContext.model !== requestContext.model || …) {
+  session.append('request/context', requestContext)   // 只有变了才记
+}
+```
+
+而面板**只靠这个事件**填模型列 ⇒ **被恢复的 continuable 子代理**（路线与上次相同）**一个事件都不会发**，那一格永远停在 `—`。
+
+**取证**（那个话题 `omt_19fdba…` 的子会话 `72d42fb3`）：子会话日志里最后一条 `request/context` 是**当天 10:11:02**（`cpa-codex/gpt-6.1-sol`），而它 **10:28 被恢复**跑了一次（2m34s）⇒ 路线没变 ⇒ 那段窗口里没有任何模型事件；两张面板卡（10:28:34 运行中、10:31:06 已完成）都只能是 `—`。对照：同一小时内新起的子代理（全新会话，第一次请求必然与「无」不同）模型正常显示 ⇒ 机制本身没坏，缺的是**事件覆盖不到的场景**。
+
+**改法**：不要只等事件 —— 行的模型有第二个来源，**直接问宿主该子会话当前的路线**（`sessions.get(childId).requestContext()`，**纯内存、同步**；那个 fold 会**重放整份日志**，所以恢复的会话也有值）。三处落地：① 行创建时（`subagent/catalog` 到达）就填；② 快照构建时，对**仍为空**的行再问一次（覆盖「catalog 先到、会话随后才驻留」）；③ 实时 `request/context` 到达时照旧覆盖。**顺带**：列现在显示 **`provider/model`**（如 `cpa-codex/gpt-6.1-sol`），因为事件与缓存两边都能拿到 provider，两个不同 provider 上的同名模型因此可区分；单元格上限 24 → 32 字符。宿主给不出路线时（子会话已不在内存）仍然是 `—`。
+
+**这是坑 66 的同类错误**：坑 66 是「把**宿主后端缺一个方法**当成**这件事做不到**」，这条是「把**没有信号**当成**没有事实**」——两条都是**用错误的层去推断**。记为坑 67。
+
+**验证**：`npm run typecheck` 0 error；**1090 tests / 56 files 全绿**（新增 2 例：**「被恢复的子代理一个 `request/context` 都不发，第一张卡就已经带路线」**、**「catalog 先到时先显示 `—`，会话随后驻留则在下一张卡补上路线」**；原「事件到达才显示模型」那条改成断言 `provider/model`）；`npm run build` 已产出。
+
+**English**: Reported as "another session's finished card still shows `-`", and it was a real bug with the upstream code as evidence: DSH appends `request/context` ONLY when the route CHANGES (`packages/core/agent-loop/src/agent.ts` compares against the session's previous context), while the panel waited for exactly that event — so a RESUMED continuable subagent (same route as before) never emits one and its row sat at `—` forever. Evidence from the affected thread: the child's own log's last `request/context` was 10:11:02 (`cpa-codex/gpt-6.1-sol`) and the child was resumed at 10:28 for 2m34s, so no model event existed in that window and both panel cards (running, then completed) could only show `—`; a brand-new child started in the same hour displayed its model normally, which proves the mechanism works and only the event's coverage was missing. The row's model now has a SECOND source: ask the host for that session's current route (`sessions.get(childId).requestContext()` — pure memory, synchronous; the fold replays the whole log, so resumed sessions answer too). It is applied in three places: when the row is created, when a snapshot is built for a row that is still empty (covering "catalog arrived before the session was resident"), and by the live event as before. Along the way the column now reads `provider/model` (both sources carry the provider, and two same-named models on different providers are now tellable apart) with the cell cap raised from 24 to 32 characters; a child the host cannot answer for (no longer resident) still shows `—`. typecheck clean, **1090 tests across 56 files** green (2 new), artifacts rebuilt.
+
 ### 修复：「新建文件夹」按钮被自己的门控藏掉了（O17 补丁，`src/feishu-onboarding.ts` / `tests/onboarding.spec.ts`，2026-10-12）
 
 使用者报「**没看见新建目录按钮**」。查下来是上一批我加的门控**把功能藏没了**，而不是没发布（自检里 `browse-mkdir` 明明在产物里）：本机 `dsh` 进程带着 `DISPLAY=:0` / `XDG_SESSION_TYPE=x11`，`directory-picker-auto` 于是选了 **`native` 后端**（`resolve.ts`：linux 上有 `DISPLAY`/`WAYLAND_DISPLAY` 且非远程绑定就 `native`），而 `native` 没有 `createDirectory` ⇒ 按「后端不是 `browse` 就藏按钮」的判据，按钮永不出现。

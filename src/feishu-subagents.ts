@@ -116,10 +116,32 @@ export interface FeishuSubagentsDeps {
   logger: PanelLogger
   /** Return the strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
+  /**
+   * The route a child session is ACTUALLY running — its own cached fold of
+   * `request/context`, or undefined when that session is not resident.
+   *
+   * Waiting for the live event is not enough: DSH appends `request/context` only
+   * when the route CHANGES (`agent-loop/src/agent.ts` compares against the
+   * session's previous context), so a RESUMED continuable subagent emits no such
+   * event at all and its row stayed `—` forever even after it finished
+   * (reported 2026-10-12). Pure memory, no I/O: `sessions.get(id)?.requestContext()`.
+   */
+  readChildRoute?: (sessionId: string) => { provider?: string; model?: string } | undefined
   /** Test seam: coalescing window. Production omits it. */
   debounceMs?: number
   /** Test seam: non-urgent refresh floor. Production omits it. */
   refreshMs?: number
+}
+
+/**
+ * One route as the model cell shows it: `provider/model`, or whichever half is
+ * known. `''` when there is no model to name, which the card renders as `—`.
+ */
+export function formatChildRoute(provider: unknown, model: unknown): string {
+  const name = typeof model === 'string' ? model.trim() : ''
+  if (name === '') return ''
+  const source = typeof provider === 'string' ? provider.trim() : ''
+  return source === '' ? name : `${source}/${name}`
 }
 
 /**
@@ -291,7 +313,7 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
       // whitespace, which would flatten `│  ` (two spaces) to `│ ` and break
       // the tree's alignment.
       `${prefix}${tableCell(label === '' ? t.subagentUntitled : label, { code: true, max: 40 })}`,
-      row.model === '' ? '—' : tableCell(row.model, { code: true, max: 24 }),
+      row.model === '' ? '—' : tableCell(row.model, { code: true, max: 32 }),
       tableCell(row.id, { code: true, max: 14 }),
       modePresentation(row.mode, t),
       formatDuration(elapsed),
@@ -328,6 +350,23 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
   }
 
   /**
+   * Ask the host for a child's current route, best-effort.
+   *
+   * This is the fallback for the case the live event cannot cover: DSH only
+   * appends `request/context` when the route changes, so a resumed child that
+   * kept its route never produces one. A throw here must not cost the card, and
+   * the accessor is a memory lookup, so failures are swallowed.
+   */
+  const childRoute = (sessionId: string): string => {
+    try {
+      const route = deps.readChildRoute?.(sessionId)
+      return route === undefined ? '' : formatChildRoute(route.provider, route.model)
+    } catch {
+      return ''
+    }
+  }
+
+  /**
    * Drop roster rows a later card should no longer carry: settled long ago, or
    * pushed out by {@link PANEL_MAX_ROWS} newer ones. Live rows are never
    * dropped, but their roster entry (and therefore their chat attribution) is
@@ -359,6 +398,13 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
       const now = Date.now()
       prune(roster, now)
       const rows = [...roster.rows.values()]
+      // A row created before its session was resident has no route yet: ask
+      // again here, so the first card that CAN carry the model does.
+      for (const row of rows) {
+        if (row.model !== '') continue
+        const route = childRoute(row.id)
+        if (route !== '') row.model = route
+      }
       if (rows.length === 0) {
         rosters.delete(key)
         return undefined
@@ -398,7 +444,9 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
       createdAt: data.childCreatedAt,
       mode: data.mode,
       label: data.label,
-      model: '',
+      // Ask the host straight away: a resumed child keeps the route it already
+      // had, so no `request/context` event is coming (see the dep's doc).
+      model: childRoute(data.childId),
       depth,
       parentId: parent === undefined ? undefined : parentSessionId,
       state: 'running',
@@ -416,7 +464,7 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
     try {
       const event = rawEvent as {
         type?: string
-        data?: { childId?: unknown; childCreatedAt?: unknown; mode?: unknown; label?: unknown; model?: unknown } | null
+        data?: { childId?: unknown; childCreatedAt?: unknown; mode?: unknown; label?: unknown; provider?: unknown; model?: unknown } | null
       }
       // The child's own route metadata (`request/context`) is the only place its
       // model is stated: the parent's catalog entry and the lifecycle edges both
@@ -424,11 +472,11 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): () => void {
       if (event.type === 'request/context') {
         const ref = children.get(session.id)
         if (ref === undefined) return
-        const model = event.data?.model
-        if (typeof model !== 'string' || model === '') return
+        const route = formatChildRoute(event.data?.provider, event.data?.model)
+        if (route === '') return
         const row = rosters.get(ref.key)?.rows.get(session.id)
-        if (row === undefined || row.model === model) return
-        row.model = model
+        if (row === undefined || row.model === route) return
+        row.model = route
         // A detail-only change, so it rides the panel's refresh floor — and it
         // is skipped entirely while a snapshot is being built, because that
         // build already renders the model.

@@ -44,7 +44,7 @@ function catalog(childId: string, overrides: Record<string, unknown> = {}) {
   return { type: 'subagent/catalog', data: { childId, childCreatedAt: 1_000, mode: 'one-shot', label: `task ${childId}`, ...overrides } }
 }
 
-function buildHarness(options: { chats?: Record<string, ConversationMessage>; debounceMs?: number; refreshMs?: number } = {}) {
+function buildHarness(options: { chats?: Record<string, ConversationMessage>; debounceMs?: number; refreshMs?: number; routes?: Record<string, { provider?: string; model?: string }> } = {}) {
   const listeners = new Map<string, Set<(...args: any[]) => void>>()
   const optionsSeen: Array<{ name: string; options: unknown }> = []
   const sent: Array<{ to: string; card: any; opts: any }> = []
@@ -79,6 +79,9 @@ function buildHarness(options: { chats?: Record<string, ConversationMessage>; de
       error: () => undefined,
     },
     getTranslations: () => zh,
+    // The host's "what is this child actually running" reader. Tests pass a map;
+    // production reads the live session's cached `request/context` fold.
+    readChildRoute: id => options.routes?.[id],
     debounceMs: options.debounceMs ?? 0,
     refreshMs: options.refreshMs ?? 0,
   })
@@ -366,8 +369,42 @@ describe('startFeishuSubagents', () => {
     h.lifecycle('subagent/end', { id: 'child-1', runId: 'r1', stopReason: 'completed' })
     await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
     const text = markdownOf(h.sent[1]!.card)
-    expect(text).toContain('`deepseek-chat`')
+    // Provider and model travel together, so two children on different routes to
+    // the same model are still tellable apart.
+    expect(text).toContain('`deepseek/deepseek-chat`')
     expect(text).toContain(zh.subagentPanelColModel)
+    h.stop()
+  })
+
+  it('shows the route of a RESUMED child that emits no request/context at all', async () => {
+    // 关键坑 67: DSH appends `request/context` only when the route CHANGES, so a
+    // continuable subagent that is resumed on the same route never emits one —
+    // the row used to sit at `—` forever, even after the run finished. The host
+    // can be asked directly, so it is asked when the row is created.
+    const h = buildHarness({ routes: { 'child-1': { provider: 'cpa-codex', model: 'gpt-6.1-sol' } } })
+    h.sessionEvent('session-1', catalog('child-1'))
+    h.lifecycle('subagent/end', { id: 'child-1', runId: 'r1', stopReason: 'completed' })
+    // Both events coalesce into ONE card, and that first card already names the
+    // route: the row was seeded when it was created, not patched up later.
+    await vi.waitFor(() => { expect(h.sent.length).toBeGreaterThan(0) })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain('`cpa-codex/gpt-6.1-sol`')
+    expect(text).not.toContain('| — |')
+    h.stop()
+  })
+
+  it('waits for the session to become resident before giving up on the route', async () => {
+    // The catalog can arrive before the host can answer for the child; the next
+    // card that CAN carry the route must carry it.
+    const routes: Record<string, { provider?: string; model?: string }> = {}
+    const h = buildHarness({ routes })
+    h.sessionEvent('session-1', catalog('child-1'))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(markdownOf(h.sent[0]!.card)).toContain('| — |')
+    routes['child-1'] = { provider: 'minimax-cn', model: 'MiniMax-M3' }
+    h.lifecycle('subagent/end', { id: 'child-1', runId: 'r1', stopReason: 'completed' })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    expect(markdownOf(h.sent.at(-1)!.card)).toContain('`minimax-cn/MiniMax-M3`')
     h.stop()
   })
 
