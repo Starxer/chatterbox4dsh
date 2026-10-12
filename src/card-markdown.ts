@@ -311,6 +311,89 @@ export function mapCardMarkdownAudio(
   })
 }
 
+/** A line that is NOTHING but a fence run (up to 3 spaces of indent), i.e. a closer. */
+const FENCE_ONLY_PATTERN = /^\s{0,3}(`{3,}|~{3,})\s*$/
+
+/**
+ * The fence run glued to the END of a line, if there is one (`…写死档```).
+ *
+ * @param line - one markdown line.
+ * @param character - the fence character of the OPEN block (`` ` `` or `~`).
+ * @returns the trailing run (3+ of that character), or `undefined`.
+ */
+function trailingFenceRun(line: string, character: string): string | undefined {
+  const trimmed = line.replace(/\s+$/, '')
+  let start = trimmed.length
+  while (start > 0 && trimmed[start - 1] === character) start -= 1
+  const run = trimmed.slice(start)
+  return run.length >= 3 ? run : undefined
+}
+
+/**
+ * Move a closing fence the model glued to the end of its last code line onto a
+ * line of its own.
+ *
+ * Feishu renders each card markdown element on its own, and only a line that is
+ * NOTHING but the run closes a fence: `…只有这四个写死档``` ` does not. One glued
+ * closer therefore turns the WHOLE rest of the answer — headings, tables and all
+ * — into code. Measured against the real corpus (2026-10-12: 931 assistant
+ * messages carrying fences across 26 session logs), 6 leave a fence
+ * unterminated and **4 of those are exactly this glue**; the other two are one
+ * glued opener and one genuinely missing closer.
+ *
+ * **Only an UNBALANCED element is repaired.** A well-formed element is returned
+ * untouched, which is what keeps a code sample that legitimately ENDS with a
+ * fence run (documenting markdown inside a fence) from being split — that shape
+ * balances, because its real closer comes later, so it never gets here. An
+ * unterminated element has no correct reading to lose, and its glued line is the
+ * model's own "I meant to stop here".
+ *
+ * Idempotent: the split leaves the run on a line of its own, so the next pass
+ * balances and returns the text unchanged.
+ *
+ * @param text - one card markdown element.
+ * @returns the same markdown with glued closers moved onto their own line.
+ */
+export function repairGluedFenceClosers(text: string): string {
+  if (!text.includes('```') && !text.includes('~~~')) return text
+  const lines = text.split('\n')
+  /** The fence the walk is inside of (`undefined` = outside any fence). */
+  let fence: string | undefined
+  /** Lines whose trailing fence run is glued to the line's content. */
+  const glued: Array<{ index: number; content: string; run: string }> = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
+    const marker = FENCE_PATTERN.exec(line)
+    if (fence === undefined) {
+      if (marker !== null) fence = marker[1]!
+      continue
+    }
+    // A line of nothing but the run closes the block, as markdown requires.
+    const only = FENCE_ONLY_PATTERN.exec(line)
+    if (only !== null && only[1]![0] === fence[0] && only[1]!.length >= fence.length) {
+      fence = undefined
+      continue
+    }
+    const run = trailingFenceRun(line, fence[0]!)
+    if (run !== undefined && run.length >= fence.length) {
+      const trimmed = line.replace(/\s+$/, '')
+      glued.push({ index, content: trimmed.slice(0, trimmed.length - run.length), run })
+    }
+  }
+  // Balanced, or nothing to move: this element renders as written.
+  if (fence === undefined || glued.length === 0) return text
+  const out: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const entry = glued.find(candidate => candidate.index === index)
+    if (entry === undefined) {
+      out.push(lines[index]!)
+      continue
+    }
+    out.push(entry.content, entry.run)
+  }
+  return out.join('\n')
+}
+
 /**
  * Make card markdown safe for Feishu: every image reference that is not an
  * uploaded image key becomes text, every link Feishu cannot open keeps its
@@ -323,7 +406,11 @@ export function mapCardMarkdownAudio(
  * @returns markdown Feishu will accept.
  */
 export function neutralizeCardMarkdown(text: string, options: NeutralizeOptions = {}): string {
-  const withReferences = mapCardMarkdownReferences(text, (reference) => {
+  // FIRST: an unterminated fence swallows everything below it, so repairing the
+  // glue has to happen before the passes that deliberately skip code blocks —
+  // and it also puts any reference down there back in their reach.
+  const withFences = repairGluedFenceClosers(text)
+  const withReferences = mapCardMarkdownReferences(withFences, (reference) => {
     if (reference.image) {
       if (options.aggressive !== true && isFeishuImageKey(reference.target)) return reference.raw
       return imageFallback(reference.alt, reference.target)

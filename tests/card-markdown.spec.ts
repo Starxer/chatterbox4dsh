@@ -6,6 +6,7 @@ import {
   mapCardMarkdownReferences,
   neutralizeCard,
   neutralizeCardMarkdown,
+  repairGluedFenceClosers,
 } from '../src/card-markdown.ts'
 
 const KEY = 'img_v3_0215q_0a59b5e6-4758-41de-95a5-a1b2c3d4'
@@ -108,6 +109,72 @@ describe('neutralizeCardMarkdown', () => {
     expect(neutralizeCardMarkdown('no references here')).toBe('no references here')
     expect(neutralizeCardMarkdown('')).toBe('')
   })})
+
+describe('repairGluedFenceClosers: a closer the model glued to its code line', () => {
+  /**
+   * The real thing (2026-10-12, an assistant message reporting an ERO script's
+   * options): the closing fence is stuck to the end of the only code line, so
+   * the block never closes and everything below renders as code.
+   */
+  const REAL = [
+    '找到两个关键点,先跟你确认再跑:',
+    '',
+    '## ① ERO 没有 `--width/--height` 参数',
+    '',
+    '```',
+    '--size {draft, draft-v, quality, quality-v}   ← 只有这四个写死档```',
+    '',
+    'SIZES = `draft 896×512` / `quality 1152×640`。',
+  ].join('\n')
+
+  it('moves the glued run onto its own line, so the prose below stays prose', () => {
+    expect(repairGluedFenceClosers(REAL)).toBe([
+      '找到两个关键点,先跟你确认再跑:',
+      '',
+      '## ① ERO 没有 `--width/--height` 参数',
+      '',
+      '```',
+      '--size {draft, draft-v, quality, quality-v}   ← 只有这四个写死档',
+      '```',
+      '',
+      'SIZES = `draft 896×512` / `quality 1152×640`。',
+    ].join('\n'))
+  })
+
+  it('does it on the send path too, before the passes that skip code', () => {
+    // The card gate is where every element passes, and the repair has to run
+    // first: `![x](…)` below the glued line used to be skipped as "inside code".
+    const text = '```\ncode```\n![x](runs/a.png)'
+    expect(neutralizeCardMarkdown(text)).toBe('```\ncode\n```\n🖼 x · `runs/a.png`')
+  })
+
+  it('leaves a BALANCED element alone, even when code ends with a fence run', () => {
+    // Documenting fences inside a fence is legitimate: this one closes later, so
+    // the trailing run is content rather than a closer.
+    const documented = ['```md', '代码块以 ``` 结束', '写一行 ```', '```'].join('\n')
+    expect(repairGluedFenceClosers(documented)).toBe(documented)
+  })
+
+  it('leaves an unterminated element with no glued run alone (nothing safe to do)', () => {
+    const missing = ['```', 'echo hi', '正文再也没关'].join('\n')
+    expect(repairGluedFenceClosers(missing)).toBe(missing)
+  })
+
+  it('only counts a run at least as long as the OPENER', () => {
+    // Inside a four-backtick fence a three-backtick line is content, not a
+    // closer — that is how nesting is written.
+    const nested = ['````', '```', 'inner', '正文'].join('\n')
+    expect(repairGluedFenceClosers(nested)).toBe(nested)
+  })
+
+  it('handles tildes and trailing spaces, and stays idempotent', () => {
+    const tildes = '~~~\nconfig~~~   \nbelow'
+    expect(repairGluedFenceClosers(tildes)).toBe('~~~\nconfig\n~~~\nbelow')
+    const once = repairGluedFenceClosers(REAL)
+    expect(repairGluedFenceClosers(once)).toBe(once)
+    expect(neutralizeCardMarkdown(once)).toBe(neutralizeCardMarkdown(neutralizeCardMarkdown(once)))
+  })
+})
 
 describe('imageFallback', () => {
   it('degrades gracefully for an empty label and target', () => {

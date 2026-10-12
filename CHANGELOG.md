@@ -84,6 +84,36 @@
 
 **English**: `PROGRESS_MAX_STEPS` goes from 3 back to 5 (the constant has been 5 → 3 → 5: 5 when the card shipped on 10-09, narrowed to 3 on 10-12 for "one glance is enough", changed back to 5 later the same day at the user's request). The window still counts STEPS and folds whole steps, headers included, with `PROGRESS_MAX_ROWS = 40` as the outer bound — so this is one constant and its comment, and the card's shape is unchanged. Three steps means the running one plus the two that led to it, which is too short a memory for a turn that keeps working: by the time a step is worth re-reading, its header has folded away. Five keeps the running step and the four before it on screen, at the cost of a few more rows on long turns (past 40 rows the folding still applies). Two specs were made constant-driven in the same commit — they hardcoded `3`, `steps 6-8` and `hr ×2`, and the separator spec (four steps) failed outright once five fitted on screen, because it was pinning the old window rather than the behaviour. typecheck clean, **1118 tests across 57 files** green, artifacts rebuilt.
 
+### 修复：模型把代码块的**收尾围栏粘在最后一行代码后面** → 后面整篇正文都变成代码（`src/card-markdown.ts`，关键坑 68，2026-10-12）
+
+使用者报「某个会话第 518 轮第 2 步，代码块渲染错误」。查证如下。
+
+**事实**：那条回复的正文（会话日志原文）里，代码块**只有开头一行是干净的**，收尾粘在最后一行代码末尾：
+
+```
+```
+--size {draft, draft-v, quality, quality-v}   ← 只有这四个写死档```
+```
+
+**为什么整篇都坏了**：飞书按**卡片元素**渲染 markdown，只有**独占一行**的围栏才算收尾（`…写死档``` ` 不算）。于是这个代码块**永远不闭合**，它后面所有的标题、表格、"请你选"全部被当成代码——就是使用者看到的"代码块渲染错了"。
+
+**这不是插件改坏的**：把这条真实文本喂给真实的 `renderStepCard`，再走发送前那道 `neutralizeCard`，**修前两处输出逐字一致**（围栏仍然粘着）——插件是忠实透传，粘的是模型自己写的。
+
+**量级**（2026-10-12 全量扫本机 26 个会话日志）：**931 条带围栏的助手消息里，6 条围栏没有闭合**，其中 **4 条正是这种粘连**（分布在 3 个不同会话），另 1 条是"围栏开头粘在正文行尾"，1 条是"真的忘了写收尾"。**是复发行为、不是一次性事故**，而模型改不了，只能在渲染层修。
+
+**修法**（`repairGluedFenceClosers(text)`，排在 `neutralizeCardMarkdown()` 的**第一步**）：在**围栏内部**，如果一行以「与开头同字符、长度不短于开头」的围栏串**结尾**，就把这个串挪到自己一行（于是它真的收尾了）。两条边界是这次的关键：
+
+1. **只在元素本身围栏不闭合时才动手**——已闭合的元素**原样返回**。这挡住的是「在围栏里演示围栏」（代码示例本身有一行以 ``` 结尾）：那种形状自带真正的收尾、走不到修复分支；不设这道闸，把合法的示例拆开会把它自己变成两个块。
+2. **必须排在图片/链接/音频中和之前**：不先修，下面那半篇会被扫描器当成"代码里"而跳过中和——那里若有一个 `![x](本地路径)` 就会让整张卡被拒收。
+
+**刻意不修**的两种：开头粘在正文行尾的（把散文切出一个代码块是猜测）、真的没写收尾的（无从判断模型想在哪一行结束）。**有证据、有安全读法的才动手。**
+
+**验证**：`npm run typecheck` 0 error；**1124 tests / 57 files 全绿**（本批 +6：真实原文的粘连被拆开且下面的散文留在块外、经 `neutralizeCardMarkdown` 的端到端行为、**已闭合元素不动**、无粘连候选的不动、开头是 4 个反引号时 3 个反引号的行不算收尾（嵌套写法）、波浪号 / 行尾空格 / 幂等）；真实原文重放：修前 `neutralizeCard` 输出仍带 `…写死档``` `，修后是「代码行 + 独立 ` ``` ` 行」，后面的 `SIZES = …` 与标题回到块外；`npm run build` 已产出（`client/client.js` 未变，纯宿主侧）。
+
+**⚠️ 已经发出去的那张卡不会变**：卡片只发不更新（关键坑 57），第 518 轮那张卡停在飞书里就是这个样子；这条修复只对**新**卡片生效。
+
+**English**: A user reported a broken code block in one session's turn 518 step 2. The assistant text itself is malformed: the opening fence sits on its own line but the closing fence is glued to the end of the last code line (`--size {…}   ← 只有这四个写死档``` `). Feishu renders each card element on its own and only a line that is NOTHING but the fence run closes a block, so the block never closed and every heading, table and sentence after it rendered as code. The plugin is not what broke it: feeding that exact text through the real `renderStepCard` and then through the pre-send `neutralizeCard` produced byte-identical fences before the fix — model text is passed through faithfully. This is recurring, not a one-off: across 26 session logs on this machine (2026-10-12), 931 assistant messages carry fences and 6 leave one unterminated, **4 of them exactly this glue** (in three different sessions); the other two are one opener glued to prose and one genuinely missing closer. `repairGluedFenceClosers()` runs FIRST inside `neutralizeCardMarkdown()` and moves a trailing fence run (same character, at least as long as the opener) onto its own line — but only for an element whose fences do not balance. That guard is the point: an element that closes later is returned untouched, so a code sample documenting fences inside a fence keeps its content instead of being split in two. Running it before the reference/audio passes matters as well, because those deliberately skip code: without the repair the second half of the answer counted as "inside code", and an image reference down there would have been left for Feishu to reject. Two shapes are deliberately NOT repaired — an opener glued to prose, and a fence with no closer at all — because neither has a reading we can defend. typecheck clean, **1124 tests across 57 files** green (6 new), a replay of the real text now yields "code line + its own ` ``` ` line" with the prose back outside the block, artifacts rebuilt. The card already sent cannot be fixed (cards are send-only, pitfall 57); this applies to new cards.
+
 ### 新增：`/subagents` —— 手动打开子代理面板（TODO O2，`src/feishu-subagents.ts` / `src/index.ts` / `src/commands.ts` / `src/i18n.ts`，2026-10-12）
 
 面板此前**只能自动出现**（名册完全来自本进程的事件流：`subagent/catalog` + 宿主 `subagent/start`·`end`），于是**重启后看不见之前跑过的子代理**，也不能主动查一眼「现在有哪些、在跑什么」。WebUI 侧对应的是会话头部的**血缘视图**（`ui-subagent`，数据来自投影 ⇒ 打开即最新），所以这个手动入口也必须**打开即权威**，而不是只回放本进程见过的事件。
