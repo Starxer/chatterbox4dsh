@@ -57,13 +57,18 @@ export const PROGRESS_MAX_ROWS = 40
  * Whole steps kept visible before older ones fold away.
  *
  * **The window is counted in STEPS, not rows** (2026-10-11, at the user's
- * request): three steps is what a glance needs — the newest one is what the
- * agent is doing, the two before it are how it got there — and it makes the
- * card's height predictable whatever a step happens to contain. Older steps are
- * one tap away inside the folded panel. {@link PROGRESS_MAX_ROWS} stays as the
- * outer bound, because one step can hold dozens of calls on its own.
+ * request): whole steps are what makes the card's height predictable whatever a
+ * step happens to contain, and a step that is visible without its header reads
+ * as belonging to the step above it. Older steps are one tap away inside the
+ * folded panel. {@link PROGRESS_MAX_ROWS} stays as the outer bound, because one
+ * step can hold dozens of calls on its own.
+ *
+ * Five since 2026-10-12 (it was three that same day, five before that): three
+ * turned out to be too short a memory for a turn that keeps working — by the
+ * time a step is worth re-reading, its header had folded away. Five leaves the
+ * running step, the one that led to it and three more of how it got there.
  */
-export const PROGRESS_MAX_STEPS = 3
+export const PROGRESS_MAX_STEPS = 5
 
 /** Folded lines carried in the panel body (the panel is collapsed, not free). */
 export const PROGRESS_MAX_FOLDED = 60

@@ -72,6 +72,18 @@
 
 **English**: The running title changed from `⚙️ 本回合进行中 · N 个工具 · 12.3s` to `深度求索中 · 12.3s` (`DeepSeeking · 12.3s` in English — the same pun, since 深度求索 is DeepSeek's Chinese name). This card is scanned while the model works: "what is happening now" is already carried by the running step's header light (previous entry), the tool count is readable from the rows below, so the title only has to answer two questions — still running, and for how long. Icon and count went with it, and `turnCardTitleRunning` narrowed from `(calls, elapsed)` to `(elapsed)`. The settled titles are untouched (`⚙️ 本回合 · N 个工具 · 耗时` / `⚙️ 本回合失败 · …`): no row is moving any more by then, and the count is what that title is for. While updating the specs, five streaming assertions that told a turn card from a step card by looking for `本回合` in the title were rewritten to `isTurnCardTitle()` — the running title no longer contains that word, so left alone they would have asserted nothing ("no progress card at this level" would have been trivially true). typecheck clean, **1118 tests across 57 files** green, artifacts rebuilt.
 
+### 调整：`compact` 过程卡的可见窗口从 3 步改回 5 步（`src/feishu-progress.ts`，2026-10-12）
+
+`PROGRESS_MAX_STEPS` 3 → 5。这个常量本身是 5 → 3 → 5：10-09 上线时是 5，10-12 白天按「一眼就够」收成 3，**同日晚些时候使用者要求改回 5**。窗口仍然**按步骤计数**、整步（连标题）折叠，`PROGRESS_MAX_ROWS = 40` 仍是外层上限，所以这次只动一个常量与它的说明，**卡片形状零变化**。
+
+**为什么 3 太短**：这张卡是「一边干活一边看」的，3 步 = 运行中的那一步 + 「怎么走到这」的两步。回合稍长一点，想回头核对某一步做了什么时，它的标题已经折进面板里了。5 步留下「正在跑的 + 它之前四步」，代价只是长回合多几行（超过 40 行照样折）。
+
+**顺带把两条测试改成常量驱动**（这次的直接教训）：原来写死 `3` / `steps 6-8` / `hr ×2` 的地方，现在按 `PROGRESS_MAX_STEPS` 推导（`total = PROGRESS_MAX_STEPS + 3`、`dropped * 3`、`PROGRESS_MAX_STEPS - 1`）。其中「分隔线画在折叠面板之后」那条用的 4 步，在窗口变成 5 后**折叠面板整个不再出现**，于是直接失败——不是因为功能坏了，而是测试钉着旧窗口。以后再调这个常量不会再出现同一类假失败。
+
+**验证**：`npm run typecheck` 0 error；**1118 tests / 57 files 全绿**（改 2 例、新增 0 例）；`npm run build` 已产出（`client/client.js` 未变，纯宿主侧）。
+
+**English**: `PROGRESS_MAX_STEPS` goes from 3 back to 5 (the constant has been 5 → 3 → 5: 5 when the card shipped on 10-09, narrowed to 3 on 10-12 for "one glance is enough", changed back to 5 later the same day at the user's request). The window still counts STEPS and folds whole steps, headers included, with `PROGRESS_MAX_ROWS = 40` as the outer bound — so this is one constant and its comment, and the card's shape is unchanged. Three steps means the running one plus the two that led to it, which is too short a memory for a turn that keeps working: by the time a step is worth re-reading, its header has folded away. Five keeps the running step and the four before it on screen, at the cost of a few more rows on long turns (past 40 rows the folding still applies). Two specs were made constant-driven in the same commit — they hardcoded `3`, `steps 6-8` and `hr ×2`, and the separator spec (four steps) failed outright once five fitted on screen, because it was pinning the old window rather than the behaviour. typecheck clean, **1118 tests across 57 files** green, artifacts rebuilt.
+
 ### 新增：`/subagents` —— 手动打开子代理面板（TODO O2，`src/feishu-subagents.ts` / `src/index.ts` / `src/commands.ts` / `src/i18n.ts`，2026-10-12）
 
 面板此前**只能自动出现**（名册完全来自本进程的事件流：`subagent/catalog` + 宿主 `subagent/start`·`end`），于是**重启后看不见之前跑过的子代理**，也不能主动查一眼「现在有哪些、在跑什么」。WebUI 侧对应的是会话头部的**血缘视图**（`ui-subagent`，数据来自投影 ⇒ 打开即最新），所以这个手动入口也必须**打开即权威**，而不是只回放本进程见过的事件。

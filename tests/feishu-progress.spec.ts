@@ -308,8 +308,11 @@ describe('renderProgressCard', () => {
     }
   })
 
-  it('keeps only the newest three STEPS visible and folds the older ones', () => {
-    const steps = Array.from({ length: 8 }, (_, i) => ({
+  it('keeps only the newest PROGRESS_MAX_STEPS steps visible and folds the older ones', () => {
+    // Eight steps of two calls each: the window is counted in STEPS, so the
+    // cutoff lands on a step boundary whatever the constant happens to be.
+    const total = 8
+    const steps = Array.from({ length: total }, (_, i) => ({
       step: i + 1,
       startedAt: 0,
       endedAt: 100,
@@ -318,15 +321,16 @@ describe('renderProgressCard', () => {
         { name: `t${i}b`, startedAt: 0, elapsed: 10 },
       ],
     }))
-    const card: any = renderProgressCard(t, { steps, calls: 16, failed: 0, turnStart: 0, now: 200, failedTurn: false })
+    const card: any = renderProgressCard(t, { steps, calls: total * 2, failed: 0, turnStart: 0, now: 200, failedTurn: false })
     const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
-    // The window counts STEPS (2026-10-11): steps 6-8 stay, steps 1-5 fold away
-    // with their headers — 5 headers + 10 rows.
-    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(15)))
+    const dropped = total - PROGRESS_MAX_STEPS
+    // A dropped step takes its header and both rows with it.
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(dropped * 3)))
     const visible = visibleLines(card)
-    expect(visible[0]).toBe(t.turnCardStep(6, '100ms'))
-    const titles = [6, 7, 8].map(n => t.turnCardStep(n, '100ms'))
-    expect(visible.filter(line => titles.includes(line))).toHaveLength(3)
+    const first = total - PROGRESS_MAX_STEPS + 1
+    expect(visible[0]).toBe(t.turnCardStep(first, '100ms'))
+    const titles = Array.from({ length: PROGRESS_MAX_STEPS }, (_, i) => t.turnCardStep(first + i, '100ms'))
+    expect(visible.filter(line => titles.includes(line))).toHaveLength(PROGRESS_MAX_STEPS)
   })
 
   it('renders only the rows of this segment when one was cut short', () => {
@@ -535,18 +539,20 @@ describe('renderProgressCard', () => {
     })
 
     it('puts the rule after the folded panel, not between it and the first step', () => {
-      const steps = [0, 1, 2, 3].map(i => ({
+      // Enough steps that the window provably drops some, whatever it is set to.
+      const total = PROGRESS_MAX_STEPS + 3
+      const steps = Array.from({ length: total }, (_, i) => ({
         step: i + 1,
         startedAt: 0,
         endedAt: 100,
         tools: Array.from({ length: 4 }, (_, j) => ({ name: `t${i}_${j}`, startedAt: 0, elapsed: 10 })),
       }))
-      const card: any = renderProgressCard(t, { steps, calls: 16, failed: 0, turnStart: 0, now: 200, failedTurn: false })
+      const card: any = renderProgressCard(t, { steps, calls: total * 4, failed: 0, turnStart: 0, now: 200, failedTurn: false })
       const elements = card.body.elements as any[]
       expect(elements[0].tag).toBe('collapsible_panel')
       expect(elements[1].tag).toBe('markdown')
-      // Steps 2-4 stay visible -> two rules, both BETWEEN step blocks.
-      expect(elements.filter(el => el.tag === 'hr')).toHaveLength(2)
+      // One rule between each pair of visible steps, and none before the first.
+      expect(elements.filter(el => el.tag === 'hr')).toHaveLength(PROGRESS_MAX_STEPS - 1)
     })
 
     it('does not split a step that needed two elements of its own', () => {
