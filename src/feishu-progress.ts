@@ -418,6 +418,50 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
 }
 
 /**
+ * Group rows into whole-step blocks — one block per markdown element.
+ *
+ * A block boundary is the only thing that CLOSES a quote block. `> ` on every
+ * content line is not enough: Feishu's card markdown is CommonMark, so a
+ * blockquote continues through a following UNMARKED line (lazy continuation,
+ * 关键坑 65), and a step heading is ordinary paragraph text. The folded body
+ * used to be one element for every older step, so the frame that opened on its
+ * first content row ran to the panel's last row and swallowed every later step
+ * heading — reported from a live card 2026-10-12. One element per step ends the
+ * frame with the step, which is why the visible rows and the folded rows share
+ * this one grouping instead of each rolling their own.
+ *
+ * A narration whose inline markup is unbalanced keeps an element of its own
+ * (关键坑 60): inside a shared element an odd `**` would pair with the next
+ * row's, which renders as the wrong text being emphasised.
+ *
+ * @param lines - the rows, in render order.
+ * @returns one `{ step, content }` block per element, `content` newline-joined.
+ */
+function groupByStep(lines: readonly Line[]): Array<{ step: number; content: string }> {
+  const groups: Array<{ step: number; content: string }> = []
+  let block: string[] = []
+  let blockStep: number | undefined
+  const flush = (): void => {
+    if (block.length === 0) return
+    groups.push({ step: blockStep ?? 0, content: block.join('\n') })
+    block = []
+    blockStep = undefined
+  }
+  for (const line of lines) {
+    const loneNote = line.note === true && !inlineMarkupBalanced(line.text)
+    if (loneNote || (blockStep !== undefined && line.step !== blockStep)) flush()
+    if (loneNote) {
+      groups.push({ step: line.step, content: line.text })
+      continue
+    }
+    blockStep = line.step
+    block.push(line.text)
+  }
+  flush()
+  return groups
+}
+
+/**
  * Render the card for the facts known so far.
  *
  * `now` is a parameter (not `Date.now()`) so the running labels are testable.
@@ -477,8 +521,14 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
     // card, and a whole turn of rows is not worth a 30KB rejection).
     const body = hidden.slice(Math.max(0, hidden.length - PROGRESS_MAX_FOLDED))
     const truncated = body.length < hidden.length
-    const content = `${truncated ? '…\n' : ''}${body.map(line => line.text).join('\n')}`
-    elements.push(foldedPanel(t, t.turnCardOlderRows(hidden.length), [{ tag: 'markdown', content }]))
+    // One element per step HERE TOO — not one element for the whole body. A
+    // single element lets the first step's quote block run to the panel's last
+    // line (see `groupByStep`); only an element boundary stops it.
+    const folded = groupByStep(body)
+    if (truncated && folded.length > 0) {
+      folded[0] = { step: folded[0]!.step, content: `…\n${folded[0]!.content}` }
+    }
+    elements.push(foldedPanel(t, t.turnCardOlderRows(hidden.length), folded.map(group => ({ tag: 'markdown', content: group.content }))))
   }
   // One element per STEP, not one per row (2026-10-11).
   //
@@ -486,37 +536,15 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
   // sides (关键坑 58), and this card used to render 40 single-line elements: a
   // measured turn spent 64px of pure spacing on 327 characters of text. Lines
   // inside ONE element are separated by an ordinary newline instead, so a step
-  // costs one block.
-  //
-  // A step's narration is model text and joins the block only when its inline
-  // markup is balanced; an odd `**` would pair with the next line's (关键坑 60).
-  // It keeps its own element in that case, which costs one block, not a lie.
+  // costs one block — and that block boundary is also what ends the step's quote
+  // frame, so `groupByStep` is the single place this shape is decided.
   //
   // Steps are separated by a real `hr` ELEMENT (2026-10-12, at the user's
   // request). A text rule (`---`) is not an option: card markdown does not
   // necessarily draw one, and a line of box-drawing characters would be a fake
   // rule that still takes a text line. The rule goes between GROUPS, never
   // before the first one and never between a step's own elements.
-  const groups: Array<{ step: number; content: string }> = []
-  let block: string[] = []
-  let blockStep: number | undefined
-  const flush = (): void => {
-    if (block.length === 0) return
-    groups.push({ step: blockStep ?? 0, content: block.join('\n') })
-    block = []
-    blockStep = undefined
-  }
-  for (const line of visible) {
-    const loneNote = line.note === true && !inlineMarkupBalanced(line.text)
-    if (loneNote || (blockStep !== undefined && line.step !== blockStep)) flush()
-    if (loneNote) {
-      groups.push({ step: line.step, content: line.text })
-      continue
-    }
-    blockStep = line.step
-    block.push(line.text)
-  }
-  flush()
+  const groups = groupByStep(visible)
   let separated: number | undefined
   for (const group of groups) {
     if (separated !== undefined && group.step !== separated) elements.push({ tag: 'hr' })

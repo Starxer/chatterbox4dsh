@@ -32,6 +32,32 @@
 >
 > Also evaluated **and upgraded to** DSH **`0.1.7-rc.1`** (**156 commits / 933 files** against this repository's baseline): **no plugin changes needed**. This release's notes are written cumulatively from `0.1.5-rc.3`, and most of that had already been taken up with `0.1.7-alpha.1`/`alpha.2`; the real delta since alpha.2 concentrates on the Web presentation layer and the plugin install path. The one genuinely new gate is the **DSH peer compatibility check** for plugin, bundle, and agent-preset rows (`includePrerelease: true`; exemptions live in the profile's `compatibility.json` or `dsh plugin allow-version`). All 18 peers this plugin declares satisfy `0.1.7-rc.1`, and startup reported **zero refusals**. Other relevant changes: work details now have **four modes** (`compact`/`standard`/`detailed`/`verbose`, default moved from `compact` to `standard`, saved `expanded` read as `detailed`); tool rows gained `preparing → start → result` stages (**client-only**: no change to model requests, dispatch timing, Session events, or the persisted format); local images preview inside chat; pnpm runs are now **bounded** (process exit rather than pipe EOF, an idle timeout, and whole-tree reaping), so an install or removal can no longer hold the profile lock indefinitely; `agentPresetRegistry.readDocument()` was added for read-only preset composition viewing; and Office tasks now use the bundled `libreoffice-kit` 0.1.0. Session logs remain **V4** (no migration); across the restart the chat→session binding table stayed intact, real tool calls worked, `typecheck` was clean, and **650 tests across 41 files** passed. The plugin artifacts were **not rebuilt** (hashes unchanged before and after), and the plugin's dev dependencies were deliberately left at `0.1.7-alpha.2`.
 
+### 修复：`compact` 过程卡**折叠区**的引用块从第 2 行一路连到最后一行（`src/feishu-progress.ts`，关键坑 65，2026-10-12）
+
+使用者报「折叠起来的内容里，那个 quote 标志除了第一行以外，从第二行一直延伸到最后一行」。
+
+**根因**：折叠区（「更早的 N 行」）把**所有**折叠行拼成了**一个** markdown 元素，而步头不带 `>`。飞书的卡片 markdown 是 CommonMark，**引用块会被随后一行未标记的普通段落文本延续**（惰性延续，关键坑 65）——于是一个元素里第 1 行是步头（块外），从第 2 行起是 `> ` 内容行，**框就一直画到元素的最后一行**，把中间每一个后续步头都框了进去。真机渲染的字符串长这样：
+
+```
+▸ **第 1 步** · 2.0s          ← 第 1 行：步头，无 >
+> 💬 第 1 步的叙述行            ← 框从这里开始
+> ✅ `read` · file1.ts · 40ms
+▸ **第 2 步** · 2.0s          ← 无 >，但被惰性延续并进上面的框
+> 💬 第 2 步的叙述行
+▸ **第 3 步** · 2.0s
+> 📥 注入上下文 · AGENTS.md（已更新）
+```
+
+**为什么上面的可见区没事**：可见部分是**每步一个元素**，元素边界正好是框的边界，跨不过去；折叠区图省事拼成了一个元素，边界就消失了。另外两个折叠面板（步骤卡的推理折叠、压缩卡摘要）里没有 `>` 行，**不受影响**。
+
+**修法**：把「按步分组产出元素」抽成 `groupByStep()`，可见区与折叠区**共用同一份**——折叠区现在也是**每步一个 markdown 元素**（步头在框外，框到本步最后一行就结束），截断时的 `…` 仍挂在第一个元素开头，`PROGRESS_MAX_FOLDED` 上限不变。两边共用一份实现，是为了这个形状以后不会再各自漂移。
+
+**观感决定按规矩先发样板**（关键坑 63/65）：A 现状（对照）/ B 空行分隔 / C 每步一个元素 / D 每步一个元素 + 步间 `hr` 四张真实渲染卡（面板展开）发到聊天，使用者选 **C**；四张都被 `im.v1.message.create` 收下（`code=0`，顺带确认「面板里放多个元素」「面板里放 `hr`」都是合法结构）。
+
+**验证**：`npm run typecheck` 0 error；**1125 tests / 57 files 全绿**（本批 +1：折叠区逐步产元素、且每个元素的第 1 行是步头、其余行全部带 `>`——即框不会跨过步边界）；`npm run build` 已产出（`client/client.js` 未变，纯宿主侧）。
+
+**English**: A user reported that inside the compact progress card's folded panel the quote frame started on the second line and ran to the very last line. The folded body was built as ONE markdown element holding every older row, and step headings carry no `>`: Feishu's card markdown is CommonMark, so a blockquote continues through a following unmarked paragraph line (lazy continuation, pitfall 65) — the frame opened on the first content row and swallowed every later step heading. The visible rows were unaffected because they are already one element per step, and an element boundary is the only thing that closes a blockquote. The fix extracts `groupByStep()` and shares it between the visible rows and the folded body, so the folded panel is now one markdown element per step as well; the `…` truncation marker still prefixes the first element and `PROGRESS_MAX_FOLDED` is unchanged. Per the visual-change rule the four candidate shapes (A current, B blank-line separated, C one element per step, D one element per step plus `hr`) were rendered with the real renderer and sent for a human pick — C was chosen, and all four were accepted by `im.v1.message.create` (`code=0`). typecheck clean, **1125 tests across 57 files** green (1 new: the folded panel holds one element per step, each element's first line is its heading and every other line is quoted), artifacts rebuilt (`client/client.js` unchanged, host-only). The other two folded panels (the step card's reasoning fold and the compaction summary) carry no `>` rows and were never affected.
+
 ### 新增：`compact` 过程卡上「正在跑的那一步」带状态灯（`src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-10-12）
 
 `compact` 的回合过程卡此前只能告诉你「这一步跑了多久」，看不出**现在在干什么**——一步刚开始、还没调工具时，表头只有一个往上走的 `4.8s…`。现在**正在跑的那一步**在这条表头里带一个灯，插在**步号与耗时之间**：

@@ -47,6 +47,17 @@ function visibleElements(card: any): string[] {
   return visible.filter(el => el.tag === 'markdown').map(el => String(el.content))
 }
 
+/** The folded panel's markdown ELEMENTS: one per folded step since 2026-10-12. */
+function foldedElements(card: any): string[] {
+  const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+  return (panel?.elements ?? []).filter((el: any) => el.tag === 'markdown').map((el: any) => String(el.content))
+}
+
+/** The folded panel's rows, flattened. */
+function foldedLines(card: any): string[] {
+  return foldedElements(card).flatMap(content => content.split('\n'))
+}
+
 /**
  * A step's CONTENT row: since 2026-10-12 every line under the `▸` heading is one
  * quote block, and the heading itself stays outside it (the user's rule: frame
@@ -215,10 +226,39 @@ describe('renderProgressCard', () => {
       tools: Array.from({ length: 30 }, (_, j) => ({ name: `t${i}_${j}`, startedAt: 0, elapsed: 10 })),
     }))
     const card: any = renderProgressCard(t, { steps, calls: 180, failed: 0, turnStart: 0, now: 200, failedTurn: false })
-    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
-    const body = panel.elements[0].content as string
-    expect(body.startsWith('…\n')).toBe(true)
-    expect(body.split('\n').length).toBeLessThanOrEqual(PROGRESS_MAX_FOLDED + 1)
+    const lines = foldedLines(card)
+    expect(lines[0]).toBe('…')
+    expect(lines.length).toBeLessThanOrEqual(PROGRESS_MAX_FOLDED + 1)
+  })
+
+  it('gives every folded step its own element, so no quote block can run past its step', () => {
+    // The reported bug (2026-10-12): the folded body was ONE element, so the
+    // blockquote that opened on the first content row continued through every
+    // later step heading (CommonMark lazy continuation, 关键坑 65) and the frame
+    // ran to the last line of the panel.
+    const total = 8
+    const steps = Array.from({ length: total }, (_, i) => ({
+      step: i + 1,
+      startedAt: 0,
+      endedAt: 100,
+      tools: [
+        { name: `t${i}a`, startedAt: 0, elapsed: 10 },
+        { name: `t${i}b`, startedAt: 0, elapsed: 10 },
+      ],
+    }))
+    const card: any = renderProgressCard(t, { steps, calls: total * 2, failed: 0, turnStart: 0, now: 200, failedTurn: false })
+    const folded = foldedElements(card)
+    const dropped = total - PROGRESS_MAX_STEPS
+    // One element per folded step.
+    expect(folded).toHaveLength(dropped)
+    for (let i = 0; i < dropped; i++) {
+      const lines = folded[i]!.split('\n')
+      // The heading is the element's FIRST line and stays outside the frame…
+      expect(lines[0]).toBe(t.turnCardStep(i + 1, '100ms'))
+      expect(lines[0]!.startsWith(PROGRESS_QUOTE_MARKER)).toBe(false)
+      // …and every other line is quoted, so the frame ends with this step.
+      for (const line of lines.slice(1)) expect(line.startsWith(PROGRESS_QUOTE_MARKER)).toBe(true)
+    }
   })
 
   it('carries no button and no tappable row (the card must stay updatable)', () => {    // 关键坑 11: a card carrying buttons stops delivering callbacks after 2-3
