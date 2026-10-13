@@ -36,6 +36,10 @@ interface Options {
   withDeliver?: boolean
   planRows?: boolean
   produceCard?: 'off' | 'summary' | 'delivery'
+  compact?: boolean
+  /** Whether a step card really carried the turn's text (streaming's flag). */
+  textDelivered?: boolean
+  hydrateCard?: (card: object, workspace?: string) => Promise<object>
 }
 
 /** A finished turn with the numbers the Turn Complete card renders. */
@@ -89,6 +93,7 @@ function buildHarness(options: Options = {}): Harness {
       resolveChat: (sessionId: string) => (options.bound === false ? undefined : sessionId === SESSION ? CHAT : undefined),
       getSessionMeta: async () => ({ workspace: '/w', agentPreset: 'standard', model: 'm', reasoningEffort: 'high', contextWindow: 1000, lastInputTokens: 10 }),
       busyMode: () => 'queue' as const,
+      consumeIntermediateSent: () => options.textDelivered === true,
     },
   }
   const controller = startFeishuExternalTurns({
@@ -103,11 +108,19 @@ function buildHarness(options: Options = {}): Harness {
     logger: { info: () => undefined, warn: () => undefined },
     getTranslations: () => t,
     flushed: flushRef,
-    sessionMeta: async () => ({ workspace: '/w', model: 'm' }),
+    sessionMeta: async () => ({
+      workspace: '/w',
+      model: 'm',
+      reasoningEffort: 'high',
+      contextWindow: 1000,
+      lastInputTokens: 10,
+    }),
     ...(options.produceCard === undefined ? {} : { produceCard: () => options.produceCard! }),
     ...(options.withDeliver === false ? {} : { deliver: { plan, autoSend } }),
     noteCardTopic: (messageId, topic) => { topics.push({ messageId, topic }) },
     enabled: () => options.enabled !== false,
+    ...(options.compact === true ? { compact: () => true } : {}),
+    ...(options.hydrateCard === undefined ? {} : { hydrateCard: options.hydrateCard }),
   })
   return {
     sent,
@@ -268,6 +281,52 @@ describe('completing a turn that did not start on Feishu', () => {
     const planned = h.plan.mock.calls[0]?.[0] as { files?: Array<{ path: string }> }
     expect(planned.files?.map(file => file.path)).toEqual(['notes/deck.pdf', 'runs/chart.png'])
     expect(markdownOf(h.sent.at(-1))).toContain(t.turnProducedLine(1))
+    h.stop()
+  })
+
+  it('at compact, posts no Turn Complete card and mirrors the turn facts onto the answer card', async () => {
+    // The answer card carries the summary (streaming wrote it), so the only
+    // thing this module may still post is the delivery card for its rows.
+    const h = buildHarness({ compact: true, stats: turnStats(), withDeliver: true, planRows: true, textDelivered: true })
+    h.fire({ type: 'user/message', data: { content: [{ type: 'text', text: 'ETA reminder' }], source: { kind: 'schedule' } } })
+    await flush()
+    h.sent.length = 0
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    const cards = h.sent.map(sent => sent.input.card).filter(Boolean) as Array<{ header?: { title?: { content?: string } } }>
+    // One card: the delivery card. No Turn Complete card at this level.
+    expect(cards.map(card => card.header?.title?.content)).toEqual([t.deliverablesCardTitle])
+    h.stop()
+  })
+
+  it('at compact, posts a minimal completion card when no card carried the answer', async () => {
+    // A mirrored turn whose step card never reached Feishu would otherwise end
+    // with nothing on screen saying the turn is over.
+    const h = buildHarness({ compact: true, stats: turnStats(), textDelivered: false })
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    expect(h.sent).toHaveLength(1)
+    const card = h.sent[0]?.input.card as { header?: { title?: { content?: string } } }
+    expect(card.header?.title?.content).toBe(t.turnCompleteTitle)
+    const md = markdownOf(h.sent[0])
+    // Who woke the turn, that it is over, and the filtered facts.
+    expect(md).toContain(t.turnCompleteExternalTurn(t.autoTurnTriggerName('request')))
+    expect(md).toContain(`✅ ${t.turnSummaryDone}`)
+    expect(md).toContain('🧠 m · 💡 high')
+    expect(md).toContain('📊 10/1K (1%)')
+    // The facts the level drops stay dropped.
+    expect(md).not.toContain('🧠 LLM')
+    expect(md).not.toContain('TTFT')
+    h.stop()
+  })
+
+  it('hydrates the compact delivery card before sending it', async () => {
+    const hydrateCard = vi.fn(async (card: object) => ({ ...card, hydrated: true }))
+    const h = buildHarness({ compact: true, stats: turnStats(), withDeliver: true, planRows: true, textDelivered: true, hydrateCard })
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    expect(hydrateCard).toHaveBeenCalledWith(expect.objectContaining({ schema: '2.0' }), '/w')
+    expect((h.sent[0]?.input.card as { hydrated?: boolean }).hydrated).toBe(true)
     h.stop()
   })
 

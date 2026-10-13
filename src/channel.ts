@@ -17,6 +17,7 @@ import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import { hasDeliverables, renderDeliverableElements, type DeliverChat, type DeliverPlan, type DeliverPlanInput, type DeliverRow } from './feishu-deliver.ts'
+import { appendCompletionFooter, renderDeliveryCard } from './turn-summary.ts'
 import { mergeProducedArtifacts, producedArtifacts } from './produced-files.ts'
 
 // Re-exported for callers that historically reached the sniffer through this
@@ -285,6 +286,12 @@ export async function startChannel(
    * `delivery` also routes the artifact-shaped ones through the delivery plan.
    */
   produceCardMode?: () => ProduceCardMode,
+  /**
+   * Whether the active level is `compact`. That level has no Turn Complete
+   * card: its filtered summary is folded into the answer card's footer, and the
+   * deliverable rows move to their own titled card (`src/turn-summary.ts`).
+   */
+  compactFooter?: () => boolean,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -613,12 +620,44 @@ export async function startChannel(
             if (deliver === undefined || deliverPlan === undefined) return
             await deliver.autoSend(deliverPlan, deliverChat)
           }
-
+          /**
+           * `compact` has no Turn Complete card: the summary is folded into the
+           * card that carries the answer (streaming's step card does it itself;
+           * the reply cards below do it here), and the few rows a reader can
+           * ACT on move to their own titled card — a card that is written once
+           * and never updated is the only safe home for clickable rows
+           * (关键坑 11 / 55).
+           */
+          const compactView = compactFooter?.() === true
+          /**
+           * Only the facts the fallback reply card's OWN footer does not already
+           * print: it carries workspace, model, effort, context and tok/s, so a
+           * summary repeating them would show the same line twice. The produced
+           * count is not in that footer, hence it stays.
+           */
+          const completionFacts = {
+            stats: turnStats,
+            ...(producedCount === undefined ? {} : { producedCount }),
+          }
+          const sendDeliveryCard = async (): Promise<void> => {
+            if (deliverPlan?.rows === undefined || deliverPlan.rows.length === 0) return
+            const sent = await sendCard(chatId, renderDeliveryCard(getTranslations?.() ?? translationsFor('zh'), deliverPlan.rows), {
+              replyTo: replyToId,
+              replyInThread,
+            }, meta?.workspace)
+            noteTopic(sent.messageId)
+          }
           if (intermediateSent) {
-            // Streaming already sent a step card with the text content:
-            // send only the Turn Complete footer.
-            console.log('dsh-feishu: [reply] a step card carried the text → footer only')
-            const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows, undefined, producedCount)
+            // Streaming already sent a step card with the text content. At
+            // `compact` that card also carries the turn summary, so only the
+            // delivery card is left to post; every other level keeps the Turn
+            // Complete footer.
+            console.log(compactView
+              ? 'dsh-feishu: [reply] a step card carried the text → compact summary in its footer'
+              : 'dsh-feishu: [reply] a step card carried the text → footer only')
+            const footerCard = compactView
+              ? undefined
+              : renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows, undefined, producedCount)
             // The auto-send runs even if posting the footer failed: the files
             // are what the operator asked for, and swallowing them behind a
             // card-send error would be the worse failure.
@@ -629,6 +668,8 @@ export async function startChannel(
                   replyInThread,
                 }, meta?.workspace)
                 noteTopic(sent.messageId)
+              } else if (compactView) {
+                await sendDeliveryCard()
               }
             } finally {
               await autoDeliver()
@@ -642,18 +683,30 @@ export async function startChannel(
             // tok/s line like every other assistant card.
             const tps = turnTokensPerSecond(turnStats)
             const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
-            console.log(`dsh-feishu: [reply] no step card carried the text → posting ${cards.length} reply card(s)`)
-            for (const card of cards) {
+            // The compact summary rides the LAST reply card, so a turn whose
+            // step card never reached Feishu still ends with the same footer a
+            // normal compact turn shows.
+            const posted = compactView
+              ? cards.map((card, i) => i === cards.length - 1
+                  ? appendCompletionFooter(card, getTranslations?.() ?? translationsFor('zh'), completionFacts)
+                  : card)
+              : cards
+            console.log(`dsh-feishu: [reply] no step card carried the text → posting ${posted.length} reply card(s)`)
+            for (const card of posted) {
               await sendCard(chatId, card, {
                 replyTo: replyToId,
                 replyInThread,
               }, meta?.workspace)
             }
             // This path builds no footer of its own, so a turn that declared
-            // deliverables would lose both the list and the auto-delivery. The
-            // footer is only posted when there IS something to deliver.
+            // deliverables would lose both the list and the auto-delivery. At
+            // `compact` the delivery card is posted whenever there are rows;
+            // otherwise the footer is only posted when there IS something to
+            // deliver.
             try {
-              if (hasDeliverables(deliverPlan)) {
+              if (compactView) {
+                await sendDeliveryCard()
+              } else if (hasDeliverables(deliverPlan)) {
                 const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan.rows, undefined, producedCount)
                 if (footerCard !== undefined) {
                   const sent = await sendCard(chatId, footerCard, {

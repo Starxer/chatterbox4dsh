@@ -208,6 +208,95 @@ describe('startChannel', () => {
     await stop()
   })
 
+  it('at compact, folds the summary into the reply card and posts no Turn Complete card', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const turnStats = {
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [],
+    }
+    const flushed = vi.fn(async () => turnStats as any)
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'compact',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'), undefined, undefined, undefined, undefined,
+    () => true)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    // No step card carried the text, so this fallback posts the answer — and at
+    // `compact` the answer card is what carries the turn summary.
+    expect(sent).toContain('the full answer')
+    expect(sent).toContain(`✅ ${translationsFor('zh').turnSummaryDone}`)
+    expect(sent).toContain('tokens')
+    // The level has no Turn Complete card at all.
+    expect(sent).not.toContain(translationsFor('zh').turnCompleteTitle)
+    await stop()
+  })
+
+  it('at compact, puts delivered rows on their own titled card', async () => {
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the full answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => true),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const turnStats = {
+      turnStartTime: 0, stepCount: 1, toolCallCount: 0, totalInputTokens: 1, totalOutputTokens: 2,
+      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalBilledTokens: 3, firstStepTtftMs: 10,
+      totalDecodeMs: 100, totalDecodeTokens: 2, totalStepMs: 100, totalToolMs: 0, totalTurnMs: 200,
+      deliverables: [{ path: 'out/report.pdf', description: 'Monthly report' }],
+    }
+    const flushed = vi.fn(async () => turnStats as any)
+    const plan = {
+      rows: [{ path: 'out/report.pdf', name: 'report.pdf', kind: 'document', size: 2048, auto: true }],
+      auto: [{ path: '/work/out/report.pdf', name: 'report.pdf', sessionId: 'test-session' }],
+    }
+    const deliver = { plan: vi.fn(async () => plan), autoSend: vi.fn(async () => undefined) }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'compact',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined,
+    async () => ({ workspace: '/work' }),
+    undefined, undefined, flushed, undefined, undefined,
+    () => translationsFor('zh'),
+    undefined,
+    deliver as any,
+    undefined,
+    undefined,
+    () => true)
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    const sent = (channel.send.mock.calls as any[]).map(call => JSON.stringify(call[1])).join(' ')
+    expect(sent).toContain(translationsFor('zh').deliverablesCardTitle)
+    expect(sent).toContain('report.pdf')
+    expect(sent).toContain('自动投递')
+    // The title is in the card header, so the body does not repeat it.
+    expect(sent).not.toContain('交付文件')
+    // Nothing about a Turn Complete card, and the answer was not re-posted.
+    expect(sent).not.toContain(translationsFor('zh').turnCompleteTitle)
+    expect(sent).not.toContain('the full answer')
+    expect(deliver.autoSend).toHaveBeenCalledWith(plan, { chatId: 'oc_1', rootId: 'om_1' })
+    await stop()
+  })
+
   it('plans the present deliverables for the footer and auto-delivers them', async () => {
     const channel = fakeChannel()
     const bridge = {

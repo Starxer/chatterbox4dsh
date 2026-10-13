@@ -310,11 +310,19 @@ function settledCard(text: string, t: Translations): object {
  *
  * @param rows - the planner's rows.
  * @param t - strings for the active locale.
+ * @param options - `omitTitle` drops the in-body title line, for the standalone
+ *   delivery card that already names the list in its header (`src/turn-summary.ts`).
  * @returns elements to append to the card body, header first.
  */
-export function renderDeliverableElements(rows: readonly DeliverRow[], t: Translations): object[] {
+export function renderDeliverableElements(
+  rows: readonly DeliverRow[],
+  t: Translations,
+  options: { omitTitle?: boolean } = {},
+): object[] {
   const shown = rows.slice(0, DELIVERABLE_ROW_CAP)
-  const elements: object[] = [{ tag: 'markdown', content: t.deliverablesTitle(rows.length) }]
+  const elements: object[] = options.omitTitle === true
+    ? []
+    : [{ tag: 'markdown', content: t.deliverablesTitle(rows.length) }]
   if (shown.some(row => row.token !== undefined)) {
     elements.push({ tag: 'markdown', content: t.deliverTapHint, text_size: 'notation' })
   }

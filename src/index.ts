@@ -755,6 +755,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // through `present` (TODO O3). Read per turn so a settings write applies
         // to the very next turn without a remount.
         () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
+        // `compact` folds its summary into the answer card's footer instead of
+        // posting a Turn Complete card, and moves the deliverable rows to their
+        // own titled card (`src/turn-summary.ts`).
+        () => currentSettings().transcriptView === 'compact',
       )
     },
   })
@@ -976,11 +980,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       transcriptView: () => currentSettings().transcriptView,
       getTranslations: () => translationsFor(currentLocale().id),
       interleave: cardInterleave,
-      ...(noteDetachedJob !== undefined ? { noteDetachedJob } : {}),
+      ...(noteDetachedJob === undefined ? {} : { noteDetachedJob }),
       hydrateImages: cardImages.hydrate,
       // Warming resolves the same media against the text still being streamed,
       // so the card that finally carries it does not pay for the uploads.
       warmImages: cardImages.warm,
+      // `compact` prints how many files the turn produced without `present` in
+      // the summary it folds into the answer card's footer.
+      produceCard: () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
     })
     stopStreaming = streamingResult.stop
     // The Feishu surface sentence (same shape as the Web bundle's
@@ -1008,7 +1015,12 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       produceCard: () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
       ...(deliverHandle === undefined ? {} : { deliver: deliverHandle }),
       noteCardTopic: (messageId, topic) => cardTopics.note(messageId, topic),
+      // The compact delivery card carries media rows exactly like the reply
+      // path's cards, so it goes through the same hydrator.
+      hydrateCard: async (card, workspace) => cardImages.hydrate(card, workspace === undefined ? {} : { workspace }),
       enabled: () => currentSettings().mirrorExternalTurns ?? true,
+      // `compact`: no Turn Complete card; see `src/turn-summary.ts`.
+      compact: () => currentSettings().transcriptView === 'compact',
     })
     stopExternalTurns = externalTurns.stop
     consumeReasoning = streamingResult.consumeReasoning

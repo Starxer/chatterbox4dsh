@@ -36,6 +36,7 @@ import { hasDeliverables } from './feishu-deliver.ts'
 import type { Translations } from './i18n.ts'
 import type { ProduceCardMode } from './config.ts'
 import { mergeProducedArtifacts, producedArtifacts } from './produced-files.ts'
+import { renderCompactCompletionCard, renderDeliveryCard } from './turn-summary.ts'
 import { beginTurn, noteUserMessage, turnOrigin, turnSurface, turnTrigger, type UserMessageOrigin } from './feishu-turn-origin.ts'
 
 /** Minimal logger surface; matches ctx.logger's call style. */
@@ -91,8 +92,23 @@ export interface ExternalTurnsDeps {
    * the chat-level topic guess.
    */
   noteCardTopic?: (messageId: string, topic: { threadId?: string; rootId?: string }) => void
+  /**
+   * Resolve a card's media references against the session workspace before it
+   * is sent — the same hydrator `channel.ts` applies to the cards it posts.
+   * Without it the delivery card this module posts at `compact` would name a
+   * clip or still instead of rendering it. Optional and best-effort.
+   */
+  hydrateCard?: (card: object, workspace?: string) => Promise<object>
   /** The `mirrorExternalTurns` setting, read live. */
   enabled: () => boolean
+  /**
+   * Whether the active level is `compact`. That level has no Turn Complete
+   * card: the summary rides the answer card's footer (streaming writes it) and
+   * the deliverable rows get their own titled card; a turn whose text never
+   * reached a card falls back to a minimal completion card
+   * (`src/turn-summary.ts`).
+   */
+  compact?: () => boolean
   /** Clock override for tests. */
   now?: () => number
 }
@@ -206,9 +222,40 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
     const source = turnOrigin(sessionId) === 'external'
       ? (turnSurface(sessionId) === 'web' ? t.surfaceLabelWebGui : t.surfaceLabelOther)
       : t.autoTurnTriggerName(turnTrigger(sessionId) ?? 'request')
-    const card = renderFooterCard(t, meta, turnStats, plan?.rows, source, producedCount)
+    const rows = plan?.rows ?? []
+    const completion = {
+      stats: turnStats,
+      ...(meta?.model === undefined ? {} : { model: meta.model }),
+      ...(meta?.reasoningEffort === undefined ? {} : { reasoningEffort: meta.reasoningEffort }),
+      ...(producedCount === undefined ? {} : { producedCount }),
+      ...(meta?.contextWindow === undefined || meta?.lastInputTokens === undefined
+        ? {}
+        : { contextWindow: meta.contextWindow, lastInputTokens: meta.lastInputTokens }),
+    }
+    // `compact` posts no Turn Complete card. The answer card already carries
+    // the summary (streaming folds it in at `turn/end`), so what may still be
+    // missing is the fallback for a turn whose text never reached a card — the
+    // mirror cannot post that text itself — plus the rows, which live on their
+    // own card so their taps keep working (关键坑 11 / 55).
+    const compact = deps.compact?.() === true
+    const cards: object[] = []
+    if (compact) {
+      const delivered = deps.bridgeHolder.current?.consumeIntermediateSent(sessionId) === true
+      if (!delivered) cards.push(renderCompactCompletionCard(t, { ...completion, source }))
+      if (rows.length > 0) {
+        const deliveryCard = renderDeliveryCard(t, rows)
+        // Media rows are Markdown references the hydrator turns into image /
+        // player elements; a failure here must not cost the card itself.
+        cards.push(deps.hydrateCard === undefined
+          ? deliveryCard
+          : await deps.hydrateCard(deliveryCard, meta?.workspace).catch(() => deliveryCard))
+      }
+    } else {
+      const card = renderFooterCard(t, meta, turnStats, plan?.rows, source, producedCount)
+      if (card !== undefined) cards.push(card)
+    }
     try {
-      if (card !== undefined) {
+      for (const card of cards) {
         const sent = await deps.channel.send(chat.chatId, { card }, replyOpts(chat))
         if (sent.messageId !== undefined) {
           const topic = topicOf(chat)

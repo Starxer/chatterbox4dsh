@@ -305,6 +305,12 @@ export interface Translations {
   compactionFailedReason: (reason: string) => string
   compactionNoSummary: string
   turnCompleteTitle: string
+  /**
+   * Completion marker on the trimmed summary the `compact` level folds into the
+   * answer card's footer (`src/turn-summary.ts`): that level has no Turn Complete
+   * card, so this one word is what says the turn is over.
+   */
+  turnSummaryDone: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
   /**
@@ -370,6 +376,12 @@ export interface Translations {
   // Turn Complete deliverables (channel.ts / feishu-deliver.ts, from
   // `deliverables/presented`)
   deliverablesTitle: (count: number) => string
+  /**
+   * Header of the standalone delivery card the `compact` level posts instead of
+   * listing the rows on a Turn Complete card: the answer card is written in
+   * place too often to carry clickable rows (关键坑 11 / 55).
+   */
+  deliverablesCardTitle: string
   deliverablesMore: (count: number) => string
   /**
    * One line reporting files the turn produced without `present`
@@ -863,6 +875,7 @@ export const zh = {
   compactionFailedReason: reason => `原因：${reason}`,
   compactionNoSummary: '本次没有产生摘要，会话历史没有被替换。',
   turnCompleteTitle: '✅ Turn 已完成',
+  turnSummaryDone: '完成',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
   turnCompleteExternalTurn: source => `💬 本回合的来源是**${source}**（不是飞书这边发的消息），过程与交付一并同步到这里`,
@@ -910,6 +923,7 @@ export const zh = {
   // 工具的 `deliverables/presented` 事件）。媒体在卡内内联；白名单文档按大小自动
   // 发原生文件消息；其余文件点行 → 确认卡 → 才发送。
   deliverablesTitle: (count: number) => `📦 **交付文件**（${count}）`,
+  deliverablesCardTitle: '📦 交付物',
   deliverablesMore: (count: number) => `_…另有 ${count} 个未显示（可以让模型用 \`feishu_send_file\` 单独发）_`,
   turnProducedLine: (count: number) => `📦 本回合新生成 ${count} 个文件`,
   deliverTapHint: '_标着「点击发送」的文件点一下即可发送，发送前还会再确认一次。_',
@@ -1363,6 +1377,7 @@ export const en: Translations = {
   compactionFailedReason: reason => `Reason: ${reason}`,
   compactionNoSummary: 'No summary was produced, so the session history was left unchanged.',
   turnCompleteTitle: '✅ Turn complete',
+  turnSummaryDone: 'Done',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
   turnCompleteExternalTurn: source => `💬 This turn came from **${source}**, not from a Feishu message; its process and deliverables are mirrored here`,
@@ -1411,6 +1426,7 @@ export const en: Translations = {
   // whitelisted documents under the size setting are pushed as native file
   // messages; every other file is a click → confirm → send row.
   deliverablesTitle: (count: number) => `📦 **Present files** (${count})`,
+  deliverablesCardTitle: '📦 Deliverables',
   deliverablesMore: (count: number) => `_…and ${count} more (not shown; ask the model to send one with \`feishu_send_file\`)_`,
   turnProducedLine: (count: number) => `📦 ${count} file(s) produced this turn`,
   deliverTapHint: '_Files marked "tap to send" go out with one tap, after a confirmation._',

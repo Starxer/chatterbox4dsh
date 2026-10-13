@@ -32,7 +32,9 @@ import {
   resolveDisplayPolicy, type DisplayPolicy, type TranscriptView,
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
-import { pendingProducedCall, settleProducedCall, type ProducedPath } from './produced-files.ts'
+import { pendingProducedCall, producedArtifacts, settleProducedCall, type ProducedPath } from './produced-files.ts'
+import { compactCompletionLines, compactCompletionElement, appendCardElement } from './turn-summary.ts'
+import type { ProduceCardMode } from './config.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
 import { createProgressCards } from './feishu-progress.ts'
@@ -156,6 +158,13 @@ export interface FeishuStreamingDeps {
    * only take detail away.
    */
   transcriptView?: () => TranscriptView
+  /**
+   * Live `produceCard` setting. `compact` prints the count of files the turn
+   * produced without `present` in the summary it folds into the answer card
+   * (`src/turn-summary.ts`); at every other level `channel.ts` owns that line.
+   * Omitted (or `off`) keeps the count out of the summary.
+   */
+  produceCard?: () => ProduceCardMode
   /** Current translations for the user's language. */
   getTranslations?: () => Translations
   /**
@@ -414,6 +423,19 @@ interface SessionStepState {
    */
   requestRoute: { provider: string; model: string } | undefined
   /**
+   * Reasoning effort of the last request header this session reported. Turn
+   * scope is enough: the compact completion footer names the effort of the
+   * route that answered, and `request/header` is appended whenever the route is
+   * established or changed.
+   */
+  requestEffort: string | undefined
+  /**
+   * The compact completion summary to render into the answer card's footer at
+   * `turn/end` (see `src/turn-summary.ts`). Set on the turn's last step, before
+   * the final write is built, so that write carries it.
+   */
+  completionLines: string[] | undefined
+  /**
    * Every path this SESSION has ever declared through `present`.
    *
    * Not turn-scoped on purpose: the produced-artifact delivery must not hand a
@@ -435,7 +457,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   consumeLastStepHadContent: (sessionId: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -509,6 +531,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         turnTrigger: undefined,
         livePhase: 'none',
         requestRoute: undefined,
+        requestEffort: undefined,
+        completionLines: undefined,
         everPresentedPaths: new Set<string>(),
         turnStats: undefined,
       }
@@ -534,6 +558,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.supersededFrom = undefined
     state.pendingSend = undefined
     state.stepEnded = false
+    // The summary belongs to the turn, and the step that just ended has already
+    // been written with it; a later step must not inherit it.
+    state.completionLines = undefined
     stopPlaceholderTick(state)
     stopWarmTimer(state)
     // NOTE: do NOT clear state.chat — it is session-level chat coordinates,
@@ -695,6 +722,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // alongside content would let a stale phase name a settled card.
         ...(emptyPhase === 'thinking' ? { phase: state.livePhase } : {}),
         ...(state.requestRoute !== undefined ? { route: state.requestRoute } : {}),
+        // The turn's filtered summary, on the LAST write of the turn only
+        // (`compact`; see the `turn/end` handler and `src/turn-summary.ts`).
+        ...(state.completionLines === undefined ? {} : { completionLines: state.completionLines }),
       },
     )
   }
@@ -1875,12 +1905,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // this on initial / resume / change / new series, so it is the cheapest
         // source that is still authoritative; `request/context` below covers a
         // route change that ships without a header change.
-        const cfg = event.data?.header?.config as { provider?: unknown; model?: unknown } | undefined
+        const cfg = event.data?.header?.config as { provider?: unknown; model?: unknown; reasoningEffort?: unknown } | undefined
         const headerProvider = cfg?.provider
         const headerModel = cfg?.model
         if (typeof headerProvider === 'string' && headerProvider !== ''
           && typeof headerModel === 'string' && headerModel !== '') {
           state.requestRoute = { provider: headerProvider, model: headerModel }
+        }
+        if (typeof cfg?.reasoningEffort === 'string' && cfg.reasoningEffort !== '') {
+          state.requestEffort = cfg.reasoningEffort
         }
       } else if (event.type === 'request/context') {
         const cw = event.data?.contextWindow as number | undefined
@@ -1917,23 +1950,54 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // still closes whatever exists.
         void progressCards.finish(sessionId, endTime, event.data?.reason?.kind === 'error')
 
+        // Capture the answer's segments BEFORE anything else: a single
+        // block-aware split drives both the step card (segment 0) and the
+        // continuation cards, and it has to read `state.text` before `resetStep`
+        // clears it. Slicing at a fixed character offset used to cut tables and
+        // code fences in half (2026-09-18) — the boundary always falls between
+        // blocks.
+        const fullText = state.text.trim()
+        const textSegments = chunkText(fullText, TEXT_STEP_CAP, MAX_OVERFLOW_CARDS + 1)
+        const overflowChunks = textSegments.slice(1)
+
+        // `compact` has no Turn Complete card: its filtered summary is folded
+        // into the footer of the card that carries the answer (see
+        // `src/turn-summary.ts`). Set BEFORE the pending send/update is flushed
+        // so that write already carries it; when the card is already on screen
+        // the summary needs one extra write, captured here because `resetStep`
+        // clears the ref and the text below.
+        const compact = displayPolicy().turnCard
+        const tr = getTranslations?.() ?? translationsFor('zh')
+        const completionFacts = compact
+          ? {
+              stats: turnStats,
+              ...(state.requestRoute === undefined
+                ? {}
+                : { model: `${state.requestRoute.provider}/${state.requestRoute.model}` }),
+              ...(state.requestEffort === undefined ? {} : { reasoningEffort: state.requestEffort }),
+              ...(produceCardMode === undefined || produceCardMode() === 'off'
+                ? {}
+                : { producedCount: producedArtifacts(turnStats?.produced ?? []).length }),
+            }
+          : undefined
+        const completionLines = completionFacts === undefined
+          ? undefined
+          : compactCompletionLines(tr, completionFacts)
+        // A long answer ends on a "continued" card, and the summary belongs on
+        // the LAST card of the reply, not on the one above it.
+        const completionOnOverflow = completionLines !== undefined && overflowChunks.length > 0
+        if (completionLines !== undefined && !completionOnOverflow) state.completionLines = completionLines
+
         // A very short final step can end inside the send debounce window;
         // post its card before anything else so it precedes the overflow and
-        // Turn Complete cards in the chat.
+        // completion cards in the chat. It is built from the current state, so
+        // it carries `completionLines` set just above.
         flushPendingSend(state)
         // The final step card's message may still be in flight (CardKit create
         // → send). Capture its promise now — resetStep clears the ref — and
         // await it before the overflow cards so they cannot be created first.
         const lastStepSend = lastStepSendPromises.get(sessionId)
 
-        // Capture overflow data BEFORE resetStep clears state. A single
-        // block-aware split drives both cards: the step card renders segment 0
-        // and the remaining segments become continuation cards. Slicing at a
-        // fixed character offset used to cut tables and code fences in half
-        // (2026-09-18) — the boundary now always falls between blocks.
-        const fullText = state.text.trim()
-        const textSegments = chunkText(fullText, TEXT_STEP_CAP, MAX_OVERFLOW_CARDS + 1)
-        const overflowChunks = textSegments.slice(1)
         const overflowChat = state.chat
         const overflowOpts = overflowChat !== undefined
           ? overflowChat.threadId !== undefined
@@ -1945,6 +2009,17 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // the reply stream shows one.
         const overflowTps = computeStepTps(state)
 
+        // The answer card is already on screen: it needs one more write for the
+        // summary. Both the card and its ref are captured NOW because resetStep
+        // wipes the state the card is built from.
+        const summaryRef = completionLines === undefined || completionOnOverflow ? undefined : state.stepCardRef
+        const summaryCard = summaryRef === undefined || completionLines === undefined
+          ? undefined
+          : buildStepCard(state)
+        const overflowSummary = completionOnOverflow && completionFacts !== undefined
+          ? compactCompletionElement(tr, completionFacts)
+          : undefined
+
         flushPendingUpdate(state).then(async () => {
           // The step card is now on screen with the first TEXT_STEP_CAP chars.
           // Wait for its message before posting overflow, otherwise the
@@ -1952,6 +2027,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           // (observed 2026-09-09). The barrier handles the real channel; this
           // await also covers channels that do not register one.
           if (lastStepSend !== undefined) await lastStepSend
+          // Fold the turn summary into the answer card. Not a text write: it
+          // must not touch the delivery record `flushed()` reads.
+          if (summaryRef !== undefined && summaryCard !== undefined) {
+            await trackUpdate(sessionId, () => scheduleCardWrite(summaryRef, {
+              card: summaryCard,
+              hasText: false,
+              stamp: 0,
+            }).then(() => undefined))
+          }
           // Send overflow text as follow-up "continued" cards so the full
           // reply is delivered without silent truncation.
           //
@@ -1964,7 +2048,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           if (overflowChunks.length > 0 && overflowChat !== undefined && overflowOpts !== undefined) {
             const overflowCards = await Promise.all(overflowChunks.map((chunk, i) =>
               prepareCard(renderOverflowCard(chunk, i + 1, overflowChunks.length, overflowTps), sessionId)))
-            for (const card of overflowCards) {
+            const cards = overflowSummary === undefined
+              ? overflowCards
+              : overflowCards.map((card, i) => i === overflowCards.length - 1 ? appendCardElement(card, overflowSummary) : card)
+            for (const card of cards) {
               await channel.send(overflowChat.chatId, { card }, overflowOpts)
             }
           }
@@ -2638,6 +2725,13 @@ export function renderStepCard(
      * rendered before everything else. Metadata only — never the injected text.
      */
     injections?: readonly string[]
+    /**
+     * The turn's filtered completion summary (`compact` only), rendered as the
+     * footer's first lines in place of the per-step timing line. Present on the
+     * LAST write of a turn: the level has no Turn Complete card, so this is
+     * where the turn's totals, model and produced-file count appear.
+     */
+    completionLines?: readonly string[]
   },
 ): object {
   const elements: object[] = []
@@ -2881,7 +2975,15 @@ export function renderStepCard(
     // element — each element costs its own vertical spacing, and a two-line
     // footer was paying it twice.
     if (tight) {
-      const footer = [timingParts.join(' · '), speedParts.join(' · ')].filter(part => part !== '')
+      // On the turn's last step the summary REPLACES the per-step timing line:
+      // the turn totals are the same facts at turn scope, and printing both
+      // would restate the same numbers one line apart (see `src/turn-summary.ts`
+      // for what `compact` keeps). The speed line stays where it was.
+      const completion = options?.completionLines
+      const head = completion === undefined || completion.length === 0
+        ? timingParts.join(' · ')
+        : completion.join('\n')
+      const footer = [head, speedParts.join(' · ')].filter(part => part !== '')
       elements.push({ tag: 'markdown', content: footer.join('\n'), text_size: 'notation' })
     } else {
       elements.push({ tag: 'hr' })

@@ -5,6 +5,20 @@
 > 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 变更：紧凑档不再发 Turn Complete 卡，摘要并入回复卡 footer + 独立「交付物」卡（`src/turn-summary.ts`（新）/ `src/feishu-streaming.ts` / `src/channel.ts` / `src/feishu-external-turns.ts`，2026-10-14）
+
+**诉求**（使用者）：紧凑档不要 Turn Complete 卡片，把其中一部分内容融进最后那张回复卡的 footer，并且筛选显示的内容；交付物要有自己的卡片和标题；只动紧凑档。
+
+**保留 vs 丢弃**（判据是「别处是否已经能看到」）：保留 `✅ 完成 · ⏱ 总时长 · 📦 回合 tokens · 📥 in (♻️x%) → 📤 out`、`🧠 模型 · 💡 推理强度`、`📦 本回合新生成 N 个文件`（`produceCard` 打开且 >0 时）；`📊 上下文占用`与 `🚀 tok/s` 沿用答案卡 footer 原有那一行，不重复。丢弃：`🧠 LLM / 🔧 Tools` 拆分与 `🔄 N 步`（过程卡就是逐步时间线）、`⚡ TTFT`、`📂 workspace`、`Enter-while-busy` 回显、外部回合的来源行（答案卡的 `⚡ 本回合由…自动触发` 已经在说同一件事）。完整取舍表写在 `src/turn-summary.ts` 的模块注释里。
+
+**实现**：新模块 `src/turn-summary.ts` 负责这套筛选后的行、独立交付卡与回退收尾卡。`feishu-streaming.ts` 在 `turn/end` 把摘要写进承载答案的那张卡：首次发送在防抖窗口内就直接带上（`state.completionLines` 在 `flushPendingSend` 之前设好），已经在屏上则补一次写入；答案被切成续卡时挂在**最后一张续卡**上。这次写入 `hasText: false`，不会碰 `flushed()` 用来判定「正文是否上屏」的送达记录。`channel.ts` 在紧凑档不再发 footer：正文已上屏时只发交付卡；回退正文卡时把摘要追加到最后一张（于是「正文没上屏」的兜底也有回合结束标记）。`feishu-external-turns.ts` 同样不再发 Turn Complete 卡，交付卡走与回复路径相同的 hydrator（新 `hydrateCard`），并在**没有任何卡承载正文**时发一张最小收尾卡（标题 `✅ Turn 已完成`，只有来源、摘要、模型/上下文）。
+
+**为什么交付物单独一张卡**：载着可点行的卡片在被就地更新 2–3 次后**不再投递回调**（关键坑 11 / 55），而答案卡整轮都在就地更新 ⇒ 交付卡只发一次、永不更新，点击发送/确认流程因此保持可靠；卡片标题为「📦 交付物」，正文不再重复标题行。
+
+**验证**：新增 9 例 `tests/turn-summary.spec.ts`（保留/丢弃项、产出行、上下文行、无统计兜底、单元素 footer、本地化、交付卡、回退卡）、2 例流式（摘要写进答案卡且不新增卡片；超长答案时挂在最后一张续卡且只发一张）、2 例通道（紧凑档回退正文卡带摘要且无 Turn Complete；交付行进独立标题卡）、3 例镜像（紧凑档不发 Turn Complete、无正文卡时发最小收尾卡、交付卡先过 hydrator）；`npm run typecheck` / `npm test`（**1144 通过 / 58 文件**）/ `npm run build` 全绿。**顺带修掉两处既有的时序脆弱断言**（同一文件：过程卡收尾渲染没等到绿色态就断言、步骤行耗时钉死成 `0ms` 而实际会读到 1ms）——它们与本批功能无关，但会让全量验证约 1/3 概率假红。`standard` / `detailed` / `verbose` 三档行为**未改动**。
+
+**English**: At `compact` there is no Turn Complete card any more. A filtered summary is folded into the last answer card's footer (the streaming step card, or the fallback reply card; the last "continued" card when the answer overflows), keeping only completion + wall clock, turn tokens, model + effort, produced-file count and the existing context meter, and dropping the LLM/tool split, step count, TTFT, workspace and busy-mode echo that the process card or `/status` already shows. Delivered rows move to their own `📦 Deliverables` card, sent once so its tap-to-send rows keep delivering callbacks (key pitfalls 11 / 55). Mirrored (auto-triggered) turns do the same and fall back to a minimal completion card when no card carried the answer; that delivery card goes through the same media hydrator the reply path uses. Other levels are untouched.
+
 ### 修复：自动触发回合的 Turn Complete 卡片整块统计缺失（`src/index.ts` / `src/feishu-external-turns.ts`，2026-10-14）
 
 **现象**（使用者报「自动触发的轮 turn complete 卡片内容显示不完整」）：定时提醒、后台任务唤醒、Web GUI 等**不是飞书消息触发的回合**，收尾卡只有首行来源说明和底部的会话元信息，**中间整块统计全没有**——没有 `⏱ 总时长 · 🧠 LLM · 🔧 Tools`，没有 `⚡ TTFT · 🚀 tok/s · 🔄 steps`，也没有 `📦 tokens · 📥 in · 📤 out`；同一回合里 `present` 声明的交付物也不进清单。飞书消息触发的回合一切正常，所以两张卡长得明显不一样。

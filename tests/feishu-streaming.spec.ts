@@ -2480,7 +2480,10 @@ describe('turn progress card wiring', () => {
     const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
       .find(card => isTurnCardTitle(String(card.header.title.content)))
     expect(mdOf(opened)).toContain('⏳ `bash`')
-    expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…', t.turnCardPhaseTool))
+    // The elapsed time is read from the clock, so pinning it to `0ms` made this
+    // assertion fail whenever the render crossed a millisecond boundary
+    // (observed flaky 2026-10-14). Assert the row's shape instead.
+    expect(mdOf(opened)).toMatch(/▸ \*\*第 1 步\*\* · 🔧 工具调用中 · \d+ms…/)
 
     emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
     // The answer opens a step card of its own — carrying the text and NOTHING
@@ -2495,10 +2498,65 @@ describe('turn progress card wiring', () => {
     expect(mdOf(answer)).not.toContain('`bash`')
 
     emit('turn/end', { reason: { kind: 'completed' } })
-    await vi.waitFor(() => { expect(progressRenders(ch).length).toBeGreaterThan(0) })
+    // Wait for the FINISHED render, not merely for some render: `finish()` is
+    // fire-and-forget, so asserting on the last render right after the first
+    // one appears raced the green repaint (observed flaky 2026-10-14).
+    await vi.waitFor(() => {
+      expect(progressRenders(ch).at(-1)?.header.template).toBe('green')
+    })
     const last = progressRenders(ch).at(-1)!
-    expect(last.header.template).toBe('green')
     expect(mdOf(last)).toContain('✅ `bash`')
+    streaming.stop()
+  })
+
+  it('folds the turn summary into the compact answer card instead of a Turn Complete card', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('request/header', { header: { config: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' } } })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } })
+    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    // The summary is written INTO the answer card: an update, not a new card.
+    const answerWrites = (): string[] => [
+      ...ch.updateCardInstance!.mock.calls.map(call => call[1] as any),
+      ...ch.updateCard!.mock.calls.map(call => call[1] as any),
+    ]
+      .filter(card => !isTurnCardTitle(String((card as any)?.header?.title?.content ?? '')))
+      .map(mdOf)
+    await vi.waitFor(() => {
+      expect(answerWrites().some(md => md.includes(`✅ ${t.turnSummaryDone}`))).toBe(true)
+    })
+    const final = answerWrites().find(md => md.includes(`✅ ${t.turnSummaryDone}`))!
+    expect(final).toContain('the answer')
+    expect(final).toContain('🧠 deepseek-flash · 💡 high')
+    expect(final).toContain('📥')
+    // Nothing opened a second card for the summary: the level has no Turn
+    // Complete card.
+    expect(titles(ch).filter(title => !isTurnCardTitle(title))).toHaveLength(1)
+    streaming.stop()
+  })
+
+  it('puts the compact summary on the last overflow card when the answer is split', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'x'.repeat(4000) } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    // The "continued" card is sent, and the summary rides it — the card the
+    // reader's eye ends on — rather than the step card above it. Exactly one
+    // card is sent: the summary never opens a card of its own.
+    await vi.waitFor(() => { expect(ch.send.mock.calls.length).toBeGreaterThan(0) })
+    const sentCards = ch.send.mock.calls.map(call => (call[1] as any).card)
+    expect(sentCards).toHaveLength(1)
+    expect(mdOf(sentCards.at(-1))).toContain(`✅ ${t.turnSummaryDone}`)
     streaming.stop()
   })
 
