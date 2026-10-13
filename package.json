@@ -39,8 +39,11 @@
     "client/client.js.map",
     "cordis.patch.yml",
     "README.md",
+    "docs/README.md",
     "docs/architecture.md",
     "docs/feishu-setup.md",
+    "docs/privacy.md",
+    "docs/feishu-capabilities.md",
     "CHANGELOG.md",
     "LICENSE"
   ],

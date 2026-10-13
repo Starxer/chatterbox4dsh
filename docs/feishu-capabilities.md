@@ -1,9 +1,10 @@
 # 飞书能力调研
 
-> 本文件记录飞书开放平台支持的消息类型、卡片组件、权限、事件订阅等能力，
-> 供 dsh-feishu 功能规划参考。
->
-> 更新时间：2026-09-08
+> 这是**平台能力与实测证据参考**，不是第二份待办台账。当前行为见 [项目首页](<../README.md>) 与 [架构](<./architecture.md>)，开放事项以 [项目待办](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) 为准。
+> 文档整理：2026-10-13；探针结论保留各自发生日期与验证范围，未在本轮重新请求飞书 API。媒体可见性与数据流见 [隐私说明](<./privacy.md>)。
+> 服务端接受结构、真发送属性校验、人眼确认渲染是三种证据，不能互相替代；未使用的组件不是已经验收的能力。
+
+> 文中 `probe-*.py` / `.ts` 是历史取证脚本名，**不随源码仓库或 npm 分发，也不是阅读前置**；保留的是用例与结果，不让维护者去寻找本机文件。
 
 ---
 
@@ -45,7 +46,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 >
 > **上传接口的大小 / 分辨率上限**（`im.v1.file.create` / `im.v1.image.create`，2026-09-24 逐条复核官方页面）——**文件 ≤ 30 MB**（视频 / 音频 / PDF / Office / 压缩包都走它，不能 0 字节；`234006` 超限、`234010` 空文件）；**图片 ≤ 10 MB**，且**分辨率**：GIF ≤ 2000×2000、其他 ≤ 12000×12000（`234039`），官方对超分辨率大图的口径是「改用上传文件接口以文件形式发送」。**发送消息只是引用上传得到的 key，不再按文件大小卡**；另一类容易混淆的 "30KB" 是**消息体**限制（文本 ≤ 150 KB、卡片/富文本 ≤ 30 KB，`230025`），与文件大小无关。两个上传接口频控均为 **1000 次/分钟、50 次/秒**。插件侧：`feishu_send_file` 与收文件用 30 MB / 10 MB 常量，**卡片内联则把这三个数字做成设置项**（`cardImageMaxMb` 1–10 默认 10、`cardVideoMaxMb` / `cardAudioMaxMb` 1–30 默认 15）——上限就是上面这两个硬边界，所以设置里的范围不会再往大放。
 >
-> **媒体类只有三种：图片 / 视频 / 音频**。**没有任何"文件/附件"组件**（`file` / `attachment` / `media` / `cloud-doc` / `file-preview` 文档路径全 404；富文本的 HTML 白名单里也没有 `<file>`，且 `<video>` 只能作独立元素、写不进富文本）——PDF / Office / 压缩包等只能走原生文件消息。详情与实测见 CHANGELOG「卡片内联媒体」。
+> **媒体类只有三种：图片 / 视频 / 音频**。**没有任何"文件/附件"组件**（`file` / `attachment` / `media` / `cloud-doc` / `file-preview` 文档路径全 404；富文本的 HTML 白名单里也没有 `<file>`，且 `<video>` 只能作独立元素、写不进富文本）——PDF / Office / 压缩包等只能走原生文件消息。详情与实测见 [变更记录](<../CHANGELOG.md>)“卡片内联媒体”。
 
 ### 2.1 内容组件（Content）
 
@@ -53,7 +54,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 |---|---|---|---|
 | 普通文本 | `plain_text` | 无格式文本 | ✅ 卡片 header |
 | Markdown | `markdown` | 表格/标题/内联代码/链接/粗体/斜体 | ✅ 主要使用 |
-| Lark Markdown | `lark_md` | 旧版 markdown（仅粗体/斜体/链接） | ⚠️ note 区域使用 |
+| Lark Markdown | `lark_md` | 文本对象格式（标签、控件文本等） | ✅ 如 checker 标签；Card 2.0 不使用旧 note 容器 |
 | 图片 | `img` | 图片组件（`img_key` 必须是上传得到的 `img_v3_…`） | ✅ 正文图片内联（`src/card-images.ts`）+ 面板卡 |
 | **视频** | `video` | 内嵌 MP4 播放（**仅 MP4**、≤30MB、客户端 ≥V7.56；含视频的卡片**必须** `config.enable_forward: false`，否则发送失败） | ✅ 2026-09-24 起：正文里 `[片段](runs/a.mp4)` 自动内联（QuickTime 先转封装、ffmpeg 抽封面） |
 | **音频** | `audio`（或富文本里 `<audio file_key='…'>`） | 内嵌音频播放（**仅 Opus**、≥V7.49；同样要求 `enable_forward: false`，且不能配合"仅特定人可见"发送） | ✅ 2026-09-24 起：正文里 `[语音](runs/a.opus)` 自动内联（其他音频格式有 ffmpeg 时转 Opus） |
@@ -68,16 +69,16 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 | **按钮** | `button` | 点击按钮，触发 `cardAction` | ✅ 审批卡片 | 通用操作 |
 | **单选下拉** | `select_static` | 下拉单选，选项列表 | ✅ `/session` 会话选择 | `/model` 选模型、选 workspace、选 preset |
 | **多选下拉** | `multi_select_static` | 下拉多选（`options` 字段） | ❌ 未使用 | 批量操作选项（若要把勾选组换成下拉，可改用它） |
-| **复选框** | `checker` | **单个复选框**（`text` + `checked`；**没有 `options` 字段**，见 2.2.1） | ✅ **多选题卡片**（2026-10-07：每个选项一个 `checker` + 一次「提交」） | 一次性提交多开关（`/display` 的备选方案，见 [`display-card-design.md`](./display-card-design.md)） |
+| **复选框** | `checker` | **单个复选框**（`text` + `checked`；**没有 `options` 字段**，见 2.2.1） | ✅ **多选题卡片**（2026-10-07：每个选项一个 `checker` + 一次「提交」） | 一次性提交多开关（`/display` 的备选方案，见 [`display-card-design.md`](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-card-design.md>)） |
 | **日期选择** | `date_picker` | 日期选择器 | ❌ 未使用 | — |
 | **时间选择** | `time_picker` | 时间选择器 | ❌ 未使用 | — |
 | **人员选择** | `select_person` | 选择人员 | ❌ 未使用 | 多人协作 |
 | **文本输入** | `input` | 文本输入框（**不能预填、不能补全**，见 §2.2.2） | ✅ 问题卡片自定义回答、会话改名卡、新建工作区 | 带占位符的输入（替代部分斜杠命令） |
-| **溢出菜单** | `overflow` | 更多操作菜单 | ❌ 未使用 | 查看上下文/清空/导出 |
+| **溢出菜单** | `overflow` | 更多操作菜单；2026-10-12 真发送接受 | ❌ 产品未使用 | 查看上下文/清空/导出 |
 
 #### 2.2.1 `checker` 实测：它是**单个复选框**，字段名只能靠「真发一次」判定（2026-10-07）
 
-多选题（`TODO.md` O24）要在飞书侧表达「勾选多项后一次提交」，候选控件是 `checker` 与 `multi_select_static`。`cardkit.card.create` 对两者都回 `code=0`，而伪造 tag `checker_bogus` 被拒（`10002 not support tag`）⇒ **tag 确实存在且被服务端校验**；但**字段名判不出来**（同 §2.3.2 的口径：create 静默容忍未知字段）。
+多选题（[项目待办](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) O24）要在飞书侧表达「勾选多项后一次提交」，候选控件是 `checker` 与 `multi_select_static`。`cardkit.card.create` 对两者都回 `code=0`，而伪造 tag `checker_bogus` 被拒（`10002 not support tag`）⇒ **tag 确实存在且被服务端校验**；但**字段名判不出来**（同 §2.3.2 的口径：create 静默容忍未知字段）。
 
 **判字段的另一个办法（本次发现，比 create 强得多）**：走真正的发送路径 `im.v1.message.create`。它**严格校验**卡片 JSON，而且**被拒的卡根本不会发出去**（聊天里不留痕迹）⇒「真发一次」就是一个**免费的字段探针**：
 
@@ -86,7 +87,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 | `checker` + `options:[{value,text,checked}]` | `230099` / ext `200621`：**`unknown property, property: options, path: … (tag: checker)`** ⇒ `checker` **没有** `options` 字段 |
 | `checker` + `text` + `checked`（一个选项一个 checker，各自 `name`） | **发送成功** ⇒ 这才是它的形状 |
 
-**结论**：`checker` 是**单个复选框**（`text` + `checked`），**多选 = 每个选项一个 `checker` 元素**（`name` 各异）；提交时 `form_value` 是 **`{name: true/false}`**——真机点击三个复选框读回 `{"c1":true,"c2":true,"c3":true}`。**一次提交带回全部勾选**，过程中完全没有卡片重绘，天然避开「带按钮的卡改 2–3 次后回调失效」（关键坑 11）。探针脚本：`~/.dsh/probe-checker-card.py`（带 `--send` 时真发一张到绑定聊天）。
+**结论**：`checker` 是**单个复选框**（`text` + `checked`），**多选 = 每个选项一个 `checker` 元素**（`name` 各异）；提交时 `form_value` 是 **`{name: true/false}`**——真机点击三个复选框读回 `{"c1":true,"c2":true,"c3":true}`。**一次提交带回全部勾选**，过程中完全没有卡片重绘，天然避开「带按钮的卡改 2–3 次后回调失效」（关键坑 11）。探针脚本：`probe-checker-card.py`（带 `--send` 时真发一张到绑定聊天）。
 
 #### 2.2.2 `input` 实测：**不能预填、也不能补全**（2026-10-12）
 
@@ -107,7 +108,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 1. **预填做不到**：唯一被接受的 `value` **发出去后输入框仍是空的**（2026-10-12 发过 A/B 对照样板，使用者目视确认）——它只是被服务端容忍的字段，客户端不用它渲染初值。
 2. **补全做不到**，而且不只是「没有字段」：飞书**不会把按键事件回传给机器人**——卡片是静态 JSON，输入过程只发生在客户端，**只有「提交」才产生一次回调**。没有事件源就没有实时补全。
-3. **能做的最接近的东西是「点着补全」**：输入一个前缀 → 提交 → 回一张候选行（可点行，与目录浏览器的行同一种）→ 点一行把路径补全后**重新填回输入框**（新卡）。比 tab 多几次点击，但在没有按键事件的通道里这是唯一能做到的。**更便宜的近似**：在「路径不存在」的确认卡里列出**最深的那个已存在父目录**的同级候选，点一下就换成那条路径。
+3. **能做的是候选选择，不是输入框预填**：输入一个前缀 → 提交 → 发候选行 → 点一行把选中路径写入**插件流程状态**，再用文本展示/确认，不声称新卡输入框能预填。已实现的近似是在“路径不存在”确认卡列出**最深的已存在父目录**下的候选目录，点一下改用该路径。
 
 ### 2.3 容器/布局组件（Container）
 
@@ -120,7 +121,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 #### 2.3.1 折叠组件探针实测（2026-09-29）
 
-折叠组件本插件从未用过，且本机**读不到飞书官方文档**（`open.feishu.cn` 经 fake-ip 解析成非公网地址，抓取工具直接拒），所以 tag 与字段名只能实测。做法是**只建卡片实体、不发送**的 `cardkit.card.create` 探针（脚本 `~/.dsh/probe-collapsible-card.py`），并带一个**伪造 tag 的对照**来证明判据有区分力：
+以下保留当时的探针记录：2026-09-29 开始调查时尚未使用折叠组件，文档抓取受限，因此用 API 取证；这不是当前“未使用”的结论。做法是**只建卡片实体、不发送**的 `cardkit.card.create` 探针（脚本 `probe-collapsible-card.py`），并带一个**伪造 tag 的对照**来证明判据有区分力：
 
 | 用例 | 结果 |
 |---|---|
@@ -133,7 +134,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 **2026-09-29 起已在产品里使用**：步骤卡的推理段（`src/feishu-streaming.ts` 的 `renderStepCard`）与压缩卡的摘要（`src/feishu-compaction.ts`）都用 `collapsible_panel` + `expanded:false` + `header.title` + `elements`，是把上面这份探针 JSON 原样搬进渲染器的。
 
-**同日的第二个探针（`~/.dsh/probe-step-card-panel.py`）**：上面验的是面板**自己**，这里再验**整张卡**——因为真实卡片是 markdown + `hr` + `text_size: notation` + 面板混排，而 `cardkit.card.create` 会对整份 JSON 做服务端校验。三个用例（只建实体、不发送）：
+**同日的第二个探针（`probe-step-card-panel.py`）**：上面验的是面板**自己**，这里再验**整张卡**——因为真实卡片是 markdown + `hr` + `text_size: notation` + 面板混排，而 `cardkit.card.create` 会对整份 JSON 做服务端校验。三个用例（只建实体、不发送）：
 
 | 用例 | 结果 |
 |---|---|
@@ -151,7 +152,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 2  hr → 📝 **消息** → 🔧 **工具调用** + 参数 + 结果 → 页脚
 ```
 
-⇒ **推理折叠默认收起**（`expanded:false`）、**注入提示行在正文最前面且卡内没有注入正文**、档位是默认「详细」——三项一次读完。**仍未验证的一点**：真机上「初始到底是不是收起」——`expanded` 若被忽略就会默认展开；若真机看到的是展开，只改一个字段名（`default_expanded`）即可，不影响结构、也不会让卡片发不出去。
+⇒ 回读确认 `expanded:false`、注入提示位于正文最前面且无注入正文、默认详细档结构完整。**证据范围**：这是服务端当前卡片结构，不等于所有客户端的目视结果；后来真实折叠样板已确认默认收起，字段使用 `expanded`，不要因早期备选说明盲目切换 `default_expanded`。
 
 #### 2.3.2 「折叠要看得出来」实测（2026-09-29）
 
@@ -161,7 +162,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 > `cardkit.card.create` **静默容忍未知字段**——在 `collapsible_panel` 的 `header` 里塞一个 `bogus_xyz` 照样 `code=0`。所以「建卡成功」**不能**证明字段存在；只有「某个**值**被拒」才是证据。
 
-`~/.dsh/probe-panel-affordance.py` 的逐个字段实测（手写卡片；对照组是「合法值 vs 明显非法的值」）：
+`probe-panel-affordance.py` 的逐个字段实测（手写卡片；对照组是「合法值 vs 明显非法的值」）：
 
 | 字段 | 通过 | 被拒（⇒ 字段确实存在且被校验） |
 |---|---|---|
@@ -176,7 +177,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 ⇒ 采用 `border: {color:'grey-300', corner_radius:'4px'}` + `header.background_color:'grey-100'`；`custom_icon` 需要真上传的 `img_key`（不能用标准图标冒充），标准图标 token 无从校验，**都不用**。
 
-**同日第三个探针（`~/.dsh/probe-real-fold-cards.py` + `.ts`，端到端）**：手写探针能过不代表**产物**能过，所以把 `renderStepCard` / `renderCompactionCard` 的**真实输出**（zh/en 各一张步骤卡、压缩卡的 summary 与 done 两态）直接打给 `cardkit.card.create`：
+**同日第三个探针（`probe-real-fold-cards.py` + `.ts`，端到端）**：手写探针能过不代表**产物**能过，所以把 `renderStepCard` / `renderCompactionCard` 的**真实输出**（zh/en 各一张步骤卡、压缩卡的 summary 与 done 两态）直接打给 `cardkit.card.create`：
 
 | 用例 | 结果 |
 |---|---|
@@ -189,7 +190,7 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 
 #### 2.3.3 「只折叠一部分内容」只有一种做法：markdown 没有折叠 / 展开全文字段（2026-10-12）
 
-使用者问：「除了折叠卡片，feishu 是否还支持**折叠部分内容、点击展示全部内容**」。官方文档在本机**仍然读不到**（`open.feishu.cn` / `open.larksuite.com` / `raw.githubusercontent.com` 全被解析成非公网地址，抓取工具直接拒 —— 与 2026-10-11 那次 TLS 事故同一个网关 fake-IP 根因），所以又走**真发一次当探针**。
+使用者问：「除了折叠卡片，feishu 是否还支持**折叠部分内容、点击展示全部内容**」。官方文档在本机**仍然读不到**（抓取工具对解析地址的安全检查拒绝访问；这与 TLS 失败是不同层面的事实，不能把 fake-IP 本身当成故障根因），所以又走**真发一次当探针**。
 
 **判据（这次的对照组特别重要）**：`im.v1.message.create` 严格校验的是**属性名是否存在**，不是值 —— 「已知名字 + 明显非法的值」（`text_size: 'gigantic'`）会被**接受**，而「不存在的名字」（`bogus_xyz`）以 `230099 / 200621 unknown property` **整卡被拒**。所以「被拒」是可信的否定证据。全部用例发到一次性测试群并**随即撤回**。
 
@@ -239,12 +240,13 @@ channel.on('cardAction', (evt) => {
 
 ## 三、权限（Scopes）
 
-### 3.1 当前已配置
+### 3.1 扫码流程声明的权限
 
 | 权限 | 说明 | 用途 |
 |---|---|---|
 | `im:message.p2p_msg:readonly` | 读取私聊消息 | 接收用户消息 |
 | `im:message.group_at_msg:readonly` | 读取群聊 @消息 | 接收群内 @机器人 |
+| `im:message.group_msg` | 接收群聊全部消息 | 关闭 @限制时需要；扫码申请不保证管理员已批准 |
 | `im:message:send_as_bot` | 以机器人身份发消息 | 回复消息/发卡片 |
 | `im:message.reaction` | 添加/删除表情回复 | 👍 消息表情反应 |
 | `application:application:patch` | 更新应用配置 | 扫码流程专用（强制 WebSocket） |
@@ -260,27 +262,27 @@ channel.on('cardAction', (evt) => {
 
 ### 3.3 权限申请方式
 
-- **扫码流程**：`provision.ts` 的 `FEISHU_PROVISION_SCOPES` 数组自动申请
+- **扫码流程**：[扫码流程](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/provision.ts>) 的 `FEISHU_PROVISION_SCOPES` 数组自动申请
 - **手动配置**：飞书开发者后台 → 应用 → 权限管理 → 开通权限
 
 ---
 
 ## 四、事件订阅
 
-### 4.1 当前已订阅
+### 4.1 扫码流程订阅
 
 | 事件 | 说明 | 订阅方式 |
 |---|---|---|
 | `im.message.receive_v1` | 接收消息 | `add_events` 参数 |
 
-### 4.2 SDK 自动处理（无需显式订阅）
+### 4.2 卡片回调与可选 SDK 事件
 
 | 事件 | 说明 | 备注 |
 |---|---|---|
 | `card.action.trigger` | 卡片按钮/选择器点击 | WebSocket 模式下自动推送 |
-| `im.message.reaction.created_v1` | 表情回复添加 | SDK 有 handler，未使用 |
-| `im.message.reaction.deleted_v1` | 表情回复删除 | SDK 有 handler，未使用 |
-| `im.chat.member.bot.added_v1` | 机器人被添加到群 | SDK 有 handler，未使用 |
+| `im.message.reaction.created_v1` | 表情回复添加 | SDK 支持处理，插件未使用；不保证应用已订阅 |
+| `im.message.reaction.deleted_v1` | 表情回复删除 | SDK 支持处理，插件未使用；不保证应用已订阅 |
+| `im.chat.member.bot.added_v1` | 机器人被添加到群 | SDK 支持处理，插件未使用；不保证应用已订阅 |
 
 ### 4.3 事件订阅注意事项
 
@@ -294,7 +296,7 @@ channel.on('cardAction', (evt) => {
 
 ## 五、卡片回调安全机制
 
-SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
+SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，**不是资源权限或文件围栏的完整安全证明**：
 
 | 机制 | 说明 |
 |---|---|
@@ -304,39 +306,23 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 
 ---
 
-## 六、功能规划建议
+## 六、组件落地状态（不是待办优先级）
 
-按投入产出比排序（状态更新于 2026-09-08）：
+| 能力 | 当前状态 | 边界 |
+|---|---|---|
+| 模型选择 | ✅ `select_static` 等组件组成向导 | 仍有 O4 的带按钮就地更新风险 |
+| 推理折叠 | ✅ `collapsible_panel`，默认收起 | detailed 200 字预览、verbose 面板保留全文；没有上游思考 token 就只显示耗时 |
+| 压缩摘要 | ✅ 事务卡 + 折叠摘要 | 正文预算 22,000 UTF-8 字节，超限有说明；不是旧的 200 字 |
+| compact 过程折叠 | ✅ 只折更早步骤 | 可见/折叠共用按步元素，步头在 quote 外；最多最新 5 步/40 行，折叠最多 60 行 |
+| 工作区选择 | ✅ `interactive_container` 行与目录浏览 | 输入框不能预填/实时补全；新建文件夹为独立提交动作 |
+| `present` 交付 | ✅ 媒体、自动文档、其他文件可点确认 | 回调只有不透明 token，每次点击重验路径；原生文件不是卡片附件组件 |
+| 单选问答 | ✅ 点选即记答案，结算问题卡 | 非最后题发回执可重答，全部答完最终确认才交模型；回调认当前 message id，重答需新问题卡 |
+| 多选问答 | ✅ 每个选项一个 `checker` | 一次提交全部勾选，中途不重绘，不用一个 checker 的 options |
+| 后台任务/子代理 | ✅ 原生 table 快照 | 变化发新卡，不逐任务就地更新；前台 jobs 不列，模型从事件与会话事实双源读取 |
+| 长工具输出折叠 | 🔲 未实现 | 当前仍有界预览，不能由“折叠组件可用”推成已经落地 |
+| 多 step 标签页 / 图表 / 更多动作菜单 | 🔲 未作为产品能力实现 | 候选 tag 的存在不等于本插件已验收；是否做以项目待办/需求为准 |
 
-> **2026-09-23 复核**：P6 批次（插件详情页的连接/扫码三分贡献、后台任务卡、会话置顶、模型目录、清单本地化名与图标）**没有新增或移除任何飞书组件用法**——新增的卡仍然只用 `header` + `markdown`，详情页用的是 `button`（本节 P2 已标 ✅）。所以下表状态**未变**；唯一仍开着的组件类缺口是折叠组件（reasoning 与长工具输出折叠）。**2026-09-29 更正**：该组件的 tag 不是 `collapsible`（那是 1.0 时代的名字，`cardkit.card.create` 直接回 `10002 not support tag`），而是 **`collapsible_panel`**——已用探针实测，详见 2.3 节的新增说明。
-
-### P0 — 优先实现
-
-| 功能 | 组件 | 状态 | 说明 |
-|---|---|---|---|
-| `/model` 下拉选择 | `select_static` | ✅ 已实现 | `feishu-model-select.ts`：provider → model → reasoning 三步卡片 |
-| Reasoning 可折叠 | `collapsible_panel` | ✅ **已实现**（2026-09-29，O5；2026-09-29 补「看得见」的外观） | 默认收起，头部带推理时长与思考 token 数；`detailed` 档正文 200 字、`verbose` 档给全文——折叠之后「只给开头」这条信息损失不再必要。收起态统一带 `border` + header 底色 + `（▸ 已折叠 · 点击展开）` 文案（`src/card-fold.ts`）：光秃秃的 header 没人看得出里面还有东西 |
-| 长工具输出可折叠 | `collapsible_panel` | 🔲 未实现（组件已可用于此处） | bash/read 等工具的长输出仍走**截断预览**（`detailed` 1500 字符 / `verbose` 6000 字符）；折叠它需要一个能记住展开状态的写入策略，单独一批做 |
-
-### P1 — 后续实现
-
-| 功能 | 组件 | 状态 | 说明 |
-|---|---|---|---|
-| `present` 交付清单可点行 + 确认卡 | `interactive_container` / `button` | ✅ **已实现**（2026-10-07，TODO O25） | Turn Complete 卡的交付清单里，「其他文件」与超限文档是整行可点的 `interactive_container`（回调只带不透明 token，**不带路径**）→ 弹确认卡 → `button`「📤 发送」才真正投递；媒体仍走 hydrator 卡内内联，文档白名单自动发原生文件消息。整张 Turn Complete 卡**只发不改**，所以不受「带按钮的卡就地更新 2–3 次后回调失效」限制 |
-| `/new` 工作区选择 | `interactive_container` | ✅ 已实现 | 最终用可点击整行（非 `select_static`），另含目录浏览器 |
-| `ask_user_question` 单选题选项 | `interactive_container` | ✅ **已实现**（2026-10-07，TODO O24） | 每个选项是**整行可点**（与工作区选择面板、交付清单同款：`width:fill` + `has_border:false` + `padding:4px 12px`），点选一行会**立刻把问题卡冻结成无交互灰卡**（`⏳ 已选择 …`）并**弹出确认卡**；确认 → **结果另发一张新卡**、原卡变灰「已提交」；返回 → 原卡变灰「已作废」+ 新发一张可交互的问题卡（两条出口终态一致）。（`📋 确认提交`：「✅ 确认提交」/「↩️ 返回」）——整行命中面积大，防误触；确认后问题卡与确认卡各写一次。⚠️ **该组件有个实测到的客户端行为**：一张卡上的可点行**被点过一次后，这张卡后续的行点击不再投递回调**（同一张卡的普通 `button` 不受影响）⇒ 「返回」必须**重发一张新问题卡**并把旧卡作废，且回调要按 `messageId` 认当前卡（否则旧卡还能再开确认卡）。选项的标签与描述都写在行内（描述用 `text_size: notation` 的下行），**没有任何选项按钮**。**多选题不用可点行**：每次勾选都重绘会撞「带按钮的卡就地更新 2–3 次后回调失效」（坑 11），改用 `checker` 复选框 + 一次提交；**复选框自己带标签 + 描述**（`checker.text` 的 `lark_md`：加粗标签 + 换行描述），正文不再重复列一遍选项 |
-| Step 卡片多列布局 | `column_set` | ⚠️ 部分 | `column_set` 已用于按钮行 / 目录浏览器布局；step 卡本身仍单列 |
-| 溢出菜单 | `overflow` | 🔲 未实现 | 卡片右上角「更多操作」：查看 status/清空上下文/导出 |
-| `/status` 卡片增强 | `table` | 🔲 未实现 | 目前用 markdown 表格，未用 `table` 组件 |
-
-### P2 — 探索性
-
-| 功能 | 组件 | 状态 | 说明 |
-|---|---|---|---|
-| 标签页多 step | `tab` | 🔲 未实现 | 多 step 结果分页查看 |
-| 图表输出 | `chart` | 🔲 未实现 | 数据可视化（如果 agent 输出结构化数据） |
-| 文本输入 | `input` | ✅ 已实现 | 问题卡片自定义回答、会话改名卡、新建工作区 |
-| 文件导出 | `file` | ✅ 已实现 | `feishu_send_file` 模型工具（≤30MB） |
+具体优先级只维护在 [项目待办](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>)，本表仅说明平台组件如何用于当前产品。
 
 ---
 
@@ -350,12 +336,12 @@ SDK 的 `SafetyPipeline` 对卡片回调有完整的安全处理：
 | 卡片实体有效期 | 14 天 | `cardkit.v1.card.*` 只能操作 14 天内创建的卡片实体 |
 | 卡片实体只能发送一次 | — | 一个 `cardkit.card.create` 出来的实体只能被发出一次；要再发必须新建实体（与坑 11 同族）。接口说明原文：一个卡片实体，仅支持发送一次 |
 | Card JSON 2.0 客户端要求 | 飞书 ≥ 7.20 | 低版本客户端标题可正常显示，正文显示升级提示 |
-| 单个 markdown 元素内容 | ~10k 字符（隐式） | 超限可能返回 200 但静默截断，发送前应主动分段 |
+| 单个 markdown 元素内容 | 社区报告约 ~10k 字符 | 非本项目逐边界实测，不作为稳定平台契约；发送前仍应主动分段 |
 | 卡片标题色带重绘 | — | 部分客户端在卡片更新后不重绘 `header.template`（白底），属客户端渲染问题 |
 | 流式卡片自动关闭 | 10 分钟 | 本插件**未启用** `streaming_mode` |
 | markdown 加粗：关闭 `**` 前有标点、后紧跟字 | — | **飞书按字面渲染星号**（2026-10-10 真机探针）：`**加粗。**后面` / `**加粗：**后面` / `**带括号（说明）**后面` / `**加粗…**后面` 都失败；把标点移到加粗外（`**加粗**。后面`）正常，可见文字不变。`src/card-emphasis.ts` 在每次写卡前自动改写（关键坑 60）。**未验证的边界**：关闭 `**` 后面跟的是**符号 / emoji** 而不是字 |
 | markdown 加粗：`**` 未闭合（含被截断） | — | 同样按字面渲染。一行式预览过去用固定字数硬切，切口落在 `**…**` 里就会留下悬空 marker；现统一走 `src/text-chunk.ts` 的 `truncateInline()`（关键坑 60） |
-| 文本流式频率 | 70ms/次 | 本插件**未启用** |
+| 文本流式频率 | 历史资料示例 70ms/次 | 非无限 QPS 保证，本插件**未启用** |
 
 ---
 

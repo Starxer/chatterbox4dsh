@@ -1,812 +1,97 @@
-# dsh-feishu TODO
+# 项目待办 / Project backlog
 
-> 定位见 [README.md](./README.md)：**把 DSH 的原生特性接入飞书，而非再造一个 agent 平台/助手**。
-> 状态：`已有` ✅ / `部分` ⚠️ / `待实现` 🔲 / `规划中` 📋 / `待调研` 🔍
+> 2026-10-13 文档整理：保留原编号与决策，分开当前工作、条件性事项和完成索引。**本文件是唯一待办台账**；历史提案中的“未动工/待拍板”不再代表当前状态。
+> This is the single active backlog. Stable identifiers and decisions are retained; historical proposals do not establish today's status.
 
----
+[文档导航](<./docs/README.md>) · [当前功能](<./README.md>) · [架构](<./docs/architecture.md>) · [变更记录](<./CHANGELOG.md>)
 
-## ⬜ 未完成清单（2026-09-23 逐条核实；2026-09-25 追加 O16–O19；2026-09-28 追加 O20–O22；2026-10-02 追加 **H4**；2026-10-05 追加 **O23 / H5**（跨平台审计）与 **O24**（提问卡片）；2026-10-06 追加 **O25**（`present` 交付缺口，**2026-10-07 已实现**）；**2026-10-07：未完成项按「对使用的影响」降序重排**；2026-10-09：**O22 第二轮（简洁档把整轮工具活动合并到一张回合过程卡）结案**，同日**第三轮**（中间回复并入过程卡 + 简洁档卡片收紧）；**2026-10-12：O16 / O17 / O19 结案**，同日 **O2 结案**（`/subagents` 手动打开子代理面板）（`/new` 路径不存在先问再建 + 目录浏览器可新建文件夹 + 注册推迟到最后一步））
+状态：🔲 待实现 / 🔍 待确认或复现 / ⏳ 上游或验证条件阻塞 / ✅ 已完成 / ❌ 已取消。下面排序沿用“用户能否完成操作 → 信息是否缺失 → 是否多绕一步”；**文档整理不等于这些功能已修复**。
 
-> **这是唯一的未完成台账。** 下面各历史章节里的「未动工 / 只剩一条」等字样可能已过期，**以本表为准**。
-> 核实方式：每条都在当期 `src/` 里 grep / 读代码确认过，不采信文档里的旧结论（旧结论正是本次要修的东西）。
-> **排序规则（2026-10-07）**：本表**未完成项**按**对使用的影响程度降序**——**高**（能力直接不可用 / 流程走死 / 交互成片失灵）→ **中**（信息缺失 / 多绕一步）→ **低**（细节与潜在风险）；同档内按「用户能不能把事情做完 → 信息是否缺失 → 是否多绕一步」排。已完成项（✅）保留在各表末尾，**原优先级不改判**。
-> 分类：**功能缺口**（用户可感知）→ **上游阻塞**（我们能做的都做完了）→ **可选项**（无明确需求）→ **开发卫生**。
+## 当前功能缺口
 
-### 功能缺口
-
-| # | 项 | 优先级 | 状态与出处 |
+| # | 项目 | 影响 / 状态 | 下一步与边界 |
 |---|---|---|---|
-| O4 | **残留的就地更新上限（带按钮的卡）** | **高**（交互可靠性） | 🔲 **仍在**（2026-09-23 二轮复核：全仓 `updateCard` / `updateCardInstance` **22 处实际调用**（另 3 处是能力探测）逐个过了一遍，行号按当前 `src/` 重核）。**会被反复点到失效的 3 张卡**：① `/session` 管理面板卡——[`feishu-session.ts:397`](./src/feishu-session.ts)（`action==='refresh'`）与 [`:439`](./src/feishu-session.ts)（`op==='pin'/'unpin'`）就地重绘**同一张卡**，即「🔄 刷新」「📌 置顶」「📍 取消置顶」三个按钮**共用同一份额度**，点到 2–3 次后整张面板的按钮（含切换/归档/分叉）一起不再回调；② `/model`（无参）选择向导卡——[`feishu-model-select.ts:590`](./src/feishu-model-select.ts) 的 `cardByMessage` 逐次 `updateCardInstance`（定义在 `:573`，调用点 `:646` `:660` `:742` `:748` `:802`，含 provider→model→确认→成功各步），**整条向导是一张卡**；③ `/new` 的模型步骤复用同一个向导（provider 卡在 `index.ts:830` 新建 → 点 provider = 更新 1 → 确认后 `retireModelCard`（`index.ts:754`）再改写 1 次 = 更新 2，已到 2–3 次边缘）。**同类但更轻的 2 张**（每次点击就地重绘、重绘后按钮仍在）：[`feishu-busy.ts:105`](./src/feishu-busy.ts) 的 `/busy` 卡（2 个按钮、当前项 disabled，有效点击上限本就 1–2 次）、[`feishu-permission.ts:216`](./src/feishu-permission.ts) 的 `/permission` 卡（3 个模式同理）。**其余 12 处是一次性终态改写**（审批卡、问答卡 settle、`card-supersede`、step 卡、tool 卡、改名空标题、归档取消、`retireModelCard`），改完按钮即消失或卡本身已退休；**另有 5 处目标卡没有按钮**（step 卡 [`feishu-streaming.ts:728`](./src/feishu-streaming.ts)/[`:750`](./src/feishu-streaming.ts)、tool 卡 `:164`、`/new` 结果卡 `index.ts:236`/`:1231`），可以安全连续就地更新（关键坑 11 只管带按钮的卡）。飞书对**带按钮**的卡片就地更新 2–3 次后停止投递回调（关键坑 11）→ 改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
-| O3 | **补 `produced` 交付物**（write/edit 成功改过的文件） | 中 | ✅ **已按「不做全表」结案（2026-10-11）**。**为什么不做全表**：飞书是聊天、不是工作区浏览器，produced 的完整清单在这类仓库里几乎全是源码/测试/`/tmp` 脚本（本会话实测：21 个回合写过文件、只有 1 个回合调过 `present`；**69 个 produced 路径 vs 3 个 presented，全是工作区文件**）⇒ 每轮贴 4–6 行路径只会挤掉答案。**改成两件**：① Turn Complete 卡加**一行计数**（`📦 本回合新生成 N 个文件`，不列路径、不带按钮）；② **只投「产出物形状」的那一份**（媒体 + pdf/office 文档）——复用既有 `present` 投递管线：媒体卡内内联、文档 ≤`deliverDocMaxMb` 自动发文件消息、其余给可点行；源码/测试/临时脚本永不投。实现：[`produced-files.ts`](./src/produced-files.ts)（新，纯函数：按 WebUI 同规则从工具参数取路径、与**成功**的 `tool/result` 配对、`producedArtifacts` 过滤、`mergeProducedArtifacts` 按**解析后路径**去重后并入 deliverables）+ 采集在 [`feishu-streaming.ts`](./src/feishu-streaming.ts) 的 `tool/call`/`tool/result`（`turnStats.produced`，逐回合清空；另有会话级 `everPresentedPaths`，防「present 过的文件在后续回合又被 produced 投一次」）+ 合并与计数在 [`channel.ts`](./src/channel.ts)（仅 `delivery` 档并入 `deliver.plan` 的 `files`）。**开关**：新设置项 `produceCard`（`off` 全静默 / `summary` 只报个数 / **`delivery` 默认**，两者都做），WebUI 设置页「本轮产出物」即它，`.volatile()` 热生效。**仍不做**：`workspace/changes`（git 口径的改动清单）——全表都不做，它便没有必须接的理由，留作将来做 diff 卡片时再说。原审计保留如下。插件原来只订阅 `deliverables/presented`（[`feishu-streaming.ts`](./src/feishu-streaming.ts)）→ 实测 **32%（18/56 轮）** WebUI 有产物行而飞书完全没有；同节另两个缺口：complete 卡只对**飞书触发的**轮次发（唯一发送点 [`channel.ts:525`](./src/channel.ts)）；`renderReplyCards` 的 else 分支不带 `turnStats`（交付清单与指标整块不渲染，见 O25 备注） |
-| O18 | **切模型时不能直接用「上次的配置」**（2026-09-25 使用者报） | 中 | 🔲 **未修；口径待确认**。原话：「切换模型页面没法直接选上次的配置」。现状：`/model` 是两步向导 provider → (model + effort + 确认)（`renderProviderSelectCard` / `renderModelSelectCard`，[`feishu-model-select.ts:142`](./src/feishu-model-select.ts) / [`:190`](./src/feishu-model-select.ts)），起始值取**本会话** `request/header` 里的最后一套（`resolveCurrent` → `bridge.sessionCurrentSelection`，[`harness.ts:1293`](./src/harness.ts)），会话没有记录才回落全局默认；`/new` 的模型步则直接取**全局默认** `defaultModel.currentSelection()`（[`index.ts:1758`](./src/index.ts)）。⇒ **没有任何地方记住「上次的选择」**：想复用同一套必须重走 provider（哪怕就是当前那个）→ 确认；新建会话时卡片显示全局默认，可以和上一轮实际用的完全不同。**三种可能口径，等使用者挑**：(a) `/model` 卡加一个「沿用当前」一键确认（省掉 provider 那步）；(b) `/new` 的模型步改用「上次用过的配置」（需要一个持久化的 last-used provider/model/effort，或读最近一个会话的 `request/header`）；(c) 两者都要。**没有确认前不动手** |
-| O7 | **`renderMode: auto\|card\|text`** | 低 | 🔲 **未实现**（2026-09-23 复核：`src/` 内仍无）。超长回复回退纯文本的能力，来自「飞书消息长度限制调研」的「待定」 |
-| O8 | reasoning 预览字数是否可配置 | 低 | 🔍 **待定**。`REASONING_CAP = 200` 硬编码在两处（[`channel.ts:33`](./src/channel.ts)、[`feishu-streaming.ts:1336`](./src/feishu-streaming.ts)，行号按 2026-09-23 的 `src/` 重核） |
-| O23 | **DSH 家目录是自己手拼的，没问宿主**（2026-10-05 跨平台审计发现） | 低 | 🔲 **未修**。[`src/index.ts:593`](./src/index.ts) 用 `process.env.DSH_HOME \|\| \`${homedir()}/.dsh\`` 自己算出「聊天 → 会话」绑定表的路径（下一行拼出 `lark-session-map.json`），**没问宿主**。口径与上游 `resolveDshHome`（`$DSH_HOME` > `~/.dsh`，`packages/util/home-paths`）**当前一致，所以这不是 bug**；但宿主早把这个能力递到手上了 —— `ctx.provide('dshHomePath', dshHomePath)`（`packages/boot/app-boot/src/index.ts:995`），而且上游专门为 Windows 写过 `canonicalizeWatchPath`（「短名别名与长路径混用」）。**真正的风险是静默分叉**：上游一旦改口径，插件会写到**另一个目录**，读回来永远是空的 ⇒ 重启后聊天全部退回默认哈希会话，**症状与 O13 一模一样却查不到原因**。**修法**：`ctx.get('dshHomePath')` 优先、现有手写逻辑留兜底（走 `ctx.get` 而不是加进 `inject`，符合关键坑 2 的约定）。**动 `src/` ⇒ 要 `npm run build` + 延迟重启（关键坑 14），等使用者拍板再动**；已上线版本的 Windows 表现见 README「平台支持」 |
-| O1 | **思考期占位卡（方案 A）** | 中 | ✅ **已实现并生效（2026-09-23，11:38 重启后实测；使用者已目视确认）**。`step/start`（模型请求发出前）立即发「🧠 深度思考中…」占位卡，并按 5s 刷新已用时；`assistant/message` / `tool/call` / `tool/result` 全部在**同一张卡**上就地更新；某步最终没有可显示内容时在 `step/end` 折叠为「本步无输出」。四个边角（占位态渲染、`stepHasVisibleContent` 放行、无内容步的去留、i18n）按原方案处理；方案 B（逐字流式）仍不做，见下文「已知问题 → 思考期无反馈」。**生效证据**：journal 出现 `[message] card already sent for this step → updating`（卡片在模型消息落地前已在屏上——旧路径下首卡只会在 `assistant/message` 或首个 `tool/call` 时发出），探针另抓到「🧠 深度思考中… → 工具调用 → 工具完成」同一张卡的四阶段连续状态 |
-| O5 | **`#18` reasoning 代码块可折叠** | 中 | ✅ **已实现（2026-09-29，与 O22/O21 同批）**。推理段改成 `collapsible_panel`（**默认收起**，头部保留 `💬 **推理** · 耗时 · 思考 tokens`），正文放在面板里——`detailed` 档给 200 字、`verbose` 档给**全文**，顺带解决了「以前只能给开头 200 字」这条信息损失（砍字数的唯一原因是「不折叠会占满屏」）。组件名是 2.0 的 `collapsible_panel`（1.0 的 `collapsible` 会被服务端回 `10002 not support tag`，探针见 [`docs/feishu-capabilities.md`](./docs/feishu-capabilities.md) §2.3.1）。**同类但未做**：长工具输出折叠（现在仍是截断预览，1500/6000 字符）——它需要一套「记住展开状态」的写入策略，见 O22 备注。**验证**：5 例渲染/接线测试（含 `verbose` 全文不截断、`standard` 只给首行、`compact` 完全不给）。**2026-09-29 追加（使用者反馈）**：「思考块看不出来是已经折叠的样子，不了解的人不知道这个东西已经折叠了」——收起态**只渲染 header**，光秃秃的 header 没人知道里面还有东西。修法：`border {grey-300,4px}` + `header.background_color: grey-100` + 标题结尾 `（▸ 已折叠 · 点击展开）`，推理与压缩摘要两处折叠统一走新模块 [`card-fold.ts`](./src/card-fold.ts) 的 `foldedPanel()`。**取证口径**：`cardkit.card.create` 静默容忍未知字段 ⇒ 判字段真伪只看「值被拒」（命名色 token only、`corner_radius` 只认 px、`standard_icon` 的 token 不校验）；真实渲染产物端到端校验见 [`docs/feishu-capabilities.md`](./docs/feishu-capabilities.md) §2.3.2。**2026-09-29 另一条结论（使用者问「思考块还是获取不了 token 数目吗」）**：**确实拿不到，且不是插件 bug**——最上游 MiniMax 的 anthropic 接口 `usage` 只有 input/output/cache（thinking 算进 `output_tokens`、不单列，已直连原始接口验证）；pi-ai 只给 `openai-*` / `google-*` 协议填 `usage.reasoning`，anthropic 不填；DSH 的 `mapUsage()`（pi-ai）与 `updateUsage()`（deepseek）也都不映射 `reasoningTokens`（全仓库 grep 无任何生产者，最近 12 个会话日志 0 命中）。⇒ 卡片里那段 `· N tokens` 是**永不执行**的「等上游」代码。**处理决定：保持现状**（曾考虑显示估算值：标定误差 ±40%，且中文提问时 thinking 常是英文，使用者改口不做）。详见坑 49。 |
-| O6 | **错误详情**（用户可见的报错） | 中 | ✅ **主体已实现（2026-09-23，本批）**；原假设被实测**推翻**，缺口换成另一件事。① **四条"截断上限"从未咬到**：全部 23 个会话日志 / 21645 条工具结果 / **734 次 `isError`**，错误文本 p50 **149** · p90 **313** · **max 344** 字，超 600 字 **0 条**、超 1500 字 **0 条**；`turn/end` 失败全历史 3 次、最长 140 字。② **真正没解决的是"有一类错误用户完全看不到"**：`[update] failed` 7 天内 **15 次**只有 journal 一行，卡片**静默停在旧内容**（停在「深度思考中」的那两张卡即此）。本批两项：**[`error-text.ts`](./src/error-text.ts)** 补 `cause` 链（≤4 跳、去重、防自引用）+ SDK `response.data.msg` + 信封业务码，上限 600 → 1000，**只读 message/code/response、绝不读 `config`/`request`**（关键坑 29）；**[`feishu-streaming.ts`](./src/feishu-streaming.ts)** 陈旧卡**纯文本**上报（2s 确认窗内被下一次写入救回则**不报**、每卡一次、`stop()` 清定时器），选文本是因为要报的正是"卡片写不进去"（关键坑 39）。**仍可选**：工具结果 >4k 另发文本全文（0/734 触发）、超大错误落文件交 `feishu_send_file`；`/error` 回看**倾向不做** |
-| O9 | **后台任务面板卡**（一张卡列出本群**全部**后台任务） | 中 | ✅ **已实现（2026-09-23，已重启生效）**。标题固定 `🧩 后台任务`；**一张卡列出该聊天全部后台任务**，列 = 状态 · 任务 · 编号 · 耗时 · 进度/结果；**只发不更新**（名册一变发一张新卡，取代 `663a96a` 的一任务一卡与就地更新）；判据不变（只列模型真拿到 jobId 的后台任务，前台 bash 调用不进表、不发卡，关键坑 37）。上限 8 行 + 已结算 30 分钟 TTL + 非紧急刷新下限 30s。**同日追加 `🧹 清理已完成` 按钮**（对齐 WebUI 的 Clear：只从名册里删已结算的行、宿主注册表不动；还有运行中的行就重发干净卡，清空则回一句文字；回调按被点击卡片的 message id 回查名册键）。实现见 [`src/feishu-jobs.ts`](./src/feishu-jobs.ts) / [`src/feishu-panel.ts`](./src/feishu-panel.ts)，实测见 CHANGELOG「后台任务 / 子代理面板卡」与「面板卡三处跟进」 |
-| O10 | **子代理面板卡**（一张卡列出**全部**子代理） | 中 | ✅ **已实现（2026-09-23，已重启生效）**。标题固定 `🤖 子代理`，同样只发不更新；数据源 = 父会话 `subagent/catalog` + 宿主 `subagent/start` / `subagent/end`（`{ global: true }` 注册），**按子会话 id 关联**，**不读** `listChildren` / `listDescendants`（因此不需要每事件一次的全量异步读取）。嵌套子代理按已知父子关系归属到同一聊天，渲染时**画树**（`├─ ` / `└─ ` + `│  ` 竖线，深度优先排列；此前用空格缩进，实测飞书会折叠单元格前导空白 → 看起来是平铺）；表里另有**模型**列，值取自**子会话自己**的 `request/context`。进程外子代理（`local: false`）不列。实现见 [`src/feishu-subagents.ts`](./src/feishu-subagents.ts)。**O2（`/subagents` 命令）仍可在此基础上做「渲染这张面板卡的快照」** |
-| O11 | **后台任务唤醒的轮次标记** | 低 | ✅ **已实现（2026-09-23）**。`turn/start` 重置两个回合级开关，本回合**第一条** `user/message` 的 `source.kind === 'tool-jobs'` 即认定"这轮是任务完成通知开的"（宿主对空闲 owner `followup`、忙时 `inject`，靠 append 顺序区分），该回合每张步骤卡正文顶部加 `⚡ 本回合由后台任务完成通知触发`；忙时注入的**不标**。目前只认 `tool-jobs`，`schedule` / `subagent-settled` / `goal` / `webhook` 等各自加一行即可。实现见 [`src/feishu-streaming.ts`](./src/feishu-streaming.ts) |
-| O12 | **卡片 markdown 图片：中和 / 拒收兜底 / 内联真图** | **高**（曾经整卡被拒 → 整轮答案丢失 + 卡片永久停在「深度思考中」） | ✅ **已实现（2026-09-23，L1+L2+L3；提交 `49df1ba` + 本批）**。飞书把卡片 markdown 的 `![alt](src)` 当**图片元素**，`src` 只认上传后的 `img_v3_…`（本地路径与公网 URL 都让**整张卡** 400：`200570`/`230099`）。**L1** [`card-markdown.ts`](./src/card-markdown.ts) 中和代码跨度外的非法图片引用（闭合反引号才保护、目标里带反引号也不保护——均实测）；**L2** [`card-write.ts`](./src/card-write.ts) 拒收后无差别剥净再试一次 + CardKit sequence 单调下限 + 实例更新失败回退 `im.v1.message.patch`（堵死"卡片停在旧内容"）；**L3** [`card-images.ts`](./src/card-images.ts) 把工作区内真实图片上传后**内联进卡片**（realpath 判包含、魔数嗅探、≤10MB、每卡 8 张、单卡 6s 预算、`path+mtime+size` 缓存 + 并发去重）。**外加一个设置项 `cardImages: text\|workspace\|any`（默认 `workspace`）**：设置页「卡片显示」里的「正文里的图片」下拉，决定允许多走多远（永不上传 / 只传工作区内 / 任意可读路径）；`.volatile()` 热生效、不重启。**没有「关闭」档**——L1 中和不可关，关了卡片就会被拒收。**L4「在 `feishu_send_file` 描述里让模型别写这种 markdown」明确不做**：模型输出只有一份、WebUI 是它的正确渲染器，该适配的是渲染侧。全部实测表与解释见 CHANGELOG 同名条目与关键坑 39。**真机已验证（2026-09-23）**：正文里写 `![…](notes/inline-probe.png)`（未用 `feishu_send_file`）→ journal `[img] uploaded … → img_v3_…` **只上传一次**，服务端回读确认卡片正文已换成真 key，使用者目视看到图片内联；18:36 与 20:10 两次重启后卡片相关 error 均为 0。**唯独 L2 的三步（剥净重试 / 回退 patch）还没有活体样本**，目前只有单测覆盖 |
-| O13 | **重启落在活跃回合上会清空「聊天→会话」绑定**（2026-09-23 事故） | **高**（静默数据丢失） | ✅ **已修（2026-09-23，本批）**。现象：重启后聊天退回**默认哈希会话**（一个旧会话），而不是原来的绑定。取证：01:47 升级备份里 `chatToSession` 11 条 / `chatToRootId` 10 条，事故后只剩 1 / 0，**唯独 `busyMode` 6 条完好** = `dispose()` 清空三张表、却漏清 `chatToBusyMode` 的签名；`toSessionId` 是 `sha256('feishu\0'+chatKey)`，算出的 DM 默认会话正是那个"旧 session"；会话日志显示原会话 21:51:19→22:01:29 无事件、默认会话 21:56:37 被唤醒。根因：`dispose()` 之后 in-flight 任务仍持已 dispose 的实例 → `saveSessionMap()` 把清空后的内存写回磁盘（触发条件＝**重启正好打在正在跑的回合上**；20:10 那次空闲重启没丢）。修法：`disposed` 门拒写 + 空表拒写 + **原子写（tmp+rename）** + 坏文件隔离 `.corrupt-<ts>` + 启动打印读回条数 + `dispose()` 也清 busyMode。**顺带**：`cardkit.card.create` 对非法内容不抛错而是 `code=200570` + `card_id=""`，空 id 曾被当引用发出（`cardid is invalid`、步骤卡永不出现）→ 现改为抛可识别错误 + 空 id 走普通发送。丢掉的 10 个话题绑定与 10 个话题根已从备份合并恢复（在服务停止窗口内写入）。详见 CHANGELOG 同名条目与关键坑 41 |
-| O14 | **卡片内联媒体（图片 / 视频 / 音频）**——对齐 DSH Web UI「正文里的工作区路径可直接打开」 | **中**（本次已实现） | ✅ **已实现并真机目视通过（2026-09-24）**。`![图](path)` 与 `[片段](path)` 都会被解析：图片 → `img_v3_…`（L3 原有）；MP4 视频 → 独立 `{tag:'video'}` 元素（**拆开 markdown 元素**插入；QuickTime 先 `-c copy` 转封装、ffmpeg 抽封面、ffprobe 取时长）；Opus 音频 → 富文本里的 `<audio file_key='file_v3_…'>`（wav/mp3/m4a/flac 有 ffmpeg 时转码）。含音/视频的卡片补 `config.enable_forward = false`（飞书强制）。范围：仅工作区内（`any` 放宽）、图片 ≤10MB / 音视频 ≤30MB、单卡数量由设置项 `cardMediaLimit` 控制（1–30，默认 12，图片与音视频**各组一份**）、**大小由三个设置项分别控制**（`cardImageMaxMb` 1–10 默认 10、`cardVideoMaxMb` / `cardAudioMaxMb` 1–30 默认 15）、图片预算 6s / 媒体 15s、失败一律退回文字。**2026-09-24 补一批（使用者报告「超过两个视频就不再内联、交付卡不渲染媒体」）**：① 真机实测飞书的真边界是**一卡 200 个元素/组件**（`cover`/`fallback` 各占一个 ⇒ 带封面视频 66 个封顶）+ 卡片 JSON ~30KB，**原来的 2 完全是插件自己的上限**（见关键坑 42）；② 上限改成可配置（默认 12/12）且数「这张卡**渲染**几个」（缓存命中一起计数）⇒ 重复渲染结果一致；③ 上传改有界并发 3；④ 新增**预热**：流式正文一出现媒体引用就先跑同一条链路（不写负面缓存，坑 44），写卡时基本缓存命中；⑤ 交付清单改 Markdown 链接 ⇒ Turn Complete 卡也能内联（原来用行内代码，扫描器按设计不认）；⑥ 溢出续卡改走 hydrator。**2026-09-24 再补一批**：⑦ 三个媒体大小上限做成设置项（见上），并按**分类后的类型**逐类判 —— 顺带堵住「非 ISO 音频从来没有字节检查」的洞（Opus/WAV/MP3/FLAC 以前再大都会转码上传）；⑧ 超限文件**不再写「检过但不是媒体」的负缓存**（否则把设置改大要等缓存淘汰才生效）；⑨ `feishu_send_file` 的图片补上 `{file}` 兜底（原 TODO O15）（原来裸 `channel.send`，正文过 3000 字后尾部的媒体永远不内联）。实现见 [`src/card-images.ts`](./src/card-images.ts) + [`src/media-upload.ts`](./src/media-upload.ts)，实测见 CHANGELOG「卡片内联媒体」与关键坑 42。**真机证据**：02:23 那轮 journal 三条 `[media] uploaded …→ image img_v3_… / video file_v3_… / audio file_v3_…`，紧接 `[reply] a step card carried the text → footer only`（**没有**第二张 reply 卡）；使用者目视确认图 / 视频 / 音频三样都正常渲染。**同日真机踩到一个连带 bug 并已修**：媒体内联把一次卡片写入从毫秒拉到秒级，`flushed()` 的交付守卫在写入还在飞时读到"未确认送达"、撤回乐观标记，于是 reply 之后又多出一张 reply 卡（关键坑 43）。修法：`inFlightUpdates` 跟踪在飞写入，`flushed()` 等它们落地后再判定。
-| O15 | **`feishu_send_file` 的图片没有 `{file}` 兜底**（2026-09-24 查证飞书大小限制时发现） | 中 | ✅ **已修（2026-09-24，同批）**。图片也套上 `sendWithFileFallback('image', …)`（返回 `sent_as: 'file'`），工具描述同步写明「超分辨率也算」；**反向验证过**：还原成旧的直接 `ch.send({image})`，用例立刻转红（`Failed to send "tall.png" via Feishu: … 234039 …`）。**原始问题**：工具里**视频/音频**走 `sendWithFileFallback`（内联失败退回附件），**图片**却是直接 `ch.send({ image })`（[`feishu-send-file.ts:293`](./src/feishu-send-file.ts)）——一张 ≤10MB 但**超过分辨率上限**的图（GIF > 2000×2000、其他 > 12000×12000，飞书错误码 `234039`）会被拒，于是**整次调用抛错、文件一份都没落地**；官方文档对这类图的口径正是「请使用上传文件接口以文件形式上传」。长图/全景截图很容易命中（本机产出过 4096×6622 的对照大图）。**修法**：图片也套一层 `sendWithFileFallback('image', …)`（或至少识别 `234039` 后退回 `{file}`），并把分辨率上限加进本地预检让模型拿到可操作的理由；补 `tests/feishu-send-file.spec.ts` 用例（分辨率超限 → 仍以 `file` 送达、`sent_as: 'file'`）。顺带核对卡片内联路径：超分辨率图片目前是 warn + 退回路径文字（不伤卡片），无需修 |
-| O20 | **步骤卡「首字之前」与「开始思考」不区分**（2026-09-28 使用者报） | 中（体验错位，非功能故障） | ✅ **已实现（2026-09-29，按使用者拍板：方案 2 + 方案 1 的文案合成一批）**。原话：「卡片就是在模型输出首字之前的那个卡片，和模型开始思考的卡片要区分开来……尽量对齐 WebUI 的体验」。**问题**：占位卡在 `step/start` 就发，标题写「🧠 深度思考中…」，但那一刻 DSH 还没组装/发出请求（`step/start` 先 append，之后才 `buildRequest` → `request/header` → HTTP）；等模型真开始思考时插件**没有任何实时信号**（0.1.3 起 token 级增量不再是持久事件，`assistant/chunk` 已死，代码里那段是只累加、不发卡的历史遗留），只能整条消息落地后一次性写进同一张卡，标题此刻已是「回复」。**调研结论**（逐条查过 DSH 源码）：① 「首字之前」的准确边界是持久事件 `request/header`，插件没订阅；② 「开始思考」只有实时流能即时知道，但**不必用 `follow()`**——`agent/assistant-stream` 是 agent-scoped `emit`，用 `ctx.on(…, { global: true })` 就能收 `{ agent, frame }`（与现有 `subagent/start` 同款），帧序 `start → chunk… → end`、重试换 `attemptId`/`revision`；③ WebUI 的标题也不区分这两段（都叫「正在分析请求」），它靠**实时详情行 + 推理折叠行出现**来表达「开始思考」。**方案三档**：1 只改文案与边界（零新订阅）／**2 接实时流只切阶段（推荐先做）**／3 连推理与正文也流式上屏（最贴 WebUI，但飞书有 `230020` 速率限制，节流不能照抄 WebUI）。**全量调研、卡片状态规格、实施纪律与残留风险**见 [`docs/step-card-phases-design.md`](./docs/step-card-phases-design.md)。**待使用者拍板**：① 选哪档 ②「思考中」卡上要不要带一行「最新一段思考」的尾部 ③ 标题词表是否整体改用 WebUI 的说法（会改掉现有「深度思考中」等字样）。建议「方案 1 的文案 + 方案 2 的订阅」合成一批做。**实现（2026-09-29）**：订阅瞬时发布 `agent/assistant-stream`（`{ global: true }`，按 `payload.agent.session.id` 关联、沿用 `bridge.resolveChat` 门控），把步骤卡按 **占位（`step/start`，请求还没发出）→ `awaiting`（`start` 帧，已发出等首个 token）→ `thinking`（首个 `reasoning-delta`）→ `replying`（首个 `text-delta`）** 切相位；`end` 且 `outcome.kind === 'abandoned'` 退回占位等重试。文案：占位改 `⏳ 正在分析请求`（把「深度思考」从这个阶段拿掉）、`📡 已发出请求，等待输出…` / `🧠 思考中…` / `✍️ 回复中`，`awaiting` 阶段在卡上带 route（`📡 provider / model`，取自持久的 `request/context`，按会话记住）。纪律：一次尝试内相位只前进（迟到推理不倒退）、**只重绘没有内容的卡**、只在相位变化时走既有 `updateStepCard`（每步最多多 2–3 次写入，卡仍是一步一张）、`step/end` 后忽略该步帧、`stop()` 退订。**验证**：typecheck 0 error、729 tests / 42 files 全绿（新增 9 例：四相位单元 4 例 + 接线 5 例，含「一张卡走完四相位」「不倒退」「abandoned 回退后再 start」「非绑定会话忽略」「step/end 后不响应」「stop 退订」）；产物已重建（`lib/index.js`，`client/client.js` 未变）。**使用者第二问的答案是不带思考内容**（只看状态与已用时），方案 3 明确不做。完整规格与取舍见 [`docs/step-card-phases-design.md`](./docs/step-card-phases-design.md) §七 |
-| O21 | **上下文注入与压缩摘要在飞书完全不可见**（2026-09-28 使用者报，两件事一次提出） | 中（信息缺失，非功能故障） | ✅ **已实现（2026-09-29，与 O22/O5 同批）**。原话：「就是注入 agent MD 这种类似的操作在这里没有展现出来，**是完全看不到的**」＋「压缩的卡片也没对齐到 WebUI，好像压缩完后会显示一个摘要」。**① 注入**：DSH 的上下文注入**是持久事件**，统一落在 `user/message`（`data.source.kind !== 'user'`），来源是**开放集合**（`MessageSourceMap` 是 merge-extensible，0.2.0-rc.1 有 17 个真实声明点；实例出现过的有 `agent-instructions`、`skill-catalog`、`plugin`、`runtime-context`、`session-reference`、`skill-invocation`、`model-selection`、`plan-mode`、`user-approval`、`agent-message`、`subagent-settled`、`tool-jobs`、`goal` 等，另有一族 `developer/message`）⇒ 渲染必须按未知 kind 兜底。插件在 [`feishu-streaming.ts:1469`](./src/feishu-streaming.ts) 的 `user/message` 分支**只认 `tool-jobs`**（O11 的回合触发归因），其余**全部静默丢弃**、连日志都没有 ⇒ 看不到「这轮被喂了什么」、看不到子代理结算通知、看不到跨会话召回。WebUI 侧：`conversation-nodes/message.ts:76` 只要 `kind !== 'user'` 就造 `kind:'context'` 节点 → `chat/ContextInjectionRow.tsx` 渲染成**一条可折叠行**（标题「上下文注入」/「跨会话召回」+ producer label，如 `AGENTS.md`；展开正文按 6 种 `form` 分派，未知 form 退回 opaque），但**它会被「整轮折叠」吃掉**——`context` **不在** `TURN_PROCESS_INDEPENDENT_KINDS`（`contract/turn-process.ts:32`，只有 `user`/`steering`/`turn-trigger`/`turn-error`/`turn-max-tokens`/`turn-tail`/`turn-process`/`system-prompt` 在里面）⇒ 注入行是**过程组成员**，回合结束随整轮过程隐藏（`ChatNodeSeat.tsx:83/110` 的 `processMember`/`processHidden`），要展开那一轮才看得见；只有把空闲 agent 唤醒的注入会被归为 `turn-trigger` 而独立成行。**② 压缩**：一次压缩是 `compaction/start` → `compaction/summary`（`summary` 内容块 + `shadowedSeqs` + `shadowedTokenCount` + `provider`/`model`/`usage`）→ `user/message` checkpoint（`source.kind='compact-checkpoint'`，**替换型**表面事件）→ `compaction/end`（**失败时这里带 `error` 且没有 summary**）；自动压缩跑在**步骤之间**（`compaction-basic` 的 preStep 压力/请求溢出），手动走 `/compact`（带 `sourceCommandId`）。插件对 `compaction/*` 与 `command/*` **零订阅** ⇒ 自动压缩发生时聊天里没有任何迹象（使用者不知道模型刚丢掉了几百条历史），`/compact` 也无反馈；压缩标记同样不在独立名单里，WebUI 里也是被整轮折叠吃掉的。**频次实测（2026-09-28 更正）**：全量 73 个会话统计，**每个会话的注入条数中位数只有 3 条**（均值 41、p90 275、最大 306；长会话约 0.4–1.2 条/轮），0 条注入的会话为 0（会话开始那批固定 2–3 条）⇒ 注入的体量在常态下完全可承受（无论最终是每条一张卡、还是插进所属 step 卡）。**本文档第一版采信的那次「39 轮 / 55 条注入」是一次开发期会话**（里面 `AGENTS.md` 本身被改了 19 版、插件集反复变动），**不代表常态，当时的「会淹没」结论已作废**。**全量调研、真实事件载荷、WebUI 渲染依据、三档方案与档位映射**见 [`docs/transcript-parity-design.md`](./docs/transcript-parity-design.md) §1/§2。**✅ 已拍板（2026-09-28；注入部分当晚二次修订）**：① 注入**改成插进「声明它的那个 step」卡片的正文最前面**（使用者提案原话：「在哪个步骤注入，就把消息插入到哪里……如果是在调用模型之前发生了注入，那就在这个 step 卡片的最前面显示'注入 agent MD'」）——第一版的「每次注入发一张独立卡片」**作废**。**位置实测（115 个会话目录 / 2589 条注入）**：**93.0%** 落在 `step/start` 之后、`request/header` 之前（卡片已在屏上，就地重渲染即可）；**6.8%** 落在该 `step/start` **之前**，且**无一例外**都是压缩事务里重新注入的插件清单（固定形状 `compaction/start → compaction/summary → user/message[plugin] → compaction/end → step/start 或 turn/start`）⇒ 先缓冲、等那个 step 建卡时并入首版；0.2%（4 条）落在 `request/header` 之后。**提案的「情况 2」——模型调用之后、footer 之前追加——实测 0 条**：DSH 是在步骤**认领收件箱**的那一刻才把注入落盘（`agent/inbox/spliced` 紧邻 `step/start`），所以语义上晚到的注入（子代理结算、会话间消息）也会被物化到**下一个 step 的开头**，这个位置无需实现。另外：注入只落在 **2.7% 的 step** 上（1658/62141，绝大多数 1 条、会话开始那批 3 条），改成插卡后**卡片总数不增加一张**；要保留「有注入的 step 必须发卡」这条例外（否则将来改发卡策略会让注入静默消失）；`tool-jobs` **不在顶部重复**（已有 O11 的回合触发标记）。② 压缩摘要**可折叠显示、上限 200 字**，压缩详情（折叠几条历史 / 多少 token）放在**折叠区之上**；③ **不做**「完整摘要另发文件」按钮（摘要超 200 字即截断）。**④ 注入只显示一行「提示」，不渲染注入内容**（使用者原话，同日第三次修订）⇒ 不需要按 `form` 渲染正文、也不需要任何截断逻辑（`content` 是给模型看的整段文本，实测一条 6.2k 字，根本不进卡片）；提示行的信息全部取自 `source` 的元数据，例如 `📥 注入上下文 · AGENTS.md（已更新）`（动作口径照抄 WebUI 的 `instructionAction`）、`📥 注入上下文 · 技能目录（N 条）`、`🔗 跨会话召回 · <label>`、`✉️ 会话间消息 · 来自会话 <id>`、`🤖 子代理已结算 · <id>`（不显示 `summary`）、未知 kind 只报种类。**仍待拍板**：提示行还能不能再压——是否连 `<路径>`/`<skill 名>` 这类元数据、以及 `N 条` 计数也去掉，只留「📥 注入上下文」。**✅ 折叠组件探针已跑通（2026-09-29）——可以做**：本插件从未用过折叠组件、且飞书文档在本机不可达，所以用**只建实体、不发送**的 `cardkit.card.create` 探针实测（脚本 `~/.dsh/probe-collapsible-card.py`），并带**伪造 tag 的对照**证明判据有区分力：`collapsible_panel` + `expanded:false` + `header.title` + `elements` → **`code=0` 拿到 card_id** ✅；同一份卡换 `default_expanded` → 也 `code=0`（未知字段被容忍，分不出正确字段名）；**`collapsible`（1.0 时代的名字）→ `code=10002 not support tag`** ❌；对照：伪造 tag `collapsible_bogus` → 同样 `10002`（⇒ tag 会被服务端校验，上面的成功有意义）。**结论**：tag 必须写 **`collapsible_panel`**（`docs/feishu-capabilities.md` 原来记的 `collapsible` 是错的，已更正），初始展开态按 `expanded: false` 实现、真机再校（纯外观，不影响结构）。另记一条同族 API 约束：**一个卡片实体只能发送一次、有效期 14 天**——现有「每次发卡都新建实体」的流程天然符合，但隔天还要更新的卡片不能复用实体。 | **实现（2026-09-29）**：① 注入走新模块 [`injection-notice.ts`](./src/injection-notice.ts)（纯函数，输入是 `data.source`，输出一行提示或 `undefined`），在 `user/message` 分支里接进既有 handler（**没有新开第二个 `session/event` 监听器**）：`agent-instructions`（`changes[].path` + `baseline`/`set`/`replace`/`remove` 四动作，文案照抄 WebUI）、`skill-catalog`（`entries.length`）、`plugin`（**只带一个包名**，不是「N 个包」——真机载荷更正了这一条）、`runtime-context`、`session-reference`、`skill-invocation`、`agent-message`、`subagent-settled`（只给 `senderSessionId`，不给 `summary`）、`goal`、`user-approval`，以及一切 `form: "notice"` 的生产者（用其自带的一行 `summary`，截 100 字）；未知 kind 只报种类、**绝不 dump 字段**；`user` / `compact-checkpoint` / `tool-jobs` 静默。**位置**：注入落在**它所归属的那张 step 卡正文最前面**（93.0% 在 `step/start` 之后 → 就地重绘；**6.8% 在 `step/start` 之前**（全是压缩事务里的插件重注入）→ 先进**会话级** `pendingInjections` 缓冲、由 `step/start` 搬进该步的 `state.injections`，因为放在 step 状态里会被 `resetStep` 清掉；提案的「追加到 footer 之前」实测 **0 条**，不实现）。卡片总数**不增加**，且「有注入的 step 一定有卡」这条例外已就地注释在 `step/start` 的无条件建卡处。② 压缩卡走新模块 [`feishu-compaction.ts`](./src/feishu-compaction.ts)：`start`（grey，写明自动 / `/compact`）→ `summary`（green，**详情行在折叠区之上**）+ `collapsible_panel` 摘要（`expanded:false`，正文 200 字上限）→ `end`（无 error 收尾；带 error 转红并给出原因 + 「本次没有产生摘要」）。**不假设「start 之后必有 summary」**：失败路径与 `compaction/prune`（纯裁剪，整场无 summary）都按实际有的事实渲染。**写入**：独立小写入器（CardKit 实例 + 递增 sequence + 话题坐标），**不走**步骤卡的防抖/写槽/送达记账——压缩发生在步骤之间、不载任何助手文本，套进去只会让两处失败模式互相牵连（设计文档 §四.2 已按实测更正）；卡片完全发不出去时**退回纯文本**一行（关键坑 40）。**验证**：11 例注入提示行（**用真机日志里的真实 `source` 载荷**逐个核对字段名）+ 3 例接线（含「先于 `step/start` 到达」的缓冲与「不重复显示触发消息」）+ 15 例压缩卡（渲染 7 / 控制器 8：顺序、序列、话题、纯文本兜底、`stop()` 后不再开卡）。**真机待验**：折叠面板初始是否收起（`expanded` vs `default_expanded`）。 |
-| O22 | **显示级别没对齐 WebUI 的 4 档**（2026-09-28 使用者报） | 中（体验/设置不对齐） | ✅ **已实现（2026-09-29，与 O21/O5 同批）**。原话：「webui 好像有 4 个显示的级别，看看我们该如何对齐这个显示的级别」。**WebUI 侧**：设置项 `ui-chat.transcriptView`，取值 `compact｜standard｜detailed｜verbose`，**默认 `detailed`**，历史值 `normal` / `expanded` 都**按 `detailed` 读**、不再提供也不再写回；设置页文案「工作步骤展示」= **简洁 / 标准 / 详细 / 完全展开**。关键在于它**只改 4 条策略轴**（`packages/client/ui-chat/src/client/presentation-policy.ts`，渲染器从不比较档位枚举）：`foldCompletedTurns`（已结束回合的整段过程是否折起）／`stepGrouping`（`collapsed` 全折｜`history` 只折**已关闭**的回合｜`none` 不分组）／`liveProcessDetail`（运行中的组标题右侧是否带**实时细节**：正在跑的命令/路径/推理尾部）／`settledReasoningPreview`（已结束的思考行是否在标题旁显示**首行预览**）。**插件侧**：`showReasoning`/`showToolCalls`/`showToolArgs`/`showToolResults` 四个**互不相干的布尔**（都默认 `true`、都 `.volatile()`）+ `/display` 卡逐项切换——它回答的是「**显示哪些内容**」，与 WebUI 的「**显示多少细节 / 折到哪一层**」不是同一根轴，因此不能互相替代。**额外约束**：飞书侧「一个 step 只能一张卡」（关键坑 12）⇒ WebUI 的「折叠」在飞书**没有视觉等价物**，只能翻译成「本轮少发几张卡 + 汇总进 Turn Complete 卡」；而 `liveProcessDetail` 这一轴**依赖 O20 的实时流**（没有实时信号就是空转）。**建议档位表**：简洁＝一轮合并成 1 张过程卡（工具只显示计数、推理只显示状态）／标准＝每步一卡但工具只一行摘要、无参数无结果、推理首行预览／详细＝**现状**／完全展开＝每步一卡 + 每个工具调用一张独立卡、推理与摘要全文、注入逐条成行。落地方式推荐「**`transcriptView` 作权威档位 + 4 个布尔降为 `custom` 档的细分**」，默认 `detailed` 与现状等价（现有部署 4 布尔皆默认 `true`）。**全量调研与映射表**见 [`docs/transcript-parity-design.md`](./docs/transcript-parity-design.md) §3。**待使用者拍板**：① 是否引入档位（引入／只做「档位=一键写 4 布尔」的预设／先不做）② 档位与 O20 的先后 | **实现（2026-09-29）**：新增设置项 `transcriptView`（`compact｜standard｜detailed｜verbose`，**默认 `detailed`**，`.volatile()`，WebUI 设置页叫「工作步骤展示」），三个入口同源：`/display <档位>`、`/display` 卡片顶部四个按钮、WebUI 下拉框（`DisplayControl` 新增 `getLevel`/`setLevel`）。**两处与提案的偏离（都在设计文档 §3.4 写明理由）**：① **档位是「基线」不是「权威」**——不提第五档 `custom`，而是把档位与四个老开关用 **AND** 合成（`resolveDisplayPolicy`），这样升级不会把用户**已经关掉**的东西放回来，也不用为「档位与布尔不一致」定义展示规则；② **简洁档不合并卡片**——只把卡片缩成状态行（推理不显示、工具只报 `N 个工具调用 · M 个失败`），因为合并卡片要新建一套跨 step 的卡片生命周期，而 WebUI 的 `foldCompletedTurns`/`stepGrouping` 两轴在「一个 step 只能一张卡」（关键坑 12）下本就**没有视觉等价物**；③ `verbose` 的「不截断」= 上限提到 4 倍（结果 1500→6000、参数 2000→6000 字符），因为卡片 JSON 过 ~30KB 会被整张拒收、而被拒收的卡**什么都不显示**。**legacy 读法**：`normal` / `expanded` 一律按 `detailed` 读（0.2.0 自己的读法），非法值退回默认；注意 `/display expanded` 这个**命令别名**故意指向 `verbose`（用户此刻是在表达「最详细」，与「读一个历史存储值」不是同一件事，已在 `commands.ts` 注释里写明）。**验证**：8 例单元（含 legacy 与「AND 只减不加」）+ 6 例显示卡/设置页 + 5 例接线。**第二轮（2026-10-09，本表「仍待拍板」②结案）**：`compact` 现在把**整轮的工具活动合并到一张回合级过程卡**上——首个 `tool/call` 懒创建、整轮就地更新、`turn/end` 定格（灰头运行中 → 绿头 / 红头），正文是 step 小节 + 每行「工具名 · 耗时」（连续同名合并 `×N`、超 40 行按整步折叠进 `collapsible_panel`），**只有名字与耗时**；新增策略轴 `turnCard`（仅 `compact`，`showToolCalls=false` 时也关），其余三档零变化；**分工在真机复核后定稿**：`compact` 的步骤卡 `tools` 降为 `off` ⇒ 步骤卡只承载答案正文、**纯工具步骤不再发卡**，`step/start` 占位卡只在该步带注入提示行时才发（注入行只渲染在步骤卡上，O21①）。实现 `src/feishu-progress.ts`（新）+ `src/display-level.ts` + `src/feishu-streaming.ts` + `src/i18n.ts`；写入纪律（一次在飞 + 900ms 合并窗口 + 只写最新）与三条寿命红线（实体只能发送一次且 14 天有效 ⇒ 每回合新建、不落盘；永不带按钮/可点行；未启用 `streaming_mode` ⇒ 不受 10 分钟自动关闭约束）见关键坑 57。**验证**：typecheck 0 error、**908 tests / 51 files**（新增 25 例）、`npm run build`。**第三轮（2026-10-09，使用者复看后的两条反馈）**：① **中间回复不再单独发卡**——模型「中间那条 reply」以前被当成一次回复单独成卡（一轮里出现好几张），现在按 WebUI 自己的答案判据（只有**不含 tool-call 块的正文消息**才算最终答案，`ui-chat` 的 `latestAnswer`）判为**过程**：`compact` 下只作过程卡里该步小节下的一行 `💬 …`（首个非空行、80 字截断），带注入提示行的步骤仍保留步骤卡（注入行只在步骤卡上，O21①）。② **简洁档卡片收紧**：答案卡去掉 `📝 **消息**` 小节标题与正文/脚注之间的 `hr`、脚注两行合成一个元素、`body.vertical_spacing: 4px`（过程卡同样 4px）。间距字段是**真机探针实测**的——一次性测试群逐案真发并随即撤回：未知字段/非法取值被 `230099` 拒收（`2006` / `11310`），而 markdown `margin` 与 `body.vertical_spacing` 被接受（`none`、markdown `padding`、`line_height` 被拒）；脚本 `~/.dsh/probe-card-spacing.py`，见关键坑 58。**验证**：typecheck 0 error、**921 tests / 51 files**（新增 13 例）、`npm run build`。**第四轮（2026-10-09 晚，使用者复看后又五条）**：① **注入提示行并入回合过程卡**（该步小节下的 `📥` 行），**不再为注入开步骤卡**——这同时修掉「reply 出现在第一步就冒出一张单卡」：真机证据是**每个回合的 step 1 都认领一条 `time-context` 注入**，旧的「带注入的 step 必须发卡」例外于是每轮第一步都强制开卡并载着正文；O21① 的意图保留（回合卡存在时显示在它上面，整轮无工具时显示在答案卡上，只出现一次、不额外开卡）。② **外部卡片之后另起新卡**（新模块 `src/card-interleave.ts`：`cardChannel.send` 发卡成功后 `note(chatId)`，压缩卡自己 note）——过程卡结束当前分段、下一次事件新开一张只带新内容的卡（计数仍整轮；中断时仍在跑的 step 留在新段）；简洁答案卡同理（`supersededFrom` 只发新增正文）。③ 过程卡**只显示最新 5 步**（`PROGRESS_MAX_STEPS`，40 行仍是外层上限）。**同日追加修复（使用者报「问题卡片时大量碎卡片」）**：②的分段策略第一版是「收到通知立刻开新卡」，而提问卡一次是**三张连着**（问题卡 → 确认卡 → 作废卡）⇒ 一轮 5 问的问答里 17 条消息有 9 条是内容完全相同的 `⚙️ 本回合进行中` 碎片；改成**只关分段、不立刻开卡**，下一件真事（新 `tool/call`/新 step）才开新卡；被关掉的分段仍保留时钟（每 30 秒刷已耗时间，不加行），`turn/end` 只改表头写成终态。④ 运行中的工具显示 `执行中`、超过 1 秒显示已耗时间，并**每 30 秒重绘一次**（快调用在 30 秒内跑完则不排 tick）。**验证**：typecheck 0 error、**935 tests / 52 files**（新增 13 例：progress 11 / streaming 3 / interleave 3，其中 2 例为改写）、`npm run build`。 |
-| O24 | **提问卡片：多选答不了 + 选项没有描述**（2026-10-05 使用者报；同一次审查查出另两处） | **高**（多选根本答不了） | ✅ **已实现（2026-10-07）**：**单选题改成「选项整行可点」**（`interactive_container`，与工作区选择面板同款；行内 `1. **标签**` + 描述，**不再有选项按钮**）+ **点选后立刻冻结旧卡**（无交互灰卡）；**2026-10-09 二次重做（使用者拍板）**：点选**即作答**（不再需要第二次确认点击）、每答一题发 `✅ 已提交` **回执卡**（`↩️ 返回重答` = 重开该题）、全部答完后发 `📝 确认全部回答` **最终卡**（`✅ 确认提交` / `↩️ 返回上一题`，**只有它 resolve 本次问答**）；N 题 = N 问题卡 + (N-1) 回执 + 1 最终卡，旧形状（另发结果卡 + 「已作废」指针、先弹确认卡）全部删除；**返回 → 旧卡变灰「已作废」+ 新发一张可交互的问题卡**（两条出口终态一致，问题卡永不复用）、去掉 `slice(0, 6)` 这个自造上限；多选题改成 `form` + **每个选项一个 `checker` 复选框**（复选框自带标签+描述，正文不再重复列选项）+ 一次「✅ 提交」带回全部勾选（真机点回 `form_value={"c1":true,…}`）——全程不重绘卡片，避开坑 11；复选框卡被拒时自动回退「只放序号」的单选项卡。实现 `src/feishu-questions.ts` + `src/i18n.ts`，**840 tests / 47 files** 全绿。**确认卡真机验收（2026-10-07 15:37–15:38）踩到真 bug 并已修**：点行 → `answer-open`（长标签原样带回）→ 确认卡上屏（新 message id）→ 按「返回」后**再点选项行无任何回调**（同一张卡的「跳过」按钮却正常）⇒ 飞书客户端**把被点过的 `interactive_container` 行消费掉了**；修法：返回 = **重发新问题卡 + 旧卡作废**，且所有回调**按 `evt.messageId` 认当前卡**、旧卡点击一律忽略。**修复后二轮真机验收（2026-10-07 15:44–15:46）**：4 次回调来自 4 个不同 message id —— 原卡点行 → 确认卡返回 → **新发的卡上再点行**（原先正是这里丢回调）→ **✅ 确认提交**（此前从未真机点过）⇒ 三条路径全通。**单选/多选真机端到端（2026-10-07 14:29–14:30）**：8 个长选项 + 描述的单选卡全部渲染、点第 3 项按 label 结算；5 选项多选卡勾 3 项一次提交，journal 读回 `form_value={"opt_0":true,"opt_1":false,…}`、工具侧收到 3 个 label（走主路径、未触发回退）。（探针结论见关键坑 54：`cardkit.card.create` 容忍未知字段、`im.v1.message.create` 严格校验）。**原始审计（未修时的状态）**：原话：「在 WebUI 中，每个选项下面都有一个具体的描述，但在我们这里只有选项，没有选项的描述」；方案「以后所有的问题都发在选问题卡片的主要内容中，选项也包括选项的描述。不要把选项放在按钮中，按钮只放选项的序号」。**根因不是上游没给**：`AskUserQuestionOption.description?: string`（`packages/interaction/user-questions/src/types.ts:14`，注释「Optional extra context rendered by capable UIs」）是**持久事件**字段、随 `user-questions/request` 一起到；WebUI 渲染成标签下面一行（`QuestionComposer.tsx:530`），而**上游自己的排版就是「序号 + 标签 + 描述」**（同文件 `:526` 的 `optionIndex + 1`）⇒ 使用者的方案等于**直接对齐上游**。我们只读了 `option.label`（按钮文字 [`feishu-questions.ts:504`](./src/feishu-questions.ts)、结算卡 `:443`）⇒ 纯渲染缺口，不用等上游。**改动范围（2026-10-05 已拍板）**：① 正文按 `1. 标签` + 描述逐条列出（`description` 可选，缺失就不留空行），按钮只放序号，**序号只用来回指 label、答案里仍带 label**（结算卡与答案对齐都靠 label）；结算卡 `:441-445` 必须同步带描述，否则「点了 2 却看不出 2 是什么」。② **不设选项数上限**（使用者决定：「选项卡本身字符数不会很多」）——真撑爆了按**步骤卡相位那套**处理（一卡同时只许一次写入在飞、只留最新一张、送达判据按构建顺序盖戳，坑 45），**别再写一个自造上限**。③ **多选：DSH 有，是一等公民，我们才是唯一表达不了的通道**——工具 schema 就有 `multi_select`（`tool-ask-user/src/index.ts:68`，**模型能主动要**）、类型注释「Whether more than one option may be selected」、答案是 `selected: string[]`、投影与 timed 模式都带；WebUI 已完整实现：`choose()` **点一下勾上、再点一次取消**（累积，`QuestionComposer.tsx:326-336`），`role='checkbox'`（单选是 `radio`），且**多选时不自动跳下一题**（同文件 `:335`），由 composer 的「继续」按 `answered()` 统一提交。⇒ 飞书侧要对齐就是这个形态：**序号按钮当勾选钮（选中显示 ✅）+ 底部一个「确认」按钮统一提交**，而不是现在这种点一下即结算。④ **plan-review 现在不做**——`AskUserQuestionIntent`（2026-08-13 引入）上游**只有接收端、没有发送端**：`ask()` 会校验 intent（`user-questions/src/index.ts:296-315`，`approve` 必须命中某个 option、`plan-review` 必须带 `detail`），客户端有完整消费链（`PlanReviewPanel.tsx`；`ui-plan` 还注册了 `conversation.plan-review.actions` 槽位给第三方挂动作，且把描述当按钮 tooltip），但**全仓唯一构造 `kind: 'plan-review'` 的地方是 4 个测试**；工具 schema **没有 `intent` 参数**，模型造不出来，只有宿主内代码直接调 `ask()` 才能传 ⇒ **rc.2 上游没有任何生产者，我们即使渲染也永远收不到**。等上游（或某个第三方插件）真的开始发这类请求再说|
-| O25 | **`present` 的交付在飞书只落到「一行点不动的路径」**（2026-10-06 审计，使用者提出核对） | 中（信息缺失；`present` 实际在用的那些文件恰好全都送不到） | ✅ **已实现（2026-10-07，按使用者当天拍板的四条口径）**：① 媒体**卡内内联**（复用 `card-images.ts`，不额外发消息）且行上**写出文件名**；② 文档白名单（pdf/doc/docx/ppt/pptx/xls/xlsx）不超过新设置项 `deliverDocMaxMb`（1–30，默认 30）就**自动发原生文件消息**；③ 其余文件与超限文档变成**可点行**（`interactive_container`，工作区面板同款）→ 点一下弹**确认卡** → 只有按「📤 发送」才投递；④ 超 30MB / 不存在 / 工作区外**不给按钮**、行内写原因。实现：新增 [`deliver-files.ts`](./src/deliver-files.ts)（分类 + 飞书大小常量 + 「本会话 10 分钟内已发过」去重表）与 [`feishu-deliver.ts`](./src/feishu-deliver.ts)（规划 / 渲染 / 自动发送 / 确认流程）；回调**只带不透明 token 不带路径**（30 分钟过期、上限 200，每次点击重验存在性 / 普通文件 / ≤30MB / `realpath` 仍在工作区内——卡片发出后换成指向区外的符号链接照样被拒）；`feishu-send-file.ts` 抽出共用的 `sendWorkspaceFile` 并**给每次发送套 120s 上限**（补上此前工具路径无界的坑 29 缺口）；`channel.ts` 发卡前规划、发卡后自动投递，**没有步骤卡承载正文的回退分支**也补发 Turn Complete 卡（顺带补 O3 那半）；确认卡只改一次、Turn Complete 卡只发不改（不碰坑 11），话题按被点击卡片回查（硬规则 3 / 坑 31）。验证：typecheck 0 error、**816 tests / 47 files** 全绿、`npm run build` 产出 `lib/index.js` + `client/client.js`；**生效需重启 dsh**。**真机验证通过（2026-10-07 13:08–13:23，重启后 + 聊天回读）**：媒体卡内内联（Turn Complete 卡首个元素为 `img`）、`report.pdf` 13:09:03 **自动送达**（无需点击）、点 `notes.md` 行 → 确认卡（13:22:59，回调实测只带 opaque token）→ 按发送 → 13:23:04 `notes.md` 文件消息落地；三条分支全过。**后续已补（2026-10-08）**：WebUI 发起 / 后台任务唤醒的回合现在也会**回显用户消息**并补发 **Turn Complete 卡 + 同一条交付管线**（见 CHANGELOG「外部入口的回合也完整镜像到飞书」；O25 这半边结案）。**仍未做**：上游 `ui-deliverables` 的全局 prompt 本身没动——我们用一条**飞书界面 section**（`feishu-surface.ts`，2026-10-08）就地纠正（坑 52 的实际落法）；清单仍最多 10 行；O3 的 produced 口径（write/edit 产出的文件）仍未做。原始审计与三方案保留如下。**未修时的状态；2026-10-06 使用者曾拍板「先只记档，改天再动手」**。原话：「看一下 present 工具，似乎我们插件没实现兼容」。**三层事实**：① **事件层 ✅ 接了**——订阅 `deliverables/presented`（[`feishu-streaming.ts:1660`](./src/feishu-streaming.ts)）按 path 去重收集（单轮上限 16），渲染成 Turn Complete 卡第一个元素 `📦 交付文件（N）`（[`channel.ts:828`](./src/channel.ts)，≤6 条 + 「另 N 个」）。② **渲染层：媒体 ✅ / 文档 ❌**——`deliverableLink()` 写成 `[描述](path)` 交 hydrator：png/mp4/ogg 真上传、卡内内联；**docx/xlsx/pdf/zip/md/csv/ts 走到 `linkFallback()` 被降级成 `描述 · \`path\``（点不动的纯文本）**，[`tests/channel-footer.spec.ts:197`](./tests/channel-footer.spec.ts) 逐字断言。根因是**卡片能力边界**（关键坑 42：卡片没有文件/附件组件，PDF/Office/zip 只能走原生文件消息）⇒ 文档在卡上**无处可放**，飞书唯一的等价物是「发一条文件消息」。③ **提示词层 ❌ 且我们零干预（本次最要命的一条）**——`ui-deliverables` 的 host 半注册了一条**全局** system prompt（`packages/client/ui-deliverables/src/index.ts:20`）：「Use `present` … **Each presented file adds a card below the reply, with preview and native-open actions**」，**不区分客户端**，飞书会话同样收得到；而飞书既没有 `native-open`（那是 WebUI 的 `/api/present.open` 宿主桌面路由）也没有文档预览，`src/` 里**没有任何 `systemPrompt` 注入**去纠正 ⇒ **模型被告知「已经交付了」**（新增关键坑 52）。**真机数据（2026-10-06 扫 3 个飞书会话 / 444 轮）**：`present` **13 次**、`feishu_send_file` 4 次；13 次 present 里**只有 1 次**（第 180 轮，csv + md 两件）真正送达——那一轮模型自己额外调了 `feishu_send_file`；**13/13 全是非媒体**（`.md` 多数、`.sh`、`.csv`、`.tsx`、`.ts`×6），恰好是卡片唯一放不下的那一类，媒体 **0 次**。另核实 `present` 确实在飞书会话的工具集里（rc.2 标准 preset 注册，实测 `request/header.tools[18]`）。**旁证**：这 13 轮之后的用户消息**没人追问过文件**（操作者本机就有工作区、模型也常把内容贴在正文里）⇒ 目前「不疼」，但缺口是真的。**三方案（均未选）**：**A** Turn Complete 卡给非媒体条目加「📎 发送文件」按钮——回调载荷里的路径**必须校验「本会话本轮 `present` 声明过 + 落在会话工作区内」**，否则等于开一个任意读文件的口子；Complete 卡一次性发送，不触发坑 11。**B** 收到 `deliverables/presented` 就自动推送非媒体文件——与显式 `feishu_send_file` 可能重复（第 238 轮真出现过一轮 7 件）、发生在工具执行之外 ⇒ 无 `exec.signal`、必须自带有界（坑 29）并与卡片链排序（坑 45），且要推翻 2026-09-10「只列清单不推送」的决定。**C** 按 agent scope 给飞书绑定的会话注入一段说明（仿 `file-reference-local`），让模型改用 `feishu_send_file`——成本最低，但仍靠模型自觉、卡上那行照旧点不动。**当时建议 A+C**。**动 `src/` ⇒ `npm run build` + 延迟重启（关键坑 14）** |
-| O26 | **连接状态指示在出站全断时仍显示「已连接」**（2026-10-11 由使用者提出：「插件的连接状态指示并没有正确地指出存在故障，而是显示正常连接」） | 中（运维信号是否可信） | ✅ **已实现（2026-10-11）**。**触发事故**：16:48:29 → 16:56:50 共 79 行 `write EPROTO … tlsv1 unrecognized name (SSL alert 112)`，**每个新建出站 TLS 握手都被拒**（回复/建卡/改卡/`feishu_send_file`/reaction 全发不出去），而详情页徽章**全程「已连接」**；同时**入站长连接活着**（16:49/16:50/16:51 的 `[msg]` 照收）—— 两个方向命运不同，而 UI 只看了一个**建连时刻的快照**（`src/runtime.ts` 的 `connected` 由 `start()` 返回即置位、之后永不复查）。**根因在网关不在插件**（`open.feishu.cn` → `198.18.0.0/15` 里的一个 fake-IP，连 `1.1.1.1`/`223.5.5.5` 问也是它 ⇒ DNS 被网关上游劫持，且本机无代理进程/环境变量/`hosts` 记录）；插件只能改「别谎报正常」。**改法**：① 出站按**请求自己的历史**判定 —— `src/outbound-health.ts`（新）把 SDK 的 `defaultHttpInstance` 用 **Proxy** 包一层（`createLarkChannel({ httpInstance })`；实测 SDK 只调 `.request`，`lib/index.js:100718` 以 `params.httpInstance \|\| defaultHttpInstance` 兜底），**有 `response` = 对端答了（400/429/500 都算答了，链路是好的）、没有 `response` = 链路失败、`ERR_CANCELED` 两者都不算**；`verdict` 自第一次无人应答起为 `failing`，下一次收到应答才回 `ok`（失败数保留为历史）。② 入站按**长连接真实生命周期** —— `runtime.status()` 每次读 `channel.getConnectionStatus()` 报 `inbound`（没有该方法就只报建连结论，不让 `/status` 挂）。③ UI：`connected` 之上出站异常 →「已连接 · 出站异常」+ 红点 +（连续失败次数 + 对端原话），长连接 `reconnecting/failed/idle` →「已连接 · 长连接断开」+ 重连次数；**只有 `connected` 会被二次判读**（旧失败不改 `connecting`/`error` 的画）；**`observed === 0` 明写「尚未观测到出站请求」**，不把「没测过」装成「测过是好的」。④ 指示本身**持续复读**（原来每个页面只读一次 ⇒ 「页面已开着、之后才断」照样看不见）：有条目挂在页上时配置流程 2s、其余 10s，页面关掉即停；「一次配置跑完只回调一次」改按 **active → terminal 跳变**判定。**验证**：typecheck 0 error、**1024 tests / 55 files 全绿**（本批新增 32 例）、`npm run build` 产物已更新；另跑**一次性真机探针**（真 SDK + 真凭据，跑完即删）：真实 `chat.get` 使 `observed` 累加到 2（token 请求也在这条线上），域名指到 `127.0.0.1:9` 后立刻 `failing` + `lastError = connect ECONNREFUSED 127.0.0.1:9`，再答一次回 `ok`。**原先看不见、当日补完的一种失败**：**永不 settle 的请求**（坑 29 的半开 socket）—— 没有结局就没有可记录的事实，而 `withTimeout` 只截断等待。**已补（同日晚些时候那批）**：`withLinkTimeout` 覆盖全部 18 个真的发飞书请求的调用点，放弃等待时经 `observeOutboundWaits` → `noteAbandoned` 记一笔（`no answer within <该调用点预算>ms: <调用点>`），徽章随即变红；**预算由调用点自己给**（发送 20s / 发文件 120s），所以不猜阈值、也不会把慢上传误判成故障；**等在自家管线上的（卡片链 flush / 上一张卡 settle）不算链路事实**，仍走普通 `withTimeout`（有源码级测试钉住这条边界）。上报是 best-effort：观察者抛错也必须让等待结束 |
-| O27 | **compact 的回合过程卡不够紧凑**（2026-10-11 使用者提出：「compact 的步骤卡片不够 compact，有没有什么改进的建议」） | 低（观感/信息密度） | ✅ **已实现其中一条（2026-10-11）**。**先量后改**：用真实渲染器跑 10 步 / 42 次调用 / 3 失败的一张卡 —— 只有 **1578 字节**（上限 30KB ⇒ 字节不是瓶颈），却渲染成 **17 个元素、16 个全是单行**，可见文本 **327 字**（平均每元素 20 字）；每元素两侧各付一次 `vertical_spacing` 4px ⇒ **64px 纯间距**。构成：5 行纯步标题 + 8 行工具行 + 2 行叙述 + 1 行注入。**建议共 6 条，使用者只取第 2 条**（**一步的行装进同一个 markdown 元素**：元素内换行不付间距，只有步与步之间付 ⇒ 17 元素 → 6-10 元素，步骤边界仍可见）；**明确不做的**：①步标题并进首行（使用者否掉：「视觉上不好看，改善不大」——曾按此发过样板 D/E/F 供选）、③可见步数 5→3、④注入聚合成一行、⑤笔记 80→40 字、⑥回合结束后整卡收起。**叙述行的安全边界**：模型文本只有**行内标记成对**（`**`/反引号计数为偶）才并入本步元素，否则单独占一个元素（多行同元素会让未闭合 `**` 与下一行配对、渲染成错加粗，坑 60）。**同批按使用者要求给工具行补「碰了什么」**：读写编辑给末两段路径（`…/src/feishu-progress.ts`），`bash`/`pwsh` 给程序名（切开 `| && ;` 换行、丢掉 `sudo`/`time`/`env`/`cd` 这类包装及其参数、basename、去重），其余不给；**合并行名字跨调用累计、上限 3 个**（第一版把上限加在调用数上，样板卡当场印出 5 个 `npm / tail / git / node / tail`，已修并加测试）。**`$(…)` 命令替换不解析**（猜名字比留空更糟）。派生在流式层 `progressToolDetails()`（参数只在那里），卡片层只渲染。**验证**：typecheck 0 error、**1055 tests / 55 files 全绿**（新增 20 例）、`npm run build` 已产出、两版真机样板卡已发飞书（第一版暴露 5 名字 bug）。**按要求未重启**。**同日跟进**（使用者第二条反馈：「一个步骤内的工具调用挤在一起，步骤不是很明显」+ 可见窗口按**步骤数**算）：步骤标题的中括号**试过又撤了**（使用者：「不要中括号 看起来很丑」）；`PROGRESS_MAX_STEPS` **5 → 3**（窗口按步骤计数，`PROGRESS_MAX_ROWS = 40` 仍作外层兜底）；行的样式已按使用者选定落地：**步骤行加图标**（`▸ **第 N 步** · 1.2s`，样板比对后选小三角）、**工具行不带列表符**（`- ` 试过又取消：有了 `hr` 之后列表符只是多余标点）、**中间的 reply 行用 quote**（`> 💬 …`；**2026-10-12 起改为「步头在块外、注入行/叙述行/工具行同处一个引用块」**，见本行末）、**步与步之间加 `hr` 分隔线**（原生元素，只落在步与步之间：首组之前不加、同一步被拆成两个元素时也不加）；标记收在 `PROGRESS_QUOTE_MARKER`，图标在 i18n 的 `turnCardStep`（`▸`）。**补丁（2026-10-12，使用者报「bash 命令获取不准确」）**：会话日志里 12 条真实 `bash` 命令有 **6 条**提取错误（引号内的 `\|`、heredoc 正文、`for … do` 关键字、注释/emoji 都被当成程序；卡片上真印出过 `echo / grep / first_frame"`），改为**解析而非切分** —— 新模块 [`src/shell-programs.ts`](./src/shell-programs.ts)（引号/注释/heredoc 跳过、`\` 续行保留、前缀关键字只跳自己、候选必须是裸程序名、读不出的丢掉），那 6 条逐字进了 `tests/shell-programs.spec.ts`（16 例）。**再补丁（2026-10-12，使用者追问「工具调用的 quote 逻辑是什么、为什么上下文注入的显示没有那个符号」后给出规则）**：**步头留在引用块外，注入行 / 叙述行 / 工具行统一带 `PROGRESS_QUOTE_MARKER`**（每行**显式**加，不靠渲染器的惰性延续——叙述行行内标记不成对时会单独成元素（坑 60），延续会在那里断框、把该步的工具行掉在框外，同一张卡于是有的步骤框住、有的没框住）；先发 **7 张真机样板**（A 现状 / B 叙述单独成元素 / C 注入也加线 / D 全无竖线 / E 连标题一起框 / F 框内容不框标题（显式）/ F2 同上但靠延续；全部用真实渲染器 `renderProgressCard` 渲染）比对，使用者判定 F 与 F2 无差别 ⇒ 取显式版。元素数不变（步头与内容仍同元素），样板卡 699 → 731 字节。**三补丁（2026-10-12，使用者：「读写文件的文件名显示就不显示上一级目录了，只显示裸文件名」）**：文件类工具的行从**末两段路径**（`…/src/feishu-progress.ts`）改为**裸文件名**（`feishu-progress.ts`，`bareFileName()`；Windows 反斜杠同样处理，空路径/以分隔符结尾的路径**不给名字**——那一行干脆不写，比写出一个目录名诚实）；`docs/architecture.md` 注明「同名不同目录读起来一样，这一行是指向那次调用、不是文件的身份」 |
-| O16 | **`/new` 手输路径不存在时不自动新建目录**（2026-09-25 使用者报） | **高**（流程直接走死） | ✅ **已实现（2026-10-12，方案 B）**：手输一个不存在的路径**不再直接报 `ENOENT`**，而是发一张确认卡「这个目录还不存在」+ **隔壁有哪些目录**（最深已存在父目录的子目录，点一行就改用那个=路径打错的一键修正，也是卡片输入框做不了补全的替代，见 `docs/feishu-capabilities.md` §2.2.2）+「✅ 就建这个目录 / ← 返回重输」；**确认本身也不落盘**——`mkdir -p` 与注册一起发生在流程最后一步（O19）。顺带把两条静默/难懂的分支做对：**相对路径**给中文说明（原来抛上游英文 `TypeError: not fully qualified`）、**路径是文件不是目录**单独报；失败分支补 `logger.warn`（原来只发卡不打日志）。实现：`src/feishu-onboarding.ts` 的 `commitWorkspace` / `inspectDirectory` / `siblingDirectories` / `renderNewWorkspaceConfirmCard`，`src/index.ts` 的 `commitNewSession` 新增 `prepareWorkspace` 钩子。**原审计保留如下**。原话：「新建会话时输入路径的目录不存在时不会自动新建」。链路：`handleCreateWorkspace` → `commitWorkspace`（[`feishu-onboarding.ts:879`](./src/feishu-onboarding.ts)）→ `workspaceRegistry.create(path)`，而 `Workspace.create` 先 `realpathNormalize` 再 `stat`（上游 `packages/workspace/workspace/src/index.ts` 的 `create`，注释即「Create or create over an **existing** directory」）→ 目录不存在抛 `ENOENT` → 插件发红卡 `onboardingCreateWorkspaceFail*`。**真机取证（2026-09-25）**：19:56:09 journal `value={"kind":"create-workspace"} form={"workspace_path":"…/KYB/20260925-备课"}`，**随后没有成功路径才打的 `created workspace` 日志**；19:58:32 同一路径重试 → 19:58:36 直接进 `pick-preset`（说明目录已被别的途径建好）⇒「一次失败、一次成功、中间只多了那个目录」。**判定旁证**：失败分支**只发卡、不 `logger`**（`commitWorkspace` 的 catch 里没有任何日志）→ 这次只能靠「成功路径有日志」反推，**顺带要补 warn**（关键坑 6 同一教训：静默失败的东西最贵）。**上游可抄的语义**：`initializeDefault` 对首次默认工作区就是 `mkdir(path, { recursive: true })` 再注册（同文件 `:265`）。**修法待使用者拍板**：A 静默 `mkdir -p` 后注册（顺手、但有副作用）；B 先回一张确认卡「目录不存在，是否新建？」→ 确认后 mkdir -p 再注册（与「归档运行中会话先问再停」同风格） |
-| O19 | **`/new` 的副作用不是全在最后一步**（2026-09-25 使用者报） | 中（取消会留下痕迹；与 O16 同一处代码） | ✅ **已实现（2026-10-12，按台账建议与 O16 同批）**：`commitWorkspace` 不再注册工作区（只校验 + 记录 `workspace` / `workspaceMissing`），真正的 `mkdir -p`（仅当操作者确认过要建）与 `workspaceRegistry.create` 挪到流程最后一步——`commitNewSession` 之前（新增 `prepareWorkspace` 钩子，失败则**不创建会话**并在确认卡上写明原因）。⇒ 中途取消什么都不留。**文本命令路径**（`/new --workspace …`）不受影响：它只接受**已注册**的工作区（找不到直接报错），本来就不需要注册。**原审计保留如下**。原话：「新建会话操作不是在最后确认卡片才生效，前面有些步骤已经会有影响」。**逐步骤读码核实（2026-09-25）**：① `/new` 工作区面板本身只读；② **工作区步是全流程唯一「确认前已生效」的持久副作用**——点已有工作区行（`handlePickWorkspace`）只写内存 `flowState`，但**手输表单**与浏览器的「选此目录」都走 `commitWorkspace` → `workspaceRegistry.create(path)`（[`feishu-onboarding.ts:882`](./src/feishu-onboarding.ts)），工作区**当场注册**（`/new` 列表、WebUI 侧边栏、其它群立刻可见，且落盘；中途取消也不会撤销）；③ 预设步（`handlePickPreset`）只写内存；④ 模型步的 provider 下拉只读，点「确认」在 `flow === 'new-session'` 分支里**直接 return**（[`feishu-model-select.ts:678`](./src/feishu-model-select.ts)）→ 只 `retireModelCard` + 发最终确认卡，**不建会话、不 `selectModel`**；⑤ 只有最终确认卡的「创建」走 `commitNewSession` → `bridge.startNewSession`（[`index.ts:1319`](./src/index.ts)）才切换聊天绑定并落盘（[`harness.ts:1048`](./src/harness.ts)）。⇒ **会话确实只在最后一步建**，但工作区在第二步就注册了（叠上 O16：手输一个不存在的路径会直接在第二步失败，连确认卡都到不了）。**另注**：`/new --workspace … --preset …` 的**文本命令路径**根本没有确认卡（`commitNewSession` 由命令直接调用）——若感受来自这条，属设计如此，要改需另行讨论。**修法（建议与 O16 合并成一批）**：把注册推迟到最终确认——`commitWorkspace` 只做校验并记录（存在？是目录？不存在的处理按 O16 的 A/B），真正的 `mkdir -p`（如需）+ `workspaceRegistry.create` 挪进 `commitNewSession`，与建会话同一个事务点 ⇒ 取消则什么都不留。`commitWorkspace` 现在负责的「冻结选中路径那张卡」（`settlePrevious: path`）不受影响。**待使用者确认**：见到的「有影响」是否就是工作区被注册/出现在列表里？若看到的是「默认模型变了」，那是**创建成功之后** `applyCreationRoute` → `selectModel` 连带持久化默认选择（[`harness.ts:1696`](./src/harness.ts)），属确认之后，不在本条；若还有别的，请指出是哪一步。**2026-10-09 补记**：`applyCreationRoute` 持久化默认与「恢复时拿全局默认当 `agentOptions`」是同一枚硬币的两面——后者已修（关键坑 59：恢复改为读会话自己记录的路线），新建会话仍按 WebUI 口径持久化默认选择 |
-| O17 | **目录浏览器不能在当前层新建文件夹**（2026-09-25 使用者报，「不方便」） | 中 | ✅ **已实现（2026-10-12）**：目录浏览器加了「📁＋ 新建文件夹」（`form` + 单段名输入 + 提交，与工作区选择卡同一种已验证形状）→ 新动作 `browse-mkdir` → `directoryPicker` 的 `createDirectory(当前层, 名字)` → 成功后**直接进入新目录**；`directory-exists` / 非法名字翻成中文一行挂在浏览器上（失败不换卡，层级不丢）。**门控：一开始做错了，当天就改**（2026-10-12 使用者报「没看见新建目录按钮」）。第一版按「后端不是 `browse` 就藏按钮」，而本机 `dsh` 带着 `DISPLAY=:0`（x11）⇒ `directory-picker-auto` 选了 **`native`** ⇒ 按钮被藏、功能等于没做。**这是把「宿主选择框的能力」当成了「文件系统的能力」**：`native` 只说明没有系统弹窗，插件在没有 `browse` 时本来就在**自己列目录**（`listDirectoryLocally`）、O16 那批也**已经在自己 `mkdir`**。改成：宿主有 `browse.createDirectory` 就用它（它有单段/非递归/`directory-exists` 的围栏），否则**插件自己 `mkdir`**（同样非递归，名字在调用前按同一口径校验：非空、单段、不含 `/` 或 `\`、不是 `.`/`..`），**按钮无条件显示**。实现：`resolveDirectoryCreator()` + `renderWorkspaceBrowser(..., { canCreateFolder })` + `describeCreateFailure()`。**原审计保留如下**。原话：「选择目录时不能在当前目录新建目录不方便」。现状：浏览器只有 进入 / 上一级 / home / 显隐 / 翻页 / 选此目录（`renderWorkspaceBrowser`，[`feishu-onboarding.ts:535`](./src/feishu-onboarding.ts)）。**能力早就探到、却 0 个调用点**：`DirectoryPickerLike.createDirectory?` 已在窄接口里声明（[`feishu-onboarding.ts:89`](./src/feishu-onboarding.ts)），`grep -rn createDirectory src/ tests/` 只命中声明与注释。**上游现成**：`directoryPicker.createDirectory(path, name)`（`packages/api/workspace-controller/src/directory-picker.ts`，后端 `packages/host/directory-picker-browse/src/index.ts`）——非递归 `mkdir`（父目录必须存在）、名字必须单段、已存在抛 `directory-exists`；Web UI 的目录浏览器自带这个入口（`packages/client/ui-directory-picker-browse`）。**修法**：浏览器卡加「📁＋ 新建文件夹」→ `form` + 单段名 `input` → `createDirectory(当前路径, 名字)` → 成功后重新列这一级（或直接进入新目录）；`directory-exists` / 非法名字翻成中文文本。**门控**：本地兜底 listing（`listDirectoryLocally`）没有 `createDirectory` ⇒ 没有 `browse` 能力时**不显示**该按钮（与现有「非 browse 后端就藏浏览入口」同一判据） |
-| O2 | **`/subagents` 子代理卡片命令** | 中 | ✅ **已实现（2026-10-12）**：`/subagents` 手动打开**本会话**的子代理面板，`/subagents tree` 用 `listDescendants` 列整棵子树（复用既有 `├─ └─ │` 树渲染）。**数据 = 宿主目录 ∪ 本进程名册**：`ctx.get('subagents')`（**可选依赖**，不进 `inject`，坑 2）的 `listChildren`/`listDescendants` 给 id / label / mode / 父会话 / 深度（含 `kind: diagnostic` + `reason`），内存名册给模型 / 每轮耗时 / 结算原因；`mergeSubagentPanelRows()` 按子会话 id 合并，**只有目录信息的行耗时写 `—`**（不编造精度），状态用 `ctx.agents.get(id).status === "running"` 现算（与宿主 `list_agents` 同口径，但**两种 mode 都列**——那个工具故意只留可续谈的）。**有界**：宿主读取走 `withTimeout` 5s（坑 29），超时/抛错退回名册 + warn。**空态回纯文本**（不发空表卡）；与上一次手动打开的快照签名相同则回一行「面板没有变化」而不重复发卡；卡片**不加按钮**（只发不更新，坑 11/57）。**自动面板的既有行为不变**（同一条测试钉住）。**验证**：typecheck 0 error、**1107 tests / 57 files 全绿**（本批新增 17 例：解析/合并/画树/空态/去重/无按钮/服务缺失退回/超时退回/自动面板不受影响）、`npm run build` 已产出。**原审计保留如下**：数据源 `ctx.subagents.listChildren` / `listDescendants`；与 rc.1 评估的 **C2** 是同一件事。**与 O10 共用数据源与渲染，建议一并实现** |
+| O4 | 带按钮控制卡的反复就地更新 | 高 · 🔲 | `/session` 刷新/置顶、模型向导以及部分 busy/permission 卡仍可能消耗回调额度；逐流程改成“发新卡 + 旧卡退休”，不能把无按钮步骤卡一起改掉。2026-09-23 的详细审计不是当前行号保证。见 [交互生命周期](<./docs/architecture.md#卡片生命周期>) |
+| O18 | 复用上次模型配置 | 中 · 🔍 口径待确认 | 候选：① `/model` 一键沿用当前会话 ② `/new` 复用上次配置 ③ 两者都做。会话当前路线、全局默认与 last-used 不是同一事实；确认前不新增持久选择表。见 [模型选择](<./src/feishu-model-select.ts>) |
+| O7 | `renderMode: auto\|card\|text` | 低 · 🔲 | 现有正文已经分片，不是所有长回复都丢失；是否提供纯文本/混合回退仍待需求。不要把旧流式方案当实现要求 |
+| O8 | 推理预览长度可配置 | 低 · 🔍 | 详细档仍为 200 字预览，verbose 推理面板保留全文；调整需和卡片字节上限一起设计，不动思考 token 估算。见 [档位策略](<./src/display-level.ts>) |
+| O23 | DSH 家目录由宿主提供 | 低 · 🔲 | 绑定文件路径当前自行计算，口径与宿主一致，但未来可能静默分叉。优先可选 `ctx.get('dshHomePath')`，保留兜底并用路径 API；不要加必需 inject 导致挂载等待。见 [插件入口](<./src/index.ts>) |
 
-**O14 备注 — 未做**：① 正文里的**行内代码路径**（`` `runs/a.mp4` ``，DSH 的 `fileMentions` 会变成可点 chip）不扫描——只认带 `()` 目标的 Markdown 引用；② 非媒体文件（PDF/Office/zip）上游**没有**卡片组件，仍走原生文件气泡，也不新开公网文件服务；③ 没有「只内联视频不内联音频」这类细分开关（`cardImages` 三档统一管；数量已由设置项 `cardMediaLimit` 控制，1–30 默认 12，按组各算一份）；④ 交付清单**有意不去重**（同一个文件可能在正文与交付卡各渲染一次，对齐 Web UI；按 turn 去重会让步骤卡自己的下次更新丢掉媒体，坑 43/44）。 |
+## 上游阻塞
 
-### 上游阻塞（我们能做的都做完了）
-
-| # | 项 | 卡在哪 |
+| # | 事项 | 条件 |
 |---|---|---|
-| B1 | **C3 的最后一处弃用 API**：`summarizeTurn` 仍需读单轮原始事件（逐 step 计时 / 首 token 时间） | 等上游提供**逐步计时类投影**；现有 `sessionProjections` 不提供。代码注释已写明这是**有意保留** |
-| B2 | **P6-4**：用投影替代剩余的全量日志扫描 | 与 B1 同一上游缺口。**2026-09-23 alpha.2 复核：仍无新投影**（`sessionProjections` 的方法集与 alpha.1 完全一致） |
-| B3 | **坑 28 撤权宜之计**（服务入口从构建产物切回源码入口） | 上游 `#7011` / `#6986` **仍未修**（alpha.2 范围内**没有任何 commit 引用**这两个编号）。要撤必须**先做实测实验**，不要凭推断撤 |
+| B1 | 单轮摘要保留原始事件读取 | 等宿主提供逐步骤计时/首 token 等价投影；当前 `summarizeTurn` 只按单轮 seq 范围读，不许改成全日志物化 |
+| B2 | P6-4 剩余投影迁移 | 与 B1 同一能力缺口，不另开一套扫描/缓存实现 |
+| B3 | 撤销双实例规避 | 源码入口模块双实例风险仍未完成撤除验证。先查上游 [#7011](https://github.com/deepseek-ai/deepseek-harness/discussions/7011) / [#6986](https://github.com/deepseek-ai/deepseek-harness/discussions/6986)，再做隔离实测，不能凭新版本号切回源码入口 |
 
-### 可选项（无明确需求，记录备查）
+## 可选与条件性验证
 
-| # | 项 | 说明 |
+| # | 事项 | 状态与边界 |
 |---|---|---|
-| X3 | 🟡 **按收窄范围完成 3/5（2026-09-23）** P6-7 | ✅ `job-controller`（任务卡）、✅ 工作区 pin/unpin、✅ `modelCatalog()`；❌ `speech-to-text`（本机无语音供应商，无法端到端验证→本次不做）、❌ `readBytes`（原生 `Uint8Array`；纯内部重构、用户不可见→本次不做） |
-| X5 | **C5 代理环境** | 入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；**暂不处理** |
-| ~~X1~~ | ✅ **已完成（2026-09-23）** P6-5 | 设置页 = 配置，插件详情页 = 连接与扫码（见上方 P6-5） |
-| ~~X2~~ | ✅ **已完成（2026-09-23）** P6-6 | `icon.svg` + 双语 `locale/*.json`（见上方 P6-6） |
-| X4 | **MiniMax M3 思考强度** | ✅ **已执行（2026-09-28 复核确认在生效）**。修的正是「纯配置，插件与 DSH 都不用改」：`compat.forceAdaptiveThinking: true` + `reasoningEfforts: {off: disabled, high: high}`，落在**本部署的 profile 补丁**（`~/.dsh/profiles/web/cordis.patch.yml` 的 `llm-pi-ai` 段；0.1.7 升级后 `settings.yaml` 的这段已并入 profile 补丁）。2026-09-28 按 wire 复核：`thinking:{type:'disabled'}` → 200 且**无 thinking 块**；`thinking:{type:'adaptive'}+output_config:{effort:'high'}` → 200 且**有 thinking 块**。细节见「问题追踪」 |
-| X6 | **V13 压缩阈值实测** | **不是待改项**。要长会话自然跑到 ~680k 才会出现 `compaction/start`，**至今未触发**；公式已在代码侧核对 |
-| X7 | 流式输出（CardKit `streaming_mode`） | ❌ **已取消**（2026-09-02 使用者决定）。下方技术方案仅作留档，**不要当待办** |
-| X8 | **MiniMax M3.1-Flash-Preview 上架** | ✅ **已加（2026-09-28，使用者要求）**。同一个 `llm-pi-ai` `minimax-cn` 路由，手写一条模型声明（pi-ai 0.85.1 自带的 `providers/data/minimax-cn.json` **没有**这个 id）：1M 上下文、`input: [text, image]`、`forceAdaptiveThinking`、**不声明 `off`**、五档 `low/medium/high/xhigh/max`。官方文档与逐条 wire 取证见「问题追踪」 |
-| X9 | **加粗边界：关闭 `**` 后面跟的是符号（emoji）而不是字** | 2026-10-10 探针把「关闭 `**` 夹在末尾标点与后字之间」这条钉死了（见关键坑 60，已修 `src/card-emphasis.ts`），但**没覆盖**「标点被包进加粗、后面跟 `🖼` 这类符号」的形状：按 CommonMark 只有 `P*` 算标点，理论上同样失败，而当前实现按第三方口径只在后随字符是**字/数字**时才改写。**不猜、不改**——等真实卡片上出现可复现样例再补规则（复现手法：两张编号探针卡，每行一个 `markdown` 元素 + 一个「多行同元素 + 表格」对照卡） |
+| X3 | P6-7 收窄范围 | ✅ 已完成任务面板、pin/unpin、model catalog；speech-to-text 因无验证供应商不做，readBytes 纯重构本轮不做。不要重新列成必改项 |
+| X5 | 显式代理环境 | 🔲 入站 WebSocket 不直接沿用 HTTP 代理环境变量；纯代理部署需独立验证，暂不加代理入口 |
+| X6 | V13 压缩阈值长会话验证 | ⏳ 原记录要求自然达到阈值后取证，公式已核对；不是待改功能。不能把当时一次部署的数值当通用默认 |
+| X9 | 加粗收尾后跟 emoji/符号 | 🔍 等真实可复现卡片再扩规则。现有强调规范化只修已验证边界，不按理论猜测扩大改写。见 [强调规范化](<./src/card-emphasis.ts>) |
+| — | 长工具输出折叠 | 🔲 组件可用但尚未实现；现在是有界预览，不意味着全部结果不可见 |
+| — | `timed` 问答与迟到答案 | ⏳ 启用前明确 `user-question-reply` 的提示文案和题卡过期留痕，再验双端竞态；当前旧问答模式的通过结果不覆盖 timed 模式。见 [设计记录](<./docs/transcript-parity-design.md>) |
+| — | 完整压缩摘要出口 | 🔍 当前单卡正文最多 22,000 UTF-8 字节，超出有说明；文件/多张续卡尚未做，不自行增加发文件按钮 |
+| — | 失败步骤的补记结果 | ⏳ 保留 rc.1/rc.2 的验证关注：宿主补记没有配对 `tool/call` 的 `tool/result` 时，步骤卡应不错位 |
 
-### 开发卫生（非功能，但会咬人）
+以上无编号事项沿用能力/设计记录里的开放问题，**不新增或重排关键坑编号**。
 
-| # | 项 | 说明 |
+## 发布与验证
+
+| # | 事项 | 下一步 |
 |---|---|---|
-| H4 | **发版：让 WebUI 插件页能真正「一键装 / 升级」**（使用者 2026-10-02 要求记入 TODO；**等插件完善后再做**） | **包形态已经支持**：我们是可安装的 bundle（`package.json` 的 `dsh.bundle.patch` + `dsh.client`，npm 公开包，`publishConfig.access: public`，`npm pack` 的 tarball 里 `lib/index.js` / `client/client.js` / `cordis.patch.yml` 齐全），`plugin_manager list_bundles` 现在就把我们列为 `enabled=true / installed=true / removable=true` 的 bundle（row `lark-channel`）。**卡点在版本**：npm 上只有 `0.1.0` / `0.2.0`，`latest = 0.2.0` 发布于 **2026-09-08**，peer 范围是 **`^0.1.3-alpha.1`**；当前运行时的兼容闸门（`packages/boot/plugin-manager/src/plugin-compatibility.ts`：`semver.satisfies(runtime, range, {includePrerelease:true})`）实测——`^0.1.3-alpha.1` vs `0.2.0-rc.1` / `0.2.0-rc.2` 都是 **false**（该范围展开是 `>=0.1.3-alpha.1 <0.2.0-0`，rc 落在上界外），而 `^0.2.0-rc.1` vs rc.1 / rc.2 都是 **true**。⇒ 在 WebUI 里装线上包会被拒为 `incompatible-version`（界面给的出路只有 `dsh plugin allow-version` **逐版本豁免**，并明确警告可能崩溃/丢数据）；**就算豁免也没意义**——那个 0.2.0 早于 0.1.7「设置服务被替换、插件侧 4 处必改」。**要做的事**：① 升版本（仓库现在也是 `0.2.0`，与 npm 撞版，npm 不允许覆盖发布）；② `npm publish`（发布链路仍是手动的，坑 16 未配 trusted publisher / OIDC）；③ **发布前彩排**：把 `npm pack` 出来的 tarball 装进一个**干净 profile** 冷启动，验证「从 npm 安装进来的 bundle patch + client 半边」能起来（本机一直是 `link:` 安装，这条路径从未演练过）；④ README 补「WebUI 安装 + 首次连接配置」；⑤ 知情项：管理器把我们标成 `removable: true`，**误点卸载会直接摘掉飞书桥**。 |
-| H5 | **非 Linux 平台零验证**（2026-10-05 跨平台审计） | 审计结论是「**构造上跨平台**」：纯 JS、**零原生模块**、`src/` 里 `process.platform` 出现 **0 次**、无 POSIX-only 调用（`/proc`、`systemctl`、`chmod`、信号）、无硬编码平台路径；`pwsh` 早就与 `bash` 归一。README 已按这个口径写明。**但完整链路只在 Linux x64 跑过一次**（真机卡片 / 媒体转码 / 宿主联调），**macOS 与 Windows 一次都没有**。**要补只有两条路**：① 纯 Node/jsdom 的 `npm run typecheck && npm run test` 在别的平台跑一遍（不需要 DSH，Windows 上大概率直接过，**这能证明「装得上、测得过」但证不了卡片渲染**）；② 在 macOS / Windows 上各起一次真实 DSH 冷启动 + 一轮真实对话。**在此之前，任何文档都不要写成「已支持三平台」**。完整审计证据（每条命令与命中数）见本机 `notes/cross-platform.md` |
-| H1 | `src/harness.ts.bak.20260902_172344` / `_215829` | 坑 3 要求「验证启动正常后**手动删** `.bak.*`」；这两份 2026-09-02 的临时备份**至今未删** |
-| H2 | 本机旧产物 | `~/.dsh/plugin-node-modules.pre-017`（168M）、`plugin-package-lock.json.pre-017`、8 个 `settings.yaml.bak.*`；确认没有回退需求后可删 |
-| H3 | 检出根 `lib/types/{index,invariant,startup}.js`（各 11 字节存根） | ⚠️ **别删**：`pnpm run clean` 不会碰它，但它已穿过两次完整构建；删了可能立刻回到 `Cannot find entry` 一类失败。见坑 32 与 `notes/upgrade-0.1.7-alpha.2.md` §6 |
+| H4 | 发布兼容当前 DSH 的新包 | 🔲 等明确发版要求。旧 npm `0.2.0` 与仓库同号但代码/peer 不同，不能覆盖发布或强行豁免。新版本需 bump、质量门禁、真实 tarball 的干净 profile 冷启动（Host + Client）、确认可信发布链路后才发布。当前只整理文档/包内文档清单，**没有发布** |
+| H5 | 非 Linux 平台验证 | ⏳ macOS/Windows 尚无端到端验收。先 typecheck/test，再真实宿主冷启动与一轮媒体/卡片交互；不把“纯 JS 可安装”写成“三平台已验证” |
+| H1 | 临时源码备份清理 | 🔍 本地历史项；确认当前文件、启动验收与回滚需求后再删，不按旧文件名直接批量删除 |
+| H2 | 旧依赖、配置与升级备份清理 | 🔍 本地运维项，等待删除授权；公共台账不列机器目录、文件名与大小 |
+| H3 | 宿主入口存根 | ⏳ 保留“不盲删”的原决策；只在宿主升级维护中核验，不把插件文档整理扩成宿主产物清理 |
 
----
+发布 workflow 文件存在不代表 trusted publisher/OIDC 已配置完成；历史单测也不能证明发布端配置可用。需要发版时单独核验，本文不触发安装、重启或发布。
 
-## 已实施：后台任务 / 子代理面板卡（2026-09-23，O9 + O10）
+## 已完成索引
 
-**使用者原话**：
+以下是已结案的原事项，不是待实施功能。日期保留事件发生时的口径，当前行为以首页/架构为准，详细决策与探针见变更记录。
 
-> 这个后台任务现在这个标题是不合适的，应该改成「后台任务」。然后这个卡片要列出所有的后台任务，还有这个任务的命令、状态这些。sub agent 也是一样的。就是在生成后台任务或者后台任务更新的时候，会自动发卡片展示一下，sub agent 也是。展示的形式暂定就是用表格形式。
-
-> （同日补充定形）这两个卡片的发卡时机都是触发了相关的东西的时候，**这两个卡片是发卡即可，不需要就地更新**。因为这两个都相当于是后台的任务。
-
-### 实施结果（as built，与上面草案的差异以本节为准）
-
-1. **标题固定**：`🧩 后台任务` / `Background jobs`、`🤖 子代理` / `Subagents`。**不再用 job label 当标题**。
-2. **一张卡列全部 + 只发不更新**：每个聊天（严格说是每个**话题坐标**，即 session 绑定的 `chatId + threadId`）一张快照卡；名册一变就**发一张新卡**，**不就地更新**、也不发灰色「已失效」卡——这是草案里"刷新同一张卡"被使用者后一条指令**取代**的地方。发卡纪律集中在 [`src/feishu-panel.ts`](./src/feishu-panel.ts)：同一刻合并（flush 时重新渲染）· 非紧急刷新下限 30s（只有进度文案变化才等它）· **指纹去重**（耗时等时钟文本不进指纹）· 按 chat 串行。
-3. **后台任务表列**：状态（🔄 / ⏹️ / ✅ / ❌ / ⛔）· 任务（`JobView.label`，截断 48 字 + 行内代码）· 编号（`bash-N`）· 耗时（`finishedAt ?? now` − `startedAt`）· **进度 / 结果**（运行中取 `progress`，终态取 `detail`）——草案里的「进度」「结束原因」两列**合并成一列**，否则卡片太宽。
-4. **子代理表列**：状态 · 子代理（`label`）· 子会话 id（截断 14 字）· 模式 · 耗时；**深度不占列**，改用缩进（`　` × (depth−1)）表达嵌套。
-5. **数据源最终选择**：后台任务 = `jobs.events` 事件 + 工具结果句式的门控（**没用** `jobs.list`）；子代理 = 父会话 `subagent/catalog`（会话事件）+ 宿主 `subagent/start` / `subagent/end`（**没用** `listChildren` / `listDescendants`，也就没有每事件一次的异步全量读取，无需节流）。
-6. **有界**：一张卡最多 **8 行**（超出提示「另有 N 条更早的记录未列出」），已结算的行 **30 分钟**后退出名册；聊天里的历史卡保留——它们就是记录本身。
-
-### 侦察结论（原「实施前要侦察的」逐条答案）
-
-1. **子代理的终态触发** → 有，但**不是会话事件**：`subagent/catalog` 只在创建时 append，`running → inactive` 没有任何 `session/event`；可用的是宿主的 `subagent/start` / `subagent/end`（`packages/subagent/subagent/src/lifecycle.ts`，按委派父级做 scoped dispatch → 本模块用 `{ global: true }` 注册，与 DSH 自己的 invariant 同一写法）。**没有**采用轮询 / `turn/end` 边界刷新。见关键坑 38。
-2. **`jobs.list(owner)` 口径** → **没有依赖它**：名册由门控后的 registry 事件自己攒，所以不存在"前台调用是否还在列表里"的歧义（判据仍是关键坑 37 的工具结果句式）。
-3. **表格真机表现** → ✅ **使用者已目视确认（2026-09-23）**：表格与树形连线的渲染、列宽、长命令截断、zh/en 排版都没问题，`🧹 清理已完成` 按钮点击效果也正常。观测局限不变：API 侧读到的是卡片实体引用（`请升级至最新版本客户端，以查看内容`），**读不到正文**，这类结论只能由使用者给出。备用改法仍留着——替换 `renderTable` 一处（换成"一行一个任务"的列表）。
-4. **退场语义** → 已定：卡**保留**最后状态（发新卡，历史卡不动），名册里的结算行 30 分钟后清掉。
-5. **一张卡还是两张** → 已定：**两张独立卡**（`🧩 后台任务` / `🤖 子代理`），触发源与数据源不同。
-
-### 实测（2026-09-23 12:00:57 重启后，探针）
-
-- 起 `run_in_background` 的 `sleep 25`（job `bash-6`）+ 一次前台 `subagent` → 窗口内**恰好 4 条**面板消息：`🧩 后台任务`（12:02:45，任务开始）· `🤖 子代理`（12:02:45，注册）· `🤖 子代理`（12:02:48，**新消息** = 终态）· `🧩 后台任务`（12:03:09，**新消息** = `exit code: 0`）。
-- **只发不更新被证实**：两张 `🧩 后台任务` 的 message id **不同**，采样器全程没有对它们报过 `CHANGED`。
-- 前台 bash 调用 → **0 张卡、不进表**（该轮多次前台调用）。
-- 完整记录见 [CHANGELOG.md](./CHANGELOG.md)「后台任务 / 子代理面板卡」。
-
-### 仍未做（可选后续）
-
-- **O2 `/subagents` 命令**：可以直接渲染这张面板卡的快照（共用 `renderSubagentPanelCard`）。
-- **进程外子代理**（`local: false`，claude-code / codex / acp / dsh-sdk provider）：没有本地子会话就没有 `subagent/catalog`，lifecycle 事件也不带聊天归属 → **当前不列**。要覆盖可读 `subagent/start` 的 scope carrier（`dsh-scope` 的 `carrierKeyOf`，需新增 peer）拿父 agent。
-- **进度明细区**：长命令目前截断到 48 字；如果确实要看全文，可在表下加「明细」区或改用 `/job` 类命令。
-- **配置开关**：是否需要 `jobCards: off|detached|all` 之类（暂不做）。
-
----
-
-## 0.1.2-alpha.1 适配（已完成，2026-08-28）
-
-- 删除 `apiproxy` 依赖（DSH 0.1.2-alpha.1 整包移除 `packages/host/apiproxy`）
-- events 订阅改 `ctx.on('session/event', (session, event) => ...)` —— 5 文件统一改
-- user-questions / approval 答案改 `ctx.on('user-questions/request' / 'approval/request', listener return answer/outcome)` —— 走 Cordis waterfall，listener return 即 claim
-- selectModel 改 `ctx.sessionController.selectModel(...)` 一站式同步 agent ref + WebUI + 持久化（之前 plugin 自己的 `selections: Map` + `installModelSelection` 删除）
-- inject 数组 `'apiProxy'` → `'sessionController', 'userQuestions', 'approval'`
-- `/stop` 改 `sessionController.cancel({ sessionId })`
-- 132 tests pass / typecheck 0 errors / build OK
-- 已知降级：`tool/call` 事件无 view 字段（callView 永远 undefined）；`tool/result` 用 `event.data.meta` 作 resultView
-
----
-
-## DSH 0.1.5-rc.1 适配（已评估，2026-09-10）
-
-> 完整评估见 [`docs/migration-0.1.5-alpha.1-to-rc.1.md`](./docs/migration-0.1.5-alpha.1-to-rc.1.md)（279 commits）。
-
-- ✅ **插件运行时代码零改动**；依赖范围 `^0.1.5-alpha.1` **无需修改**（与 rc.1 同属 `0.1.5` tuple，semver 预发布范围自动命中）。
-- ✅ 17 个被 import 的 `dsh-*` 包 `exports` map 零差异，仅 5 个包源码有变动且全为增量/注释；19 个宿主服务名全在。
-- ✅ **测试环境坑（发版阻塞，已修 2026-09-10）**：`dsh-client-ui-primitives@rc.1` 把运行时依赖降为 `devDependencies`，全新安装后 `tests/client.spec.ts` 报 `Failed to resolve import "clsx"`。**采用 B1**：`vitest.config.ts` 加 `resolve.alias` 指向 `tests/stubs/ui-primitives.tsx`（按真组件可观测契约实现的四个替身），**零新增依赖、断言一条未删**。验证＝真模拟（移走 `node_modules/clsx`）：无 alias ❌ `Cannot find package 'clsx'`，有 alias ✅ 307 passed。完整记录见评估文档「问题 B」。
-- ✅ **C1（高）已实现（2026-09-10）——接管 `deliverables/presented`**。但结论与最初设想不同：**只把交付物列进 Turn Complete 卡片，不推送文件**。飞书没有工作区浏览器，推送既噪音大、又会与 `feishu_send_file` 重复；清单保留了 `present` 的全部信息（模型筛过的成品 + 描述），用户真要文件时说一句即可。实现落在 `feishu-streaming.ts`（收集）+ `channel.ts` `renderFooterCard`（渲染），**没有新建 `src/feishu-deliverables.ts`**。清单排在**卡片最前面**并用分隔线与指标隔开（2026-09-10 真机反馈修正，原先夹在 stats 与元信息之间）。
-- 🔲 **C2（中）`/subagents` 子代理卡片**：rc.1 有 `subagent/catalog` 事件 + 子代理排队/steer/stop，插件目前完全隐藏子代理会话。
-- ✅ **C4（低）已实现（2026-09-10）**：`deriveToolSummary` 补了 `present` 分支，显示 `交付文件：a.txt +2`（2026-09-11 随 i18n 对齐把「交付物」改成 WebUI 的「交付文件」），不再落到「工具名 · 首字段」的 `present · files` 兜底。
-- 📋 **C5（记录）代理环境**：入站 WebSocket（`ws`）不认 `HTTP_PROXY` 等环境变量，纯代理出网可能「发得出收不到」；暂不处理。
-- ✅ **C3 `/feedback` 无需改动**：它是宿主 `commands` 注册表命令，插件的 `commands.execute` 兜底路径已自动转发，且会出现在 `/help` 的「DSH 内置」分组。
-
----
-
-## DSH 0.1.5-rc.2 适配（已评估并升级，2026-09-10）
-
-> rc.2 距 rc.1 仅 **4 commits**（`dsh-v0.1.5-rc.1...dsh-v0.1.5-rc.2`），其中 2 个是 release/version bump，实质改动只有 1 个 Web 回移提交。
-
-- ✅ **插件运行时代码零改动、依赖范围不变**（与 rc.1 同属 `0.1.5` tuple，`^0.1.5-alpha.1` 自动命中；实测 `semver.satisfies('0.1.5-rc.2','^0.1.5-alpha.1') === true`）。
-- ✅ **17 个被插件 import 的宿主包一个都没变**：rc.2 仅改动 Web 客户端包 `ui-message-feedback`（点赞/点踩改弹窗确认）、`ui-deliverables`（产物卡片排版与间距）、`ui-primitives`（`CodeFileIcon` 重构为 artwork manifest）。`SESSION_FORMAT_VERSION` 仍为 **3**，无会话日志迁移，随时可退回 rc.1。
-- ✅ `ui-primitives` 的 `Button` / `Input` / `Switch` / `StateDot` 公开契约未变（只动 `CodeFileIcon`），且 **rc.2 仍未把运行时依赖放回 `dependencies`**，故 B1 测试替身继续有效、无需调整。
-- 🔲 飞书侧可受益的 rc.2 新特性：**无**（纯 Web 显示层改进，无对应聊天端口能力）。
-
----
-
-## DSH 0.1.6-alpha.2 适配（已评估并升级，2026-09-18）
-
-> 完整评估与事故记录见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](./docs/migration-0.1.6-alpha.1-to-alpha.2.md)（**887 commits / 2622 个改动文件**）。
-
-- ✅ **插件运行时代码零必改**：四个被消费的 `sessionController` 方法签名逐字节未变、client slot 契约零差异；依赖范围因同属 `0.1.6` tuple 无需改（只重装了工作区依赖）。
-- ⚠️ **Creator preset 工具集替换**：`cordis_define/run/stop/undefine` 全部删除，改由 `plugin_manager` 承担（自建 preset 需跟着改）。
-- ⚠️ **解析模式默认值 `link` → `runtime`**，核心包必须只有**一份物理副本**；本机当天因此在 `tsx` 源码入口触发 `@deepseek-ai/dsh-tools` 双实例 → **每次工具调用**报 `Cannot read properties of undefined (reading 'prepare')`。
-- ✅ **临时措施（仍生效）**：服务入口从 `tsx src/bin.ts` 改为**构建产物入口**（关键坑 28；**不动 DSH 源码、等上游**）。代价：改 host 源码必须重建、**dsh 运行期间绝不 `pnpm run build`**、跨 tag 切版本必须先清产物（关键坑 32）。
-- 🔲 上游修复落地后：把服务入口切回源码入口并复验一次工具调用。**2026-09-22 复核：0.1.7 里 `TOOL_RUNTIME_SCHEDULER` 仍是局部 `Symbol(...)`（未改 `Symbol.for`），且 alpha.2 的默认解析模式开关已随解析模型重写消失 → 权宜之计仍未退休，只能靠实测实验撤。2026-09-23 alpha.2 复核：仍未修**（alpha.2 范围内无任何 commit 引用 `#7011` / `#6986`）——详见上方 **B3**。
-
----
-
-## DSH 0.1.7-alpha.1 适配（已评估并升级，2026-09-22）
-
-> 完整方案、执行记录、两次 build 失败的根因与逐项实测见 [`docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md`](./docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md)（**1299 commits**）。
-
-- ✅ **A1 设置服务换血**：`settings.register()` / `settingsScope.get()` / `scope.watch()` 全删（服务变 `SettingsForms`），配置改读 `apply()` 收到的 live Config；`ConfigSchema` 字段**必须 `.volatile()`**（否则设置页空白、所有写路径抛错）；`ns` 改为**从自身 fiber 反查**（不再依赖"碰巧同名"）；`scope.watch` → `ctx.on('loader/volatile-update')`。
-- ✅ **A2 preset 包改名**：`@deepseek-ai/dsh-agent-presets` → `@deepseek-ai/dsh-agent-preset-registry`（服务名与 `list/resolve/mount/defaultId` 不变）；依赖范围整体升 `^0.1.7-alpha.1`（关键坑 17）、`schemastery` → `^3.18.3`、`cordis` → `^4.0.3`。
-- ✅ **C1 `tool/result` 拍平**：改读 message 自身的 `content` / `isError`（旧读法会把**失败渲染成成功**），并加回归测试锁死「失败必须渲染成 ❌ 失败」。
-- ✅ **C4 `locale:'auto'`** 恢复跟随 DSH 语言（改走 `settings.describe()` + 1s TTL 缓存）。
-- ✅ **升级红利已兑现**：压缩死区（阈值改为 `min(W × ratio, W − O − headroom)`）与 `turn/end` 被 `Session.append` 静默拒绝两条链由上游修复；坑 28 的双实例症状在产物入口下**未复现**（但权宜之计未撤）。
-- ✅ **C2 归档运行中会话**（2026-09-22 完成）：对齐 WebUI 的「先问再停」——第一次归档不带 `stopActivity`（绝不静默停止正在跑的工作）；DSH 回以 `WorkspaceActiveSessionError` 时发**第二张确认卡**写明活动类型，按钮变「停止并归档」，只有它的确认才传 `{ stopActivity: true }`。错误识别用鸭子类型（宿主抛的类，插件可能持有另一份副本，与关键坑 28 同源）。
-- 🟡 **C3 弃用 API**（部分完成）：`snapshotEvents` / `eventAt` / `ownEvents` 已被上游弃用（2026-09-09 决策：既有逻辑可暂不迁移、**禁止新增调用**）。**会话列表已迁**：活动会话的标题/预设/空白位改读宿主投影 `title` / `agentPreset` / `sessionListMetadata`，活跃度用与 WebUI 相同的 `max(createdAt, lastPromptAt)`（关键坑 8 同源）；投影服务缺失时保留日志回放。**仍保留一处**：`summarizeTurn` 需要单轮的原始事件（逐步计时等，现有投影不提供），已在注释写明理由。
-- ✅ **B3 目录型 preset：已决定不再保留（2026-09-22 处置完毕）**。0.1.7 的 registry 既不扫目录也不收 preset 路径 → 本地「持久模式」preset（`~/.dsh/.agent-presets/persistent/`）本就不再出现在 `agentPresets.list()`；使用者决定**不迁移、直接删除**，已把整个 `~/.dsh/.agent-presets/` 移出（含 6 份历史副本）。**原本的搬迁做法（留档备查）**：若要恢复，需搬成 `@deepseek-ai/dsh-agent-preset` 声明式行，且**必须文本级搬运**（保留 `!!js` 表达式）、**不要丢 `isolate` 组**。删除前已精确复核：**0 个会话**记录过该 preset；删除前后 `--dump-config` 逐字节一致（无引用，故无需重启）。
-- ✅ **升级后发现的插件 bug 已修**：重建冷会话时用**插件配置默认值**覆盖了会话自己记录的 preset → 「卡片写 `cordis`、工具集却是 `standard`」。与 0.1.7 无关（`0.1.6-alpha.2` 上已复现），已修并固化为**关键坑 33**。
-- ✅ **C2 / C3 / P6-8 批次已上线**（2026-09-22 22:40 重启后确认）：`apply()` 三项服务 available、`[ws] ws client ready`、`dsh web:` banner 在、journal **0 error**；并已用 `cordis_inspect` 证实宿主 `sessionProjections` 服务在 **host 平面**存在，`stateOf(session, key)` 契约与代码假设一致，且 `ctx.get(...)` + 判 `undefined` 正是官方许可的**可选访问**方式（`requiresUndefinedCheck: true`）。
-
----
-
----
-
-## DSH 0.2.0-rc.2 适配（已评估并升级，2026-10-02）
-
-> 对比 `dsh-v0.2.0-rc.1...dsh-v0.2.0-rc.2`：**187 commits / 1022 个文件**、**同 tuple（0.2.0）**、`**/package.json` **无增无删**。完整执行记录见本机 `notes/upgrade-0.2.0-rc.2.md`（含逐符号/逐事件核查、三轨彩排、切换与实测）。
-
-- ✅ **rc.2 是桌面端/客户端为主的小版本，插件零必改**：插件 import 的 18 个包 + 客户端用的 5 个包导出**零删除**（仅新增）；用到的 30 个事件在 rc.2 树里逐个 `git grep` 全部存在。
-- ✅ **插件依赖范围有意不动**（`^0.2.0-rc.1` 同 tuple 覆盖 rc.2，semver 与运行时闸门都实测通过）——升到 `^0.2.0-rc.2` 反而会让**回滚到 rc.1 被闸门拒**。只把 `package-lock.json` / 物理依赖树刷新到 rc.2（`3d009d5`，零源码改动、产物逐字节一致），让本地 typecheck / 787 用例跑在真正运行的那版上。
-- ⚠️ **本跳唯二有源码改动的相关包**：① `user-questions` 新增**实验性异步问答**（`askTimed` / `TimedQuestionWait` / 新增 `./typert` `./remote` 导出），开关在 `tool-ask-user` 的 Cordis 行 `Config.mode`，**默认 `'legacy'`** ⇒ 本部署**行为不变**；② `llm-pi-ai` 把 pi-ai 升到 **0.87.1**，compat 闸门字段有增删（去掉 `deferredToolsMode`/`supportsToolReferences`，新增 `supportsMidConvo*` 等，新增 `mistral-conversations` 协议）——本部署补丁里 minimax 只用 `compat.forceAdaptiveThinking` + `reasoningEfforts` + `input`，**都不在被删字段里**（冷启动彩排已验证补丁整体解析通过）。
-- ✅ **先彩排后切换，三轨全绿**：A 宿主（rc.2 浅克隆构建，`--version` 0.2.0-rc.2）/ B 插件（`git archive` 全新装，38 个 `dsh-*` 解析到 rc.2，787 用例全绿）/ B+ 冷启动（真实补丁 + 隔离 `DSH_HOME` + appId 置假，`apply()` 与三个服务 available、**0 peer denial**）。
-- ✅ **正式切换一次跑通（4 分 09 秒）**：`TARGET_OK=1 PLUGIN_OK=1 ROLLED_BACK=0`；改动过的 320 个包目录 `lib/` 断言全过（坑 46 后置守卫）；journal `error|failed` 0、**peer denial 0**；session map 与停服前逐项一致（10/12/11/6）。
-- ✅ **升级后实测**：本会话（真实飞书对话）跑在 rc.2 上，步骤卡/工具/就地更新全部正常；服务端读回线上卡片（坑 48）确认结构正确；服务 `MainPID 776679`、`NRestarts=0`。
-- ⚠️ **如实记录一次与升级无关的瞬时网络抖动**：`20:11:21/26` 两次 `ECONNRESET`（到 `open.feishu.cn`），插件「重试一次」后 **20:11:28 成功送达**，此后 4 小时 **0 条 `sdk error`**、卡片持续正常 ⇒ 判为本机链路抖动，**不是 rc.2 回归**。
-- 🔲 **未单独验**：插件客户端半边在 rc.2 的页面表现（本跳 `client/client.js` 零改动；`/api/modules` 被浏览器信任栅栏挡成 401 未强绕）——可在浏览器打开设置页看「工作步骤展示」下拉确认。
-- 🔲 **待观察（继承上一跳）**：异步问答模式若将来启用，需重验飞书问答卡的「迟到答案」语义与双端弹卡竞态（坑 22）；`agent-loop` 失败步骤补记 pending `tool/result` 的行为仍在观察。
-- 🔲 **新发现：rc.2 给 `MessageSourceMap` 加了一个持久注入 kind**（`user-question-reply`，见坑 50 / `docs/transcript-parity-design.md` §1.1、§五·4）。它只在 `tool-ask-user` 的 `Config.mode = timed` 时出现，**本部署仍 `legacy`，所以真机上从未见过**。切 `timed` 之前要定的两件事：① 提示行给它专门的中英文案（否则只会显示 `📥 user-question-reply`）；② 「答案迟到」要不要在问题卡那一侧也留痕（现在迟到答案只在注入行里看得见，问题卡本身不知道它已过期）。**升级后顺手重数一遍声明者**（rc.1 = 28 个 `src/` 文件、rc.2 = 29 个），这是判断上游有没有加新 kind 的最便宜手段。
-
----
-
-## DSH 0.2.0-rc.1 适配（已评估并升级，2026-09-28）
-
-> 对比 `dsh-v0.1.7-rc.1...dsh-v0.2.0-rc.1`：**607 commits / 3838 个文件**（新增 9 个包目录、**0 个删除**）。完整执行记录见本机 `notes/upgrade-0.2.0-rc.1.md`。**这是第一次跨 semver tuple（0.1 → 0.2）的跳跃**，且发行说明从 `v0.1.7-rc.2` 累计 —— 实际吃了两段变更。
-
-- ✅ **先彩排后切换**：临时克隆全新构建 + **真实 profile 补丁**冷启动（插件一并装上、凭据置假不连飞书）都通过，才动线上；彩排断言见本机笔记。
-- ✅ **逐符号 0 删除**：16 个被 import 的包 **0 个导出符号被删**（`dsh-llm` 纯新增 `ToolUpdate` / `ToolHistory` / `ProjectedToolUpdates` / `projectToolUpdates` / `ACCOUNT_QUOTA_EXCEEDED_CODE`）；`agent/assistant-stream`、事件目录、`llm-pi-ai` 的 config/catalog、`session-format`、`settings` **逐字节未变** ⇒ 台账 **O20 的实时流方案原样成立**。
-- ⚠️ **插件这次必须动，但只需动依赖**：34 处 `@deepseek-ai/dsh-*` 由 `^0.1.7-alpha.1` 升到 `^0.2.0-rc.1`（不升会被 peer 闸门判不兼容、**每次启动只提示一次就静默跳过**）；**源码零改动**，typecheck 0 error、**720 tests / 42 files** 全绿，`client/client.js` 重建逐字节未变。升级脚本的两次失败（守卫前置判死构建与自动回滚 / 旧 `node_modules` 触发 `ERESOLVE`）已成坑 **46/47**。
-- ⚠️ **部署侧三条变化**：① 工作过程展示默认值 `standard` → **`detailed`**，且 legacy `expanded` **这跳起读作 `detailed`**（0.1.7 时读作 `standard`）——本部署 profile 补丁正钉着 `expanded`，观感会自动变详细一档，要保持原样得显式钉 `standard`（**待使用者定**）；② 定时/自动化任务改为**可选插件包**，本部署未启用；③ `llm-deepseek` 拆成 api-key + account 两条，**`deepseek-official` route id 不变**（默认模型不受影响）。
-- 🔲 **待真机观察**：0.2.0 的 `agent-loop` 给失败步骤补记了 pending `tool/result`（`ToolCallRecovery`）→ 插件会收到"没有 `tool/call` 前置"的结果，需跑一轮「工具失败」确认步骤卡不错位。
-- 🔲 **仍未解决**：坑 28 的上游讨论（源码入口下 `dsh-tools` 被求值两次）本次**未撤权宜**、也未确认修复；`dsh-tools` 双实例规避继续走构建产物入口。
-
----
-
-## DSH 0.1.7-alpha.2 适配（已评估并升级，2026-09-23）
-
-> 对比 `dsh-v0.1.7-alpha.1...dsh-v0.1.7-alpha.2`：**162 commits / 869 个文件**。完整执行记录见本机 `notes/upgrade-0.1.7-alpha.2.md`。
-
-- ✅ **插件零改动**：逐符号核过 `settings.section` / `sessionProjections` / `configForms` 契约 / `remote.credentials` / `sessionController.prompt`、`selectModel` / `archiveSession` / `WorkspaceActiveSessionError` / `whileServed` —— **全部 0 差异**；18 个 peer 包里 16 个源码 0 变更，其余两个（`api/session-controller`、`core/tools`）只有**纯新增可选字段**（`SessionPageRequest.turnWindow?`、`ToolDefinition.projectContent?`）。持久化 schema 无变化 → **无需数据迁移**。
-- ✅ **产物逐字节一致**：升级前后 `lib/index.js` / `client/client.js` 的 sha256 相同——「不需要改」不是推断，是构建结果。typecheck 0 error、**458 tests 全绿**（插件 dev 依赖已对齐 alpha.2：44 个 `@deepseek-ai/*` 包全部 `0.1.7-alpha.2`，`cordis` 4.0.4、`schemastery` 3.18.4）。
-- ✅ **升级红利**：① 后台任务完成唤醒**默认无上限**——修掉「用户离开后会话被静默卡住」，飞书场景正好命中（本机未配置 `maxConsecutiveWakes`，升级即得）；② Web 服务重启后原页面**恢复连接**，不再「显示已连接但收不到回复」；③ 客户端批次脚本失败改为**按行重试**，设置卡更不容易被同批次其他行拖垮。
-- ⚠️ **一处破坏性配置变更不适用**：`spill-policy` 的 `maxInlineBytes` → `maxInlineTokens`（改为按 token 计预算）。本机没有任何自定义 spill-policy（上游改的是 base bundle 默认值）。
-- ℹ️ **发行说明那句「插件依赖解析模式调整为运行时解析 / 插件管理支持运行时卸载，请开发者检查加载与卸载逻辑」的落点**：对应 `workspace:^` → `workspace:*`（DSH 目标精确）/ `~`（vendor、native）的**依赖范围策略**（连 remote API cookbook 的示例也改了），**不是运行时行为改动**——alpha.2 里 `packages/boot/app-boot/src/profile-resolution/*` 一个文件都没动。我们已符合「共享实例的 dsh 包同时声明在 `peerDependencies` 与 `devDependencies`」；linked 解析**不校验 peer 范围**，且 `^0.1.7-alpha.1` 本就涵盖 alpha.2（同 tuple，关键坑 17），所以 `package.json` 无需改动。插件自身的卸载卫生也复核过：定时器在 `dispose()` 里 clear，路由/字典/表单全走 `ctx.effect`，无裸 `process.on` / `globalThis` 泄漏。
-- ℹ️ **服务入口路径未变**（`apps/cli/package.json` 的 `bin` 两版一致）→ systemd 单元无需修改，**关键坑 28 的产物入口规避继续有效**；升级后工具调用正常，`prepare` 报错未复现。
-- 🔲 **仍未解决**：坑 28 的上游讨论（源码入口下 `dsh-tools` 被求值两次）在 alpha.2 范围内**没有任何 commit 引用**，无法确认已修 → 权宜之计**不撤**。
-- 🔲 **P6-4 仍被上游阻塞**：alpha.2 没有新增任何逐步计时类投影（`sessionProjections` 的方法集与 alpha.1 完全一致）。
-
----
-
-## 迁移遗留：P6 可选重构（2026-09-22 盘点，2026-09-23 复核）
-
-> 来源：0.1.7 升级评估 §2.6「可借新特性重构」。没有一条是"必改"，但都是"能删掉自造轮子"的改进。
-> **状态（2026-09-23 收口：8 项里 6 项完成 / 1 项阻塞 / 1 项按收窄后的范围完成）**：P6-1 / P6-2 / **P6-3** / **P6-5** / **P6-6** / P6-8 ✅ 已完成；**P6-4 被上游阻塞**（见 B2）；**P6-7 完成 3 项**（modelCatalog / 工作区 pin-unpin / job 任务卡），`speech-to-text` 与 `readBytes` 按使用者 2026-09-23 的决定**本次不做**（见 X3）。**后续修复（2026-09-23）**：P6-7c 的 job 任务卡原本把**前台** bash/pwsh 调用也镜像成卡（每个工具调用多一张，关键坑 37）→ 已改为只镜像工具结果确认过的后台任务，`removed` 不再改写终态卡；同批实现 **O1** 思考期占位卡。
->
-> **已重启生效（2026-09-23 02:33）**：`MainPID` 3017371 → 3110625、启动时刻 01:50:34 → 02:33:24；journal **0 error**；`ctx.get('jobs')` **拿到服务**（那条 `no background-job registry` 出现 0 次 → 任务卡功能开着）；产物含 `startFeishuJobs` 与 `plugins.detail.*`。⚠️ 任务卡是否送达 **journal 证明不了**（只在失败时记日志），与页面级效果一样待使用者目视。
->
-> ⚠️ 本表原先**漏了 P6-3**（从 P6-2 直接跳到 P6-4），2026-09-23 补上——它的内容随 P6-1 一起落地了。
-
-| # | 项 | 收益 / 代价 |
+| # | 结案内容 | 日期 / 现状 |
 |---|---|---|
-| ~~P6-1~~ | ✅ **已完成（2026-09-22）** 设置页改走原生 **`ctx.configForms`**（ns = profile 行 id `lark-channel`）+ **`ctx.remote.credentials`**（密钥按引用读写） | **自建的 `SETTINGS_PATH` 路由与 `settings-api.ts`（140 行：字段白名单 / 脱敏 / revision 栅栏）已整块删除**；页面位置不变（仍是 Settings → 飞书与 Lark 标签页），仅保留 `/dsh-feishu/provision` 承载扫码与运行状态。**已重启生效（2026-09-23 00:13）**：服务 active、journal 无 error、产物核对通过 |
-| ~~P6-2~~ | ✅ **已完成（2026-09-22）** | 「留空 = 保留 secret」由凭据域写入语义实现（只在用户输入时 `.set()`），不需要自建表单组件 |
-| ~~P6-3~~ | ✅ **已完成（随 P6-1 一并落地，2026-09-23 复核确认）** `.volatile()` 免重启、**不杀正在跑的 turn** → 替代原来的「保存后重连」 | ① 19 个可编辑字段**全部** `.volatile()`（`src/config.ts:98-116`）→ 保存立即生效、**不需要重启 Harness**；② 「不杀正在跑的 turn」由 `connectionFingerprint`（`src/config.ts:181`）保证——指纹**只覆盖连接字段**（`appId` / `appSecret` / `domain` / `requireMention` / `dmMode` / 两个 allowlist / `reactEmoji`），显示开关、语言、`provider`/`model`/`workspace`/`agentPreset`、`errorMessage` **都不在指纹里** ⇒ 改它们不会推倒 runtime（坑 20；注释里还留着 2026-09-10 那次「跑 turn 时切显示开关 → `flush on a closed handle`」的事故记录）；③ `loader/volatile-update` 仍会调 `runtime.reconcile()`，但它是**指纹门控**的，非连接字段的重复写是空操作 |
-| ~~P6-8~~ | ✅ **已完成（2026-09-22）** 两项清理 | ① `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-runtime` 已删（现为 locale / ui-settings / ui-plugin-manager / api-remotes）；② `settings.action` 的 `id:'open-document'` + `priority:-1` 影子注册**已补注释**（`src/client/index.ts:61-71`），写明它必须与壳层同名同 id 才能压掉壳层入口。⚠️ 注释里仍留着一句「Intent not re-verified」——**当初为什么要压掉壳层那条 action，仍未复核** |
-| P6-4 | 用 `sessionController.projections()` 替代剩余的全量日志读 | 与 C3 剩下那处（`summarizeTurn`）同源；**要等上游提供逐步计时类投影**，否则轮次指标会退化 |
-| ~~P6-5~~ | ✅ **已完成（2026-09-23，commit `cff2c91`）** `plugins.detail.badge` / `actions` / `section`（新单元格 id `lark-channel`，关键坑 35） | 设置页只留**配置**，**连接状态与扫码**搬到插件详情页：badge = 状态标签、actions = 「扫码配置 / 重新扫码」、section = 连接与扫码区块（二维码在这里）。三个 entry 都认 subject（非本插件返回 `null`，且**不订阅、不发请求**）。**「重新连接」在客户端不可达**（宿主 `reconcile()` 按连接指纹门控、调用点全在宿主侧）→ 给的是有真实副作用的扫码动作；限制与两个替代做法写在 `docs/feishu-setup.md`。文档同步：README（中英双语「两个页面」+ 快速开始改指向）与 `docs/feishu-setup.md` |
-| ~~P6-6~~ | ✅ **已完成（2026-09-23，commit `f43750b`）** `locale` meta + `package.json` `icon` | `locale/en.json` + `locale/zh.json`（`meta.title` / `meta.description`）+ `icon.svg`；`package.json` 顶层 `icon`、`exports` 放行 `./locale/*.json`、`files` 补两个资源。**验证用宿主自己的 `readPluginMeta()`**：返回中英两套文案 + base64 SVG 且**无 `error`** |
-| ~~P6-7~~ | 🟡 **按收窄后的范围完成 3/5（2026-09-23）** | ✅ `modelCatalog()`（`sessionController.modelCatalog()` 一次拿 provider + **可读模型名** + 每模型推理档位，llm 目录降为回落；`eb33289`）、✅ 工作区 **pin/unpin**（面板两个幂等按钮 + 📌 标记，归档互斥走专门文案；`825e273`）、✅ **job 任务卡**（一人一卡、就地更新、首发不防抖、`dispose()` 退订；`663a96a`）。**本次不做**：`speech-to-text`（本机无语音供应商，无法端到端验证）、`readBytes`（纯内部重构、用户不可见）。**2026-09-23 修复**：job 任务卡的判据曾是「registry 里有 job 就发卡」，而前台 bash/pwsh 调用也是 job → 每个工具调用多一张卡（关键坑 37）；现改为只镜像**工具结果确认过**的后台任务，且 `removed` 只清账、终态卡保留 |
-
-- ⏳ **V13 压缩阈值实测**：上游把触发公式改为 `min(W × ratio, W − O − headroom)`（本机 = `min(800000, 680000)` = **680000**）；需要一个长会话自然跑到该水位才能确认日志出现 `compaction/start`，**至今未触发**。公式已在代码侧核对，**不是待改项**，只是"待观察"。
-
----
-
-## 已完成
-
-| # | 功能 | 说明 |
-|---|---|---|
-| — | 归档运行中的会话 | ✅ **已完成（2026-09-22）**：DSH 0.1.7 起拒绝归档仍有活动的会话（`WorkspaceActiveSessionError`）→ 插件发**第二张确认卡**写明活动类型（turn / 子代理 / 后台任务 / 定时任务）、按钮「✅ 停止并归档」，**只有它确认**才传 `{ stopActivity: true }`；错误按 `name` + `activity[].kind` 鸭子类型识别（宿主抛的类，插件可能持有另一份副本）。对齐 WebUI 的「先问再停」，绝不静默停止正在跑的工作 |
-| 1 | 卡片化 + footer | 最终回复卡片底部标注 workspace + preset + **模型名** + **推理等级** + **上下文使用量** |
-| 4 | `/status` 命令 | 展示 session id / title / workspace / preset / model / **reasoning** / tokens / context / **缓存命中率** / **TTFT** / **吞吐量** / **LLM 时间** / **工具时间** |
-| 5 | 工具调用展示 | 订阅 `ctx.on('session/event')` → `tool/call` + `tool/result`，wathet/green/red 卡片。**原地更新**：`tool/call` 发卡片后保存 `messageId`，`tool/result` 用 `updateCard` 更新同一张卡片 |
-| 6 | todo 展示 | 订阅 `ctx.on('session/event')` → `todo/write`，turquoise 卡片含进度条 |
-| 11 | 中间消息不可见 | ✅ 改为 `ctx.on('session/event')` + `tool/call` 时 flush 累积文字，紫色卡片 |
-| 12 | tool call 卡片 markdown 渲染 | ✅ `lark_md` → `markdown`，4 文件 11 处 |
-| 13 | 卡片 Markdown 渲染不稳定 | ✅ 全面迁移到 Card JSON 2.0，表格/标题/内联代码原生渲染，移除降级逻辑 |
-| 14 | 纯查询命令即时返回 | ✅ fire-and-forget + agent 运行状态检测 |
-| 15 | Agent 消息队列调研 | 两层队列机制已确认（见下方调研记录） |
-| 17 | `/reasoning` 推理等级命令 | ✅ `/reasoning [off|low|high|max]`，通过 `agentDefaultModel.saveSelection` 持久化 |
-| 19 | tool_call / tool_done 顺序问题 | ✅ `tool/call` 直接发送保存 `messageIdPromise`，`tool/result` 等待后 `updateCard`，消除竞态 |
-| 20 | 工具调用摘要 | ✅ 通过 mux `frame.view` 获取 `presentCall`/`presentResult` 的 `description`、`title`，显示在工具名称上方 |
-| 21 | 卡片颜色区分 | ✅ 工具调用中 wathet → 成功 green → 失败 red；Reply 蓝色；Turn Complete 绿色 |
-| 22 | Reply 标题命名 | ✅ 已统一为 "Reply" |
-| — | `/stop` 命令 | 通过 `ctx.sessionController.cancel({ sessionId })` 中断运行中的 agent，等同 WebUI 停止按钮 |
-| — | `/stream` 命令 | 切换 `showIntermediateMessages` 设置（已与中间消息模块解耦，保留备用） |
-| — | 统一 per-step 卡片 | ✅ 每个 step 一张卡片，包含 reasoning + text + 工具调用 + 结果预览 + step 时长/token footer |
-| — | 工具结果预览 | ✅ 按 `resultView.card` 类型分发渲染（terminal/web/search/read/diff/generic） |
-| — | 工具名称内联代码 | ✅ 工具名用 `` ` `` 内联代码展示（如 `` `read` ``、`` `edit` ``） |
-| — | Turn Complete 卡片 | ✅ 显示轮次时长、TTFT、吞吐量、输入输出 token、缓存命中率 |
-| — | Step token footer | ✅ 每个 step 卡片底部显示时长 + 输入输出 token |
-| — | Debounce + flush 同步 | ✅ 150ms debounce 合并快速更新，turn/end 时 flush 确保 footer 在 card update 之后发送 |
-| — | 卡片顺序（步骤卡优先） | ✅ 每 chat 步骤卡消息串行链 + 发卡前屏障（问题卡/审批卡/溢出续卡前先刷出并等待步骤卡消息）+ 溢出续卡显式 `await lastStepSend`；修「续卡排到更早步骤卡前」与「问题卡先于步骤卡」 |
-| — | 卡片显示粒度开关 + 面板精简 | ✅ **已完成（2026-09-09）**：`showToolCalls` / `showToolArgs` / `showToolResults`（+ 已有 `showReasoning`）四个开关；工具总开关关闭时纯工具步骤不发卡；WebUI 面板改为「应用凭据 / 访问策略 / 卡片显示」三卡，移除 Provider/Model/Workspace/Agent Preset/失败提示；修 `SETTINGS_KEYS` 漏收 `showReasoning`；新增 `/display` 斜杠命令覆盖四个开关 |
-| — | 防止卡片消失 | ✅ 内层 try/catch 保护 mux 事件处理，timer 回调 error-safe |
-| — | 不同步骤工具调用分离 | ✅ `resetStep` 不清除 `state.chat`（session 级坐标），每个 step 独立卡片 |
-| — | 提问/审批两端同时弹卡 | ✅ **已完成（2026-09-11）**：飞书绑定会话不再让 WebUI 静默失效——最外层监听器渲染飞书卡后用 `next()` 把同一请求交给 WebUI，`firstDefined()` 赛跑、谁先答谁生效；飞书胜出时用信号门中止转发（浏览器卡片消失），WebUI 胜出时飞书卡改写为「已在网页端处理」。见 `src/dual-answerer.ts` + CHANGELOG |
-| — | 审批按钮反馈 | ✅ 点击后卡片结算为 ✅ 已允许 / ❌ 已拒绝（随 `/lang` 双语），移除按钮 |
-| — | 审批卡：中止作废 + 取值统一 | ✅ **已完成（2026-09-11）**：本轮中止（`/stop`、turn 取消、请求结束）时审批卡此前会留下点不动的活按钮，现改写为灰色「⏹️ 审批已失效」并去按钮；按钮 `action.value` 从自写的「只认字符串」解析改为共享 `decodeCardValue()`（字符串/双重编码/对象都吃）。整卡原先硬编码英文，现已全量双语（`approval*` 一组 i18n 字段） |
-| — | i18n 词典对齐 WebUI locale | ✅ **已完成（2026-09-11）**：以各 `client` 包的 `src/client/locales.ts` 为准对齐中英词表——审批 `等待审批`/`允许一次`/`拒绝`、`推理等级`（原「推理强度」）、会话 `分叉`（原「派生」）、`交付文件`（原「交付物」）、`首 token 延迟`（原 `TTFT 平均`）。能取自词典的测试断言改为引用 `t.xxx()`，避免改词即红 |
-| — | 飞书事件订阅修复 | ✅ provision 新增 `im:message.reaction` 权限 |
-| — | 卡片按钮回调修复 | ✅ ~~Node.js SDK `MessageType.CARD` 被过滤~~**经对照实验证实补丁不必要**：`card.action.trigger` 以 `type='event'` 到达，帧过滤不拦它；已移除 `patch-sdk-card-action.sh` + `postinstall`（还原 pristine SDK） |
-| — | 选项卡片反馈 | ✅ 选择后 recall 旧卡 + 发新卡（青绿色头部，显示所有选项，已选高亮） |
-| — | 双重编码 JSON | ✅ Feishu `action.value` 双重编码 → 二次 `JSON.parse`（questions + approvals） |
-| — | Turn Complete 时间修复 | ✅ LLM 时间（assistant/message 累加）与工具时间（tool/result 累加）分开统计 |
-| — | `/thread` 改名 `/session` | ✅ 命令实际操作 DSH session（`listSessions`/`switchToSession`），与飞书原生"话题"混淆、与 WebUI「会话」心智不一致；已重命名（`commands.ts`/`index.ts`/`tests`/文案/`FEISHU_OWNED_COMMANDS`），**不保留 `/thread` 别名** |
-| — | `/session` 管理面板 | ✅ `feishu-session.ts`：下拉选会话 + 切换（占用先确认）/detach/归档/fork/改名（独立卡片，`sessionController.rename`）/列表/刷新；`/session list` 表格卡；`/session N` 快速切换 |
-| — | `/help` 卡片化 + 分组 | ✅ 飞书文本不渲染 markdown → 卡片；分「🔹 dsh-feishu 插件 / 💠 DSH 内置」两组，被拦截命令（busy/steer/queue/permission/stop）补进 Feishu 组 |
-| — | 工具调用摘要找回 | ✅ `deriveToolSummary`（`feishu-streaming.ts`）按 Web UI `classifyTool`+`deriveSummary` 从 tool/call 的 arguments 本地推导（bash/search/read/write/code/未知）；因 DSH 0.1.2-alpha.1 不再发射 `presentCall`，`callView` 路径已死 |
-| — | 工具 args fenced 代码块 | ✅ args 用独立 `` ``` `` 代码块渲染（`sanitizeCodeblock` 折反引号/剔控制字符），避免破坏卡 markdown/横向溢出 |
-| — | 工具结果兜底展示 | ✅ `renderResultPreview` 各分支无输出时 `finish()` 兜底渲染原始结果内容，保证结果始终可见 |
-| — | 免会话命令重启可用 | ✅ `resolveAgentOrResume`（harness）冷会话懒恢复 + 真正免会话命令（`/model`/`/reasoning`/`/approvals`/`/approve`/`/deny`/`/help`）在 `resolveAgent` 兜底前直接拦截 |
-| — | 问题结算卡保留描述 | ✅ `renderSettledQuestionCard` 补上 `detail` |
-| — | Turn Complete 展示 busy 模式 | ✅ footer 只读显示 `**Enter while busy:**`（Queue/Steer），与 `/status` 一致 |
-| — | `/busy` 交互选择卡 + `/queue` | ✅ `feishu-busy.ts`、`/queue`（`forceQueue`），模式匹配短接 |
-| — | `action.value` 双解码 | ✅ `decodeCardValue`（多深度 JSON.parse，cap 4），busy/permission/model-select/session 共用 |
-| — | `/model` 一站式 | ✅ `ctx.sessionController.selectModel`（agent scoped ref + WebUI + 持久化），不再用插件 `selections: Map`/`installModelSelection` |
-| — | 步骤卡实例更新必须等消息发出 | ✅ **已修复（2026-09-08）**：飞书在发送引用卡片实体的消息时对内容做快照，`cardkit.v1.card.update` 若早于 `sendCardByReference` 就不会进入该消息（表现为「只剩 reasoning」/「工具停在 running」）。`executeCardUpdate` 先 `await ref.messageId` 再更新。用 `im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回真实渲染内容验证 |
-| — | 快步骤首发合并 | ✅ **已优化（2026-09-08）**：`STEP_CARD_DEBOUNCE_MS = 150`，首发也防抖——一步内 reasoning→call→result 全落窗口内时只发一张卡（内容已含结果）；步骤在窗口内结束或 turn/end 时 `flushPendingSend` 补发 |
-| — | Turn Complete tok/s 口径 | ✅ **已修复（2026-09-08）**：首 token 判定改用 dsh-llm `isTokenDelta`（含 tool-call delta），新增 `totalDecodeTokens` 与 decode 时间同批配对，对齐 Web UI `deriveTurnMetrics`（此前「只调工具」的步骤会虚高，实测最高 2×） |
-| — | 每张助手卡都带 tok/s | ✅ **已完成（2026-09-08）**：步骤卡 footer、溢出续卡、兜底回复卡 footer 均显示速度 |
-| — | 步骤卡 footer 两行 + 定位信息 | ✅ **已完成（2026-09-08）**：footer 拆两行；卡片标题带「第 N 轮 · 第 M 步」；reasoning 标题带思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）。**token 口径 2026-09-10 修订**：第一行 `⏱ 时长 · 📥 本步新输入（未缓存+缓存写入，有命中带 ♻️ NN%）→ 📤 输出`，第二行 `🚀 tok/s · 📊 上下文占用/窗口 (百分比)`——📥 不再用整段 prompt（那与 📊 是同一个数，会重复显示） |
-| — | 运行中发消息提示 + steer 去重 | ✅ **已完成（2026-09-08）**：运行中发普通消息立即回一条**纯文本**提示（steer 已插入 / queue 已排队）；steer 分支不再等待本轮、不返回文本，避免同一 turn 出现两张回复卡 |
-| — | 去掉用户消息的 `[Feishu] ` 前缀 | ✅ **已完成（2026-09-08）**：`reply()`/`steer()` 都不再拼通道前缀，用户文本原样进模型；纯图片/文件消息只带 image/file 块（不再补空文本块）。通道归属由 session↔chat 绑定记录，回复路由由插件决定，与文本无关。见 CHANGELOG |
-| — | 步骤卡标题色带"变白底"定性 | ✅ **已定性（2026-09-08）**：插件发出的 `header.template` 始终正确，飞书服务端实体也是正确颜色；**部分客户端在卡片更新后不重绘标题背景**，属飞书客户端渲染问题，非插件 bug。取证方法：`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`。不再往代码里查（详见下方「已知问题」） |
-
-## 下一轮待办（2026-08-30 定）—— 5 项里只剩 1 项
-
-> 原记录：「用户最后明确：**先更新 TODO 文件，暂不动手改代码**」。
-> **2026-09-23 复核：第 2/3/4/5 项已全部完成，只剩第 1 项的「专门命令」没做**（已并入上方 **O2**）。
-
-| # | 功能 | 优先级 | 说明 |
-|---|---|---|---|
-| 1 | subagent 会话独立命令 | **中** | **主会话列表剔除 subagent 会话：✅ 已完成（2026-09-02）** —— `listSessions()` 按会话 durable header `origin === 'subagent'` 过滤（DSH 子代理会话创建时即写该字段；fork 会话只有 `parentSession`、无 `origin`，不受影响，仍显示）。`/session`、`/session list`、`/session N`、onboarding 选择卡全部经 `listSessions`，一处过滤全覆盖。剩余：新增专门命令（暂定名 `subagent`）单独查看子代理会话，数据源 `ctx.subagents.listChildren` / `listDescendants`（列名称/状态/depth），只读。**尚未动工**（2026-09-11 核实：`src/` 内无该命令；与上文 rc.1 评估的 **C2** 是同一件事） |
-| 2 | `/steer` 与 `/queue` idle 兼容 | **中** | ✅ **已完成（2026-09-08）**：agent 空闲时 `/steer` 自动回退为发新消息，不再报错 |
-| 3 | `locale` 设置 + `/lang` | **中** | ✅ 已完成（2026-08-31）：插件 `locale` 字段（`auto`/`zh`/`en`，默认 `auto`）+ `/lang [zh\|en\|auto]` 切换持久化。**语言源 = 插件字段，默认跟随 DSH**（`settings.get('locale').preference`，无值回退 `zh`）。见 CHANGELOG「中英双语 i18n」 |
-| 4 | 插件文案 i18n（zh/en) | **中** | ✅ 已完成（2026-08-31）：命令响应层（`CommandTranslations` 拆 zh/en，`src/commands-i18n.ts`）+ 卡片层（`Translations` 字典 `src/i18n.ts`）：streaming/session/busy/permission/questions/onboarding/model-select/status/footer 全部双语，术语对齐 DSH。191 测试通过 |
-| 5 | 测试 + typecheck + build + restart + 文档 | **中** | ✅ 已完成：改动均已补 spec，`npm run typecheck` / `npm run test` / `npm run build` 全绿，延迟重启生效，CHANGELOG 与文档同步（`AGENTS.md` 为本地开发笔记，不入库） |
-
----
-
-## 待实现
-
-> ⚠️ 状态已刷新（2026-08-30）：`#16 权限系统接入`、`/thread→/session` 改名均已**完成**，从本表移除。
->
-> 下表是**条目状态归档**（含已完成项，保留以便追溯）。**未完成项一律以上方「⬜ 未完成清单」为准**——「真正还没动工的只剩一条 #18」是 2026-08-30 的旧结论，2026-09-23 复核已被刷新（实际还有 O1–O8）。
-
-| # | 功能 | 优先级 | 说明 |
-|---|---|---|---|
-| — | **`/display` 交互卡片**（卡片内设置显示开关） | **中** | ✅ **已完成（2026-09-10）**：按方案 A 落地，`src/feishu-display.ts`。无参 `/display` 发「📇 卡片显示」卡片，四个开关各一个按钮（`✅ 工具调用：开` / `⬜ 结果：关`），点击取反即持久化；**每次点击发新卡 + 上一张改写成「已失效」**（绕开「就地更新 2–3 次后按钮回调失效」）；按钮 `value` 带目标值，重复投递幂等；按 `messageId` 记住话题坐标让新卡留在原话题；发卡失败回退文本列表。测试 `tests/feishu-display.spec.ts`（9 例）。设计依据与实现差异见 [`docs/display-card-design.md`](./docs/display-card-design.md)。**未采用**方案 B 的 `checker` 多选（无需真机验证）。 |
-| 18 | 思考内容**可折叠** | **中** | reasoning 代码块支持折叠（飞书 Card JSON 2.0 `collapsible` 组件）。**2026-09-08 核实**：reasoning 已收紧为 **200 字预览**（`REASONING_CAP`，不展示完整思维链）、text 超 3000 字改为拆溢出续卡；仅 `collapsible` 未实现 |
-| — | **step 卡片可见性开关**（过程透明可配置） | **中** | ✅ **已完成（2026-09-09）**：新增 `showToolCalls` / `showToolArgs` / `showToolResults` 三个布尔配置（连同已有的 `showReasoning`，默认全 `true`），分别门控工具段落、`⚙️ 参数`、`📤 结果`、思考过程；`showToolCalls=false` 时工具段落整体不渲染、且**只有工具、无文字/思考的步骤不发卡**；WebUI 面板新增「卡片显示」卡承载四个 `Switch` + 插件语言。见 CHANGELOG「新增：卡片显示粒度开关 + 精简 WebUI 面板」。原记录：**后续计划**（2026-08-30 定）。step 级透明是双刃剑：对需观察/干预者有价值，对偶发使用者是打扰噪音。新增配置开关，控制三段式 per-step 卡片（💬 Reasoning / 📝 Message / 🛠 Tool call）各段展示内容，可自定义——如：①只展示其中一段；②只展示工具 description + 工具名、不展示具体 args。与 `showIntermediateMessages` 不同，是精细到"段/字段"的颗粒度 |
-| 3 | ~~工作区候选补全~~ → 目录浏览器 | **中** | ✅ **已完成（2026-09-08）**：改为**目录浏览器**（比输入前缀补全更直接）——`/new` 工作区卡片新增「📂 浏览目录…」，可导航 / 分页 / 显示隐藏目录 / 选当前目录为工作区。目录来源优先 DSH `directoryPicker` 的 `browse` 能力，`native` 或缺失时回退插件自带只读列举。见 CHANGELOG「新增：/new 工作区卡片支持浏览目录」。**前缀补全本身不再做**（浏览器已覆盖）。**2026-09-08 追加**：工作区列表与目录浏览最终统一用 **`interactive_container`**（Card 2.0 整块可点击区域，官方定位就是「卡片内的列表项」）：每个工作区 / 目录一整行可点、无按钮外观、名字与路径不省略——按钮宫格 / 按内容宽度分行（飞书不认列内 `width: 'fill'`）、编号下拉框（要先选号再提交，太绕）、整行按钮（有多余按钮外观）均已弃用。控制按钮行用 `column_set` + `flex_mode: 'stretch'`（窄屏堆叠，避免手机端被压缩截断） |
-| — | **旧卡片改写为「已失效」提示** | **中** | ✅ **已完成（2026-09-08）**：新增 `src/card-supersede.ts`，交互流程每发一张新卡就把上一张改写成无按钮的灰色提示卡（zh/en 双语、优先 CardKit 实例、best-effort）。已接入 `/new` 全流程（含目录浏览每一步、预设→模型交接）与 model-select 的兜底发新卡路径；`cancel`/`attach`/错误卡标记 terminal，不被改写。见 CHANGELOG「发新卡片时把被替换的旧卡片改写为『已失效』提示」。**仍待排查（2026-09-23 二轮复核，**仍在** → O4）：`feishu-session.ts` 的面板卡仍有就地更新——「🔄 刷新」（`:397`）与「📌 置顶 / 📍 取消置顶」（`:439`）都直接重绘**被点击的那张卡**，三者共享同一份额度；切换/断开/归档/fork/改名走「发新卡」，结果卡也是新卡，不占额度 |
-| — | **交互卡片就地更新上限** | **高** | ✅ **已修复（2026-09-08）**：飞书对同一条消息的卡片**就地更新约 2–3 次后停止投递按钮回调**（patch 与 CardKit 实例**同样**受限）。目录浏览器改「每次导航发新卡片」；`sendCard` 已不再用 `updateCardInstance`。**仍待排查（2026-09-23 二轮复核，**仍在** → O4）：`feishu-session.ts` 面板卡的 3 个按钮（`:397`/`:439`）；`feishu-model-select.ts` 整个选择向导（provider→model→确认→成功卡**全是同一张卡**，`updateCardInstanceOnMessage` 定义 `:573`、调用点 `:646`/`:660`/`:742`/`:748`/`:802`）。两者都可能到第 2–3 次点击后回调失效——改法是「每步发新卡 + 旧卡置失效」（`/new`、`/display` 已是此模式） |
-| — | **step 卡编辑次数上限** | **中** | ✅ **已修复（2026-09-08）**：step 卡改走 CardKit 卡片实例（`cardkit.v1.card.update` + 单调 `sequence`），通道未提供时回退 patch。**重要澄清**：飞书对**带按钮**的卡片就地更新约 2–3 次后停止投递回调；**step 卡没有按钮**，因此连续原地更新是安全的（详见上一条「交互卡片就地更新上限」）。见 CHANGELOG「修复：step 卡片改用 CardKit 卡片实例」 |
-| — | **step 卡丢失更新（工具状态不刷新 / 卡片只剩 reasoning）** | **高** | ✅ **已修复（2026-09-08）**：① `assistant/message` 曾无条件发新卡 → 工具先开卡时旧卡被弃、再也收不到结果；改为「已有卡就更新」。② 防抖表按 session state 键 → 下一步骤的更新取消上一步骤待触发的定时器；改为按卡片 ref 键。另加 `[send]`/`[update]` 诊断日志。见 CHANGELOG「修复：step 卡片丢失工具状态更新 / 只剩 reasoning」 |
-| 9 | 流式输出 → CardKit | ~~低~~ **不再做** | ~~解决 5 QPS 瓶颈。单卡持续流式更新（`streaming_mode`）~~。**2026-09-02 用户决定：不再做流式输出，方向取消** |
-| — | ~~清除 `/stream`（stream on 状态）~~ | **中** | ✅ **已完成（2026-09-02）**：移除 `/stream` 命令 + `showIntermediateMessages` 配置，保留三段式 per-step 卡片更新机制（stream off/默认行为不变）。见 CHANGELOG「移除：/stream 命令及 showIntermediateMessages 配置」。原记录：**只清除「stream on = 流式更新文字」这个一直没用状态；三段式 per-step 卡片更新机制保留，stream off（默认）行为不变**。范围：`/stream` 命令（index.ts + commands.ts 注册/`/help`）+ `config.ts` 的 `showIntermediateMessages` 字段 + toggle 写入路径。**关键事实**：`showIntermediateMessages` 只在 `/stream` toggle 写入，无任何渲染路径读取——统一三段式卡片始终渲染、与开关无关，故删掉不影响默认行为 |
-| 8 | 文档与版本一致性 | **低** | **README / docs/architecture.md / TODO / CHANGELOG 已同步（2026-09-08 二轮）**：per-step 卡片/footer/定位信息、reasoning 耗时与思考 token、原生附件库、busy 提示、`[Feishu] ` 前缀移除、标题色带客户端问题均已写入；README/TODO 里指向未公开 `AGENTS.md` 的链接已改指 `CHANGELOG.md`/`README.md`。版本号 `package.json` 已是 **`0.2.0`**（旧记录误写 0.1.0），发版时统一 bump |
-| — | 飞书 SDK 卡片回调补丁追踪 | **低** | 2026-08-30 核实：**可关闭** —— 无 postinstall/patch，SDK `1.73.0` 原版；card 帧被过滤已**证伪**（「已知问题」同段已标注）。仅为未来 SDK 变更留档 |
-| — | **思考期反馈 / 发卡时机** | **中** | ✅ **已实现（2026-09-23，见上方 O1）**：此前思考期间完全无反馈，第一张卡只在本步模型输出落地后才出现，用户感知延迟 = **思考时长 + 150ms 首发防抖**。根因：0.1.3 起 `assistant/chunk` 被移除、token 级增量不再是持久事件（实时增量只以 client-only `assistant/live-chunk` 存在于 Web 的 follow 流），而插件订阅的是持久事件总线 `session/event`；`step/start`（思考开始时就到）当时只重置状态、不发卡。**采用方案 A**（已落地）：`step/start` 立即发「深度思考中…」占位卡，`assistant/message` 到达后原地更新为 reasoning 区。**明确不做流式**（原方案 B）。详见「已知问题 → 思考期无反馈：发卡时机偏慢」。 |
-| — | **agent 回复过长被飞书截断 → 自动分段发送** | **中** | ✅ **已实现**（2026-09-08）：step 卡 text 超 `TEXT_STEP_CAP=3000` 自动拆溢出卡（`renderOverflowCard` + `chunkText`），不再截断丢弃；reasoning 收紧 200 字；args 改 pretty 打印 2k 上限。见 CHANGELOG「修复：step 卡 text 超 3000 字不再截断 → 自动拆分溢出卡发送」 |
-
-> ✅ 已从本表移除（2026-08-30 确认完成）：
-> - `/new` 带参数（`--workspace`/`--preset`）—— 已实现
-> - 多 session 话题导航 —— 已做（会话映射持久化 + 话题映射）；**不再做并行可见性**（用户明确）
-> - `#16` 权限系统接入、`/thread→/session` 改名、SDK 补丁追踪（证伪关闭）
-
----
-
-## `/thread` → `/session` 改名清单 —— ✅ 已完成（2026-08-30）
-
-> 命令实际操作的是 DSH session（`bridge.listSessions()` / `bridge.switchToSession()`），`thread` 命名与飞书原生"话题"混淆，且与 WebUI「会话」心智不一致。**不保留 `/thread` 别名**，`/help` 列表中只出现 `/session`。下方清单为提出时的改动范围，历史存档。
->
-> ⚠️ 只改**命令相关**的 thread 引用；`threadId` / `replyInThread` / `thread_id`（飞书话题消息坐标）与命令无关，**不要动**。
-
-| 文件 | 改动内容 |
-|---|---|
-| `src/commands.ts` | 翻译键 `threadDescription`/`threadUsage`/`threadListHeader`/`threadListEmpty`/`threadListEntry`/`threadSwitched`/`threadInvalidIndex`/`threadArchived`/`threadIdle`/`threadLastActive*` → `session*`；`name: 'thread'` → `'session'`；`handleThreadCommand` 函数名；`formatRelativeTime` 内 `t.threadLastActive*` 引用 |
-| `src/index.ts` | `executeSlashCommand` 中 `parsed.name === 'thread'` → `'session'`；translations 定义（约 489-502 行）的 `threadXxx` 键 → `sessionXxx`；`handleThreadDirect` 函数名及内部 `t.thread*` 引用 |
-| `tests/commands.spec.ts` | stub translations 的 `threadXxx` 键 → `sessionXxx`；`registered.map(item => item.name)` 期望数组 `'thread'` → `'session'`；`describe('/thread command')`；`item.name === 'thread'` 查找；`Usage: /thread [N]` 断言文本 |
-| `README.md` | 斜杠命令表 `/thread` → `/session`；`\| /thread [N] \| 列出/切换会话 \|` 行 |
-| `AGENTS.md` | 3 处 `/thread` 提及（功能对齐表"多 thread 并行工作"行、session 映射持久化行）→ `/session` |
-| `CHANGELOG.md` | 在 Unreleased 段**新增**一条改名记录（历史条目保留原文不动） |
-| `TODO.md` | 本文档自身："多 thread 话题导航"行中 `/new` `/thread` 已通 → `/new` `/session` |
-
-不需要改：`tests/harness.spec.ts`（无 thread 字样，经确认）；`src/harness.ts` / `src/conversation.ts` / `src/channel.ts` / `src/feishu-*.ts` / `docs/architecture.md`（仅含飞书话题 `threadId`/`replyInThread`，与命令无关）。
-
----
-
-## 已知问题
-
-### 思考期无反馈：发卡时机偏慢（**2026-09-22 定性 → 2026-09-23 方案 A 已实现**）
-
-**已实现（2026-09-23，O1 收口）**：`step/start`（模型请求发出前）立即发「🧠 深度思考中…」占位卡（带轮/步号，`PLACEHOLDER_TICK_MS = 5s` 刷新已用时）→ `assistant/message` 写入 reasoning / 文本 → `tool/call` → `tool/result`，四阶段**同一张卡**就地更新；`step/end` 时若该步始终没有可见内容，占位卡折叠为「本步无输出」（新增 i18n：`stepPlaceholderTitle` / `stepPlaceholderBody` / `stepEmptyTitle` / `stepEmptyBody`）。方案 B（消费 client-only `assistant/live-chunk` 做逐字流式）**仍不做**：真流式只在 Web 客户端 follow 流里，改动面大（新增消费链 + 卡片更新限流 + 与 `session/event` 去重），使用者 2026-09-22 已决定不做。
-
-**现象**：使用者报告「模型正在思考的时候并不会发卡」——长思考（`high`/`max` 推理等级）期间聊天里完全没有动静，第一张步骤卡直到**本步模型输出落地**才出现。
-
-**根因（三条，都是宿主契约变更后遗留的）**：
-
-| # | 事实 | 后果 |
-|---|---|---|
-| 1 | DSH **0.1.3 移除了 `assistant/chunk`**，token 级增量**不再是持久事件**（0.1.6 的 `packages/core/agent-loop/tests/loop.spec.ts` 直接断言该事件不存在）。实时增量改为 **client-only** 的 `assistant/live-chunk`，只存在于 Web 客户端的 follow 流（`packages/api/session-controller/src/client/sessions/assistant-stream.ts`；其 README：「every stream member becomes a **Client-only** `assistant/live-chunk` entry」） | 宿主侧看不到"正在生成"的增量 |
-| 2 | 插件订阅的是**持久事件总线** `ctx.on('session/event', …)`（`src/feishu-streaming.ts`） | 结构上就看不到任何未提交的内容；插件里唯一的"早期触发"正是那条已死事件——文件头注释与 `assistant/chunk` 分支仍是 0.1.3 之前的契约，现在是**只累加、不发卡**的死代码 |
-| 3 | **`step/start` 才是"思考开始"的信号**（`packages/core/agent-loop/src/agent.ts` 在 `await this.step(...)` **之前** append，必然早于模型请求发出），但插件收到它只 `resetStep` + 记时间，**不发卡**；其余发卡点（`assistant/message` / `tool/call` / `tool/result`）全在本步输出落地之后 | 首卡延迟 = 完整思考时长 + 150ms 首发防抖 |
-
-⇒ 代码注释里那句「card still appears ~150ms after the step starts」是 0.1.3 之前的描述，**现已不成立**（实际是"本步内容落地后 150ms"）。
-
-> 补充事实：`assistant/attempt` 是**持久**事件且带 `{turn,step,stream}`（部分思考流），但只在 abort / error / retry 的 settle 时刻 append → 可用于渲染"被打断的思考"，**当不了思考开始的节拍器**。
-
-**方案 A（2026-09-23 已按此实现，见 O1）**：`step/start` 立即发一张「深度思考中…」占位卡（带已用时），`assistant/message` 到达后**原地更新**成 reasoning 区——复用了原有的 `stepCardSent` → `updateStepCard` 路径。
-
-要处理的边角（**四条均已按此处理**，见 O1）：
-
-1. 需要一个**占位态渲染**（现在卡片标题/颜色只看工具状态，无 reasoning/text/tools 时没有专门形态）；
-2. 现有 `stepHasVisibleContent` 门控在无内容时**跳过发卡**，占位阶段需放行；
-3. 要定「本步最终无可见内容」（例如只调工具且关掉工具显示）时占位卡的去留——现有设计明确不产生噪音卡，倾向撤掉或改写为一行极简结果；
-4. 文案进 i18n（zh/en 各一条）。
-
-**成本**：常见路径**不增加发卡次数**（占位卡就是那张步骤卡，后续只是 update），仅"最终无内容"的步骤多一次创建。
-
-**明确不做**：方案 B —— 订阅 `sessionController.follow()` 消费 `assistant/live-chunk` 逐字渲染（对齐 Web UI）。改动大（新增消费链、卡片更新限流、有界等待纪律、与 `session/event` 去重），且 **2026-09-22 使用者决定不做流式**。
-
-### ✅ 超阈值分卡会切坏 Markdown（表格等）—— **已修复（2026-09-18）**
-
-**现象**：使用者报告「卡片消息超出设定的字数阈值后，分卡发消息会破坏 Markdown 格式（比如表格等）」——同一条回复被拆到多张卡上时，表格/代码块等**跨行结构**被从中间切开，两端各渲染半张表。
-
-**定位（两处硬切，均无 Markdown 边界感知）**：
-
-| 位置 | 原实现 | 问题 |
-|---|---|---|
-| `feishu-streaming.ts` | `fullText.slice(TEXT_STEP_CAP)`（3000）| **纯字符切片**——切点落在哪全看字数，落进表格/代码块内部就各持一半 |
-| `text-chunk.ts` | 单个段落超预算时 `para.split('\n')` 逐行硬切 | Markdown **表格是一个段落**（行间只有单个 `\n`、没有空行），因此整张表走这条分支被切两半；同时影响 `channel.ts` 的 reply 卡 |
-
-**修法（用户方案：从空行切、提前点切）**——`src/text-chunk.ts` 重写为**块感知切分**：
-
-1. **装箱阶段**：先把 markdown 切成「块」（空行分隔；**代码围栏内部的空行不算分隔**），再把块装进卡里；当下一块放不进剩余预算时，**回退到上一个块边界**结束当前卡，绝不让一块跨两张卡。
-2. **超预算单块**按类型给最小破坏的切法：**代码围栏**在每个分片闭合再重开（每片都是合法代码块）；**表格**在每个分片重复表头与分隔行（每片都是合法表格）；其余（长列表/引用/段落）退回行边界，单行超长才按字符切。
-3. `feishu-streaming.ts` 的步骤卡与续卡改为**共用同一次切分**：步骤卡渲染 `segments[0]`，其余成为续卡——两者永远一致，不可能再对不上。
-
-**验证**：`tests/truncation.spec.ts` 新增 7 例（提前切到上一个空行 / 表格整体进下一张卡 / 超预算表格重复表头 / 代码围栏闭合重开 / 围栏内空行不作边界 / 单行超长仍按字符切 / 混合文档逐块保真），`tests/feishu-streaming.spec.ts` 新增 1 例（2990 字填充 + 表格 → 步骤卡只含填充、表格整体进续卡；短文本表格完整渲染）。
-
-> **一条踩过的坑（勿再清理）**：升级时曾把工具摘要表里的 `cordis_run/stop/undefine`、`cordis_package_inspect/runtime_inspect` 当成「alpha.2 已删除的工具」换掉——**错的**。这张表镜像 Web UI 的 `TOOL_VARIANTS`，而该文件在 alpha.1/alpha.2 之间逐字节未变、仍映射这些旧名，为的是让**旧会话记录的工具调用**继续以相同摘要重渲染。已回退（见 CHANGELOG）。`plugin_manager` 不在 Web UI 变体表里，走通用 `plugin_manager · <action>` 行即对齐。
-
-全套 **415 passed / 33 files**（原 405），typecheck 0 error，build ✅。
-
-> 相关：本文档「飞书消息长度限制调研记录」已给出卡片 30KB 请求体 / 单 markdown 元素约 10k 字符的隐式上限与推荐拆卡阈值（~6k–8k 字符）；本次修法与该阈值选择无耦合。
-
-### 飞书侧报错内容比 WebUI 简略（**turn 级 2026-09-17 修复；剩余部分 2026-09-23 复核并收口 → O6**）
-
-**现象**：使用者报告「报错时 feishu 端显示的内容不详细，没有和 webui 对齐」——同一次失败，WebUI 能看到完整错误原文，飞书这边只剩一句被截断的摘要。
-
-**✅ 已修（2026-09-17，turn 级错误）**：飞书原先只回一句通用句子，现在**直接渲染 WebUI 那一份失败事实**。根因是 `summarizeTurn()` 丢掉 `turn/end` 的 `reason.error`，`harness.reply()` 随即抛硬编码的 `Harness turn did not produce a successful assistant response`（journald 里 09-08 起出现 20+ 次）。改法见 CHANGELOG「飞书把 turn 失败压成一句通用错误」：新增 `src/turn-failure.ts` **逐行移植** WebUI 的 `displayFailure` + `TurnErrorItem`（红头 + `本轮运行失败`/`This turn failed` + 原文正文 + `code`；`AUTH` 换 `API 密钥无效`/`API key is invalid`），红卡被拒时回退同样内容的纯文本。顺带修掉 `/stop` 中止当前轮后**必然错报一次"运行失败"**的问题（`aborted`/`interrupted` 等非失败结束不再报错）。
-
-**✅ 复核（2026-09-23）——原记录的「仍存在的上限」一条都没被触发过。** 使用者先说「现在很多错误在飞书已经能看得到了」，逐条实测证实了这个观察。测量口径：`~/.dsh/sessions/*/*/session.v3.jsonl.zstd` 全部 **23 个会话日志**，解出 `tool/result` 的每个 `tool-result` 块，取 `isError === true` 的 `content[].text` 长度：
-
-| 指标 | 值 |
-|---|---|
-| 工具结果总数 / `isError=true` | **21645 / 734** |
-| 错误文本长度 | min **22** · p50 **149** · p90 **313** · p99 **313** · **max 344** |
-| 超过 600 字 | **0 条（0.00%）** |
-| 超过 1500 / 3000 / 4000 / 10000 字 | **0 条（0.00%）** |
-| `turn/end` 且 `reason.kind === 'error'` | 全历史 **3 次**，最长 **140** 字（`UNSUPPORTED_REASONING_EFFORT` ×2、`PI_AI_ERROR` ×1） |
-
-即「工具 1500 / reasoning 200 / 正文 3000 / 插件侧 600」这四条上限**在真实负载下一次都没咬到**（p90 才 313，离 1500 差 5 倍）。**作为"报错不详细"的问题，O6 已经被 09-17 的 turn 级修复 + 错误本来就短这两件事实解掉了。**
-
-**真正的缺口换成了另一件事：有一类错误用户永远看不到。** 7 天 journal 分类：
-
-| 错误 | 次数 | 用户看得见？ |
-|---|---|---|
-| `[update] failed`（`cardkit.card.update` / patch） | **15** | ❌ **只有 journal**，卡片**静默停在旧内容** |
-| `message handling failed` | 6 | ✅ 有（文本，`errorText()`） |
-| `[send] card instance create failed` | 2 | ❌ journal（有回退，回退失败就没了） |
-| `[send] send by reference failed` | 1 | ❌ journal（同上） |
-| `[sdk error]` / `[sdk warn]` / `reconcile failed` | 7 / 3 / 1 | ❌ journal |
-
-停在「🧠 深度思考中」的那两张卡（第 28 轮第 9 步、第 30 轮第 4 步）就是 17:43:49 / 17:50:26 的两条 `[update] failed`：`feishu-streaming.ts` 的更新失败分支只 `console.log` + `logger.warn`。L2（[`card-write.ts`](./src/card-write.ts)）已把"内容级拒收 → 剥净重试 → 回退 patch"补进写路径，**18:36 重启后至今 0 条 `[update] failed`**；但"回退也失败"时用户仍然什么都收不到。
-
-**✅ 2026-09-23 收口（本批两件事）**：
-
-1. **`errorText()` 不再丢根因**（[`error-text.ts`](./src/error-text.ts)）：补 `cause` 链（最多 4 跳、去重、防自引用，用 ` ← ` 拼）与飞书 SDK 响应信封里的 `response.data.msg`，`code` 也认信封里的业务码。动机是本仓真实错误形态：`Request failed with status code 400` 这句话里没有任何信息量，真正的原因是 `card contains invalid image keys`。**只读 `message`/`code`/`response.data`，绝不读 `config`/`request`**（请求体，token 路径上有 app secret → 关键坑 29）。上限 600 → **1000** 字符（文本消息上限 150KB，这个数字只是防病态负载）。
-2. **陈旧卡改为用户可见**（[`feishu-streaming.ts`](./src/feishu-streaming.ts)）：步骤卡写入失败且此后无成功写入时，发一条**纯文本**通知「⚠️ 第 N 轮第 M 步的卡片没能更新，已停在旧内容。原因：…」。`STALE_CARD_CONFIRM_MS = 2s` 确认窗——被下一次写入救回的错误**不报**（15 次里有相当一部分是瞬时失败，报出来就是把恢复过程变成噪音）；每张卡只报一次；`stop()` 清掉待发定时器。**选文本而非卡片**：要上报的正是「卡片写不进去」，再用卡片去报是自相矛盾；且文本不经 markdown 解析，不会因为错误原文里的图片/链接语法被整卡拒收（关键坑 39）。
-
-**WebUI 侧对照**：`packages/client/ui-trajectory/src/client/TrajectoryTable.tsx` 的输出格把 `record.cell.outputDetail` **整段**塞进 `<pre>`（并附「复制输出」按钮），**不做字符截断**；聊天区也保留完整错误文本。现在的差距只剩"超长原文"这一档，而它在 734 次失败里 0 次出现。
-
-**仍保留的上限（有数据支撑，本批不动）**：工具失败预览 `RESULT_PREVIEW_CAP = RESULT_CONTENT_CAP = 1500`；结构化预览取样（`paths` 前 20、`files` 前 5、`matches` 前 3、`diffs` 前 3、每个 diff 各 8 行）；`REASONING_CAP = 200`；`TEXT_STEP_CAP = 3000`（正文溢出拆「Reply (continued N/M)」卡，**不丢**）。
-
-**仍可选（记录备查，未动工）**：
-
-1. 工具结果 **> 4k** 时，卡片里保留预览、另发一条**文本**全文（当前 0/734 触发，尚无需求）；
-2. 超大错误（> ~100KB）落 `.log`/`.txt` 到工作区，交已有的 `feishu_send_file` 推送（零新面，第三级逃生口）；
-3. ~~`/error` 命令回看最近一次错误的全文~~ **倾向不做**：与 1 信息重复，且插件不保留会话级错误状态，成本高于收益。
-
-### 交付物面比 WebUI 窄：produced 整半未实现 + complete 卡只对飞书触发的轮次发送（**2026-09-17 记录，2026-09-23 复核仍未做 → O3**）
-
-**现象**：使用者报告「产物信息有的时候出现在最后一个卡片，这是步骤卡片而不是 complete 卡片」。
-
-**核实一：步骤卡上那条不是 bug。** 步骤卡里的「交付文件：xxx +N」是 DSH `present` **工具调用**的渲染（`feishu-streaming.ts:1235` 的 `deriveToolSummary` 摘要 + 紧随的 `⚙️ 参数` / `📤 结果`）；WebUI 对同一个工具调用也是照样渲染，两端一致。`📦 **交付文件（N）**` 清单只可能出现在 complete 卡上：唯一渲染点 `channel.ts:770`（`renderFooterCard`，清单取自 `turnStats.deliverables`），唯一调用点 `channel.ts:525`（**行号已按 2026-09-23 的 `src/` 更新**）。实测 DM 1500 条消息 + 群 25 个话题 2005 条消息，**0 例**出现在步骤卡。
-
-> 排查方法（可复现）：`im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回用户可见卡片 JSON，再**按元素开头精确匹配** `^📦 **(交付文件|Present files)**`；判定步骤卡里的那条用 `^> 交付文件：`。⚠️ 不要用「正文含『交付文件』」这种粗筛——工具参数/结果里可能字面含这四个字（例如 grep 过 CHANGELOG），会大量假阳性。
-
-**核实二：真正的缺口是 produced。** 插件只订阅 `deliverables/presented`（`feishu-streaming.ts:864`），**没有实现 WebUI 的 produced 这一半**。
-
-**WebUI 的真实渲染条件**（`packages/client/ui-deliverables/src/client/Deliverables.tsx` 的 `selectDeliverables`）：`produced.length + presented.length === 0 ? null : {...}` —— 「本轮 write/edit 成功改过文件」**或**「调过 `present`」二者有其一才挂载那一行（所以 WebUI 也不是每轮都显示，这点使用者已当场指出）。`produced` 的推导在 `turn-deliverables.ts` 的 `mutationPath()`：只认 `write` / `edit` / `str_replace_editor`（tool/call 记路径，tool/result **非 error** 才算），按 path 去重、首次出现顺序，并排除 closing assistant seq 之后的结果。
-
-**量化**（本会话 turn ≥ 200 共 56 轮，逐轮从 `session.v3.jsonl.zstd` 统计）：`present` 5 轮、write/edit 有产出 23 轮、两者皆无 33 轮 ⇒ **WebUI 有产物行而飞书完全没有 = 18 轮（32%）**。"改了文件但没调 `present`"是常态而非偶发。
-
-**这解释了现象本身**：不调 `present` 的轮次（18/23 的多数），飞书侧唯一的产物线索就是步骤卡里 `write`/`edit` 工具调用的 `⚙️ 参数`（`file_path`）与 `📤 结果`（`<path>…`）；WebUI 轮末那行「改动的文件」在飞书没有对应物。而"有时候"＝模型恰好调了 `present` 的轮次——那时 📦 清单才出现在 complete 卡上。
-
-**缺口 2（origin）**：complete 卡只在**飞书入站消息触发的轮次**发送（唯一发送点在 `channel.ts:525`，位于 `bridge.reply().then()` 内），而 WebUI 的交付行挂在 `turn/start` 上、与来源无关。实测第 **251** 轮（此前 6.5 小时无飞书消息，最后停在「回复 · 第 251 轮 · 第 8 步」）**没有 complete 卡**，第 203 轮同样。本窗口内没有「`present` + 非飞书触发」的轮次，故尚未造成实际丢失，属逻辑风险。
-
-**缺口 3（整块丢）**：`channel.ts:531-544` 的 else 分支（`intermediateSent === false`）走 `renderReplyCards`，而它的入参只有 `meta` + 一个 `tps` 数字，**拿不到 `turnStats.deliverables`** ⇒ 交付清单不渲染，也没有 Turn Complete 的指标行（tok/s 那一行有，是从 `turnStats` 单独算出 `tps` 传进去的）。群里实测命中 **15 次**，DM 0 次。
-
-**✅ 顺带隐患已修（2026-09-17）**：`markIntermediateSent` 原先只在卡片**首次发出**时判断有无文本（`feishu-streaming.ts` 的 `actuallySendStepCard`）；若该步先被 `tool/call` 开卡、正文后到（走 `updateStepCard`），标记不会补上 → channel.ts 会再发一张**重复**的蓝色 `Reply` 卡（正文出现两遍）并且不发 complete 卡。现抽成 `noteStepCardText(sessionId, state)`、**发送与更新两条路径都调用**（`SessionStepState` 因此带上 `sessionId`），3 例新测试；这也**缩小了下面缺口 3 的触发面**。详见 CHANGELOG「工具先开卡、正文后到时误判…」。
-
-**可选方向（未定、未动工）**：
-
-1. **补 produced**（直接消掉那 18 轮缺口）：在 streaming 里按 WebUI 同规则收集 write/edit/str_replace_editor 的成功产出（path 去重、首次出现顺序、closing seq 截断），渲染进 complete 卡；
-2. **complete 卡改为「轮次结束即发」**：让 streaming 在 `turn/end` 补发，并与 channel.ts 约定「谁负责这一轮的 footer」，覆盖飞书没触发的轮次；
-3. **else 分支接上 `turnStats`**，至少把交付清单渲染出来。
-
-**处理**：2026-09-17 使用者决定**三个缺口先只记录、不改**；同轮只修了上面那个已复现的隐患。**2026-09-23 复核：三个缺口一个都没动 → O3。**
-
-### 推理 token 数在 DSH 0.1.6 后消失（**宿主侧回归，非插件 bug**，2026-09-16 定性）
-
-**现象**：步骤卡的推理标题从 `💬 **推理** · 807ms · 135 tokens` 变成 `💬 **推理** · 5.3s`——思考耗时还在，**推理 token 数没了**。真机卡片历史对照（`im.v1.message.list` + `card_msg_content_type: 'user_card_content'`，264 张推理卡）：09-15 15:45 及以前带 token 数（不带的都是该步本就没有推理），**09-15 20:20 重启后 0 张**。
-
-**根因（已取证到 wire 层）**：DSH `0.1.6` 把 `@deepseek-ai/dsh-llm-deepseek` 的 `protocol` 默认值改成了 **`messages`**（`packages/llm/llm-deepseek/src/config.ts`，端点 `https://api.deepseek.com/anthropic`），而**该端点的 usage 根本不带 thinking 明细**——直接打 API（流式 + 非流式都试过）只返回 `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `service_tier`；`protocols/messages/translate.ts` 的 `updateUsage` 自然也只映射这四个计数字段。老协议 `/chat/completions` 仍返回 `completion_tokens_details.reasoning_tokens`（实测 `{"reasoning_tokens": 23}`），`chat-completions/mapUsage` 会映射成 `reasoningTokens`。会话日志逐小时统计佐证：09-15 20 点前几乎每步都有 `usage.reasoningTokens`，**20:20 重启后 174 步全部为 0**。
-
-**影响面**：插件步骤卡的 `· N tokens`；**以及 DSH WebUI Trajectory 面板的 think 用量格**（`packages/client/ui-trajectory` 读的就是同一个 `usage.reasoningTokens`）——两端一起丢，所以这是宿主侧的事。
-
-**为什么插件修不了**：数值在 wire 上不存在，宿主拿不到，插件更拿不到。可选只有两条，**2026-09-16 使用者决定「先不改，只记录」**：
-
-1. 给 `llm-deepseek` settings 段（或 profile overlay 行）设 `protocol: chat-completions` → 精确值立刻回来（代价：本机不再走 `messages` 协议）；
-2. 插件按推理文本做 CJK 感知估算并标 `≈` → 全协议可用，但不是精确值。
-
-**处理**：不要在插件里继续找这个"bug"。建议把这个宿主侧回归反馈给 DSH：`TokenUsage.reasoningTokens` 仍在类型里、`ui-trajectory` 仍在读，但默认协议已经不再产出它。
-
-### 卡片标题色带在部分客户端更新后不重绘（2026-09-08 重新定性）
-
-**现象**：卡片更新（`im.v1.message.patch` 或 `cardkit.v1.card.update`）后，标题背景色在部分飞书客户端上消失、变成白底（`header.template` 的缺省值 `default`）；同一张卡片在另一台设备上显示正常。
-
-**核实结论**：**不是插件 bug，也不是 patch 的问题**。用 `im.v1.message.list` 带 `card_msg_content_type: 'user_card_content'` 拉回用户可见卡片 JSON，最近 2000 条消息 / 1836 张卡片的 `header.template` 全部合法（green/blue/wathet/red/grey/turquoise），**0 张缺失或 default**，且头体一致、服务端实体颜色正确。故属于飞书客户端渲染问题。
-
-**旧记录更正**：早期「`im.v1.message.patch` 只更新 body、不更新 header」的判断**不成立**——拉回的实体里 header 标题与 template 都已更新（例如 patch 后标题从「创建时」变为「更新后」）。真正不生效的是部分客户端的**重绘**。
-
-**处理**：不要在插件里改 header 数据去"修"它。用户侧切换会话 / 重启客户端通常可恢复。若将来要弱化影响，方向是让状态不依赖标题色带（用标题文字/emoji 表达），而不是改数据。
-
-### ~~Node.js SDK `MessageType.CARD` 被过滤~~（已证伪，补丁已移除）
-
-**现象（原判断）**：飞书卡片回调事件（`card.action.trigger`）通过 WebSocket 推送时 `type='card'`，Node.js SDK 的 `handleEventData` 过滤了 `type !== 'event'` 的消息。
-
-**纠错**：该判断经**对照实验证伪**——还原 pristine SDK（`type !== MessageType.event`）后重启，`card.action.trigger` 仍以 `type='event'`（带 `event_type`）到达插件，卡片点按正常。即帧过滤并不拦它，**此前加的 `scripts/patch-sdk-card-action.sh` + `postinstall` 补丁是过度诊断，已移除**，SDK 还原为官方原版。真正导致卡片「点按无反应」的是 `action.value` 双编码解析问题（用 `decodeCardValue` 修复，见 CHANGELOG）。
-
-**长期方案**：若未来 SDK 变更导致 card 帧被拦，再评估提 issue/PR。
-
-### `action.value` 双重编码
-
-**现象**：飞书返回的 `action.value` 是 JSON 字符串内嵌 JSON 字符串（双重编码）。
-
-**解决**：`JSON.parse` 两次（feishu-questions.ts、feishu-approvals.ts）。
-
----
-
-## 问题追踪（2025-08-27）
-
-### ✅ WebUI 改模型后 status 命令显示不更新 —— 已解决（2026-08-30）
-
-**现象**：
-- WebUI 里切换模型后，`/status` 命令显示的模型名仍是旧模型
-- 即使在 WebUI 切换后进行一轮对话，`/status` 仍显示旧模型
-- 在飞书继续对话后，`/status` 仍不更新，但实际对话的模型已经是 WebUI 切换后的模型
-
-**复现**：WebUI 修改模型 → `/status`（显示旧模型）
-
-**根因分析**：`/status` 命令读取的是 `bridge.selections`（飞书侧的 per-chat selection ref），而 WebUI 切换模型只更新了 `apiProxy.selections`（WeakMap，WebUI 侧）。两者是独立的缓存，没有同步。
-
-**修复方向**：`/status` 命令需要优先从 `sessionController.selectModel` 的结果或 `selectionFor(agent).current` 读取当前实际模型，而不是只读 bridge 的 selection ref。
-
-**解决**：`/model` 已改为 `ctx.sessionController.selectModel(...)` 一站式（写 agent scoped ref + WebUI + 持久化），插件不再维护独立的 `selections: Map`/`installModelSelection`；`/status` 改为读 `selectionFor(agent).current`（scoped ref）。飞书与 WebUI 收敛到同一处缓存，不再各读各的。**已确认解决**。
-
----
-
-### ⚠️ MiniMax M3 思考强度选项差异 —— **可解（2026-09-17 重新定性）：settings 一处即可，插件与 DSH 都不用改**
-
-**现象**：MiniMax M3 的思考强度选项与标准模型不同——`/reasoning` 列出 `off / minimal / low / medium / high`，而 M3 的 `/anthropic` 端点只认 `adaptive` / `disabled`。
-
-**根因（已取证到 wire 层）**：
-
-- M3 在本部署走 `llm-pi-ai` 的 `api: anthropic-messages`（`baseUrl: https://api.minimaxi.com/anthropic`）。pi-ai 随附的 `providers/data/minimax-cn.json` 里 M3 只有 `reasoning: true`，**既无 `thinkingLevelMap` 也无 `compat`**；DSH 的 `resolveModelReasoning()`（`packages/llm/llm-pi-ai/src/catalog.ts`，`efforts === undefined` 分支）原样透传 → `getSupportedThinkingLevels()` 列出上面那 5 档，请求走 pi-ai 的 **budget 分支**：`thinking: {type:'enabled', budget_tokens:N}`（`@earendil-works/pi-ai` `dist/api/anthropic-messages.js` 的 `streamSimple`，只有 `compat.forceAdaptiveThinking === true` 才走 adaptive）。
-- MiniMax 官方口径：**M3 只接受 `thinking:{type:'adaptive'}` / `{type:'disabled'}`，会静默忽略 Anthropic 的 `enabled + budget_tokens`**（表现为拿不到 thinking 块 / `reasoning_tokens=0`）；M2.x 反而继续用 manual 形态。两家独立实现为此各发过一个 fix，可直接当参照：hermes-agent `3c680ea`（fix(minimax): preserve native M3 thinking on Anthropic routes）、`8267f85`（fix(anthropic-adapter): treat MiniMax M3 as adaptive-thinking on /anthropic），两处都注明来源为 [MiniMax Anthropic 兼容文档](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api)。
-
-**修法（settings-only，改 `~/.dsh/settings.yaml` 的 `llm-pi-ai` 段；插件零改动）**：给 M3 显式声明 `compat.forceAdaptiveThinking` + `reasoningEfforts`：
-
-```yaml
-llm-pi-ai:
-  providers:
-    minimax-cn:
-      models:
-        - id: MiniMax-M3
-          name: MiniMax-M3
-          contextWindow: 1000000
-          maxTokens: 128000
-          compat:
-            forceAdaptiveThinking: true   # → pi-ai 发 thinking:{type:'adaptive'}
-          reasoningEfforts:
-            off: disabled                 # 非 null → pi-ai 发 thinking:{type:'disabled'}
-            high: high                    # 唯一"开"档（M3 本来就不分档）
-```
-
-要点与坑：
-
-- `off:` **不能留空**。留空（= `null`）会被 pi-ai 读成"支持但什么都不发"（`model.reasoning && thinkingEnabled === false && thinkingLevelMap?.off !== null` 这条判据），而 M3 在**没有 thinking 参数时会返回空响应**——必须给个非空字面量，值本身不参与这条分支的 wire。
-- **M2.x 不要加** `forceAdaptiveThinking`：M2 家族的 `/anthropic` 不支持 adaptive（同一仓库测试里就有 M2.x 保持 manual 的断言）。
-- `/reasoning` 会**自动**跟着变，因为插件读的是 `llm.resolveModelInfo()` → pi-ai 的 `getSupportedThinkingLevels()`（`packages/llm/llm-pi-ai/src/adapter.ts` 的 `reasoningInfo()`）：声明后列表只剩 `off / high`，插件侧**一行都不用动**。
-
-**残留风险（需真机验一次，不要只看配置）**：pi-ai 的 adaptive 分支除了 `thinking:{type:'adaptive'}` 还会带一个 `output_config:{effort:<映射值>}`，而 MiniMax 文档只提 adaptive/disabled、没提这个字段。若 M3 对多出来的字段返回 400，就落到 pi-ai/宿主侧，超出 settings 能解决的范围（只能等上游或改源码）。**验证方式**：切 M3 + `/reasoning high` 跑一轮，看步骤卡是否出现 `💬 推理`、以及是否报错——只是"配置生效"不算验证。
-
-**状态**：原记录「✅ 已明确，无需修复」**已更正**为**可解**，并且**已于 2026-09-28 复核确认在生效**：这段配置现在落在 `~/.dsh/profiles/web/cordis.patch.yml`（0.1.7 升级后 `settings.yaml` 的 `llm-pi-ai` 段并入 profile 补丁），内容与上面 YAML 一致。按 wire 复核：`disabled` → 200 且无 thinking 块；`adaptive + output_config.effort=high` → 200 且有 thinking 块（`output_config` 不报错，"残留风险"这一条**已排除**）。
-
----
-
-### ✅ MiniMax M3.1-Flash-Preview 上架（2026-09-28，使用者要求；纯配置，插件与 DSH 零改动）
-
-**来源**：使用者「看看 minimax 官方文档，新增 m3.1 模型」。判据文档：[Anthropic SDK / Anthropic API 兼容页](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api)（`platform.minimax.io` / `platform.minimax.cn` 在本机 DNS 落在 `198.18/15` 假地址段、`web_fetch` 直接拒收；同一个文档站在 `platform.minimaxi.com` 有公网解析，curl 可达——**查 MiniMax 文档走 `.minimaxi.com` 这个域名**）。
-
-**官方口径（要记住的三条差异）**：
-
-- id 就是 **`MiniMax-M3.1-Flash-Preview`**（`-Preview` 别省）；**1,000,000** 上下文、原生多模态（text / image / video / tool_use / tool_result / thinking）；文档同时写明「**暂时仅通过 Token Plan 和 MiniMax Code 提供**」。
-- **thinking 关不掉**：省略 thinking → 开启，`{"type":"adaptive"}` → 开启，`{"type":"disabled"}` → **400**（原文：`model "MiniMax-M3.1-Flash-Preview" requires adaptive thinking; thinking.type="disabled" (including reasoning.effort=none) is not allowed (2013)`）。
-- 思考深度改走 **`output_config.effort`**：`low / medium / high / xhigh / max`，**省略即 `max`**（`none` 也 400）；思考 token 计入 `max_tokens`。对照 M3：省略 thinking → **关闭**、`adaptive` → 开启、`disabled` → 保持关闭 ⇒ **两代模型不能共用一份 `reasoningEfforts`**。
-
-**落点**：`~/.dsh/profiles/web/cordis.patch.yml` 的 `llm-pi-ai.providers.minimax-cn.models`，紧跟 M3（改前已 `cp` 备份；pi-ai 自带的 `providers/data/minimax-cn.json` 里**没有**这个 id，必须手写声明）：
-
-```yaml
-- id: MiniMax-M3.1-Flash-Preview
-  name: MiniMax-M3.1-Flash-Preview
-  contextWindow: 1000000
-  maxTokens: 128000              # 官方 Anthropic 页没给输出上限；与 M3 条目对齐
-  input: [text, image]           # DSH 的 MODALITIES 只有 text/image（video 不在 schema 里）
-  compat:
-    forceAdaptiveThinking: true  # → pi-ai 发 thinking:{type:'adaptive', display:'summarized'}
-  reasoningEfforts:
-    low: low
-    medium: medium
-    high: high
-    xhigh: xhigh
-    max: max
-```
-
-**为什么这里不能照抄 M3 的 `off: disabled`（最容易做错的一处）**：DSH 的 `resolveModelReasoning()` 把**未声明**的档位**钉成 `null`**（= 不支持、不进 `getSupportedThinkingLevels()`），而 pi-ai 发 disabled 的判据是 `thinkingLevelMap?.off !== null` ⇒ 只有 `null` 才保证**永远不发** `thinking:{type:'disabled'}`。写 `off: disabled` 会稳定吃 400（2013）；写空值 `off:` 则把语义押在"未声明 vs 声明为空"的细节上，不值得赌。结论：**M3.1 不提供 off，五档全开**，`invalid()` 的「至少一档非 off」也满足。
-
-**Wire 取证（2026-09-28，全部真机 HTTP；`minimaxi.com/anthropic` 与 `minimax.cn/anthropic` 都试了，均 200——没动路由的 baseURL，免得牵连 M2.7/M3）**：
-
-- `thinking:{type:'disabled'}` → **400 / 2013**（与文档逐字一致，反证 id 与路由都对）。
-- 五档逐打：`low / medium / high / xhigh / max` **全部 200**（`low` 那次没出 thinking 块，其余都出）。
-- **按 pi-ai 实际会发的形状**（`thinking:{type:'adaptive', display:'summarized'}` + `output_config:{effort:'high'}` + `stream:true`）打 SSE：`thinking_delta` → `signature_delta` → `text_delta` → `message_stop` 齐全 ⇒ 多出来的 `display` 字段**被接受**、thinking 签名正常回传（M3 侧同样复核了 disabled / adaptive 两条）。
-- `dsh --profile web --dump-config` 能看到新条目。
-- **配置解析预检（比 `--dump-config` 强，而且不需要重启）**：直接拿 DSH 自己的 `resolveRouteModels()`（`packages/llm/llm-pi-ai/src/catalog.ts`；Node 24 能直接跑 `.ts`）解析这份 route 请求 → `modelErrors: 0`，新模型解析成 `api: anthropic-messages`、`baseUrl: api.minimaxi.com/anthropic`、`input: [text, image]`、`reasoning: true`、`thinkingLevelMap: {off: null, minimal: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max'}`、`compat: {forceAdaptiveThinking: true}`，**`getSupportedThinkingLevels()` → `['low','medium','high','xhigh','max']`（没有 off）** ⇒ 插件侧下拉不会再出现 off，那条必然 400 的形状从"选不到"这一层就被堵住了。顺带确认「选默认档 = 不传 effort」时走的是 pi-ai 的 `thinkingEnabled: false` + `off === null` 分支 → **一个 thinking 参数都不发** → MiniMax 按自己的默认（thinking 开、effort max）跑，不会 400。
-
-**尚未做**：**插件侧真机验证**（重启后 `/model` → minimax-cn 应出现五项 effort 下拉；选 M3.1 + 任一档跑一轮，步骤卡应出现 `💬 推理` 且不报错）。配置生效 ≠ 端到端可用，这一步别省。
-
----
-
-## 卡片颜色参考
-
-| 颜色 | 用途 | 文件 |
-|---|---|---|
-| blue | Reply 回复卡片、问题卡片 | `channel.ts`、`feishu-questions.ts` |
-| turquoise (青绿) | Todo 列表卡片、已选问题卡片 | `feishu-todos.ts`、`feishu-questions.ts` |
-| wathet (浅蓝) | Tool Call 调用中 | `feishu-streaming.ts` |
-| green | Tool Result 成功 / Turn Complete | `feishu-streaming.ts`、`channel.ts` |
-| red | Tool Error 失败 | `feishu-streaming.ts` |
-| orange | 审批请求 | `feishu-approvals.ts` |
-| grey | 无选项问题 | `feishu-questions.ts` |
-
----
-
-## #11 中间消息不可见 —— ✅ 已修复
-
-- **根因 1**：旧代码用 `ctx.on('session/event')` 订阅 Cordis 事件，在插件 scope 中不生效
-- **根因 2**：旧代码依赖 `showIntermediateMessages` 设置，默认为 `false`
-- **修复**（2025-08-25）：
-  - 改用 `ctx.on('session/event')` 监听（与 toolcalls/todos 一致）
-  - 逻辑：`assistant/chunk` → 累积 text-delta → `tool/call` 到达时 flush 为紫色卡片
-  - 不再依赖 `/stream` 开关或 `showIntermediateMessages` 设置
-  - 不再调用 `markIntermediateSent`（中间消息 ≠ 最终回复，不应跳过最终卡片）
-
-## #17 `/reasoning` 推理等级命令 —— ✅ 已实现
-
-- **命令**：`/reasoning` 查看 / `/reasoning off|low|high|max` 设置
-- **持久化**：通过 `agentDefaultModel.saveSelection()` 写入 DSH settings，重启后自动恢复
-- **联动**：status 卡片 + footer 均显示当前 reasoning effort
-
-## #12 tool call 卡片 markdown 不渲染 —— ✅ 已修复
-
-- **问题**：`feishu-toolcalls.ts` / `feishu-todos.ts` / `feishu-questions.ts` / `feishu-approvals.ts` 使用 `{ tag: 'div', text: { tag: 'lark_md' } }`，只支持粗体/斜体/链接，不支持代码块。
-- **修复**：改为 `{ tag: 'markdown', content }`（同 reply card）。`channel.ts` 的 note 区保持 `lark_md`（note 只支持 lark_md）。
-
-## #13 卡片 Markdown 渲染不稳定 —— ✅ 已修复（Card JSON 2.0）
-
-- **根因**：Card JSON 1.0 的 markdown 组件不支持表格、标题、内联代码等完整语法
-- **修复**（2025-08-25）：
-  - 全面迁移到 **Card JSON 2.0**（`schema: '2.0'` + `body.elements`）
-  - 表格、标题、内联代码（反引号）原生渲染，不再降级
-  - `note` 标签（2.0 不支持）替换为 `markdown` + `text_size: 'notation'`
-  - 删除 `needsPlainTextFallback()`、`logReplyDiagnostic()`、`buildFooterText()` 三个废弃函数
-  - 回复流程简化：始终发卡片，不再有 markdown 消息降级路径
-
-## #16 权限系统接入 —— ✅ 已实现（2026-08-30）
-
-- **DSH 权限**：3 种 sandbox 模式（read-only / workspace-write / danger-full-access）+ permission presets
-- **Session 事件**：`sandbox/mode`、`permission/preset`，持久化在 session log
-- **飞书接入**：`/permission [模式]`（`feishu-permission.ts`）交互式选择卡 + 带参直接切换；`/sandbox` 保留为隐藏别名；命名/显示名对齐 WebUI `ui-permission-presets`（Read Only / Workspace Write / Full access）；`/status` 显示 Permission。复用 `ctx.get('sandboxPolicy')` 服务 + 会话日志 log-only `sandbox/mode` 事件
-
-## #18 思考内容展示 —— ✅ 基本完成（仅 `collapsible` 未做 → O5）
-
-- **已完成**：
-  - `feishu-streaming.ts` 从 `assistant/chunk`（旧版）与 `assistant/message.stream`（0.1.3）两条路径累积 reasoning-delta
-  - step 卡片里 reasoning 放在代码块中，按 **200 字预览** 展示（不展示完整思维链，见 `REASONING_CAP`）
-  - reasoning 标题显示思考耗时与思考 token（`💬 **推理** · 4.3s · 1.2K tokens`）
-- **待优化**：
-  - reasoning 代码块可折叠（飞书 Card JSON 2.0 支持 `collapsible` 组件）—— **未实现**
-  - reasoning 预览字数是否做成可配置 —— 待定
-
-## #19 tool_call / tool_done 顺序问题 —— ✅ 已修复
-
-- **现象**：有时飞书先收到 tool result（绿色/红色卡片），后收到 tool call（蓝色卡片），顺序反了
-- **根因**：`tool/call` 和 `tool/result` 都走 `scheduleBatch`（200ms debounce），`tool/result` 到达时 `messageId` 可能还没保存（异步竞态）
-- **修复**（2025-08-25）：
-  - `tool/call` 卡片**直接发送**（不走批量队列），保存 `messageIdPromise`
-  - `tool/result` 时 `await messageIdPromise` 确保拿到 `messageId` 后再 `updateCard`
-  - 效果：一张卡片从蓝色（调用中）→ 绿色/红色（完成），不再出现两张卡片
-
-## #9 流式输出技术方案
-
-> 详见下方 [飞书流式输出技术方案](#飞书流式输出技术方案)。
-
-- **现状**：每次发独立新卡片，5 QPS 限制
-- **目标**：CardKit 流式更新（单卡持续更新，无 QPS 限制）
-- **状态**：❌ **已取消（2026-09-02 用户决定，见「待实现」表 #9）**——下方方案仅作技术留档
-
----
-
-## 飞书流式输出技术方案
-
-### 现状：普通卡片发送（5 QPS 限制）
-
-```
-POST /im/v1/messages → 每张独立消息，5 QPS
-```
-
-### 目标：CardKit 流式更新（无 QPS 限制）
-
-```
-POST /cardkit/v1/card {streaming_mode: true} → 创建流式卡片，拿到 card_id
-POST /cardkit/v1/card/:card_id/contents      → 持续更新，无 QPS 限制
-```
-
-| 限制项 | 值 |
-|---|---|
-| 流式更新 QPS | **无限制** |
-| 卡片大小 | 30KB |
-| 组件数量 | 200 个 |
-| 自动关闭 | 10 分钟 |
-| 文本流式频率 | 70ms/次（可配） |
-
-### 参考
-
-- [流式更新卡片概述](https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/streaming-updates-openapi-overview.md)
-- [飞书AI机器人流式输出实践](https://juejin.cn/post/7600990891206819867)
-- [CardKit 流式更新 Python 示例](https://feishu.danling.org/streaming/cardkit/)
-
----
-
-## Agent 消息队列调研记录
-
-- **两层队列**：Lark SDK `chatQueue`（per-chat 串行）+ DSH Agent `Inbox`（per-agent 应用层）
-- **`followup()`**：消息进 `next-turn` 队列，`wakeRequested` latch，当前 turn 完成后自动处理
-- **`whenIdle()`**：spin-until-stable，等所有排队 turn 完成才返回
-- **关键结论**：消息不会丢失，但飞书侧需等当前 turn 完成才能响应
-
----
-
-## 飞书消息长度限制调研记录（2026-09-08）
-
-> 出处：飞书/Lark 开放平台文档与实测参考。**查文档小技巧**：官方域名在本机解析到非公网 IP，`web_fetch` 会被拦，但用 `curl` 直连并在路径后加 `.md`（如 `https://open.feishu.cn/document/cardkit-v1/card/update.md`）可直接拿到纯 markdown 正文。
-
-### 平台限制（请求体上限，非字符数）
-- **text（文本）消息**：请求体最大 **150 KB**
-- **interactive（卡片）/ 富文本消息**：请求体最大 **30 KB**
-- 来源：[Tapdata Lark-IM 文档](https://github.com/tapdata/docs/blob/main/docs/prerequisites/saas-and-api/lark-im.md)（转引官方 `im/v1/message/create` 条款）。
-
-### 卡片 markdown 元素的隐式内容上限
-- 单个 `markdown` 元素的 `content` 有**隐式长度上限**（社区实测/报告约 **~10,000 字符/元素**）。**关键坑**：超限时 Feishu API 返回 **HTTP 200、无错误**，但**静默丢弃超出部分**——客户端无从感知，看到的回复就是被截断的。
-- 来源：[openclaw/openclaw#88631](https://github.com/openclaw/openclaw/issues/88631)——流式卡片 text 累积超限即静默截断；[openclaw/openclaw#70651](https://github.com/openclaw/openclaw/pull/70651) 另记录了卡片**表格数量**超限错误码（`230099`/内层 `11310`，>3 个 markdown 表格）。
-
-### 本插件现状（截断点，均需改成分段）
-| 位置 | 现在 | 问题 |
-|---|---|---|
-| `feishu-streaming.ts` `renderStepCard` | text 前 3000 字上屏、溢出用 `chunkText` 拆 `Reply (continued N/M)` 卡（**已分段**）；reasoning 只保留 200 字预览（设计如此） | 已无硬截断；reasoning 仍是预览（不展示完整思维链） |
-| `channel.ts` `renderReasoningForReply` | reasoning 超过 `REASONING_CAP = 200` 时截断加 `…(truncated)`（2026-09-10 核实：此处早已统一到和步骤卡同一个 200 字常量，不再是最初的 5000） | 两阶段 reply 的 thinking 卡按设计只做预览 |
-| `channel.ts` `renderReplyCards`（546） | `chunkText(displayText, CARD_TEXT_MAX=4000)` 已分卡（≤30 张） | **已分段**，基本安全 |
-| `text-chunk.ts` | `chunkText` 按段落装箱 + `capChunks` | 已具备分段工具，可复用 |
-
-### 结论 / 改动方向
-1. **step 卡 text**：✅ 已完成（2026-09-08）——超 3000 字改为拆溢出续卡，不再 `…(truncated)`；reasoning 按设计收紧为 200 字预览。
-2. **阈值选择**：卡片 30KB 请求体（非字符数，中文按 UTF-8 ~3B/字）换算 ≈ **中文约 1 万字**、英文约 3 万字符；单 markdown 元素另有 ~10k 字符隐式上限。`CARD_TEXT_MAX=4000` 是保守安全值，**拆卡阈值宜取 ~6k–8k 字符**，留足 markdown 开销与表头/footer 余量。
-3. **text 消息回退**：超长纯文本可改发 `text` 消息（150KB，上限远高于卡片），或卡片 + 文本混合。
-4. **静默截断防护**：发送前按已知上限（30KB 请求体 / ~10k 元素）本地校验并主动分段，**不要依赖飞书静默截断**。
-
-### 待定
-- 是否需要 `renderMode: auto|card|text` 配置（对齐 openclaw 建议，让超长回复回退纯文本）。**仍未做**（**2026-09-23 复核**：`src/` 内无 `renderMode` → O7）。
-- 分段后是否在每卡加 `Part i/N` 标注：**reply 卡已有**（`channel.ts` `Part ${i}/${total}`），**step 溢出续卡也已有**（`feishu-streaming.ts` `Reply (continued ${part}/${total})`）——2026-09-11 核实，此项实际已完成。
+| O1 | 思考期占位反馈 | 2026-09-23；后由 O20 区分真实相位，compact 不强制每步占位 |
+| O2 | `/subagents` / `tree` 手动入口 | 2026-10-12；目录 ∪ 本进程名册、有界、去重、无按钮 |
+| O3 | 过滤后的 produced 交付 | 2026-10-11；计数 + 媒体/白名单文档，不投源码全表 |
+| O5 | 推理折叠面板 | 2026-09-29；默认收起、可见外观，思考 token 无数据则不显示 |
+| O6 | 错误原因与陈旧卡提示 | 2026-09-23；cause/业务码、最小披露、恢复确认窗 |
+| O9 | 后台任务名册 | 2026-09-23；只发快照，过滤前台 jobs，支持清理已完成 |
+| O10 | 子代理名册 | 2026-09-23；树形与模型列；2026-10-12 补恢复会话路线事实源 |
+| O11 | 自动唤醒来源标记 | 2026-09-23 起；后扩展为与 Web UI 对齐的来源族，不再只认 tool-jobs |
+| O12 | 卡片 Markdown 媒体安全网 | 2026-09-23；中和/拒收兜底/内联，后扩到音视频 |
+| O13 | disposed 后持久化空表覆盖 | 2026-09-23；拒写门、原子落盘、坏文件隔离 |
+| O14 | 卡片图片/视频/音频内联 | 2026-09-24；可配置分组数量与各类大小、有界预热 |
+| O15 | 主动发图失败退文件 | 2026-09-24；图片也有原生文件兜底 |
+| O16 | 手输不存在路径先问再建 | 2026-10-12；目录创建/注册延迟到最终创建会话 |
+| O17 | 目录浏览器新建文件夹 | 2026-10-12；有宿主能力则复用，否则插件非递归 mkdir；这是用户独立提交的立即操作 |
+| O19 | 推迟工作区注册副作用 | 2026-10-12；会话创建流程取消不注册/创建手输路径；不覆盖 O17 的显式 mkdir |
+| O20 | 占位/等待/思考/回复相位 | 2026-09-29；只更新状态，不逐 token 上屏正文 |
+| O21 | 注入提示与压缩摘要 | 2026-09-29；2026-10-12 摘要改字节预算 |
+| O22 | 与 Web UI 同名的四档展示 | 2026-09-29 起；compact 后改回合过程卡，各入口读插件自己的同一配置 |
+| O24 | 问答描述与多选 | 2026-10-07；2026-10-09 重做点选/回执/最终批确认 |
+| O25 | `present` 投递与外部回合完整镜像 | 2026-10-07/08；媒体/文档/确认发送分流，Web 回合也走交付管线 |
+| O26 | 入站/出站健康分开显示 | 2026-10-11；包括外层放弃等待，零观测不宣称健康 |
+| O27 | compact 信息密度与步骤边界 | 2026-10-11/12；最新 5 步、状态灯、解析程序名、可见与折叠共用按步元素 |
+| X1 | 配置页与连接/扫码详情分离 | 2026-09-23 |
+| X2 | 图标与本地化 metadata | 2026-09-23 |
+| X4 | MiniMax M3 思考配置 | 本地部署配置事项已结案，不是插件通用预设 |
+| X8 | MiniMax M3.1 模型声明 | 本地配置事项已结案；不宣称所有供应商/模型组合均已端到端验证 |
+| X7 / 原 #9 | 逐 token 流式输出 | ❌ 2026-09-02 已取消，不是待办；CardKit 普通就地更新仍在使用 |
+| P6-1/2/3/5/6/8 | 配置、凭据、live 字段、插件详情与清理 | ✅ 已完成；P6-4 对应 B2，P6-7 对应 X3 |
+
+早期数字编号 #11–#19 等问题及各次 DSH 迁移保留在 [变更记录](<./CHANGELOG.md>) 和 [历史文档索引](<./docs/README.md#历史迁移--historical-migrations>)；不再在这里重复展开成多份“待实现”表。历史证据应带当时版本，不能把旧行号/测试数量当当前保证。
+
+## 本轮新增的边界说明（未改功能）
+
+- **媒体隐私**：主动 `feishu_send_file` 目前没有工作区包含校验；与自动内联/计划交付的围栏不同。加固仍未实施，详见 [隐私边界](<./docs/privacy.md#三条上传路径的围栏不同>)。
+- **无表情与出站故障**：表情失败不会阻止消息进 agent，当前不自动重试；链路故障先查真实请求与网关日志。重试策略与可观测性扩展未实施，详见 [收发排查](<./docs/feishu-setup.md#常见问题>)。
+
+这些是核对后补充的说明，**不等于授权下一批自动改代码**。

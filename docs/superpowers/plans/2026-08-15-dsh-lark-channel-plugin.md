@@ -1,6 +1,6 @@
 # DeepSeek Harness Lark Channel Plugin Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or execute inline with superpowers:test-driven-development. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical archive, not an active execution plan.** This was the initial implementation proposal. Unchecked boxes preserve the original plan and do not describe today's backlog; API names, configuration and packaging may have changed. Start with the [documentation index](<../../README.md>) and the [current backlog](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>). No worker/subagent instructions in this record apply to current maintenance.
 
 **Goal:** Build a DeepSeek Harness Cordis plugin that lets users converse with a Harness agent from Feishu or Lark through the official Node SDK's WebSocket long connection.
 
@@ -16,7 +16,7 @@
 - Group messages require an explicit bot mention by default; direct messages are enabled by default.
 - Lark SDK safety policy owns duplicate/stale event handling and per-chat serialization.
 - The plugin replies only with assistant text produced after the current inbound message was queued.
-- A failed Agent turn produces a bounded user-facing error without exposing secrets or stack traces.
+- A failed Agent turn produces a bounded user-facing error without exposing credential values or stack traces.
 - Channel listeners, WebSocket connection, Agents, and sessions are released or flushed on Cordis disposal.
 - Every production behavior begins with a failing test and follows red-green-refactor.
 
@@ -102,7 +102,7 @@
 **Interfaces:**
 - Package exports one DSH Host plugin and contributes a disabled-by-default documented patch instance using `FEISHU_APP_ID` and `FEISHU_APP_SECRET`.
 
-- [ ] Write a failing package smoke test for exported files, scripts, bundle metadata, and secret-free examples.
+- [ ] Write a failing package smoke test for exported files, scripts, bundle metadata, and examples without credential values.
 - [ ] Add setup instructions for app creation, bot capability, `im.message.receive_v1`, permissions, WebSocket event mode, installation, and troubleshooting.
 - [ ] Run `npm test`, `npm run typecheck`, `npm run build`, and `npm pack --dry-run`.
 

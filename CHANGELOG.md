@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+> 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
+> Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+
+### 文档：区分当前指南、待办与历史设计（2026-10-13）
+
+- 新增文档总索引与媒体隐私说明；首页合并中英对照、命令与配置表，说明仓库主线不等于旧 npm 包。
+- 架构从超长职责表改成模块导航 + 会话/事件/卡片/可靠性/交付章节；修正旧“一任务一卡”、占位标题、无限 verbose 与 200 字压缩摘要等现状误述。
+- 待办保留 O/B/X/H/P6 编号，将当前缺口、条件性验证与完成索引分开；旧审计全文已保留为本地非发布快照，不把本机清理目录和部署配置混入公共功能手册。
+- 能力参考移除第二份优先级表，更新问答终态、权限声明与组件证据；历史设计/迁移加明确状态，不再把旧计划指令当当前实施要求。
+- 配置指南补入站/出站独立排查；隐私说明区分媒体自动内联、计划交付与显式文件工具的不同围栏，保留资源探针的验证范围，不承诺未测的跨租户/跨应用隔离。
+- npm 文档清单补索引、隐私和能力参考；本批不改运行代码/依赖范围，不安装、不发布、不重启，也不修改网关或宿主配置。
+- 验证：typecheck / build 通过，**57 个测试文件、1125 个用例全绿**；117 个本地链接与 80 个仓库链接目标/章节锚点核对通过（未请求远端页面）；`npm pack --dry-run` 确认包内文档局部链接均可落地、内部笔记不入包；隐私扫描仅豁免声明字段/引用名。首次测试发现首页 `Settings` 加粗范围改变使字面断言失败，修正文档后全量重跑，未修改测试。
+
+**English:** Reorganize current usage, architecture, platform evidence, the active backlog and historical decisions. Add a navigation index and media/privacy boundaries, align bilingual behavior, document the main-versus-published-package gap, clarify segmented compact cards, bounded verbose output, the 22,000-byte compaction budget and batch-confirmed questions. Keep stable backlog identifiers and preserve the old operational audit privately. Add inbound/outbound troubleshooting without turning network hypotheses into facts. Include the navigation/privacy/capability references in npm's document allowlist. No runtime code, dependency-range, deployment or network change; no installation, release or restart.
+
+### 历史兼容演进摘要（版本均为当时快照）
+
 > 对齐 DSH `0.1.5-alpha.1`。插件**无需改代码**：typecheck / tests / build 全绿，全部 `@deepseek-ai/dsh-*` 依赖的公开 API 逐项 diff 无变化。
 >
 > Aligned with DSH `0.1.5-alpha.1`. **No plugin code changes needed**: typecheck / tests / build all green, and the public API of every `@deepseek-ai/dsh-*` dependency is unchanged.
@@ -10,7 +27,7 @@
 >
 > 也已评估 **并已升级到** DSH `0.1.5-rc.2`（距 rc.1 仅 4 commits）：只改动 Web 客户端包（反馈弹窗、产物卡片排版、`CodeFileIcon` 重构），**17 个被插件 import 的宿主包零变化**，`SESSION_FORMAT_VERSION` 仍为 3——插件零改动、依赖范围不变，B1 测试替身继续有效。记录见 `TODO.md`。
 >
-> 另已评估 **并已升级到** DSH **`0.1.6-alpha.2`**（887 commits / 2622 改动文件）：插件运行时代码**零必改**（四个被消费的 `sessionController` 方法逐字节未变、client slot 契约零差异、依赖范围因同属 `0.1.6` tuple 也无需改）。部署侧前置项：默认模型目录删除两个 id（已改 settings 路由）、Creator preset 工具集由 `cordis_define/run` 换成 `plugin_manager`、解析模式默认值 `link`→`runtime`、web profile 默认开 HMR、`dsh.profile.patchReload` 字段被删除（已复核无动作）。完整评估、升级/回滚步骤与**事故记录**见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](./docs/migration-0.1.6-alpha.1-to-alpha.2.md)。
+> 另已评估 **并已升级到** DSH **`0.1.6-alpha.2`**（887 commits / 2622 改动文件）：插件运行时代码**零必改**（四个被消费的 `sessionController` 方法逐字节未变、client slot 契约零差异、依赖范围因同属 `0.1.6` tuple 也无需改）。部署侧前置项：默认模型目录删除两个 id（已改 settings 路由）、Creator preset 工具集由 `cordis_define/run` 换成 `plugin_manager`、解析模式默认值 `link`→`runtime`、web profile 默认开 HMR、`dsh.profile.patchReload` 字段被删除（已复核无动作）。完整评估、升级/回滚步骤与**事故记录**见 [`docs/migration-0.1.6-alpha.1-to-alpha.2.md`](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/migration-0.1.6-alpha.1-to-alpha.2.md>)。
 >
 > ⚠️ **升级当天触发上游 alpha.2 回归，会话坏过一次**：源码入口下 `@deepseek-ai/dsh-tools` 被求值两次 → 每次工具调用报 `Cannot read properties of undefined (reading 'prepare')`。已用**服务入口改走构建产物**规避，**未改动 DSH 源码**；上游修复前不改 DSH 源码（详见 migration 文档 §6）。
 >
@@ -20,7 +37,7 @@
 >
 > 同批次修掉：**在群里新建话题建会话时，创建流程的卡片被发到另一个话题**——卡片所属话题不能按「群」推断（一个群只有一个 `chatId`、却有很多话题），改成按**被点击卡片的 message id** 精确回查。见下。
 >
-> 已升级到 DSH **`0.1.7-alpha.1`**（1299 commits）：这一版**换掉了设置服务**，插件侧有 4 处必改（见下节）。会话控制 / 流式 / 工具 / 附件 / 客户端 UI / 会话日志格式**均未破坏**。完整评估、升级/回滚步骤与**两次构建失败的根因**见 [`docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md`](./docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md)。
+> 已升级到 DSH **`0.1.7-alpha.1`**（1299 commits）：这一版**换掉了设置服务**，插件侧有 4 处必改（见下节）。会话控制 / 流式 / 工具 / 附件 / 客户端 UI / 会话日志格式**均未破坏**。完整评估、升级/回滚步骤与**两次构建失败的根因**见 [`docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md`](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/migration-0.1.6-alpha.2-to-0.1.7-alpha.1.md>)。
 >
 > Upgraded to DSH **`0.1.7-alpha.1`** (1299 commits). This release **replaced the settings service**, so the plugin needed four changes (see the first entry below). Session control, streaming, tools, attachments, the client slot contract, and the session-log format are unaffected.
 >
@@ -116,10 +133,10 @@
 
 **事实**：那条回复的正文（会话日志原文）里，代码块**只有开头一行是干净的**，收尾粘在最后一行代码末尾：
 
-```
+````text
 ```
 --size {draft, draft-v, quality, quality-v}   ← 只有这四个写死档```
-```
+````
 
 **为什么整篇都坏了**：飞书按**卡片元素**渲染 markdown，只有**独占一行**的围栏才算收尾（`…写死档``` ` 不算）。于是这个代码块**永远不闭合**，它后面所有的标题、表格、"请你选"全部被当成代码——就是使用者看到的"代码块渲染错了"。
 
@@ -322,7 +339,7 @@ if (previousContext?.provider !== requestContext.provider
 
 ### 修复：连接状态指示在出站全断时仍显示「已连接」（O26，`src/outbound-health.ts`（新）/ `src/runtime.ts` / `src/index.ts` / `src/client/LarkPluginDetail.tsx` / `src/client/LarkChannelStatusController.ts` / `src/client/index.ts`，2026-10-11）
 
-**事故**（2026-10-11 16:48:29 → 16:56:50）：**79 行 `write EPROTO … tlsv1 unrecognized name (SSL alert 112)`**，**每一个新建的出站 TLS 握手都被拒** —— 回复、卡片创建与更新、`feishu_send_file`、reaction 全部发不出去；而那 8 分半里**插件详情页的徽章一直是「已连接」**。真正发生的是**两个方向命运不同**：已建立的长连接（入站）活着（16:49/16:50/16:51 的 `[msg]` 照收），新建的出站握手全挂。根因在本机之外的网关（`open.feishu.cn` 被解析成 `198.18.0.0/15` 里的一个 fake-IP（连 `1.1.1.1`/`223.5.5.5` 问也是它） ⇒ DNS 在网关上游被劫持），**插件改不了**；插件能改的是**别再谎报正常**。
+**事故**（2026-10-11 16:48:29 → 16:56:50）：**79 行 `write EPROTO … tlsv1 unrecognized name (SSL alert 112)`**，**每一个新建的出站 TLS 握手都被拒** —— 回复、卡片创建与更新、`feishu_send_file`、reaction 全部发不出去；而那 8 分半里**插件详情页的徽章一直是「已连接」**。真正发生的是**两个方向命运不同**：已建立的长连接（入站）活着（16:49/16:50/16:51 的 `[msg]` 照收），新建的出站握手全挂。当时观测到 `open.feishu.cn` 走网关 fake-IP，故障排查指向新建出站的网关/代理路径；**fake-IP 本身不能证明 DNS 被劫持，也未取得实际命中规则与出站日志来确认精确根因**。插件无法修复外部路由，但能改的是**不要在出站无响应时仍报告正常**（2026-10-13 文档整理收窄了原记录过强的归因）。
 
 **问题**：`LarkRuntime` 的 `connected` 是**建连那一刻的快照** —— `start()` 返回即置位，之后永不复查（`src/runtime.ts` 的 `snapshot`），UI 只读这一个字段。于是「WebSocket 连上了」被当成「链路健康」，而链路真正能不能发东西，这个快照从来不知道。
 
@@ -562,7 +579,7 @@ O22 落地时留了一条「仍待拍板」：**`compact` 档要不要真的合�
 
 实现要点（安全与有界是硬要求）：
 
-- **回调里绝不放路径**。[`src/feishu-deliver.ts`](./src/feishu-deliver.ts) 为每个可点行发一个**不透明 token**（`randomUUID`），登记「会话 / 聊天 / 工作区 real root / real 绝对路径 / 大小 / 描述 / 时间戳」；token **30 分钟过期、最多 200 个**，每次点击都**重新校验**（文件仍在、是普通文件、非空、≤30MB、`realpath` 仍在工作区内）——卡片发出后把文件换成指向工作区外的符号链接，点击一样会被拒。
+- **回调里绝不放路径**。[`src/feishu-deliver.ts`](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-deliver.ts>) 为每个可点行发一个**不透明 token**（`randomUUID`），登记「会话 / 聊天 / 工作区 real root / real 绝对路径 / 大小 / 描述 / 时间戳」；token **30 分钟过期、最多 200 个**，每次点击都**重新校验**（文件仍在、是普通文件、非空、≤30MB、`realpath` 仍在工作区内）——卡片发出后把文件换成指向工作区外的符号链接，点击一样会被拒。
 - **自动发送天然有界且去重**：走的是从 `feishu_send_file` 抽出来的同一个 `sendWorkspaceFile`（`src/feishu-send-file.ts`），**每次发送都套 120s 上限**（SDK 的 HTTP client `timeout: 0`，此前工具路径其实没有上限——顺手补上关键坑 29 的这处缺口）；`src/deliver-files.ts` 记「本会话 10 分钟内已发过这个路径」，所以模型已经显式 `feishu_send_file` 过的文件不会因为 `present` 再发一遍。失败只发一条文字说明，不抛错（确认卡回调抛错会杀进程，见 `card-dispatch.ts`）。
 - **清单与投递不会被「没有步骤卡」那条路径吃掉**：`channel.ts` 现在在发卡**前**规划交付物，把行的渲染交给新模块；没有步骤卡承载正文的回退分支**只在真的有交付物时**补发 Turn Complete 卡（顺带补上 O3 里「回退分支不带 `turnStats`」的缺口）。
 - **确认卡只被改一次**（点「发送」/「取消」后结算），Turn Complete 卡本身**只发不改**，因此不碰「带按钮的卡就地更新 2–3 次后回调失效」（关键坑 11）；确认卡与随后的文件消息一律用**这张卡自己的话题**（硬规则 3 / 关键坑 31）——两层保证：规划时就把话题存进 token，同时 `channel.ts` 把交付卡的 message id **登记进 `card-topics`**（新增 `noteCardTopic` 接线），所以点击**不再依赖**「按群最近使用」的兜底（评审发现的缺口：这张卡此前从没登记过，多话题群里会把确认卡与文件发进另一个话题）。同一轮评审还顺手补了两个会在自动路径上咬人的旧隐患：**封面帧上传**（`im.v1.image.create`）此前没有超时上限；内联失败回退成文件消息时，若失败原因正是**我们自己的 120s 超时**则不再回退（超时不是拒绝，回退会把同一个文件发两次）。
@@ -592,9 +609,9 @@ O22 落地时留了一条「仍待拍板」：**`compact` 档要不要真的合�
 有人问「我们这个插件是否跨平台兼容」，于是做了一次**只读的跨平台审计**，结论与三处文档更新（**没有改任何 `src/` 或 `client/` 代码，因此不重建、不重启**）：
 
 - ✅ **构造上跨平台，证据是硬的**：`src/` 里 `process.platform` 出现 **0 次**；没有 `/proc`、`/etc`、systemctl、`chmod`、`process.kill`、信号等 POSIX-only 调用；**没有硬编码的平台绝对路径**；只用了 `node:os`（`homedir`/`tmpdir`）、`node:path`、`node:fs/promises`、`node:child_process`（**仅**用于按裸名调 ffmpeg / ffprobe）。4 个运行时依赖全是纯 JS，无原生模块、无 install script、无 `os`/`cpu`/`engines` 约束；本包 `package.json` **也没有** `os`/`cpu`/`engines` ⇒ 任何平台都装得上。依赖树里 76 个平台限定包**全部是 `optional`**（esbuild / rolldown / rollup / node-addon），由 npm 按平台自选，且都在构建期。
-- ✅ **Windows 意识早就在代码里**，不是这次推断的：`pwsh` 与 `bash` 归一到同一个摘要变体（[`src/feishu-streaming.ts`](./src/feishu-streaming.ts) 与 [`src/feishu-jobs.ts`](./src/feishu-jobs.ts) 各有一处）、`~` 展开同时接受 `~/` 与 `~\`、vitest 配置用 `fileURLToPath(new URL(...))` 而非 `__dirname`。
+- ✅ **Windows 意识早就在代码里**，不是这次推断的：`pwsh` 与 `bash` 归一到同一个摘要变体（[`src/feishu-streaming.ts`](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-streaming.ts>) 与 [`src/feishu-jobs.ts`](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) 各有一处）、`~` 展开同时接受 `~/` 与 `~\`、vitest 配置用 `fileURLToPath(new URL(...))` 而非 `__dirname`。
 - ⚠️ **但「构造兼容」不等于「验证过」**：完整链路（真机卡片渲染、媒体转码、宿主联调）**只在 Linux x64 跑过一次**。新增的 README「平台支持 / Platform support」一节把这句话写在了最显眼处，并按中英双语说明 **实测只有 Linux**、ffmpeg 是**可选**外部依赖（缺失只影响封面与音频转码，媒体引用退化为路径文字）。
-- 🔴 **记一条待修（TODO O23）**：「聊天 → 会话」绑定表的路径是自己手拼的 `` `${homedir()}/.dsh` ``（[`src/index.ts`](./src/index.ts)），**没问宿主**。当前口径与上游 `resolveDshHome` 一致，**所以现在不是 bug**；但宿主已经把 `dshHomePath` 服务 provide 出来了，上游一旦改口径就会**静默写到另一个目录** ⇒ 重启后聊天退回默认会话，症状与 O13 一样却查不到原因。**未动代码**，等拍板。
+- 🔴 **记一条待修（TODO O23）**：「聊天 → 会话」绑定表的路径是自己手拼的 `` `${homedir()}/.dsh` ``（[`src/index.ts`](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/index.ts>)），**没问宿主**。当前口径与上游 `resolveDshHome` 一致，**所以现在不是 bug**；但宿主已经把 `dshHomePath` 服务 provide 出来了，上游一旦改口径就会**静默写到另一个目录** ⇒ 重启后聊天退回默认会话，症状与 O13 一样却查不到原因。**未动代码**，等拍板。
 - ⚪ **一个 Windows 上的已知退化**（失败方向安全，不会漏发工作区外文件）：工作区包含判断是路径前缀比较，Windows 的大小写不敏感与 8.3 短名可能让工作区**内**的媒体判成区外、只留路径文字。
 - 📋 **验证状态本身进 TODO（H5）**：别的平台跑一遍 `typecheck` + `test` 只能证明「装得上、测得过」，证不了卡片渲染；要真的算「支持」得在 macOS / Windows 上各起一次冷启动 + 一轮真实对话。
 
@@ -676,7 +693,7 @@ O22 落地时留了一条「仍待拍板」：**`compact` 档要不要真的合�
 
 ### 新增：四档「工作步骤展示」+ 推理可折叠 + 压缩卡 + 注入提示行（O22 / O5 / O21，`src/display-level.ts`（新）/ `src/injection-notice.ts`（新）/ `src/feishu-compaction.ts`（新）/ `src/feishu-streaming.ts` / `src/config.ts` / `src/commands.ts` / `src/feishu-display.ts` / `src/i18n.ts` / `src/client/`，2026-09-29）
 
-一批四件事，全部围绕「飞书里能看到多少、以及看不到的那两件事」。调研与逐条实测见 [`docs/transcript-parity-design.md`](./docs/transcript-parity-design.md)。
+一批四件事，全部围绕「飞书里能看到多少、以及看不到的那两件事」。调研与逐条实测见 [`docs/transcript-parity-design.md`](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/transcript-parity-design.md>)。
 
 **① 四档显示级别（对齐 WebUI 的 `ui-chat.transcriptView`，O22）**
 
@@ -931,7 +948,7 @@ p90 才 313 字，离 1500 的预览上限差 5 倍。真正没解决的因此�
 
 - 补 **`cause` 链**：最多 4 跳、去重、防自引用（`cause === 自身` 直接停），用 ` ← ` 拼在原文后面，例如 `Request failed with status code 400 ← socket hang up`。此前只取 `error.message`，而本仓最常见的两个错误形态恰恰是外层没有信息量的包装：`withTimeout` 的 `xxx failed: ...` 与飞书 SDK 的 `Request failed with status code 400`。
 - 补**飞书 SDK 响应信封**的 `response.data.msg`（真正的原因在那里，如 `Failed to create card content, ext=ErrCode: 200570; ErrMsg: card contains invalid image keys`），`code` 也认信封里的业务码。
-- **只读 `message` / `code` / `response.data`，绝不读 `config` / `request`**——那是请求体，token 路径上带 app secret（关键坑 29）。
+- **只读 `message` / `code` / `response.data`，绝不读 `config` / `request`**——那是请求体，token 路径上带应用凭据（关键坑 29）。
 - 上限 600 → **1000** 字符。这里不涉及卡片体积：9 个调用点全是**文本消息**，而文本消息请求体上限 150 KB，是卡片的 5 倍；`errorText` 的输出也不再进 markdown，所以不会被图片/链接语法连带拒收（关键坑 39）。
 
 **改动 2：陈旧卡改为用户可见（`src/feishu-streaming.ts` + `src/i18n.ts`）**
@@ -1156,9 +1173,9 @@ p90 才 313 字，离 1500 的预览上限差 5 倍。真正没解决的因此�
 - **宿主只留一个自建路由**：`/dsh-feishu/provision` —— 扫码配置与飞书连接状态，这两件事没有原生对应物；GET/POST 统一返回 `{ runtime, provision }`。
 - **删除**：`src/settings-api.ts`、`tests/settings-api.spec.ts`、旧的 `src/client/LarkSettingsSection.tsx`（fetch 版）、`SETTINGS_PATH` 与 `handleSettingsRequest`。
 - **附带清理**：`dsh.client.inject` 补上 `@deepseek-ai/dsh-client-ui-plugin-manager` 与 `@deepseek-ai/dsh-api-remotes`（与官方 `ui-settings-web-search` 的清单逐项一致，纯解析顺序提示，不新增 npm 依赖）；测试里一个私网 IP 字面量换成 RFC 5737 文档地址。
-- **验证**：typecheck 0 error、build ✅（`client/client.js` 重建）。测试数 472 → 458：删掉的 11 例属于已删除路由的专属用例，客户端用例改写为新的服务面（保存时 ops 与 revision 正确、留空不写 secret、删除 secret、四个显示开关的联动、凭据徽章、扫码与运行状态）。
+- **验证**：typecheck 0 error、build ✅（`client/client.js` 重建）。测试数 472 → 458：删掉的 11 例属于已删除路由的专属用例，客户端用例改写为新的服务面（保存时 ops 与 revision 正确、留空不写凭据、删除凭据、四个显示开关的联动、凭据徽章、扫码与运行状态）。
 - **注意**：宿主与客户端的载荷形状一起变了（`{ runtime, provision }`），**两侧需同时重启**；只刷新页面会看到运行状态停在 `connecting`。
-- **实测（2026-09-23 00:13 重启后）**：服务 `active`、插件 `apply()` 正常、`[ws] ws client ready`、journal **无 error**；产物核对确认线上就是新代码——客户端含 `whileServed` / `lark-channel` / `settings.section` 且 `dsh-feishu/settings` **0 处**，宿主只剩 `dsh-feishu/provision`。**页面级行为**（保存、留空保留 Secret、删除 Secret、运行状态徽章）留给使用者在浏览器里目视确认。
+- **实测（2026-09-23 00:13 重启后）**：服务 `active`、插件 `apply()` 正常、`[ws] ws client ready`、journal **无 error**；产物核对确认线上就是新代码——客户端含 `whileServed` / `lark-channel` / `settings.section` 且 `dsh-feishu/settings` **0 处**，宿主只剩 `dsh-feishu/provision`。**页面级行为**（保存、留空保留凭据、删除凭据、运行状态徽章）留给使用者在浏览器里目视确认。
 - **已知限制**：凭据徽章只反映**凭据域**（按 `appSecretRef` 引用查）。若某个部署仍在用已废弃的**字面量 `appSecret`**（明文写在配置里，原生表单快照会把它脱敏掉），徽章会显示「未配置」而通道其实可用——本机走 `appSecretRef`，不受影响。
 
 ### 新增：归档运行中的会话先问「停止并归档」（`src/feishu-session.ts` / `src/i18n.ts`）
@@ -1755,7 +1772,7 @@ p90 才 313 字，离 1500 的预览上限差 5 倍。真正没解决的因此�
 
 ### 迁移：兼容 DSH `0.1.3-alpha.1` → `0.1.3-alpha.2`（**P0/P1/P2 全部已实现，DSH 已升级并验证**）
 
-- DSH 远端最新打 tag 的 release 仍为 `dsh-v0.1.3-alpha.1`（2026-09-04），但 `origin/master` 上已有 `0.1.3-alpha.2` 的 release commit（`e379fa8bdd`）——距本插件基线 `dsh-v0.1.2-alpha.4` 共 **449 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](./docs/migration-0.1.2-to-0.1.3.md)**。**本条目所有迁移项均已实现**：DSH 已升级到 `0.1.3-alpha.2`（`git switch -d e379fa8bdd`），`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿，实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。
+- DSH 远端最新打 tag 的 release 仍为 `dsh-v0.1.3-alpha.1`（2026-09-04），但 `origin/master` 上已有 `0.1.3-alpha.2` 的 release commit（`e379fa8bdd`）——距本插件基线 `dsh-v0.1.2-alpha.4` 共 **449 个 commit**。完整分析见 **[docs/migration-0.1.2-to-0.1.3.md](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/migration-0.1.2-to-0.1.3.md>)**。**本条目所有迁移项均已实现**：DSH 已升级到 `0.1.3-alpha.2`（`git switch -d e379fa8bdd`），`npm run typecheck`（含 client）/ `npm run test`（225）/ `npm run build` 全绿，实机 `systemctl --user restart dsh` 后干净启动（无 `error|failed|already registered`，插件加载 + 流式卡片 + 工具调用正常）。
 - ✅ **可信度**：迁移文档全部 API 签名已对照 **0.1.3 源码**逐条核实（`git show dsh-v0.1.3-alpha.1` + `e379fa8bdd`），不依赖插件 `node_modules` 里链接的旧版（rc.8 级）类型。
 
 #### 已实现（破坏性）
@@ -2239,12 +2256,14 @@ p90 才 313 字，离 1500 的预览上限差 5 倍。真正没解决的因此�
 
 - 备份与临时文件清理：删除了 `src/commands.ts.bak.*` 和 `src/index.ts.bak.*`（编译时调试产物，已 gitignore 防止再次产生）。
 
-## Unreleased
+## 早期开发记录（原 Unreleased，历史存档）
+
+> 以下 API 与命令是当时形态，不是当前使用说明。
 
 - Add an emoji reaction (`reactEmoji`, default `THUMBSUP`) to each inbound message as an immediate acknowledgement; set it to an empty string to disable. A failed reaction logs a warning without blocking the reply.
 - Register three chat-side slash commands that bridge into the Harness command plane: `/model` (show, list, fuzzy-search by keyword, or switch the active default model through Harness Settings), `/compact` (call `ctx.compaction.compactNow()` against the chat's existing Agent), and `/stop` (call `agent.cancel({ kind: 'user' })` to abort the running turn). `/model` and `/compact` require that the chat has sent at least one ordinary message first so a session already exists.
 
-## Unreleased — 飞书 slash 命令与 session 切换
+## 早期开发记录 — 飞书 slash 命令与 session 切换（历史存档）
 
 ### 新增命令
 
@@ -2299,13 +2318,13 @@ p90 才 313 字，离 1500 的预览上限差 5 倍。真正没解决的因此�
 
 - Contribute an embedded **Feishu & Lark** section to Harness Settings through the plugin web client.
 - Require same-origin browser requests for settings and credential mutations.
-- Store App Secret through Harness Credentials using `DSH_LARK_APP_SECRET` by default.
+- Store application credentials through Harness Credentials using `DSH_LARK_APP_SECRET` by default.
 - Apply Settings and credential changes by replacing the Lark channel without restarting Harness.
 - Keep the plugin active but idle until required application credentials are configured.
-- Show explicit configured and missing App Secret states without returning the secret to the browser.
+- Show explicit configured and missing credential states without returning the credential value to the browser.
 - Populate linked Provider and Model selectors from the current Harness model catalog.
 - Resume persisted Lark sessions after restart and reuse an already-live Agent when available.
-- Print initial connection, channel, and message-handling failures to the terminal as well as the Harness logger, with App Secret redaction.
+- Print initial connection, channel, and message-handling failures to the terminal as well as the Harness logger, with application credential redaction.
 - Remove the generic configuration-file action from the Lark-focused Settings experience.
 
 ## 0.1.1

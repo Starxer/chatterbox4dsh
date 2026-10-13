@@ -1,5 +1,6 @@
 # 升级评估：DSH 0.1.3-alpha.2 → 0.1.5-alpha.1
 
+> **历史迁移记录**：仅适用于标题中的版本。正文的“当前版本”、API、依赖范围和部署命令是当时快照；不要直接用于现行 DSH。现行基线与后续记录见 [文档导航](<./README.md>)。
 > **来源**：DSH release tag `dsh-v0.1.5-alpha.1`（2026-09-08 发布）。本文基于 `dsh-v0.1.3-alpha.2..dsh-v0.1.5-alpha.1`（**563 个 commit**）分析。
 >
 > **结论**：插件**无需改代码**。typecheck / 266 tests / build 全绿；插件 import 的全部 16 个 `@deepseek-ai/dsh-*` 包公开 API 逐项 diff 无变化。**唯一必改项**是 `package.json` 的依赖范围（见下）。

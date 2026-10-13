@@ -1,7 +1,8 @@
 # `/display` 交互卡片设计（卡片内设置显示开关）
 
 > 状态：**已实现（2026-09-10）**——按方案 A 落地，实现见 [`src/feishu-display.ts`](../src/feishu-display.ts)。本文保留调研与设计依据；实际实现与设计的差异见文末「实现记录」。
-> 关联：[`src/commands.ts`](../src/commands.ts) 的 `/display` 命令、[`docs/feishu-capabilities.md`](./feishu-capabilities.md)、[`AGENTS.md`](../AGENTS.md) 关键坑 4 / 11 / 12。
+> **历史设计记录，不是现状手册**：2026-09-29 已加入 `compact / standard / detailed / verbose` 四档，仍采用每次点击发新卡，四开关与档位 AND 合成。本文“目前只有文本路径”等字样描述提出时的状态。当前说明见 [项目首页](<../README.md>) 与 [架构](<./architecture.md>)。
+> 关联：[`src/commands.ts`](<../src/commands.ts>) 的 `/display` 命令、[飞书能力参考](<./feishu-capabilities.md>)；关键坑 4 / 11 / 12 的公开约束见 [卡片生命周期](<./architecture.md#卡片生命周期>)。
 
 ## 一、目标
 
@@ -49,7 +50,7 @@
 
 ### 方案 B：form + `checker` 多选 + 一次提交
 
-- 卡片：form 容器里一个 `checker`（多选项：思考过程 / 工具调用 / 参数 / 结果），勾选=开、取消=关，底部「保存」提交按钮；提交读 `form_value` 得到选中集合，映射成 4 个布尔。
+- 卡片：form 容器里**每个开关一个 `checker`**（原提案错误地设想单个 checker 能带 options，2026-10-07 已证伪），勾选=开、取消=关，底部“保存”提交；按各字段布尔值映射四开关。
 - 优点：**改 4 个也只发一次卡**，聊天干净；一次写全。
 - 缺点 / 待验证：
   - `checker` 在 Card JSON 2.0 有文档（[v2 checker 文档](https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-json-v2-components/interactive-components/checker.md?lang=zh-CN)），但**本插件从未用过**，需先在真实聊天里验证渲染与 `form_value` 形状；

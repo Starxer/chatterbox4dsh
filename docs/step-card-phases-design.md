@@ -1,7 +1,8 @@
 # 步骤卡的阶段划分与 WebUI 对齐（调研 + 方案）
 
 > 状态：**已实现（2026-09-29）**——按使用者拍板，**方案 1 的文案 + 方案 2 的实时流只切阶段**合并成一批落地（见 §八 实现记录）。
-> 关联：[`src/feishu-streaming.ts`](../src/feishu-streaming.ts)（步骤卡全部逻辑）、[`src/i18n.ts`](../src/i18n.ts)（文案）、[`docs/architecture.md`](./architecture.md)（现状说明）、[`AGENTS.md`](../AGENTS.md) 关键坑 45（步骤卡写入纪律）。
+> **历史方案与实现记录**：方案 2 已实现，方案 3 明确不做。正文“现状/待拍板”均保留提出时的语境；先看 §七的拍板结果。compact 档后来复用这些相位作为过程卡状态灯，不新增逐 token 正文展示。
+> 关联：[`src/feishu-streaming.ts`](<../src/feishu-streaming.ts>)、[`src/i18n.ts`](<../src/i18n.ts>)、[当前架构](<./architecture.md>)；关键坑 45 的公开写入纪律见 [发送可靠性](<./architecture.md#发送可靠性与健康>)。
 > 台账：`TODO.md` 的 **O20**。
 
 ## 一、问题（使用者原话）
