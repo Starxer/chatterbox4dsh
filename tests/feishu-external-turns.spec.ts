@@ -19,6 +19,11 @@ interface Harness {
   topics: Array<{ messageId: string; topic: { threadId?: string; rootId?: string } }>
   plan: ReturnType<typeof vi.fn>
   autoSend: ReturnType<typeof vi.fn>
+  /**
+   * The live `flushed()` holder the module reads. Tests swap `.current` to prove
+   * the module reads it at completion time instead of capturing a value.
+   */
+  flushRef: { current: (sessionId: string) => Promise<TurnStats | undefined> }
   /** Fire one session event through the module's listener. */
   fire: (event: { type: string; time?: number; data?: unknown }) => void
   stop: () => void
@@ -30,6 +35,30 @@ interface Options {
   stats?: TurnStats | undefined
   withDeliver?: boolean
   planRows?: boolean
+  produceCard?: 'off' | 'summary' | 'delivery'
+}
+
+/** A finished turn with the numbers the Turn Complete card renders. */
+function turnStats(overrides: Partial<TurnStats> = {}): TurnStats {
+  return {
+    turnStartTime: 0,
+    stepCount: 3,
+    toolCallCount: 2,
+    totalInputTokens: 1000,
+    totalOutputTokens: 500,
+    totalCacheReadTokens: 0,
+    totalCacheWriteTokens: 0,
+    totalBilledTokens: 1500,
+    firstStepTtftMs: 120,
+    totalDecodeMs: 2000,
+    totalDecodeTokens: 500,
+    totalStepMs: 3000,
+    totalToolMs: 1000,
+    totalTurnMs: 5000,
+    deliverables: [],
+    produced: [],
+    ...overrides,
+  }
 }
 
 function buildHarness(options: Options = {}): Harness {
@@ -43,6 +72,9 @@ function buildHarness(options: Options = {}): Harness {
     auto: [],
   }))
   const autoSend = vi.fn(async () => undefined)
+  const flushRef: { current: (sessionId: string) => Promise<TurnStats | undefined> } = {
+    current: async () => options.stats,
+  }
   const ctx = {
     on: (_event: string, listener: (session: unknown, event: unknown) => void) => {
       listeners.push(listener)
@@ -70,8 +102,9 @@ function buildHarness(options: Options = {}): Harness {
     bridgeHolder: bridgeHolder as never,
     logger: { info: () => undefined, warn: () => undefined },
     getTranslations: () => t,
-    flushed: async () => options.stats,
+    flushed: flushRef,
     sessionMeta: async () => ({ workspace: '/w', model: 'm' }),
+    ...(options.produceCard === undefined ? {} : { produceCard: () => options.produceCard! }),
     ...(options.withDeliver === false ? {} : { deliver: { plan, autoSend } }),
     noteCardTopic: (messageId, topic) => { topics.push({ messageId, topic }) },
     enabled: () => options.enabled !== false,
@@ -81,6 +114,7 @@ function buildHarness(options: Options = {}): Harness {
     topics,
     plan,
     autoSend,
+    flushRef,
     stop: controller.stop,
     fire: event => {
       for (const listener of listeners) listener({ id: SESSION }, event)
@@ -89,6 +123,12 @@ function buildHarness(options: Options = {}): Harness {
 }
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+/** All markdown the card carries, joined — content assertions read this. */
+function markdownOf(sent: Sent | undefined): string {
+  const elements = (sent?.input.card as { body?: { elements?: Array<{ content?: string }> } })?.body?.elements ?? []
+  return elements.map(element => element.content ?? '').join('\n')
+}
 
 afterEach(() => {
   resetTurnOrigins()
@@ -180,8 +220,58 @@ describe('completing a turn that did not start on Feishu', () => {
     h.stop()
   })
 
-  it('names the automation that woke the turn', async () => {
+  it('renders the turn stats block on an auto-triggered completion', async () => {
+    const h = buildHarness({ stats: turnStats() })
+    // A schedule notice opened the turn: no human message anywhere.
+    h.fire({ type: 'user/message', data: { content: [{ type: 'text', text: 'ETA reminder' }], source: { kind: 'schedule' } } })
+    await flush()
+    h.sent.length = 0
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    const md = markdownOf(h.sent.at(-1))
+    // The three stat lines a Feishu-started turn prints. They all vanished when
+    // the module captured streaming's `flushed()` before it existed.
+    expect(md).toContain('⏱ 5.0s')
+    expect(md).toContain('🔄 3 steps')
+    expect(md).toContain('📦 1.5K tokens')
+    h.stop()
+  })
+
+  it('reads flushed at completion time, so a late-wired streaming module still reports', async () => {
     const h = buildHarness()
+    const stats = turnStats({ totalTurnMs: 9000, stepCount: 7 })
+    const flushed = vi.fn(async () => stats)
+    // What `index.ts` does after this module is constructed: the real function
+    // arrives later. Capturing the value at wiring time is the bug this locks.
+    h.flushRef.current = flushed
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    expect(flushed).toHaveBeenCalledWith(SESSION)
+    expect(markdownOf(h.sent.at(-1))).toContain('🔄 7 steps')
+    h.stop()
+  })
+
+  it('folds produced artifacts into the plan and the count line, like the reply path', async () => {
+    const h = buildHarness({
+      produceCard: 'delivery',
+      stats: turnStats({
+        deliverables: [{ path: 'notes/deck.pdf' }],
+        produced: [
+          { path: 'runs/chart.png', kind: 'image' },
+          { path: 'src/helper.ts', kind: 'other' },
+        ],
+      }),
+    })
+    h.fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await flush()
+    // Only the artifact-shaped write joins the plan; the source file stays out.
+    const planned = h.plan.mock.calls[0]?.[0] as { files?: Array<{ path: string }> }
+    expect(planned.files?.map(file => file.path)).toEqual(['notes/deck.pdf', 'runs/chart.png'])
+    expect(markdownOf(h.sent.at(-1))).toContain(t.turnProducedLine(1))
+    h.stop()
+  })
+
+  it('names the automation that woke the turn', async () => {    const h = buildHarness()
     // No human message at all: the schedule notice is what opened the turn.
     h.fire({ type: 'user/message', data: { content: [{ type: 'text', text: '自动化任务' }], source: { kind: 'schedule' } } })
     await flush()

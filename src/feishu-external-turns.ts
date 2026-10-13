@@ -34,6 +34,8 @@ import { renderFooterCard } from './channel.ts'
 import type { DeliverChat, DeliverPlan, DeliverPlanInput } from './feishu-deliver.ts'
 import { hasDeliverables } from './feishu-deliver.ts'
 import type { Translations } from './i18n.ts'
+import type { ProduceCardMode } from './config.ts'
+import { mergeProducedArtifacts, producedArtifacts } from './produced-files.ts'
 import { beginTurn, noteUserMessage, turnOrigin, turnSurface, turnTrigger, type UserMessageOrigin } from './feishu-turn-origin.ts'
 
 /** Minimal logger surface; matches ctx.logger's call style. */
@@ -62,8 +64,20 @@ export interface ExternalTurnsDeps {
    * Streaming's `flushed()`: waits for the turn's step card and every in-flight
    * write, and returns the turn stats. Using it is what keeps the completion
    * card BELOW the final step card in the chat.
+   *
+   * Read through a HOLDER, never captured by value: the streaming module is
+   * started after this one is wired, so a function captured at wiring time is
+   * the initial no-op. That mistake silently stripped the whole stats block and
+   * the `present` deliverable rows from every mirrored completion card and let
+   * it overtake the final step card (reported 2026-10-14 as an auto-triggered
+   * Turn Complete card with no metrics; see `src/index.ts`).
    */
-  flushed: (sessionId: string) => Promise<TurnStats | undefined>
+  flushed: { current: (sessionId: string) => Promise<TurnStats | undefined> }
+  /**
+   * Live `produceCard` setting. Read here so a mirrored turn's card lists the
+   * files it produced without `present`, exactly like a Feishu-started turn's.
+   */
+  produceCard?: () => ProduceCardMode
   /** Session metadata for the footer (the same values the reply card shows). */
   sessionMeta: (chat: ConversationMessage) => Promise<ReplyCardMeta>
   /** `present` delivery, planned here exactly as the reply path plans it. */
@@ -159,11 +173,18 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
     const t = deps.getTranslations()
     // Ordering first: `flushed()` only resolves once the final step card's
     // message exists, so the footer cannot overtake the answer it belongs to.
-    const turnStats = await deps.flushed(sessionId).catch((error: unknown) => {
+    const turnStats = await deps.flushed.current(sessionId).catch((error: unknown) => {
       deps.logger.warn(`dsh-feishu: external turn flush failed: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
     })
     const meta = await deps.sessionMeta(chat).catch(() => undefined)
+    // Files this turn wrote without declaring them (`produceCard`, TODO O3).
+    // The reply path folds them into the same plan and prints the same count
+    // line, so a mirrored turn must not lose them: without this the completion
+    // card of an auto-triggered turn was missing rows a Feishu turn's card had.
+    const produceMode = deps.produceCard?.() ?? 'off'
+    const produced = produceMode === 'off' ? [] : producedArtifacts(turnStats?.produced ?? [])
+    const producedCount = produceMode === 'off' ? undefined : produced.length
     const plan = deps.deliver === undefined
       ? undefined
       : await deps.deliver.plan({
@@ -171,7 +192,9 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
           chatId: chat.chatId,
           ...(chat.threadId === undefined ? {} : { topic: topicOf(chat) }),
           ...(meta?.workspace === undefined ? {} : { workspace: meta.workspace }),
-          files: turnStats?.deliverables ?? [],
+          files: produceMode === 'delivery'
+            ? mergeProducedArtifacts(turnStats?.deliverables ?? [], produced, meta?.workspace)
+            : turnStats?.deliverables ?? [],
         }).catch((error: unknown) => {
           deps.logger.warn(`dsh-feishu: deliverable planning failed: ${error instanceof Error ? error.message : String(error)}`)
           return undefined
@@ -183,7 +206,7 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
     const source = turnOrigin(sessionId) === 'external'
       ? (turnSurface(sessionId) === 'web' ? t.surfaceLabelWebGui : t.surfaceLabelOther)
       : t.autoTurnTriggerName(turnTrigger(sessionId) ?? 'request')
-    const card = renderFooterCard(t, meta, turnStats, plan?.rows, source)
+    const card = renderFooterCard(t, meta, turnStats, plan?.rows, source, producedCount)
     try {
       if (card !== undefined) {
         const sent = await deps.channel.send(chat.chatId, { card }, replyOpts(chat))

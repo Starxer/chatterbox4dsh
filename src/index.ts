@@ -214,7 +214,21 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopSurface: () => void = () => undefined
   let consumeReasoning: (sessionId: string) => string | undefined = () => undefined
   let consumeLastStepHadContent: (sessionId: string) => boolean = () => false
-  let flushed: (sessionId: string) => Promise<TurnStats | undefined> = () => Promise.resolve(undefined)
+  /**
+   * Streaming's `flushed()`, read LATE through a holder.
+   *
+   * The streaming module is started after the external-turn module is wired in
+   * `apply()` below, so handing the FUNCTION over at wiring time captured this
+   * initial no-op and every mirrored turn completed with `turnStats ===
+   * undefined`: its Turn Complete card lost the whole stats block and its
+   * `present` deliverable rows, and the card could be posted before the final
+   * step card. Reported 2026-10-14 as an auto-triggered (schedule) turn whose
+   * completion card showed no metrics at all. Assign with
+   * `flushRef.current = …`, never read this as a value.
+   */
+  const flushRef: { current: (sessionId: string) => Promise<TurnStats | undefined> } = {
+    current: () => Promise.resolve(undefined),
+  }
   let stopTodos: () => void = () => undefined
   let stopJobs: () => void = () => undefined
   let stopSubagents: () => void = () => undefined
@@ -698,7 +712,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         replyCardMeta,
         undefined,  // consumeReasoning (unused; bridge handles intermediate tracking)
         undefined,  // consumeLastStepHadContent (unused)
-        flushed,
+        // Read through the holder: this argument is evaluated when the runtime
+        // starts, which is after streaming assigned the real function, but the
+        // late read is what makes that a property of the code rather than of
+        // today's call order.
+        sessionId => flushRef.current(sessionId),
         undefined,  // messageInterceptor (unused here)
         onboardingHandle === undefined ? undefined : {
           needsOnboarding: async (message) => {
@@ -982,8 +1000,12 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
       getTranslations: () => translationsFor(currentLocale().id),
-      flushed,
+      // The holder, so this module reads streaming's `flushed()` at completion
+      // time; passing the function captured the pre-streaming no-op and cost
+      // every mirrored turn its stats and its deliverable rows.
+      flushed: flushRef,
       sessionMeta: replyCardMeta,
+      produceCard: () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
       ...(deliverHandle === undefined ? {} : { deliver: deliverHandle }),
       noteCardTopic: (messageId, topic) => cardTopics.note(messageId, topic),
       enabled: () => currentSettings().mirrorExternalTurns ?? true,
@@ -991,7 +1013,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopExternalTurns = externalTurns.stop
     consumeReasoning = streamingResult.consumeReasoning
     consumeLastStepHadContent = streamingResult.consumeLastStepHadContent
-    flushed = streamingResult.flushed
+    flushRef.current = streamingResult.flushed
     /**
      * Retire the model card once the final confirmation card carries every
      * setting. Unlike the cards that recorded a decision, this one is a mere

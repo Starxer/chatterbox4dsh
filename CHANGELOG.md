@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：自动触发回合的 Turn Complete 卡片整块统计缺失（`src/index.ts` / `src/feishu-external-turns.ts`，2026-10-14）
+
+**现象**（使用者报「自动触发的轮 turn complete 卡片内容显示不完整」）：定时提醒、后台任务唤醒、Web GUI 等**不是飞书消息触发的回合**，收尾卡只有首行来源说明和底部的会话元信息，**中间整块统计全没有**——没有 `⏱ 总时长 · 🧠 LLM · 🔧 Tools`，没有 `⚡ TTFT · 🚀 tok/s · 🔄 steps`，也没有 `📦 tokens · 📥 in · 📤 out`；同一回合里 `present` 声明的交付物也不进清单。飞书消息触发的回合一切正常，所以两张卡长得明显不一样。
+
+**根因：接线顺序 + 按值捕获**。`apply()` 里 `startFeishuExternalTurns({ …, flushed, … })` 在**第 985 行**求值，而真正的 `flushed = streamingResult.flushed` 在**第 994 行**才赋值 ⇒ 外部回合模块拿到的是第 217 行的初始占位函数 `() => Promise.resolve(undefined)`，**永远是它**。于是每次收尾都是 `turnStats === undefined`：`renderFooterCard` 无统计可渲染；`deliver.plan({ files: turnStats?.deliverables ?? [] })` 也恒为空表。飞书消息触发的回合走的是 `runtime.start` 回调里的参数（连接时才求值），那时变量已是真函数，因此不受影响——这正是「只有自动触发的卡片不一样」的原因。附带影响：`flushed()` 同时是**收尾卡排序**的手段（等最后一张步骤卡的消息真正创建），拿到占位函数后这道等待也失效，收尾卡可能抢在步骤卡前面。
+
+**修复**：(1) 把 `let flushed` 改成**延迟读取的 holder** `flushRef.current`——streaming 启动后写 `flushRef.current = streamingResult.flushed`，两处使用方（回复路径与外部回合模块）都在**调用时**读取，顺序不再影响正确性；(2) 外部回合接上与回复路径**同一套** `produceCard` 逻辑（`producedArtifacts` + `mergeProducedArtifacts` + `turnProducedLine` 计数行），不再丢掉「本回合新生成 N 个文件」。
+
+**验证**：`tests/feishu-external-turns.spec.ts` 新增 3 例——自动触发回合的卡片必须带上三行统计、`flushed` 必须在**收尾时**读取（holder 后替换成真函数仍生效）、产出文件按 `delivery` 并入计划且只收 artifact 类；`npm run typecheck` / `npm test`（1128 通过）/ `npm run build` 全绿。
+
+**English**: Auto-triggered turns (schedule reminders, background-job wake-ups, Web GUI) posted a Turn Complete card with **no statistics at all** and an empty deliverable list. `src/index.ts` passed streaming's `flushed()` **by value before it existed**: the deps object was built at line 985 while the real function was only assigned at line 994, so the module permanently held the initial no-op, `turnStats` was always `undefined`, and the ordering wait that keeps the footer below the final step card was gone too. Feishu-started turns capture the parameter inside `runtime.start` (evaluated after the assignment), which is why only auto-triggered cards looked wrong. Fixed by reading through a late-bound holder plus wiring `produceCard` into the mirrored completion path exactly like the reply path. Three regression tests added; typecheck, 1128 tests and build pass.
+
 ### 文档：区分当前指南、待办与历史设计（2026-10-13）
 
 - 新增文档总索引与媒体隐私说明；首页合并中英对照、命令与配置表，说明仓库主线不等于旧 npm 包。
