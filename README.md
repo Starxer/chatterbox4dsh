@@ -70,11 +70,11 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 
 The four `show*` switches are **ANDed with the level and only subtract**. Feishu sessions share this plugin's display config; the levels have Web UI names but **do not change the Web chat's separate setting**.
 
-`compact` 过程卡运行标题为“深度求索中 · 耗时”（`DeepSeeking · elapsed`）。最多显示最新 **5 步 / 40 行**，更早内容最多 **60 行**折叠；每步标题在引用框外，可见与折叠区共用按步分组。运行步骤带等待/思考/回复/工具状态灯；运行时钟每 30 秒刷新。别的卡片插入后，下一件实际活动另开分段，避免新内容更新到更早位置。
+`compact` 过程卡运行标题为“深度求索中 · 耗时”（`DeepSeeking · elapsed`）。最多显示最新 **5 步 / 40 行**，更早内容最多 **60 行**折叠；每步标题在引用框外，可见与折叠区共用按步分组。运行步骤带等待/思考/回复/工具状态灯；运行时钟每 30 秒刷新。别的卡片插入后，下一件实际活动另开分段，避免新内容更新到更早位置。**回合失败时，死在其中的那一步会标成 `❌ 失败`**，并列出它当时正在流式生成、但没来得及真正执行的工具调用（`⚠️ \`edit\` · 未执行`）——DSH 的 `assistant/attempt` 只在尝试未提交时追加，那是这些调用唯一的去处；它们不算工具调用，也不进标题里的计数。
 
 紧凑档**没有** Turn Complete 卡：回合结束时，答案卡 footer 会多一行筛选过的摘要——`✅ 完成 · ⏱ 总时长 · 📦 回合 tokens · 📥 in (♻️ 命中率) → 📤 out`，必要时再补 `🧠 模型 · 💡 推理强度 · 📦 本轮新生成 N 个文件`；答案卡原有的 `🚀 tok/s · 📊 上下文` 行保留。`🧠 LLM / 🔧 Tools` 拆分、`🔄 N 步`、`⚡ TTFT`、workspace 与 busy 回显都被去掉（过程卡、`/status` 已经有了）。有交付物时另发一张标题为「📦 交付物」的卡片：它只发一次、不就地更新，所以里面的「点击发送」行始终可点。
 
-The running title is `DeepSeeking · elapsed`. Progress keeps up to **five steps / 40 visible rows**, plus **60 folded rows**; headings stay outside per-step quote frames in both areas. A live phase light and 30-second clock track activity. Interleaved cards close a segment; the next real activity opens another.
+The running title is `DeepSeeking · elapsed`. Progress keeps up to **five steps / 40 visible rows**, plus **60 folded rows**; headings stay outside per-step quote frames in both areas. A live phase light and 30-second clock track activity. Interleaved cards close a segment; the next real activity opens another. **When the turn fails, the step it died in is marked `❌ failed`** and names the call it was still streaming but never got to run (`⚠️ \`edit\` · not run`) — DSH appends `assistant/attempt` only for an attempt that did not commit, which is the only place such a call exists; it is not a tool call and is not counted as one.
 
 `compact` has **no** Turn Complete card: at turn end the answer card's footer gains one filtered line — `✅ done · ⏱ wall clock · 📦 turn tokens · 📥 in (♻️ hit) → 📤 out`, plus `🧠 model · 💡 effort · 📦 N files produced` when there is more to say — while its existing `🚀 tok/s · 📊 context` line stays. The LLM/tool split, step count, TTFT, workspace and busy-mode echo are dropped (the process card and `/status` carry them). Delivered files get their own `📦 Deliverables` card, sent once and never updated, so its tap-to-send rows keep working. See [architecture](<./docs/architecture.md>).
 

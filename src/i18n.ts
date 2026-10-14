@@ -228,6 +228,18 @@ export interface Translations {
    */
   turnCardStep: (step: number, elapsed: string, light?: string) => string
   /**
+   * Suffix naming the step the turn DIED in, appended to {@link turnCardStep}:
+   * `▸ **第 6 步** · 22.3s · ❌ 失败`. Carries its own icon because it is a status
+   * mark, not a phase (`turnCardPhaseTool` already owns `🔧`).
+   */
+  turnCardStepFailed: string
+  /**
+   * One call that a failed model attempt streamed but never committed, so it
+   * never ran: `⚠️ \`edit\` · 未执行`. `name` is the bare tool name — the row adds
+   * the markup, like every other tool row does with its label.
+   */
+  turnCardCallUnrun: (name: string) => string
+  /**
    * The step's own narration — the assistant text of a step that went on to call
    * tools, i.e. process rather than answer. Already collapsed to one line.
    */
@@ -830,6 +842,8 @@ export const zh = {
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
   turnCardStep: (step, elapsed, light) => `▸ **第 ${step} 步**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
+  turnCardStepFailed: '❌ 失败',
+  turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: '执行中',
@@ -1331,6 +1345,8 @@ export const en: Translations = {
   turnCardTitleFailed: (calls, elapsed) =>
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
   turnCardStep: (step, elapsed, light) => `▸ **Step ${step}**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
+  turnCardStepFailed: '❌ failed',
+  turnCardCallUnrun: name => `⚠️ \`${name}\` · not run`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: 'running',

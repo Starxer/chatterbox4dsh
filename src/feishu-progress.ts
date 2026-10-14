@@ -161,6 +161,33 @@ export interface ProgressStep {
    * "本步无输出" plus the notice. One line per injected message, in arrival order.
    */
   injections?: string[] | undefined
+  /**
+   * Tool calls this step's LAST model attempt streamed but never committed
+   * (`assistant/attempt`): DSH appends that event exactly when an attempt did
+   * NOT commit, and the loop never runs the calls such an attempt had started
+   * streaming — no `tool/call` follows, no `tool/result` either.
+   *
+   * They are therefore NOT tool rows: they own no status, no clock, and they are
+   * deliberately excluded from {@link ProgressFacts.calls} (the title's count is
+   * "calls that ran"). They exist so the step that killed the turn says WHICH
+   * call it was making instead of showing a bare `▸ 第 N 步` (2026-10-14, the
+   * user's report: a failed turn's dying step showed nothing about its tools).
+   *
+   * Replaced by every later attempt of the same step and cleared the moment the
+   * step commits a message or runs a real call — a retry that succeeds must not
+   * leave a stale "never ran" row behind.
+   */
+  unrun?: readonly string[] | undefined
+  /**
+   * This is the step the turn died in (`turn/end` → `reason.kind === 'error'`),
+   * marked by {@link ProgressCardsHandle.finish} on the NEWEST step.
+   *
+   * Newest, not "the still-open one": DSH closes the dying step with its own
+   * `step/end` a moment before `turn/end`, so by the time the failure is known
+   * every step looks settled. The mark is what keeps a red title from reading as
+   * if the step had simply done nothing.
+   */
+  failed?: boolean | undefined
 }
 
 /** Everything one render needs. */
@@ -361,7 +388,10 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
     // step and its clock.
     const light = step.endedAt === undefined ? stepLight(t, step) : ''
     lines.push({
-      text: t.turnCardStep(step.step, stepElapsed, light === '' ? undefined : light),
+      // The step the turn died in carries one more suffix than the others: the
+      // red title names the TURN, this names the step (see `ProgressStep.failed`).
+      text: `${t.turnCardStep(step.step, stepElapsed, light === '' ? undefined : light)}`
+        + (step.failed === true ? ` · ${t.turnCardStepFailed}` : ''),
       header: true,
       step: step.step,
     })
@@ -412,6 +442,12 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
         step: step.step,
       })
       index += count
+    }
+    // Calls the step's last attempt streamed but never committed, LAST: they are
+    // the newest thing the step did (it died on them). One row per name, no clock
+    // and no status — there is no run to report (see `ProgressStep.unrun`).
+    for (const name of step.unrun ?? []) {
+      lines.push({ text: `${PROGRESS_QUOTE_MARKER}${t.turnCardCallUnrun(name)}`, header: false, step: step.step })
     }
   }
   return lines
@@ -622,6 +658,20 @@ export interface ProgressCardsHandle {
    * carrying nothing but the notice).
    */
   stepInjection(sessionId: string, step: number, notice: string, at: number): void
+  /**
+   * `assistant/attempt`: the tool calls this attempt streamed but never
+   * committed (see {@link ProgressStep.unrun}).
+   *
+   * Only ever mutates a section `step/start` already opened — the same rule
+   * `stepPhase` follows: an attempt for a step this module never saw has no
+   * section to hang a row on, and creating one would invent a step.
+   *
+   * @param names - the attempt's uncommitted call names, in stream order. An
+   *                EMPTY list CLEARS the row set, which is what a committed
+   *                message or a real `tool/call` means: the step either ran its
+   *                calls or moved on, and a stale "never ran" row would lie.
+   */
+  stepAttempt(sessionId: string, step: number, names: readonly string[], at: number): void
   /** Whether this turn has a card on screen (used to decide who shows injections). */
   hasCard(sessionId: string): boolean
   /**
@@ -886,6 +936,37 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     armRunningTick(entry)
   }
 
+  /**
+   * Record (or clear) the calls a failed attempt streamed without committing.
+   *
+   * Stored on the facts even when no card exists yet — the card opens on the
+   * first real tool call, and `finish` renders whatever the facts hold — and
+   * dropped for a step this module never saw, so an attempt frame can never
+   * invent a section.
+   */
+  const stepAttempt = (sessionId: string, step: number, names: readonly string[], at: number): void => {
+    if (stopped) return
+    const turn = turns.get(sessionId)
+    if (turn === undefined) return
+    const facts = turn.facts
+    const target = facts.steps.find(candidate => candidate.step === step)
+    if (target === undefined) return
+    const next: readonly string[] | undefined = names.length === 0 ? undefined : [...names]
+    const current = target.unrun
+    // A per-record caller (the streaming layer walks the attempt's stream) must
+    // not repaint the same row set twice.
+    const same = current === undefined
+      ? next === undefined
+      : next !== undefined && current.length === next.length && current.every((name, i) => name === next[i])
+    if (same) return
+    target.unrun = next
+    facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry === undefined) return
+    entry.facts = facts
+    schedule(entry)
+  }
+
   const toolStarted = (sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
@@ -1000,6 +1081,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     facts.failedTurn = failedTurn
     const current = facts.steps[facts.steps.length - 1]
     if (current !== undefined && current.endedAt === undefined) current.endedAt = at
+    // Name the step the turn died in. `turn/end` is the only event that says the
+    // turn failed, and the dying step has already closed itself with `step/end`,
+    // so the NEWEST step is the one to mark (2026-10-14).
+    if (failedTurn && current !== undefined) current.failed = true
     // A closed segment still has to say how the turn ended: its body is frozen
     // (it is not the newest card any more, so new rows must not appear in it),
     // but a card claiming "进行中" after the turn ended is a lie. Counters come
@@ -1129,7 +1214,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     turns.clear()
   }
 
-  return { beginTurn, stepStarted, stepNote, stepPhase, stepInjection, hasCard, toolStarted, toolFinished, stepEnded, finish, stop }
+  return { beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard, toolStarted, toolFinished, stepEnded, finish, stop }
 }
 
 /** The card's title, for the plain-text fallback. */

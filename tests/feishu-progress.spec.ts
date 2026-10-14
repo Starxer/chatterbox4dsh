@@ -155,6 +155,30 @@ describe('renderProgressCard', () => {
     expect(card.header.title.content).toBe(t.turnCardTitleFailed(1, '5.0s'))
   })
 
+  it('names the step the turn died in, and the call it never got to run', () => {
+    // The real shape (session log, 2026-10-14): the model streamed reasoning and
+    // then started a call to `edit`; the attempt died before DSH ran it, so there
+    // is no tool row for it — only this marker. Without it the dying step reads
+    // as a step that did nothing.
+    const card: any = renderProgressCard(t, facts({
+      steps: [
+        { step: 5, startedAt: 0, endedAt: 1_000, tools: [{ name: 'ssh_exec', startedAt: 0, elapsed: 3 }] },
+        { step: 6, startedAt: 1_000, endedAt: 2_000, tools: [], failed: true, unrun: ['edit'] },
+      ],
+      calls: 1,
+      endedAt: 2_000,
+      now: 2_000,
+      failedTurn: true,
+    }))
+    expect(visibleLines(card)).toContain(`${t.turnCardStep(6, '1.0s')} · ${t.turnCardStepFailed}`)
+    expect(visibleLines(card)).toContain(row(t.turnCardCallUnrun('edit')))
+    // Only step 6 died: the step above it keeps its ordinary header.
+    expect(visibleLines(card)).toContain(t.turnCardStep(5, '1.0s'))
+    // A call that never ran is NOT one of the turn's tool calls: the title still
+    // counts the one that did.
+    expect(card.header.title.content).toBe(t.turnCardTitleFailed(1, '2.0s'))
+  })
+
   it('merges consecutive same-named calls into one row with a summed duration', () => {
     const card: any = renderProgressCard(t, facts({
       steps: [{
@@ -1001,5 +1025,63 @@ describe('createProgressCards', () => {
     expect(updated.header.title.content).toBe(t.turnCardTitleDone(1, 0, '15m00s'))
     // The body is the frozen one: the turn's own rows, unchanged.
     expect(mdOf(updated)).toContain('⏳ `ask_user_question`')
+  })
+
+  it('shows the call a dying attempt streamed, and clears it when the step moves on', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 100)
+    cards.toolFinished('s1', 'c1', 400, false, 500)
+    await vi.advanceTimersByTimeAsync(0)
+    // The attempt that died had streamed a call to `edit` before the stream broke.
+    cards.stepAttempt('s1', 1, ['edit'], 600)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    expect(String(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])))
+      .toContain(t.turnCardCallUnrun('edit'))
+    // The retry committed and a REAL call followed: the marker must go, or a step
+    // that recovered would keep claiming it never ran anything.
+    cards.stepAttempt('s1', 1, [], 700)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    expect(String(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])))
+      .not.toContain(t.turnCardCallUnrun('edit'))
+  })
+
+  it('records an unrun call before the card exists, and marks the newest step at turn/end', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'bash', 'c1', 10)
+    cards.toolFinished('s1', 'c1', 400, false, 500)
+    // Step 2 dies on an attempt that had streamed a call: no card is opened by the
+    // attempt itself, so the marker has to survive on the facts until the failure
+    // render at `turn/end`.
+    cards.stepStarted('s1', 2, 1_000)
+    cards.stepAttempt('s1', 2, ['todo_write'], 1_100)
+    await cards.finish('s1', 2_000, true)
+    const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(card.header.template).toBe('red')
+    expect(String(mdOf(card))).toContain(`${t.turnCardStep(2, '1.0s')} · ${t.turnCardStepFailed}`)
+    expect(String(mdOf(card))).toContain(t.turnCardCallUnrun('todo_write'))
+    // Only the newest step is named as the one that failed.
+    expect(String(mdOf(card))).toContain(t.turnCardStep(1, '2.0s…'))
+    expect(String(mdOf(card))).not.toContain(`${t.turnCardStep(1, '2.0s…')} · ${t.turnCardStepFailed}`)
+  })
+
+  it('ignores an attempt for a step this module never saw', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 100)
+    await vi.advanceTimersByTimeAsync(0)
+    // A frame for a step that never had a section must not invent one: the row
+    // would name a step the turn never ran.
+    cards.stepAttempt('s1', 7, ['edit'], 200)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    expect(String(mdOf((channel.createCardInstance.mock.calls[0] as any)[0]))).not.toContain(t.turnCardCallUnrun('edit'))
   })
 })

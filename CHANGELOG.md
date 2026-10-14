@@ -5,6 +5,20 @@
 > 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：紧凑档回合失败时，死在其中的那一步看不到工具情况（`src/feishu-streaming.ts` / `src/feishu-progress.ts` / `src/i18n.ts`，2026-10-14）
+
+**现象**（使用者报「如果某个步骤失败导致回合结束，步骤卡看不见那个步骤的工具情况」）：紧凑档的回合过程卡在回合失败时，**死在其中的那一步只剩一个光秃秃的步头**——`▸ 第 6 步 · 22.3s`，下面什么都没有，而卡片标题是红色的「本回合失败」。真实会话日志（2026-10-14）里三个失败回合一模一样：模型已经在流式生成工具调用，然后连接断了，DSH 判定回合失败；那一步自然也没有任何工具行。
+
+**根因：`assistant/attempt` 从未被消费**。DSH 把一次模型尝试的**未提交**结果追加成 `assistant/attempt`（提交成功才是 `assistant/message`），被杀掉的工具调用**只存在于这个事件的 `stream` 里**——因为尝试没有提交，loop 从没真正执行它，所以**永远不会有对应的 `tool/call`**。插件的 `session/event` 分发没有这个分支，于是那一步在卡上没有任何可渲染的事实。取证（会话日志，失败回合的 `assistant/attempt`）：`step 6` 记录里是 `tool-call-chunks name="edit"`、`step 24` 是 `name="todo_write"`，而六次重试那种（`step 9`）全程没有工具名——所以标记与“在调什么”是两件事，都要能各自出现。
+
+**修复**：(1) 新增 `assistant/attempt` 分支，用 `uncommittedToolNames(stream)` 从打包的 `tool-call-chunks`（并兼容旧的裸 `tool-call-delta`）取出工具名，去重、最多 3 个，交给过程卡的新方法 `stepAttempt()` 记为 `ProgressStep.unrun`；只改已经存在的步骤小节（与状态灯同一规则，不为一个没见过的步骤凭空造一节）。(2) `assistant/message` 提交或真出现 `tool/call` 时**清掉**这组名字——重试成功的一步不能继续宣称自己什么都没跑。(3) `finish(…, failedTurn)` 给**最新一步**打 `failed`：DSH 在 `turn/end` 之前就用 `step/end` 关掉了那一步，所以“还开着”不是判据；渲染成步头后缀 `❌ 失败`。(4) 未执行的调用渲染为 `⚠️ \`edit\` · 未执行`：它**不是工具行**——没有状态、没有耗时，也**不计入标题的工具数**（那里只数真正跑过的调用）。仅紧凑档（`turnCard`）新增这些行；`showToolCalls: false` 时一如既往没有过程卡。
+
+**验证**：新增 10 例——`tests/feishu-progress.spec.ts` 4 例（失败步标记 + 未执行行 + 不计入工具数、死后重试清标记、卡片尚未创建时先记后渲染、给没见过的步骤不造节）、`tests/feishu-streaming.spec.ts` 6 例（`assistant/attempt` 的真实记录形状端到端、重试提交后不留残标记、`uncommittedToolNames` 的打包/裸分片/去重/上限/空集）。另外把**真实失败回合的完整事件流**（`step/start … assistant/attempt … step/end … turn/end error`）回放进流式模块逐张渲染核对，三个失败回合分别得到 `❌ 失败` + `⚠️ \`edit\`` / `⚠️ \`todo_write\`` / 仅标记；用于核对的临时回放脚本**未入库**。`npm run typecheck` / `npm test`（**1154 通过 / 58 文件**）/ `npm run build` 全绿。
+
+**这一批明确没做**（记录在案）：① 只覆盖紧凑档的过程卡——`standard` / `detailed` / `verbose` 的步骤卡**不投影** `assistant/attempt`，所以那三档里一次没提交的尝试仍然什么都不显示（那一步的残缺正文/推理同样丢弃，属既有行为，本次不动）；② `unrun` 只取工具**名字**，不显示它的参数（紧凑档不带参数是这条档位的定义）；③ 只看**最后一次**尝试的名字——若某次重试自己没流式出工具名，就不显示更早尝试的名字（真机上三种失败尾部各只对应一种情况，见上）。
+
+**English**: At `compact`, a step that killed the turn used to render as a bare heading — `▸ Step 6 · 22.3s` with nothing under it beside a red title — so the reader could not see which tool that step was calling. Cause: DSH appends `assistant/attempt` (not `assistant/message`) exactly when a model attempt did **not** commit, and a call the attempt had started streaming only exists inside that event; because the loop never ran it, no `tool/call` ever follows, and the plugin never consumed the event at all. The plugin now reads those uncommitted call names (packed `tool-call-chunks`, plus the legacy raw `tool-call-delta`), keeps at most three as `ProgressStep.unrun`, clears them when the step commits or really calls a tool, marks the newest step `❌ failed` at `turn/end`, and renders each never-ran call as `⚠️ \`edit\` · not run` — deliberately not a tool row (no status, no clock) and not counted in the title's tool total. Compact only: the other levels do not project the event, so a step whose attempt never committed still shows nothing there, and only the LAST attempt's names are kept (never the arguments). Verified with 10 new tests plus a replay of three real failed turns taken from the session log; typecheck, 1154 tests and build pass.
+
 ### 变更：紧凑档不再发 Turn Complete 卡，摘要并入回复卡 footer + 独立「交付物」卡（`src/turn-summary.ts`（新）/ `src/feishu-streaming.ts` / `src/channel.ts` / `src/feishu-external-turns.ts`，2026-10-14）
 
 **诉求**（使用者）：紧凑档不要 Turn Complete 卡片，把其中一部分内容融进最后那张回复卡的 footer，并且筛选显示的内容；交付物要有自己的卡片和标题；只动紧凑档。

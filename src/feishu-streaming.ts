@@ -37,7 +37,7 @@ import { compactCompletionLines, compactCompletionElement, appendCardElement } f
 import type { ProduceCardMode } from './config.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
-import { createProgressCards } from './feishu-progress.ts'
+import { createProgressCards, PROGRESS_MAX_DETAILS } from './feishu-progress.ts'
 import { shellPrograms } from './shell-programs.ts'
 
 // Re-exported for the callers that already import it from this module.
@@ -1514,6 +1514,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // The assembled message arrived. Record usage and message time.
         state.messageTime = event.time ?? Date.now()
         state.completedTime = state.messageTime
+        // The attempt COMMITTED: whatever an abandoned attempt of this step had
+        // streamed is now either a real call row or no longer the step's state,
+        // so the "never ran" marker goes (2026-10-14, `ProgressStep.unrun`).
+        if (displayPolicy().turnCard) {
+          progressCards.stepAttempt(sessionId, state.stepNumber, [], state.messageTime)
+        }
         const usage = event.data?.usage
         if (usage !== undefined && usage !== null) {
           state.usage = {
@@ -1601,6 +1607,31 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
         }
         state.lastStepHadContent = hasContent
+      } else if (event.type === 'assistant/attempt') {
+        // The attempt did NOT commit — DSH appends this instead of
+        // `assistant/message` when the stream died or the retries ran out, and
+        // the loop never runs the calls such an attempt had started streaming.
+        // It is therefore the ONLY place a step that killed the turn says what
+        // it was doing: without it the compact card shows a bare `▸ 第 N 步`
+        // beside a red title (2026-10-14, the user's report). Names only — the
+        // arguments and the partial reasoning stay off `compact`.
+        //
+        // The row set is REPLACED per attempt and cleared by a commit or a real
+        // `tool/call` (see `ProgressStep.unrun`), so a retry that works leaves
+        // nothing behind.
+        if (displayPolicy().turnCard) {
+          const stream = Array.isArray((event.data as { stream?: unknown } | undefined)?.stream)
+            ? (event.data as { stream: readonly AssistantStreamRecord[] }).stream
+            : undefined
+          if (stream !== undefined) {
+            progressCards.stepAttempt(
+              sessionId,
+              (event.data?.step as number | undefined) ?? state.stepNumber,
+              uncommittedToolNames(stream),
+              event.time ?? Date.now(),
+            )
+          }
+        }
       } else if (event.type === 'tool/call') {
         const toolCallId = String(event.data?.callId ?? '')
         const toolName = (event.data?.name as string) ?? 'unknown'
@@ -1625,6 +1656,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // Mirror the call onto the turn progress card (`compact` only). The
         // card opens on this first call and is updated in place from here on.
         if (displayPolicy().turnCard) {
+          // A real call answers the question the unrun marker asks — this step is
+          // RUNNING its calls, not dying on them — so the marker goes first.
+          progressCards.stepAttempt(sessionId, state.stepNumber, [], toolCall.startedAt)
           progressCards.toolStarted(
             sessionId,
             toolName,
@@ -2677,6 +2711,36 @@ export function progressToolDetails(toolName: string, argsRaw: string): string[]
     return programs.length === 0 ? undefined : programs
   }
   return undefined
+}
+
+/**
+ * The tool calls a FAILED model attempt streamed but never committed.
+ *
+ * `assistant/attempt` is appended exactly when an attempt did not commit, and its
+ * `stream` is the same lossless record list a committed `assistant/message`
+ * carries. A tool call reaches it as a packed `tool-call-chunks` run (which names
+ * the tool) — older writers could leave a raw `tool-call-delta` chunk, so that
+ * shape is read too — and because the attempt died, no `tool/call` event ever
+ * follows it: the call never ran.
+ *
+ * Deduplicated (a message may stream one call in several runs) and capped at
+ * {@link PROGRESS_MAX_DETAILS}, the same budget a merged tool row has: the row is
+ * a pointer to what the step was doing, not an inventory.
+ *
+ * @param stream - the attempt's record list.
+ * @returns the distinct tool names, in stream order; empty when the attempt never
+ *          got as far as a call (a step that died while thinking names no tool).
+ */
+export function uncommittedToolNames(stream: readonly AssistantStreamRecord[]): string[] {
+  const names: string[] = []
+  for (const record of stream) {
+    const name = record.type === 'tool-call-chunks'
+      ? record.name
+      : record.type === 'chunk' && record.chunk.type === 'tool-call-delta' ? record.chunk.name : undefined
+    if (typeof name === 'string' && name !== '' && !names.includes(name)) names.push(name)
+    if (names.length >= PROGRESS_MAX_DETAILS) break
+  }
+  return names
 }
 
 /**

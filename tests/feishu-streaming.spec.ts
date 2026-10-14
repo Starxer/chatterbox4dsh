@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
-import { deriveToolSummary, progressToolDetails, renderStepCard, startFeishuStreaming } from '../src/feishu-streaming.ts'
+import { deriveToolSummary, progressToolDetails, renderStepCard, startFeishuStreaming, uncommittedToolNames } from '../src/feishu-streaming.ts'
+import { PROGRESS_MAX_DETAILS } from '../src/feishu-progress.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { TranscriptView } from '../src/display-level.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
@@ -2597,5 +2598,104 @@ describe('turn progress card wiring', () => {
     await tick(200)
     expect(titles(ch).some(isTurnCardTitle)).toBe(false)
     streaming.stop()
+  })
+
+  /**
+   * The stream of an attempt that DIED mid-call, copied from a real session log
+   * (2026-10-14): the model streamed reasoning, opened a tool-call block, and the
+   * connection dropped before DSH ever ran `edit` — so no `tool/call` follows.
+   */
+  const DYING_ATTEMPT = [
+    { type: 'chunk', time: 100, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } },
+    { type: 'reasoning-chunks', time0: 200, index: 0, dt: [10], texts: ['让我想想'] },
+    { type: 'chunk', time: 300, chunk: { type: 'block-start', index: 1, blockType: 'tool-call' } },
+    { type: 'tool-call-chunks', time0: 400, index: 1, dt: [], id: 'call_dying', name: 'edit', args: ['{"file_path":"a.ts"}'] },
+    { type: 'chunk', time: 500, chunk: { type: 'usage', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } },
+    { type: 'chunk', time: 600, chunk: { type: 'finish', reason: 'stop' } },
+  ]
+
+  it('names the step the turn died in and the call it never ran (compact)', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'read', arguments: '{"file_path":"a.ts"}' })
+    emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    emit('step/end', { turn: 1, step: 1 })
+    // The dying step: it never committed a message, so no `tool/call` ever names
+    // the call it was making.
+    emit('step/start', { turn: 1, step: 2 })
+    emit('assistant/attempt', { turn: 1, step: 2, stream: DYING_ATTEMPT })
+    emit('step/end', { turn: 1, step: 2 })
+    emit('turn/end', { reason: { kind: 'error', error: { message: 'stream closed before response.completed', code: 'PI_AI_ERROR' } } })
+
+    await vi.waitFor(() => { expect(progressRenders(ch).at(-1)?.header.template).toBe('red') })
+    const last = progressRenders(ch).at(-1)!
+    const md = mdOf(last)
+    // The failing step is named, and the call it was making is visible even
+    // though it never ran (the user's report, 2026-10-14).
+    expect(md).toMatch(/▸ \*\*第 2 步\*\* · [\d.]+m?s · ❌ 失败/)
+    expect(md).toContain(t.turnCardCallUnrun('edit'))
+    // It is not a tool row and not a tool count: only `read` ran.
+    expect(md).not.toContain('`edit` · 4')
+    expect(last.header.title.content).toMatch(/^⚙️ 本回合失败 · 1 个工具 · /)
+    expect(last.header.title.content).not.toContain('2 个工具')
+    streaming.stop()
+  })
+
+  it('drops the never-ran row when a retry commits and the call really runs (compact)', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    // Attempt 1 streamed a call to `edit` and died…
+    emit('assistant/attempt', { turn: 1, step: 1, stream: DYING_ATTEMPT })
+    // …attempt 2 committed, and the step went on to run a real call.
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 }, message: { role: 'assistant', content: [] } })
+    emit('tool/call', { callId: 'c2', name: 'read', arguments: '{"file_path":"a.ts"}' })
+    emit('tool/result', { message: { toolCallId: 'c2', content: [{ type: 'text', text: 'ok' }] } })
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    await vi.waitFor(() => { expect(progressRenders(ch).at(-1)?.header.template).toBe('green') })
+    const md = mdOf(progressRenders(ch).at(-1)!)
+    expect(md).toContain('✅ `read`')
+    expect(md).not.toContain(t.turnCardCallUnrun('edit'))
+    expect(md).not.toContain(t.turnCardStepFailed)
+    streaming.stop()
+  })
+})
+
+describe('uncommittedToolNames', () => {
+  const records = (value: unknown): any => value
+
+  it('reads the packed run that names the call, deduplicated and in order', () => {
+    expect(uncommittedToolNames(records([
+      { type: 'reasoning-chunks', time0: 0, index: 0, dt: [], texts: ['hi'] },
+      { type: 'tool-call-chunks', time0: 0, index: 1, dt: [], id: 'c1', name: 'edit', args: ['{}'] },
+      { type: 'tool-call-chunks', time0: 0, index: 2, dt: [], id: 'c2', name: 'edit', args: ['{}'] },
+      { type: 'tool-call-chunks', time0: 0, index: 3, dt: [], id: 'c3', name: 'bash', args: ['{}'] },
+    ]))).toEqual(['edit', 'bash'])
+  })
+
+  it('reads the raw delta shape too, and skips records that name nothing', () => {
+    expect(uncommittedToolNames(records([
+      { type: 'chunk', time: 0, chunk: { type: 'tool-call-delta', index: 0, id: 'c1', name: 'todo_write', argumentsDelta: '{}' } },
+      { type: 'tool-call-chunks', time0: 0, index: 1, dt: [], id: 'c2', args: ['{}'] },
+      { type: 'chunk', time: 0, chunk: { type: 'finish', reason: 'stop' } },
+    ]))).toEqual(['todo_write'])
+  })
+
+  it('caps the row set at the same budget a merged tool row has', () => {
+    const stream = ['a', 'b', 'c', 'd'].map((name, i) => (
+      { type: 'tool-call-chunks', time0: 0, index: i, dt: [], id: `c${i}`, name, args: ['{}'] }
+    ))
+    expect(uncommittedToolNames(records(stream))).toHaveLength(PROGRESS_MAX_DETAILS)
+  })
+
+  it('returns nothing for an attempt that died before naming a tool', () => {
+    expect(uncommittedToolNames(records([
+      { type: 'chunk', time: 0, chunk: { type: 'usage', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } },
+      { type: 'chunk', time: 0, chunk: { type: 'finish', reason: 'stop' } },
+    ]))).toEqual([])
   })
 })
