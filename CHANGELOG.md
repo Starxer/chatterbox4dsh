@@ -5,6 +5,20 @@
 > 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：插件热重载把进行中的一轮拆给两个实例，同一张答复发了两遍（`src/feishu-streaming.ts`，2026-10-15）
+
+**现象**（使用者问「为什么刚刚你发了两条一样的完成卡片」）：同一秒（01:19:50）聊天里出现两张**内容逐字相同**的收尾卡；journal 只记录了其中一张（流式路径的 `[send] message=`），另一张来自回复兜底路径。
+
+**根因：热重载把「一轮」拆给了两个插件实例。** 01:19:16 我在**这一轮进行中**跑了 `npm run build`，HMR 立刻重挂插件（本批之前刚把模块热重载打开）。此后：**新实例**收到了这一轮的尾巴——剩余几个 `tool/call`/`tool/result`，以及最后的 `assistant/message`——于是照常渲染出一张带答案与完成 footer 的步骤卡；**旧实例**的回复 promise 仍在闭包里活着，走到 `.then()` 时它在**已被 dispose 的**实例上读送达记录：`flushed()` 没有统计、`intermediateSent` 为假，便判定「没有步骤卡承载正文」，又发了一张兜底回复卡。两张卡都自报完成。
+
+**修复：一轮的渲染权归「看见它 `turn/start`」的那个实例。** 新增 `state.turnSeen`（`turn/start` 置真、`turn/end` 置假）与 `TURN_SCOPED_EVENTS` 名单（`assistant/*`、`tool/*`、`step/*`、`turn/end`、`deliverables/presented`、`user/message`）：**没看见这一轮开头，就整轮不渲染**，交给仍在回答它的那个实例的回复路径。刻意不设闸的是 `request/header` / `request/context`（会话级路线，对后续回合仍有用）与 `compaction/*`（自有写入器，且压缩发生在轮与轮之间）。顺带改善：以前重挂后新实例只会渲染出**尾巴片段**（前半段它没看见），现在干脆交给兜底路径发完整答复。
+
+**操作教训**：`npm run build` 现在自己就会热重载，**在有回合进行时构建等于把那一轮劈成两半**。有了这道闸不会再有重复卡，但重挂前已上屏的半张卡会停在那里（它的实例已经没了），兜底卡给出完整答复——所以「构建放到回复之后」仍是更好的习惯。
+
+**验证**：新增 2 例（本轮无 `turn/start` ⇒ 步骤卡/续卡/过程卡一张都不发，且随后自己开的下一轮照常渲染；`request/header` 仍被采纳，随后的收尾 footer 带 `💡 xhigh`）。测试 harness 同时改成**忠实于宿主**——宿主必然在轮内事件前发 `turn/start`，harness 于是自动补一条，`noTurnStart` 可关掉以专门测这道闸；此前 17 个既有用例因为缺 `turn/start` 而变红，正说明它们过去在断言「模块容忍缺少开头」这一非宿主行为。`npm run typecheck` / `npm test`（**1171 通过 / 58 文件**）/ `npm run build` 全绿。
+
+**English**: A plugin hot reload used to split ONE turn across two instances, so the same answer went out twice (the user asked why two identical completion cards appeared in the same second). The reload disposed the instance that opened the turn while its reply promise kept running: the freshly mounted instance rendered the turn's tail as a step card, and the old promise, reading its delivery record on a disposed instance, concluded no card had carried the text and posted a fallback reply card too. The module now records whether THIS instance saw the current turn's `turn/start` and ignores that turn's own events otherwise (`TURN_SCOPED_EVENTS`); `request/header` / `request/context` and `compaction/*` stay ungated on purpose. The test harness now mirrors the host by opening a turn for the first turn-scoped event (`noTurnStart` opts out), which is what the 17 previously-failing cases were really missing. Typecheck, 1171 tests and build pass.
+
 ### 修复：紧凑档 footer 的「模型 · 推理强度」行在插件热重载后会消失（`src/feishu-streaming.ts`，2026-10-15）
 
 **现象**（使用者报「footer 还是加上模型名称和推理强度，另起一行」）：紧凑档收尾卡的 footer 只剩 `📦 N tokens · ♻️ x%` 与 `🚀 tok/s · 📊 上下文`，**本该自成一行的那对模型/推理强度不见了**。真机读回可复核：`~/.dsh/read-card.py <message_id>`（本批新增的只读工具）读出 22:17 热重载之后 00:56 那张卡正是这样。

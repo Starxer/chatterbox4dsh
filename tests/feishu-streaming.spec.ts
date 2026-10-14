@@ -419,6 +419,11 @@ function stepHarness(
      * the rest. Omitted keeps the bare context-window fixture.
      */
     sessionMeta?: () => Record<string, unknown> | Promise<Record<string, unknown>>
+    /**
+     * Suppress the harness's automatic `turn/start` (see `emit`), so a test can
+     * exercise the module's own turn-ownership guard.
+     */
+    noTurnStart?: boolean
   } = {},
 ) {
   // Listeners are keyed by EVENT NAME: the streaming module also subscribes to
@@ -450,8 +455,29 @@ function stepHarness(
     ...display,
     ...extra,
   })
-  const emit = (type: string, data?: any): void => {
+  /**
+   * Turn-scoped events, mirroring the module's own gate: the host always appends
+   * `turn/start` before any of them, so the harness opens the turn for the first
+   * one it sees. Without that, every card test would be asserting on a turn the
+   * module (correctly) refuses to render — the case a re-mounted plugin hits.
+   */
+  const TURN_SCOPED = new Set([
+    'assistant/chunk', 'assistant/message', 'assistant/attempt',
+    'tool/call', 'tool/result', 'step/start', 'step/end', 'turn/end',
+    'deliverables/presented', 'user/message',
+  ])
+  let turnOpen = false
+  const fire = (type: string, data?: any): void => {
     for (const handler of listeners.get('session/event') ?? []) handler({ id: 's-1' }, { type, time: Date.now(), data })
+  }
+  const emit = (type: string, data?: any): void => {
+    if (type === 'turn/start') turnOpen = true
+    else if (!extra.noTurnStart && !turnOpen && TURN_SCOPED.has(type)) {
+      turnOpen = true
+      fire('turn/start')
+    }
+    fire(type, data)
+    if (type === 'turn/end') turnOpen = false
   }
   /**
    * Publish one transient assistant-stream frame in its real shape: the payload
@@ -2811,5 +2837,80 @@ describe('uncommittedToolNames', () => {
       { type: 'chunk', time: 0, chunk: { type: 'usage', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } },
       { type: 'chunk', time: 0, chunk: { type: 'finish', reason: 'stop' } },
     ]))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Turn ownership: a plugin re-mounted mid-turn must not render that turn's tail
+// ---------------------------------------------------------------------------
+
+describe('turn ownership across a plugin re-mount', () => {
+  function channel(): StepChannel {
+    return {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+      sendStepCard: vi.fn(async () => ({ messageId: 'm-step' })),
+    }
+  }
+
+  it('ignores the tail of a turn it never saw start, then renders its own turn', async () => {
+    // 2026-10-15 01:19: an HMR reload split ONE turn between two instances. The
+    // new instance rendered the tail the old one was still answering, so the chat
+    // received two identical completion cards. `noTurnStart` makes the harness
+    // behave like that re-mounted instance.
+    const ch = channel()
+    const { streaming, emit } = stepHarness(
+      ch,
+      { transcriptView: () => 'compact' as TranscriptView },
+      { noTurnStart: true },
+    )
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the tail of someone else’s turn' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await tick(300)
+    // Nothing: not a step card, not an overflow card, not a progress card.
+    expect(ch.createCardInstance).not.toHaveBeenCalled()
+    expect(ch.send).not.toHaveBeenCalled()
+    expect(ch.sendStepCard).not.toHaveBeenCalled()
+
+    // The turn this instance DOES open renders exactly as before.
+    emit('turn/start')
+    emit('step/start', { turn: 2, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'mine' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => expect(ch.createCardInstance).toHaveBeenCalledTimes(1))
+    expect(mdOf((ch.createCardInstance!.mock.calls[0] as any)[0])).toContain('mine')
+    streaming.stop()
+  })
+
+  it('keeps the session route reported while it was not rendering a turn', async () => {
+    // The route events are deliberately NOT gated: they describe the session and
+    // stay useful for the turns that follow.
+    const ch = channel()
+    const { streaming, emit } = stepHarness(
+      ch,
+      { transcriptView: () => 'compact' as TranscriptView },
+      { noTurnStart: true, sessionMeta: () => ({ model: 'p/m', reasoningEffort: 'high' }) },
+    )
+    emit('request/header', { header: { config: { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'xhigh' } } })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => expect(ch.createCardInstance).toHaveBeenCalled())
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => {
+      const writes = [
+        ...ch.createCardInstance!.mock.calls.map(call => call[0] as any),
+        ...ch.updateCardInstance!.mock.calls.map(call => call[1] as any),
+      ]
+      expect(writes.some(card => mdOf(card).includes('💡 xhigh'))).toBe(true)
+    })
+    streaming.stop()
   })
 })

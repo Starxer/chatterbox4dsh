@@ -430,6 +430,14 @@ interface SessionStepState {
    */
   requestEffort: string | undefined
   /**
+   * Whether THIS instance saw the turn that is currently running (`turn/start`).
+   *
+   * False for a turn that began before the plugin was mounted (a reload mid-turn),
+   * which is what keeps a re-mounted instance from rendering — and so duplicating
+   * — the tail of a turn someone else is already answering (2026-10-15).
+   */
+  turnSeen: boolean
+  /**
    * The route this session is RECORDED to run (`bridge.getSessionMeta`, which
    * prefers the session log's latest `request/header` over any in-memory
    * default): the fallback the completion footer names when this plugin instance
@@ -552,6 +560,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         livePhase: 'none',
         requestRoute: undefined,
         requestEffort: undefined,
+        turnSeen: false,
         sessionRoute: undefined,
         completionLines: undefined,
         completionTitle: undefined,
@@ -1466,6 +1475,27 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   // payload which we use as the result view when present. `toolCall.callView`
   // is therefore always undefined; `toolCall.resultView` is `event.data.meta`
   // when the tool attaches one.
+  /**
+   * The events that belong to ONE turn's own rendering.
+   *
+   * An instance that never saw this turn's `turn/start` must not render its tail.
+   * A plugin re-mounted mid-turn (HMR reload — see `notes/build-and-install.md`)
+   * otherwise renders the remainder of a turn the OLD instance is still
+   * answering: on 2026-10-15 01:19 that posted a second, identical completion card
+   * beside the reply card, because the reload had split one turn between two
+   * instances. The gate only drops events for a turn this instance never opened —
+   * a turn that really started here renders exactly as before.
+   *
+   * Deliberately NOT gated: `request/header` / `request/context` (they describe the
+   * session's route and stay useful for the turns that follow) and
+   * `compaction/*` (its own card writer, and a compaction happens BETWEEN turns).
+   */
+  const TURN_SCOPED_EVENTS = new Set([
+    'assistant/chunk', 'assistant/message', 'assistant/attempt',
+    'tool/call', 'tool/result', 'step/start', 'step/end', 'turn/end',
+    'deliverables/presented', 'user/message',
+  ])
+
   const handleEvent = (session: { id: string }, event: { type: string; time?: number; data?: any }): void => {
     try {
       const sessionId = session.id
@@ -1475,6 +1505,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       if (chat === undefined) return
 
       const state = getState(sessionId)
+      // Not our turn (see `TURN_SCOPED_EVENTS`): the reply path of whichever
+      // instance DID open it is the one that answers.
+      if (!state.turnSeen && TURN_SCOPED_EVENTS.has(event.type)) return
 
       if (event.type === 'assistant/chunk') {
         // Accumulate reasoning-delta and text-delta chunks.
@@ -1835,6 +1868,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // turn's own messages (see `foldTurnTrigger`).
         state.sawHumanMessage = false
         state.turnTrigger = undefined
+        // This turn is OURS to render from here on (see `TURN_SCOPED_EVENTS`).
+        state.turnSeen = true
         // `compact` draws the turn's tool activity on one card; this turn owns a
         // new one (the previous card is a historical record — a card entity may
         // only be sent once).
@@ -2153,6 +2188,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
         })
         resetStep(state)
+        state.turnSeen = false
       }
     } catch (eventError: unknown) {
       console.log(`dsh-feishu: streaming event handler error: ${eventError instanceof Error ? eventError.message : String(eventError)}`)
