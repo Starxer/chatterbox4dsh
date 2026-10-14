@@ -307,11 +307,12 @@ describe('completing a turn that did not start on Feishu', () => {
     await flush()
     expect(h.sent).toHaveLength(1)
     const card = h.sent[0]?.input.card as { header?: { title?: { content?: string } } }
-    expect(card.header?.title?.content).toBe(t.turnCompleteTitle)
+    // The same completion title the answer card's final write carries.
+    expect(card.header?.title?.content).toBe(`${t.turnSummaryTitle} · 5.0s`)
     const md = markdownOf(h.sent[0])
     // Who woke the turn, that it is over, and the filtered facts.
     expect(md).toContain(t.turnCompleteExternalTurn(t.autoTurnTriggerName('request')))
-    expect(md).toContain(`✅ ${t.turnSummaryDone}`)
+    expect(md).toContain('tokens')
     expect(md).toContain('🧠 m · 💡 high')
     expect(md).toContain('📊 10/1K (1%)')
     // The facts the level drops stay dropped.

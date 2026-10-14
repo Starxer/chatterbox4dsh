@@ -318,11 +318,26 @@ export interface Translations {
   compactionNoSummary: string
   turnCompleteTitle: string
   /**
-   * Completion marker on the trimmed summary the `compact` level folds into the
-   * answer card's footer (`src/turn-summary.ts`): that level has no Turn Complete
-   * card, so this one word is what says the turn is over.
+   * Title of the card that ENDS a `compact` turn: the answer card carrying the
+   * trimmed summary, or the reply card when the answer never reached a step card
+   * (`src/turn-summary.ts`). It states the two facts a reader looks for while
+   * scrolling history — the turn is over, and how long it took — because the
+   * footer below is notation-sized and easy to miss. The clock is appended by
+   * `compactCompletionTitle`; the title carries NO turn/step position (the user's
+   * call, 2026-10-14: "完成 plus the time", it does not need to say which step).
    */
-  turnSummaryDone: string
+  turnSummaryTitle: string
+  /**
+   * Where a "continued" card sits in a split reply (`续 2/3` / `continued 2/3`):
+   * used alone on a card that carries only part of the answer, and as a segment
+   * of the completion title on the LAST fragment when the reply was split.
+   */
+  turnContinuedPart: (part: number, total: number) => string
+  /**
+   * The same marker for a reply that needed exactly ONE continuation card, where
+   * `续 1/1` would be a number with nothing to count (`📄 续` / `📄 continued`).
+   */
+  turnContinuedTitle: string
   turnCompleteDetail: (duration: string, llm: string, tools: string) => string
   turnCompleteSteps: (steps: number, tokens: string, speed: string) => string
   /**
@@ -889,7 +904,9 @@ export const zh = {
   compactionFailedReason: reason => `原因：${reason}`,
   compactionNoSummary: '本次没有产生摘要，会话历史没有被替换。',
   turnCompleteTitle: '✅ Turn 已完成',
-  turnSummaryDone: '完成',
+  turnSummaryTitle: '✅ 完成',
+  turnContinuedPart: (part, total) => `续 ${part}/${total}`,
+  turnContinuedTitle: '📄 续',
   turnCompleteDetail: (duration, llm, tools) => `总时长 ${duration} · LLM ${llm} · 工具 ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
   turnCompleteExternalTurn: source => `💬 本回合的来源是**${source}**（不是飞书这边发的消息），过程与交付一并同步到这里`,
@@ -1393,7 +1410,9 @@ export const en: Translations = {
   compactionFailedReason: reason => `Reason: ${reason}`,
   compactionNoSummary: 'No summary was produced, so the session history was left unchanged.',
   turnCompleteTitle: '✅ Turn complete',
-  turnSummaryDone: 'Done',
+  turnSummaryTitle: '✅ Done',
+  turnContinuedPart: (part, total) => `continued ${part}/${total}`,
+  turnContinuedTitle: '📄 continued',
   turnCompleteDetail: (duration, llm, tools) => `Total ${duration} · LLM ${llm} · Tools ${tools}`,
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
   turnCompleteExternalTurn: source => `💬 This turn came from **${source}**, not from a Feishu message; its process and deliverables are mirrored here`,

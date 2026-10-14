@@ -86,28 +86,33 @@ function shortModel(model: string): string {
 /**
  * The summary as plain lines, in the order they render.
  *
+ * The completion marker and the wall clock are deliberately NOT here: they live
+ * in the card TITLE ({@link compactCompletionTitle}), which is what a reader sees
+ * first — a title saying `✅ 完成 · 2m14s` and a footer repeating the same clock
+ * one line below would be the same number twice on one card.
+ *
  * @param t - current translations.
  * @param facts - what the turn produced.
- * @returns one to three lines; never empty (the completion marker always fits).
+ * @returns zero to two lines; EMPTY when the turn left nothing to report, in
+ *          which case the caller keeps whatever footer the card already had.
  */
 export function compactCompletionLines(t: Translations, facts: CompletionFacts): string[] {
   const stats = facts.stats
-  const head: string[] = [`✅ ${t.turnSummaryDone}`]
+  const head: string[] = []
   if (stats !== undefined) {
-    const totalMs = stats.totalTurnMs > 0 ? stats.totalTurnMs : stats.totalStepMs
-    if (totalMs > 0) head.push(`⏱ ${formatMs(totalMs)}`)
+    // ONE number for what the turn consumed, plus how much of that prompt the
+    // provider served from cache. The in/out split used to ride here beside a
+    // total that is exactly their sum, and the `📥` it printed meant the WHOLE
+    // prompt while the line below prints `📥` for new input alone — three ways to
+    // say one thing, two meanings for one icon (the user's call, 2026-10-14).
     const billedIn = stats.totalInputTokens + stats.totalCacheReadTokens + stats.totalCacheWriteTokens
     const totalBilled = stats.totalBilledTokens > 0 ? stats.totalBilledTokens : billedIn + stats.totalOutputTokens
     if (totalBilled > 0) head.push(`📦 ${formatTokenCount(totalBilled)} tokens`)
-    if (billedIn > 0 || stats.totalOutputTokens > 0) {
-      const hitRate = billedIn > 0 && stats.totalCacheReadTokens > 0
-        ? Math.round(stats.totalCacheReadTokens / billedIn * 100)
-        : undefined
-      const io = `📥 ${formatTokenCount(billedIn)}${hitRate === undefined ? '' : ` (♻️ ${hitRate}%)`} → 📤 ${formatTokenCount(stats.totalOutputTokens)}`
-      head.push(io)
+    if (billedIn > 0 && stats.totalCacheReadTokens > 0) {
+      head.push(`♻️ ${Math.round(stats.totalCacheReadTokens / billedIn * 100)}%`)
     }
   }
-  const lines = [head.join(' · ')]
+  const lines = head.length === 0 ? [] : [head.join(' · ')]
 
   // Second line: who answered, how hard it thought, what it left behind. Every
   // part is optional, and the line disappears when the turn has none of them.
@@ -125,6 +130,44 @@ export function compactCompletionLines(t: Translations, facts: CompletionFacts):
   }
   if (second.length > 0) lines.push(second.join(' · '))
   return lines
+}
+
+/**
+ * The title of the card that ends the turn: `✅ 完成 · 2m14s`.
+ *
+ * The clock is the turn's wall clock and lives HERE instead of in the footer line
+ * so one card never prints the same duration twice. It carries no turn/step
+ * position (the user's call, 2026-10-14: 完成 plus the time is the whole title).
+ * A turn whose stats never arrived gets the bare completion marker: the title is
+ * the one thing that has to survive every degraded path, since it is now the only
+ * place that says the turn is over.
+ *
+ * @param t - current translations.
+ * @param facts - the turn's completion facts.
+ * @param part - when this card is one fragment of a split reply, its position
+ *               (`续 2/3`), inserted between the marker and the clock.
+ * @returns the title text.
+ */
+export function compactCompletionTitle(
+  t: Translations,
+  facts: CompletionFacts,
+  part?: { part: number; total: number } | undefined,
+): string {
+  const segments: string[] = [t.turnSummaryTitle]
+  if (part !== undefined) segments.push(t.turnContinuedPart(part.part, part.total))
+  const stats = facts.stats
+  const ms = stats === undefined ? 0 : stats.totalTurnMs > 0 ? stats.totalTurnMs : stats.totalStepMs
+  if (ms > 0) segments.push(formatMs(ms))
+  return segments.join(' · ')
+}
+
+/**
+ * Retitle a card as the turn's final card: the completion title, and a green
+ * header. Every other header field is kept.
+ */
+function withCompletionTitle(card: object, title: string): object {
+  const header = (card as { header?: Record<string, unknown> }).header ?? {}
+  return { ...card, header: { ...header, title: { tag: 'plain_text', content: title }, template: 'green' } }
 }
 
 /** The summary as card elements (one notation line each). */
@@ -145,10 +188,12 @@ export function compactCompletionElements(t: Translations, facts: CompletionFact
  *
  * @param t - current translations.
  * @param facts - the turn's completion facts.
- * @returns the element to append to a card body.
+ * @returns the element to append to a card body, or undefined when the turn left
+ *          nothing to report (an empty markdown element is not valid content).
  */
-export function compactCompletionElement(t: Translations, facts: CompletionFacts): object {
-  return { tag: 'markdown', content: compactCompletionLines(t, facts).join('\n'), text_size: 'notation' }
+export function compactCompletionElement(t: Translations, facts: CompletionFacts): object | undefined {
+  const lines = compactCompletionLines(t, facts)
+  return lines.length === 0 ? undefined : { tag: 'markdown', content: lines.join('\n'), text_size: 'notation' }
 }
 
 /**
@@ -166,16 +211,34 @@ export function appendCardElement(card: object, element: object): object {
 }
 
 /**
- * Append the summary to a card that is being built (`channel.ts`'s fallback
- * reply cards). Returns a new object; the input is untouched.
+ * Turn a card into the turn's FINAL card (`channel.ts`'s fallback reply cards, and
+ * the last "continued" card of a split answer): it gains the completion title, a
+ * green header, a rule separating body from footer, and the summary lines.
+ *
+ * Retitling here rather than at each call site is deliberate — the rule of this
+ * level is "the card carrying the summary announces completion", and a card that
+ * carries the summary while still titled `Reply` is exactly the state the user
+ * reported (2026-10-14).
  *
  * @param card - the card to extend.
  * @param t - current translations.
  * @param facts - the turn's completion facts.
- * @returns the card with the summary appended to its body.
+ * @param options - `part` when this card is fragment `n` of a split reply.
+ * @returns a new card object; the input is untouched.
  */
-export function appendCompletionFooter(card: object, t: Translations, facts: CompletionFacts): object {
-  return appendCardElement(card, compactCompletionElement(t, facts))
+export function appendCompletionFooter(
+  card: object,
+  t: Translations,
+  facts: CompletionFacts,
+  options: { part?: { part: number; total: number } | undefined } = {},
+): object {
+  const titled = withCompletionTitle(card, compactCompletionTitle(t, facts, options.part))
+  const element = compactCompletionElement(t, facts)
+  // The rule is the user's request (2026-10-14): the footer has to read as a
+  // footer, not as one more sentence of the answer. It only makes sense with a
+  // body above it, and only when there is a footer to separate.
+  if (element === undefined) return titled
+  return appendCardElement(appendCardElement(titled, { tag: 'hr' }), element)
 }
 
 /**
@@ -222,11 +285,17 @@ export function renderCompactCompletionCard(t: Translations, facts: CompletionFa
     elements.push({ tag: 'markdown', content: t.turnCompleteExternalTurn(facts.source), text_size: 'notation' })
   }
   elements.push(...compactCompletionElements(t, facts))
+  // A card body with no element at all is not renderable. The completion title
+  // already says the turn is over, so the last resort is to repeat it as body
+  // text rather than post an empty card.
+  if (elements.length === 0) elements.push({ tag: 'markdown', content: t.turnSummaryTitle })
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: t.turnCompleteTitle },
+      // Same title as the answer card's final write: at this level "the turn is
+      // over" reads the same way on every card that says it.
+      title: { tag: 'plain_text', content: compactCompletionTitle(t, facts) },
       template: 'green',
     },
     body: { elements },

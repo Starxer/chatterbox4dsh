@@ -1641,7 +1641,9 @@ describe('card media hydration hooks', () => {
     await tick(500)
 
     const cards = channel.send.mock.calls.map((call: any[]) => call[1].card)
-    const overflow = cards.filter((card: any) => String(card.header?.title?.content).startsWith('Reply (continued'))
+    // The continuation card's title is localized since 2026-10-14 (it used to be
+    // a hardcoded English `Reply (continued n/m)`, shown even in a zh chat).
+    const overflow = cards.filter((card: any) => String(card.header?.title?.content).startsWith('📄'))
     expect(overflow.length).toBeGreaterThan(0)
     expect(JSON.stringify(overflow)).toContain('HYDRATED')
     streaming.stop()
@@ -2264,11 +2266,12 @@ describe('level + injection wiring through session events', () => {
     await tick(250)
     const card = lastCard(ch)
     const elements = card.body.elements as any[]
-    // No `📝 消息` label (the card has one section), no `hr`, and both footer
-    // lines share ONE element so the card pays its element spacing once.
+    // No `📝 消息` label (the card has one section), and both footer lines share
+    // ONE element so the card pays its element spacing once. The single `hr` is
+    // the rule the user asked for between the answer and its footer (2026-10-14).
     expect(mdOf(card)).toContain('the answer')
     expect(mdOf(card)).not.toContain(t.stepMessageHeader)
-    expect(elements.some((el: any) => el.tag === 'hr')).toBe(false)
+    expect(elements.filter((el: any) => el.tag === 'hr')).toHaveLength(1)
     expect(elements.filter((el: any) => el.tag === 'markdown' && el.text_size === 'notation')).toHaveLength(1)
     expect(card.body.vertical_spacing).toBe('4px')
     h.streaming.stop()
@@ -2522,19 +2525,29 @@ describe('turn progress card wiring', () => {
     emit('turn/end', { reason: { kind: 'completed' } })
 
     // The summary is written INTO the answer card: an update, not a new card.
-    const answerWrites = (): string[] => [
+    const answerWrites = (): any[] => [
       ...ch.updateCardInstance!.mock.calls.map(call => call[1] as any),
       ...ch.updateCard!.mock.calls.map(call => call[1] as any),
     ]
       .filter(card => !isTurnCardTitle(String((card as any)?.header?.title?.content ?? '')))
-      .map(mdOf)
     await vi.waitFor(() => {
-      expect(answerWrites().some(md => md.includes(`✅ ${t.turnSummaryDone}`))).toBe(true)
+      expect(answerWrites().some(card => (card.header?.title?.content ?? '').startsWith(t.turnSummaryTitle))).toBe(true)
     })
-    const final = answerWrites().find(md => md.includes(`✅ ${t.turnSummaryDone}`))!
-    expect(final).toContain('the answer')
-    expect(final).toContain('🧠 deepseek-flash · 💡 high')
-    expect(final).toContain('📥')
+    const final = answerWrites().find(card => (card.header?.title?.content ?? '').startsWith(t.turnSummaryTitle))!
+    // The card that ends the turn SAYS so, with the clock, and reads green. No
+    // turn/step position: `完成 · 时间` is the whole title (2026-10-14).
+    expect(String(final.header.title.content)).toMatch(new RegExp(`^${t.turnSummaryTitle} · \\d+ms$|^${t.turnSummaryTitle} · \\d+\\.\\d+s$`))
+    expect(final.header.template).toBe('green')
+    expect(final.header.title.content).not.toContain(t.stepPosition(1, 1))
+    const md = mdOf(final)
+    expect(md).toContain('the answer')
+    expect(md).toContain('🧠 deepseek-flash · 💡 high')
+    expect(md).toContain('📦')
+    // The footer is ruled off from the body, and no longer repeats the clock the
+    // title carries.
+    const tags = (final.body.elements as any[]).map(element => element.tag)
+    expect(tags).toEqual(['markdown', 'hr', 'markdown'])
+    expect(md).not.toContain('⏱')
     // Nothing opened a second card for the summary: the level has no Turn
     // Complete card.
     expect(titles(ch).filter(title => !isTurnCardTitle(title))).toHaveLength(1)
@@ -2546,18 +2559,47 @@ describe('turn progress card wiring', () => {
     const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
-    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'x'.repeat(4000) } })
+    // Three block-sized paragraphs: the step card takes the first, and the reply
+    // needs TWO continuation cards, which is the only case where `续 n/n` counts
+    // something (a single continuation card is just the tail of the answer).
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: ['x', 'y', 'z'].map(c => c.repeat(3000)).join('\n\n') } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
     emit('turn/end', { reason: { kind: 'completed' } })
 
-    // The "continued" card is sent, and the summary rides it — the card the
-    // reader's eye ends on — rather than the step card above it. Exactly one
-    // card is sent: the summary never opens a card of its own.
-    await vi.waitFor(() => { expect(ch.send.mock.calls.length).toBeGreaterThan(0) })
+    // The "continued" cards are sent, and the summary rides the LAST one — the
+    // card the reader's eye ends on — rather than the step card above it.
+    await vi.waitFor(() => { expect(ch.send.mock.calls.length).toBeGreaterThan(1) })
     const sentCards = ch.send.mock.calls.map(call => (call[1] as any).card)
-    expect(sentCards).toHaveLength(1)
-    expect(mdOf(sentCards.at(-1))).toContain(`✅ ${t.turnSummaryDone}`)
+    expect(sentCards).toHaveLength(2)
+    // A card that only carries part of the answer names its position…
+    expect(String(sentCards[0]!.header.title.content)).toBe(`📄 ${t.turnContinuedPart(1, 2)}`)
+    expect(sentCards[0]!.header.template).toBe('blue')
+    // …and the LAST fragment is the card that ends the turn: completion, its
+    // position, the clock, green, and a ruled-off footer.
+    const last = sentCards.at(-1) as any
+    expect(String(last.header.title.content)).toMatch(new RegExp(`^${t.turnSummaryTitle} · ${t.turnContinuedPart(2, 2)} · `))
+    expect(last.header.template).toBe('green')
+    expect(mdOf(last)).toContain('📦')
+    expect((last.body.elements as any[]).map(element => element.tag)).toContain('hr')
+    streaming.stop()
+  })
+
+  it('counts nothing on a reply that needed exactly one continuation card', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: '正文\n\n'.repeat(200) + 'x'.repeat(3500) } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    await vi.waitFor(() => { expect(ch.send.mock.calls.length).toBeGreaterThan(0) })
+    const last = ch.send.mock.calls.map(call => (call[1] as any).card).at(-1) as any
+    // One continuation card: no `续 1/1`, just the completion title.
+    expect(String(last.header.title.content)).toMatch(new RegExp(`^${t.turnSummaryTitle} · `))
+    expect(String(last.header.title.content)).not.toContain(t.turnContinuedPart(1, 1))
     streaming.stop()
   })
 

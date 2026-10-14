@@ -33,7 +33,7 @@ import {
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
 import { pendingProducedCall, producedArtifacts, settleProducedCall, type ProducedPath } from './produced-files.ts'
-import { compactCompletionLines, compactCompletionElement, appendCardElement } from './turn-summary.ts'
+import { compactCompletionLines, compactCompletionTitle, appendCompletionFooter } from './turn-summary.ts'
 import type { ProduceCardMode } from './config.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
@@ -436,6 +436,13 @@ interface SessionStepState {
    */
   completionLines: string[] | undefined
   /**
+   * The completion TITLE (`✅ 完成 · 2m14s`) that goes with those lines: this card
+   * is the one that ends the turn, and the title is where a reader scrolling the
+   * chat sees that — plus the clock, which the footer line therefore no longer
+   * repeats. Set beside {@link completionLines}, cleared with it.
+   */
+  completionTitle: string | undefined
+  /**
    * Every path this SESSION has ever declared through `present`.
    *
    * Not turn-scoped on purpose: the produced-artifact delivery must not hand a
@@ -533,6 +540,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         requestRoute: undefined,
         requestEffort: undefined,
         completionLines: undefined,
+        completionTitle: undefined,
         everPresentedPaths: new Set<string>(),
         turnStats: undefined,
       }
@@ -561,6 +569,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // The summary belongs to the turn, and the step that just ended has already
     // been written with it; a later step must not inherit it.
     state.completionLines = undefined
+    state.completionTitle = undefined
     stopPlaceholderTick(state)
     stopWarmTimer(state)
     // NOTE: do NOT clear state.chat — it is session-level chat coordinates,
@@ -725,6 +734,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // The turn's filtered summary, on the LAST write of the turn only
         // (`compact`; see the `turn/end` handler and `src/turn-summary.ts`).
         ...(state.completionLines === undefined ? {} : { completionLines: state.completionLines }),
+        ...(state.completionTitle === undefined ? {} : { completionTitle: state.completionTitle }),
       },
     )
   }
@@ -2017,10 +2027,16 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         const completionLines = completionFacts === undefined
           ? undefined
           : compactCompletionLines(tr, completionFacts)
+        const completionTitle = completionFacts === undefined
+          ? undefined
+          : compactCompletionTitle(tr, completionFacts)
         // A long answer ends on a "continued" card, and the summary belongs on
         // the LAST card of the reply, not on the one above it.
         const completionOnOverflow = completionLines !== undefined && overflowChunks.length > 0
-        if (completionLines !== undefined && !completionOnOverflow) state.completionLines = completionLines
+        if (completionLines !== undefined && !completionOnOverflow) {
+          state.completionLines = completionLines
+          state.completionTitle = completionTitle
+        }
 
         // A very short final step can end inside the send debounce window;
         // post its card before anything else so it precedes the overflow and
@@ -2050,9 +2066,21 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         const summaryCard = summaryRef === undefined || completionLines === undefined
           ? undefined
           : buildStepCard(state)
-        const overflowSummary = completionOnOverflow && completionFacts !== undefined
-          ? compactCompletionElement(tr, completionFacts)
-          : undefined
+        /**
+         * The LAST continuation card is the card that ends the turn, so it gets
+         * the completion treatment — title, rule and summary — through the same
+         * helper the fallback reply path uses.
+         */
+        const withOverflowSummary = (cards: object[]): object[] =>
+          completionOnOverflow && completionFacts !== undefined
+            ? cards.map((card, i) => i === cards.length - 1
+                ? appendCompletionFooter(card, tr, completionFacts, overflowChunks.length > 1
+                  // `续 n/n` only when the reply really was split: a single
+                  // continuation card is just the tail of the answer.
+                  ? { part: { part: overflowChunks.length, total: overflowChunks.length } }
+                  : {})
+                : card)
+            : cards
 
         flushPendingUpdate(state).then(async () => {
           // The step card is now on screen with the first TEXT_STEP_CAP chars.
@@ -2081,10 +2109,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           // cache bounds the whole batch by one budget per card at most.
           if (overflowChunks.length > 0 && overflowChat !== undefined && overflowOpts !== undefined) {
             const overflowCards = await Promise.all(overflowChunks.map((chunk, i) =>
-              prepareCard(renderOverflowCard(chunk, i + 1, overflowChunks.length, overflowTps), sessionId)))
-            const cards = overflowSummary === undefined
-              ? overflowCards
-              : overflowCards.map((card, i) => i === overflowCards.length - 1 ? appendCardElement(card, overflowSummary) : card)
+              prepareCard(renderOverflowCard(chunk, i + 1, overflowChunks.length, tr, overflowTps), sessionId)))
+            const cards = withOverflowSummary(overflowCards)
             for (const card of cards) {
               await channel.send(overflowChat.chatId, { card }, overflowOpts)
             }
@@ -2499,8 +2525,15 @@ function messageCallsTools(event: { data?: any }): boolean {
  * card's TEXT_STEP_CAP. No reasoning (already shown on the step card) and no
  * full footer (that is sent separately by channel.ts), but the step's output
  * speed is repeated so every card in the reply stream shows one.
+ *
+ * The title was hardcoded English (`Reply (continued 1/2)`) until 2026-10-14 —
+ * visible at every level, in a zh chat included. It is localized now: the part
+ * count when there is more than one fragment, and the bare marker when the reply
+ * needed exactly one continuation card (`续 1/1` would count nothing). The LAST
+ * continuation card then replaces the title with the completion one
+ * (`appendCompletionFooter`) — it is the card that ends the turn.
  */
-function renderOverflowCard(text: string, part: number, total: number, tps?: number): object {
+function renderOverflowCard(text: string, part: number, total: number, t: Translations, tps?: number): object {
   const elements: object[] = [{ tag: 'markdown', content: text }]
   if (tps !== undefined && tps > 0) {
     elements.push({ tag: 'markdown', content: `🚀 ${tps.toFixed(0)} tok/s`, text_size: 'notation' })
@@ -2509,7 +2542,10 @@ function renderOverflowCard(text: string, part: number, total: number, tps?: num
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: total > 1 ? `Reply (continued ${part}/${total})` : 'Reply (continued)' },
+      title: {
+        tag: 'plain_text',
+        content: total > 1 ? `📄 ${t.turnContinuedPart(part, total)}` : t.turnContinuedTitle,
+      },
       template: 'blue',
     },
     body: { elements },
@@ -2796,6 +2832,12 @@ export function renderStepCard(
      * where the turn's totals, model and produced-file count appear.
      */
     completionLines?: readonly string[]
+    /**
+     * The completion title that goes with {@link completionLines}
+     * (`✅ 完成 · 2m14s`): this card ends the turn, and the header is where a
+     * reader sees that. Present exactly when `completionLines` is.
+     */
+    completionTitle?: string
   },
 ): object {
   const elements: object[] = []
@@ -3035,19 +3077,25 @@ export function renderStepCard(
     speedParts.push(`📊 ${formatTokenCount(contextMeta.lastInputTokens)}/${formatTokenCount(contextMeta.contextWindow)} (${pct}%)`)
   }
   if (timingParts.length > 0 || speedParts.length > 0) {
-    // `compact`: no rule above the footer, and both notation lines share ONE
-    // element — each element costs its own vertical spacing, and a two-line
-    // footer was paying it twice.
+    // `compact`: the footer is a rule plus ONE element — each element costs its
+    // own vertical spacing, and a two-line footer was paying it twice. The rule
+    // was dropped when this footer was introduced; the user asked for it back
+    // (2026-10-14): without it the footer reads as one more sentence of the
+    // answer. It only appears when there IS an answer above it.
     if (tight) {
       // On the turn's last step the summary REPLACES the per-step timing line:
       // the turn totals are the same facts at turn scope, and printing both
       // would restate the same numbers one line apart (see `src/turn-summary.ts`
-      // for what `compact` keeps). The speed line stays where it was.
+      // for what `compact` keeps). The speed line stays where it was. A summary
+      // that came out EMPTY (the turn's stats never arrived) falls back to the
+      // step's own timing line rather than leaving the footer to the speed line
+      // alone.
       const completion = options?.completionLines
       const head = completion === undefined || completion.length === 0
         ? timingParts.join(' · ')
         : completion.join('\n')
       const footer = [head, speedParts.join(' · ')].filter(part => part !== '')
+      if (elements.length > 0) elements.push({ tag: 'hr' })
       elements.push({ tag: 'markdown', content: footer.join('\n'), text_size: 'notation' })
     } else {
       elements.push({ tag: 'hr' })
@@ -3067,7 +3115,15 @@ export function renderStepCard(
 
   let title: string
   let template: string
-  if (emptyPhase === 'thinking') {
+  /** This card ends the turn (the level has no Turn Complete card). */
+  const finalCard = options?.completionTitle !== undefined
+  if (finalCard) {
+    // A finished turn's last card says so in its header, with the wall clock, and
+    // goes green. Checked FIRST because the alternative — the card that ends the
+    // turn still reading `回复` — is what the user reported (2026-10-14).
+    title = options!.completionTitle!
+    template = 'green'
+  } else if (emptyPhase === 'thinking') {
     // Placeholder: the step exists but has produced nothing yet. WHICH phase it
     // is in decides the wording — `step/start` alone means DSH has not even
     // dispatched the request, so only `awaiting` and later may claim the model
@@ -3095,10 +3151,12 @@ export function renderStepCard(
   }
 
   // Append the step's position in the conversation so consecutive step cards
-  // can be told apart at a glance (both numbers are 1-based in DSH).
-  const titleWithPosition = turn !== undefined && step !== undefined
-    ? `${title} · ${t.stepPosition(turn, step)}`
-    : title
+  // can be told apart at a glance (both numbers are 1-based in DSH). The final
+  // card is the exception: its title is a state (`✅ 完成 · 2m14s`), and a
+  // coordinate would dilute what the user asked it to say.
+  const titleWithPosition = finalCard || turn === undefined || step === undefined
+    ? title
+    : `${title} · ${t.stepPosition(turn, step)}`
 
   return {
     schema: '2.0',

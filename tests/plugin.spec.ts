@@ -239,7 +239,9 @@ describe('startChannel', () => {
     // No step card carried the text, so this fallback posts the answer — and at
     // `compact` the answer card is what carries the turn summary.
     expect(sent).toContain('the full answer')
-    expect(sent).toContain(`✅ ${translationsFor('zh').turnSummaryDone}`)
+    // The card that carries the summary is titled as the turn's last card:
+    // completion plus the wall clock, no turn/step position.
+    expect(sent).toContain(translationsFor('zh').turnSummaryTitle)
     expect(sent).toContain('tokens')
     // The level has no Turn Complete card at all.
     expect(sent).not.toContain(translationsFor('zh').turnCompleteTitle)
