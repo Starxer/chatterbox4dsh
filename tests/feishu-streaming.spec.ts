@@ -9,7 +9,7 @@ import { createCardInterleave, type CardInterleave } from '../src/card-interleav
 const t = translationsFor('zh')
 /**
  * The running compact turn progress card, told apart from a step card by its
- * title: `深度求索中 · 1.2s` while running, `⚙️ 本回合 · …` once settled.
+ * title: `🐳 深度求索中 · 1.2s` while running, `⚙️ 本回合 · …` once settled.
  */
 const TURN_RUNNING = t.turnCardTitleRunning('')
 const isTurnCardTitle = (title: string): boolean => title.includes(TURN_RUNNING) || title.includes('本回合')

@@ -139,7 +139,7 @@ describe('renderProgressCard', () => {
     const card: any = renderProgressCard(t, facts({ calls: 3, endedAt: undefined, now: 3_400 }))
     // The count is readable from the rows below, and the running step's header
     // carries the live phase: the title only has to say the turn is still going.
-    expect(card.header.title.content).toBe('深度求索中 · 3.4s')
+    expect(card.header.title.content).toBe('🐳 深度求索中 · 3.4s')
     expect(card.header.title.content).not.toContain('3 个工具')
   })
 
