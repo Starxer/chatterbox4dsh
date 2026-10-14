@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：紧凑档 footer 的「模型 · 推理强度」行在插件热重载后会消失（`src/feishu-streaming.ts`，2026-10-15）
+
+**现象**（使用者报「footer 还是加上模型名称和推理强度，另起一行」）：紧凑档收尾卡的 footer 只剩 `📦 N tokens · ♻️ x%` 与 `🚀 tok/s · 📊 上下文`，**本该自成一行的那对模型/推理强度不见了**。真机读回可复核：`~/.dsh/read-card.py <message_id>`（本批新增的只读工具）读出 22:17 热重载之后 00:56 那张卡正是这样。
+
+**根因：这行只有一个来源 `request/header`，而它在重载场景下不会再来。** `state.requestRoute` / `state.requestEffort` 只由 `request/header` 填充，而 DSH **只在 initial / resume / change / new series** 时追加该事件；插件是 HMR 重挂的，宿主 agent 并没有重启 ⇒ 本会话最后一次 `request/header` 停在重载之前，新实例永远等不到填充，这行便静默消失，直到下一次路线变化（本次本会话停在 19:41:48）。**「插件热重载」这个新能力恰好打穿了这条老假设**——重启路径不受影响，因为重启会把会话 resume 一次、补发 header。
+
+**修复**：`turn/start` 本来就会调 `bridge.getSessionMeta()` 取上下文窗口，顺手把它的 `model` / `reasoningEffort` 记为 `state.sessionRoute`（该函数**优先读会话日志里最后一条 `request/header`**，正是这里需要的权威值）；`turn/end` 组装摘要时**本回合自己的请求头优先、取不到才退回会话记录**。footer 的排布未动：模型与推理强度本来就在独立一行（`🧠 deepseek-flash · 💡 high`），这次只是让它不再缺席。
+
+**验证**：新增 2 例流式——「没有 `request/header` 但会话记录有路线 ⇒ footer 仍带 `🧠 … · 💡 …` 且自成一行」与「两者都有时以本回合请求头为准（会话记录是 stale 值也不采用）」；两条断言在修复前都失败（先红后绿）。`npm run typecheck` / `npm test`（**1169 通过 / 58 文件**）/ `npm run build` 全绿。
+
+**English**: At `compact`, the footer line naming the model and reasoning effort silently disappeared after a plugin hot reload. It was sourced only from the turn's `request/header`, an event DSH appends on initial / resume / change / new series — a reloaded plugin inside a live host agent never sees another one, so the fresh instance knew no route while the session's own record still did (found on a real card with the new read-back tool). `turn/start` now also captures `bridge.getSessionMeta()`'s `model` / `reasoningEffort` (which prefers the session log's latest `request/header`) as a session-scoped fallback, and the completion footer prefers the turn's own header and falls back to that record. The layout is unchanged — model and effort already had their own line; they just no longer go missing. Two streaming tests pin the fallback and the precedence.
+
 ### 变更：紧凑档收尾卡的标题、分隔线与 footer 简化（`src/turn-summary.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-10-14）
 
 **诉求**（使用者）：紧凑模式最后一张卡片的标题要一眼看出「完成」；footer 与正文之间加一道分隔线；footer 再简化，尤其是输入输出 token 那部分；**标题不要再显示第几轮第几步，只显示「完成」加时间**。

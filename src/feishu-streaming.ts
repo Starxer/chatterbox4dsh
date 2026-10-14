@@ -430,6 +430,19 @@ interface SessionStepState {
    */
   requestEffort: string | undefined
   /**
+   * The route this session is RECORDED to run (`bridge.getSessionMeta`, which
+   * prefers the session log's latest `request/header` over any in-memory
+   * default): the fallback the completion footer names when this plugin instance
+   * never saw a `request/header` itself.
+   *
+   * That gap is real and was reported (2026-10-15): DSH appends `request/header`
+   * only on initial / resume / change / new series, so a plugin that was re-mounted
+   * mid-session (HMR reload, or any future reload) knows no route while the host
+   * agent it mirrors never restarted — the footer then silently lost its
+   * `🧠 model · 💡 effort` line. Session scope, refreshed at every `turn/start`.
+   */
+  sessionRoute: { model: string; reasoningEffort: string } | undefined
+  /**
    * The compact completion summary to render into the answer card's footer at
    * `turn/end` (see `src/turn-summary.ts`). Set on the turn's last step, before
    * the final write is built, so that write carries it.
@@ -539,6 +552,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         livePhase: 'none',
         requestRoute: undefined,
         requestEffort: undefined,
+        sessionRoute: undefined,
         completionLines: undefined,
         completionTitle: undefined,
         everPresentedPaths: new Set<string>(),
@@ -1851,6 +1865,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             contextWindow: state.contextMeta?.contextWindow || meta.contextWindow,
             lastInputTokens: state.contextMeta?.lastInputTokens || meta.lastInputTokens,
           }
+          // The session's RECORDED route, for the completion footer to fall back
+          // on when this instance never saw a `request/header` (a reloaded plugin
+          // inside a live host agent — see `sessionRoute`).
+          state.sessionRoute = { model: meta.model, reasoningEffort: meta.reasoningEffort }
           if (state.stepCardSent) updateStepCard(state)
         }).catch(() => undefined)
       } else if (event.type === 'user/message') {
@@ -2012,13 +2030,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // clears the ref and the text below.
         const compact = displayPolicy().turnCard
         const tr = getTranslations?.() ?? translationsFor('zh')
+        // The turn's own request header wins (it names the request that answered);
+        // the session's recorded route is the fallback, so the line survives a
+        // plugin reload that outlived its `request/header` (2026-10-15).
+        const footerModel = state.requestRoute !== undefined
+          ? `${state.requestRoute.provider}/${state.requestRoute.model}`
+          : state.sessionRoute?.model
+        const footerEffort = state.requestEffort
+          ?? (state.sessionRoute?.reasoningEffort === '' ? undefined : state.sessionRoute?.reasoningEffort)
         const completionFacts = compact
           ? {
               stats: turnStats,
-              ...(state.requestRoute === undefined
-                ? {}
-                : { model: `${state.requestRoute.provider}/${state.requestRoute.model}` }),
-              ...(state.requestEffort === undefined ? {} : { reasoningEffort: state.requestEffort }),
+              ...(footerModel === undefined || footerModel === '' ? {} : { model: footerModel }),
+              ...(footerEffort === undefined ? {} : { reasoningEffort: footerEffort }),
               ...(produceCardMode === undefined || produceCardMode() === 'off'
                 ? {}
                 : { producedCount: producedArtifacts(turnStats?.produced ?? []).length }),

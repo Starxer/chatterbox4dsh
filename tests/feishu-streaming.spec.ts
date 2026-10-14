@@ -414,6 +414,11 @@ function stepHarness(
     warmImages?: (card: any, scope: any) => void
     /** Registry another module announces its cards through (card-interleave). */
     interleave?: CardInterleave
+    /**
+     * What `bridge.getSessionMeta` reports — the session's RECORDED route among
+     * the rest. Omitted keeps the bare context-window fixture.
+     */
+    sessionMeta?: () => Record<string, unknown> | Promise<Record<string, unknown>>
   } = {},
 ) {
   // Listeners are keyed by EVENT NAME: the streaming module also subscribes to
@@ -432,7 +437,7 @@ function stepHarness(
   }
   const bridge = {
     resolveChat: () => ({ chatId: 'oc_1', chatType: 'p2p' }),
-    getSessionMeta: async () => ({ contextWindow: 4096, lastInputTokens: 12 }),
+    getSessionMeta: async () => ({ contextWindow: 4096, lastInputTokens: 12, ...(await extra.sessionMeta?.() ?? {}) }),
     markIntermediateSent: vi.fn(),
     clearIntermediateSent: vi.fn(),
   }
@@ -2600,6 +2605,73 @@ describe('turn progress card wiring', () => {
     // One continuation card: no `续 1/1`, just the completion title.
     expect(String(last.header.title.content)).toMatch(new RegExp(`^${t.turnSummaryTitle} · `))
     expect(String(last.header.title.content)).not.toContain(t.turnContinuedPart(1, 1))
+    streaming.stop()
+  })
+
+  it('names the model and effort from the session record when no request header was seen', async () => {
+    // A plugin that was re-mounted inside a live host agent (HMR reload) never
+    // sees a `request/header` — DSH appends one only on initial / resume / change
+    // — so the footer must fall back to the route the SESSION LOG records.
+    // Without it the line vanished from every card until the next route change
+    // (reported 2026-10-15).
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, {
+      sessionMeta: () => ({ model: 'deepseek-official/deepseek-flash', reasoningEffort: 'high' }),
+    })
+    /** The answer card (not the progress card): a text-only turn opens no other. */
+    const answerCards = (): any[] => [
+      ...ch.createCardInstance!.mock.calls.map(call => call[0] as any),
+      ...ch.updateCardInstance!.mock.calls.map(call => call[1] as any),
+    ].filter(card => !isTurnCardTitle(String(card.header?.title?.content ?? '')))
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 100, outputTokens: 20 } })
+    await vi.waitFor(() => { expect(answerCards().length).toBeGreaterThan(0) })
+    // `getSessionMeta` reads the session log, so its answer lands a tick later —
+    // and it is captured at `turn/start`, seconds before the turn ends in
+    // production.
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    const finalOf = (needle: string): any | undefined =>
+      answerCards().filter(card => String(card.header.title.content).startsWith(t.turnSummaryTitle))
+        .find(card => mdOf(card).includes(needle))
+    await vi.waitFor(() => { expect(finalOf('💡 high')).toBeDefined() })
+    const final = finalOf('💡 high')!
+    // On its OWN line, under the summary: the provider prefix is dropped, and the
+    // pair is not appended to the token line above it.
+    const footer = (final.body.elements as any[]).filter(el => el.tag === 'markdown').at(-1)
+    const lines = String(footer.content).split('\n')
+    expect(lines).toContain('🧠 deepseek-flash · 💡 high')
+    expect(lines[0]).toContain('📦')
+    streaming.stop()
+  })
+
+  it("prefers the turn's own request header over the session record", async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, {
+      sessionMeta: () => ({ model: 'stale-provider/stale-model', reasoningEffort: 'low' }),
+    })
+    const answerCards = (): any[] => [
+      ...ch.createCardInstance!.mock.calls.map(call => call[0] as any),
+      ...ch.updateCardInstance!.mock.calls.map(call => call[1] as any),
+    ].filter(card => !isTurnCardTitle(String(card.header?.title?.content ?? '')))
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('request/header', { header: { config: { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'xhigh' } } })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 100, outputTokens: 20 } })
+    await vi.waitFor(() => { expect(answerCards().length).toBeGreaterThan(0) })
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    await vi.waitFor(() => {
+      expect(answerCards().some(card => mdOf(card).includes('💡 xhigh'))).toBe(true)
+    })
+    const final = answerCards().filter(card => mdOf(card).includes('💡 xhigh')).at(-1)!
+    expect(mdOf(final)).toContain('🧠 gpt-6.1-sol · 💡 xhigh')
+    expect(mdOf(final)).not.toContain('stale-model')
     streaming.stop()
   })
 
