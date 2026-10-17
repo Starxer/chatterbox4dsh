@@ -2,8 +2,20 @@
 
 ## Unreleased
 
-> 当前未发布主线：已验证 DSH `0.2.0-rc.2`，peer 范围保留 `^0.2.0-rc.1`。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
-> Current unreleased main is verified with DSH `0.2.0-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+> 当前未发布主线：已验证 DSH `0.2.1-rc.1`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.1 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
+> Current unreleased main is verified with DSH `0.2.1-rc.1`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+
+### 兼容：DSH `0.2.1-rc.1` 把后台 job id 换成短 UUID，插件两种格式都认（`src/feishu-jobs.ts`，2026-10-17）
+
+**背景**（例行升级 DSH `0.2.0-rc.2 → 0.2.1-rc.1`）：新版本把 job 注册表的 id 从 `<kind>-<n>` 改成 `<kind>-<short-uuid>`——`packages/jobs/jobs-local/src/index.ts` 现在是 `` `${kind}-${randomUUID().replaceAll('-', '').slice(0, 16)}` ``，上游自己的断言是 `^started background job bash-[0-9a-f]{16}$`。插件此前把「模型真的拿到了 job 句柄」这件事钉在工具结果的**字面句**上（`ANNOUNCEMENT_AT_TOP` / `PROMOTED_ANYWHERE` / `WORKFLOW_ANNOUNCEMENT`，每个都写着 `-\d+`），于是升级后**所有后台任务都不会再上「后台任务」面板**——句子其余部分没变，只有 id 形状变了，所以失败是静默的：没有报错、没有空行，只是卡片不再出现。
+
+**修法**：把 id 形状抽成一个常量 `JOB_ID = [a-z][a-z0-9-]*(?:-[0-9a-f]{16}|-\d+)`，四条句子的正则都由它拼出。两种格式都接受是有意的：0.2.1 发短 UUID，0.2.0-rc.2（回滚目标）发数字后缀，回滚后同一份插件仍要能列任务。`tool-subagent` 的后台句在 0.2.1 已不再产生（后台子代理被 activation 取代），条目保留并注明原因——回滚时它仍然正确。
+
+**验证**：新增 2 组断言（短 UUID 的 bash/terminal/workflow；短 UUID 的「超时转后台」括号行），原数字格式断言全部保留；`npm run typecheck` / `npm test`（**1172 通过 / 58 文件**）/ `npm run build` 全绿。升级前另在隔离环境对目标版本做了三轮彩排：A 轨 tag 构建 9/9 gates、`--version` = 0.2.1-rc.1；B 轨把插件 dev 依赖临时抬到 `^0.2.1-rc.1` 后 typecheck + 1171 例测试 + 构建全绿（插件自身范围**不升**，理由见下）；B+ 轨真实 profile 冷启动 `apply() called`、无兼容闸拦截、无 `patch: entry not found`。
+
+**为什么插件依赖范围仍是 `^0.2.0-rc.1`**：0.2.1 的兼容闸（`packages/boot/app-boot/src/plugin-compatibility.ts`）用 `semver.satisfies(..., { includePrerelease: true })` 判定 ⇒ 该范围覆盖 0.2.1-rc.1；同时保留它才能让「回滚到 0.2.0-rc.2」也过闸。升到 `^0.2.1-rc.1` 会把回滚路径关死。
+
+**English**: DSH 0.2.1 replaced numeric job ids (`bash-7`) with short UUIDs (`bash-0123456789abcdef`). The background-task panel only lists jobs whose id it recovers from the producer's tool-result sentence, and those literals required `-\d+`, so after the upgrade every background job would have silently vanished from the panel. The id shape is now one constant that accepts both spellings — the old one on purpose, so a rollback to 0.2.0-rc.2 keeps working. Two new assertion groups pin the new format; all old ones stay. Typecheck, 1172 tests and build pass, and the target version was rehearsed three ways (tag build with 9/9 gates, plugin tests against 0.2.1-rc.1 packages, cold boot of the real profile in an isolated home). The plugin's peer ranges stay `^0.2.0-rc.1`: the new compatibility gate evaluates them with `includePrerelease`, which admits 0.2.1-rc.1 *and* keeps a rollback inside the gate.
 
 ### 修复：插件热重载把进行中的一轮拆给两个实例，同一张答复发了两遍（`src/feishu-streaming.ts`，2026-10-15）
 

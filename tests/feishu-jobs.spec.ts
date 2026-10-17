@@ -120,6 +120,18 @@ describe('detachedJobIdFromToolResult', () => {
     )).toBe('workflow-1')
   })
 
+  it('recovers the short-uuid ids DSH 0.2.1 mints', () => {
+    // 0.2.1: `<kind>-<16 lowercase hex>` (tool-bash tests pin
+    // `^started background job bash-[0-9a-f]{16}$`); the sentence is unchanged.
+    const id = 'bash-0123456789abcdef'
+    expect(detachedJobIdFromToolResult('bash', `started background job ${id}`)).toBe(id)
+    expect(detachedJobIdFromToolResult('terminal_send', 'started background job pty-send-deadbeefdeadbeef')).toBe('pty-send-deadbeefdeadbeef')
+    expect(detachedJobIdFromToolResult(
+      'workflow',
+      'workflow "audit" started in the background as job workflow-0123456789abcdef. Its return value arrives with the completion notice; check on it with job_output, stop it with job_kill.',
+    )).toBe('workflow-0123456789abcdef')
+  })
+
   it('recovers the id from a foreground call promoted to the background', () => {
     // tool-bash / tool-pwsh append this bracket line AFTER the output produced
     // so far, so it is the one sentence allowed below the first line.
@@ -129,6 +141,7 @@ describe('detachedJobIdFromToolResult', () => {
       + 'read newer output with job_output, stop it with job_kill.'
     expect(detachedJobIdFromToolResult('bash', promoted)).toBe('bash-8')
     expect(detachedJobIdFromToolResult('pwsh', promoted)).toBe('bash-8')
+    expect(detachedJobIdFromToolResult('bash', '[still running after 30000ms; moved to background job bash-0123456789abcdef]')).toBe('bash-0123456789abcdef')
     // Only a whole line counts.
     expect(detachedJobIdFromToolResult('bash', 'see [still running after 30ms; moved to background job bash-8] above')).toBeUndefined()
     // A tool that cannot promote must not claim it.

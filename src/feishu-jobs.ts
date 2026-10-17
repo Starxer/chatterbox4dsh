@@ -188,27 +188,39 @@ interface DetachedJobSentence {
   readonly scope: 'first' | 'any'
 }
 
+/**
+ * A registry-issued job id. DSH 0.2.1 changed it from `<kind>-<n>` to
+ * `<kind>-<short-uuid>` (16 lowercase hex chars); the producer sentences are
+ * otherwise unchanged. Both spellings are accepted on purpose: a rollback to
+ * 0.2.0-rc.2 still mints the numeric form, and the card must keep listing it.
+ */
+const JOB_ID = String.raw`[a-z][a-z0-9-]*(?:-[0-9a-f]{16}|-\d+)`
+
 /** `tool-bash` / `tool-pwsh` / `tool-terminal` with `run_in_background: true`. */
 const ANNOUNCEMENT_AT_TOP: DetachedJobSentence = {
-  pattern: /^started background job ([a-z][a-z0-9-]*-\d+)$/,
+  pattern: new RegExp(`^started background job (${JOB_ID})$`),
   scope: 'first',
 }
 
 /** A foreground `bash`/`pwsh` call promoted after its deadline passed. */
 const PROMOTED_ANYWHERE: DetachedJobSentence = {
-  pattern: /^\[still running after \d+ms; moved to background job ([a-z][a-z0-9-]*-\d+)\]$/,
+  pattern: new RegExp(`^\\[still running after \\d+ms; moved to background job (${JOB_ID})\\]$`),
   scope: 'any',
 }
 
-/** `tool-subagent` (background one-shot child). */
+/**
+ * `tool-subagent` (background one-shot child). DSH 0.2.1 replaced background
+ * subagents with activations, so this sentence is no longer produced; the entry
+ * stays so a rollback keeps listing the jobs the older host still creates.
+ */
 const SUBAGENT_ANNOUNCEMENT: DetachedJobSentence = {
-  pattern: /^started background subagent job ([a-z][a-z0-9-]*-\d+)$/,
+  pattern: new RegExp(`^started background subagent job (${JOB_ID})$`),
   scope: 'first',
 }
 
 /** `tool-workflow` (always detached). */
 const WORKFLOW_ANNOUNCEMENT: DetachedJobSentence = {
-  pattern: /^workflow .* started in the background as job ([a-z][a-z0-9-]*-\d+)\./,
+  pattern: new RegExp(`^workflow .* started in the background as job (${JOB_ID})\\.`),
   scope: 'first',
 }
 
