@@ -15,6 +15,7 @@ import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
+import { interleaveTargetOfSend, type InterleaveTarget } from './card-interleave.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import { hasDeliverables, renderDeliverableElements, type DeliverChat, type DeliverPlan, type DeliverPlanInput, type DeliverRow } from './feishu-deliver.ts'
 import { appendCompletionFooter, renderDeliveryCard } from './turn-summary.ts'
@@ -297,10 +298,12 @@ export async function startChannel(
    * continuation, a Turn Complete footer, a busy notice, a command result, an
    * error line. Long-lived progress cards above it are closed segments from here
    * on (see `src/card-interleave.ts`): their next content opens a NEW card below
-   * the message instead of writing above it. Optional so a bare channel keeps
-   * working without a card registry.
+   * the message instead of writing above it. The target carries the TOPIC the
+   * message landed in (one topic = one session), so a message in one topic never
+   * cuts a card that belongs to another. Optional so a bare channel keeps working
+   * without a card registry.
    */
-  noteMessagePosted?: (chatId: string) => void,
+  noteMessagePosted?: (target: InterleaveTarget) => void,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -396,7 +399,8 @@ export async function startChannel(
     // Text counts exactly like a card — a steer notice is the case that started
     // this rule (user request, 2026-10-19).
     try {
-      noteMessagePosted?.(to)
+      const target = interleaveTargetOfSend(to, opts)
+      if (target !== undefined) noteMessagePosted?.(target)
     } catch {
       // A listener must never break the send that fired it.
     }

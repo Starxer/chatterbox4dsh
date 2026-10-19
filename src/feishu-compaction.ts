@@ -35,7 +35,7 @@ import type { Translations } from './i18n.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
 import { truncateInline } from './text-chunk.ts'
-import type { CardInterleave } from './card-interleave.ts'
+import { interleaveTargetOfChat, type CardInterleave } from './card-interleave.ts'
 
 /**
  * How many UTF-8 bytes of summary the folded panel may carry.
@@ -387,7 +387,10 @@ export function createCompactionCards(deps: CompactionCardsDeps): CompactionCard
     }).then((messageId) => {
       // A compaction card lands BETWEEN steps of a running turn, so it ends the
       // compact turn card's segment: what comes after must read BELOW this card.
-      if (messageId !== undefined) interleave?.note(chat.chatId)
+      if (messageId !== undefined) {
+        const target = interleaveTargetOfChat(chat)
+        if (target !== undefined) interleave?.note(target)
+      }
       return messageId
     }).catch((error: unknown) => {
       logger.warn(`dsh-feishu: compaction card send failed: ${errorText(error, 'unknown error')}`)

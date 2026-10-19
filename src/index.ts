@@ -31,7 +31,7 @@ import { commandTranslationsFor } from './commands-i18n.ts'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { handleProvisionRequest, PROVISION_PATH } from './web.ts'
 import { startFeishuApprovals, type PendingApprovalView } from './feishu-approvals.ts'
-import { createCardInterleave } from './card-interleave.ts'
+import { createCardInterleave, interleaveTargetOfSend } from './card-interleave.ts'
 import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuSubagents, type SubagentPanelHandle } from './feishu-subagents.ts'
@@ -423,7 +423,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       // be written above it: announce it (see `src/card-interleave.ts`). Text
       // counts exactly like a card — the rule is "any other message" (user
       // request, 2026-10-19; a steer notice was the case that started it).
-      cardInterleave.note(to)
+      const target = interleaveTargetOfSend(to, opts)
+      if (target !== undefined) cardInterleave.note(target)
       return sent
     },
     /**
@@ -766,7 +767,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // being written above it (see `src/card-interleave.ts`). This is the path
         // that covers the steer notice; "any other message", not only cards
         // (user request, 2026-10-19).
-        chatId => cardInterleave.note(chatId),
+        target => cardInterleave.note(target),
       )
     },
   })

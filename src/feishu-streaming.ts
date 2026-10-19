@@ -42,7 +42,7 @@ import { shellPrograms } from './shell-programs.ts'
 
 // Re-exported for the callers that already import it from this module.
 export { shellPrograms }
-import type { CardInterleave } from './card-interleave.ts'
+import { interleaveHits, type CardInterleave } from './card-interleave.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -2350,9 +2350,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * (see `src/card-interleave.ts`). Nothing is written to it any more; the next
    * content of that step opens a new card below the interruption.
    */
-  const unsubscribeInterleave = interleave?.onNotice((chatId: string) => {
+  const unsubscribeInterleave = interleave?.onNotice(target => {
     for (const state of sessionStates.values()) {
-      if (state.chat?.chatId !== chatId) continue
+      const stateChat = state.chat
+      if (stateChat === undefined) continue
+      // One topic is one session: a message in another topic of the same chat
+      // must never retire this turn's card (user rule, 2026-10-19).
+      if (!interleaveHits(stateChat, target)) continue
       if (!displayPolicy().turnCard) continue
       if (state.stepEnded || !state.stepCardSent) continue
       state.supersededFrom = state.text.length

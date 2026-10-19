@@ -1,6 +1,6 @@
 /**
- * "Another message just landed in this chat" — the signal a long-lived card
- * needs to stop growing above it.
+ * "Another message just landed in this conversation" — the signal a long-lived
+ * card needs to stop growing above it.
  *
  * A card updated in place keeps rendering NEW content at the position where it
  * already sits in the conversation. Once another message is posted after it — a
@@ -16,15 +16,31 @@
  * above that notice was easy to miss. The module keeps its historical name; the
  * rule is "any other message".
  *
+ * **Scope is the CONVERSATION, not the chat**: one Feishu topic is one DSH
+ * session (user rule, 2026-10-19: "每个话题应该互不干扰"), so a message in topic A
+ * must not cut the card of a turn running in topic B of the same group. A send
+ * into a topic replies to that topic's ROOT message, so the root id is the
+ * identity carried here; a message with no root id belongs to the chat's main
+ * timeline. A topic send whose root id is unknown cannot be attributed — the
+ * channel routes it to the top level anyway (关键坑 25) — and ending a segment for
+ * it would be a guess, so it is ignored.
+ *
  * @module @starxer/chatterbox4dsh/card-interleave
  */
 
-/** Fan-out for "another message was posted into this chat". */
+/** Where an interrupting message landed. Absent `rootId` = the main chat timeline. */
+export interface InterleaveTarget {
+  readonly chatId: string
+  /** Topic ROOT message id (the `replyTo` of a topic send). Absent = main chat. */
+  readonly rootId?: string
+}
+
+/** Fan-out for "another message was posted into this conversation". */
 export interface CardInterleave {
-  /** Record that a message (card or text) was posted into `chatId`. */
-  note(chatId: string): void
+  /** Record that a message (card or text) was posted into `target`. */
+  note(target: InterleaveTarget): void
   /** Observe notices. Returns the unsubscribe function. */
-  onNotice(listener: (chatId: string) => void): () => void
+  onNotice(listener: (target: InterleaveTarget) => void): () => void
 }
 
 /**
@@ -34,22 +50,66 @@ export interface CardInterleave {
  * @returns the registry.
  */
 export function createCardInterleave(): CardInterleave {
-  const listeners = new Set<(chatId: string) => void>()
+  const listeners = new Set<(target: InterleaveTarget) => void>()
   return {
-    note(chatId: string): void {
+    note(target: InterleaveTarget): void {
       for (const listener of [...listeners]) {
         try {
-          listener(chatId)
+          listener(target)
         } catch {
           // A listener must never break the send that triggered it.
         }
       }
     },
-    onNotice(listener: (chatId: string) => void): () => void {
+    onNotice(listener: (target: InterleaveTarget) => void): () => void {
       listeners.add(listener)
       return () => {
         listeners.delete(listener)
       }
     },
   }
+}
+
+/**
+ * The conversation a `send` call lands in, reduced from its delivery options.
+ *
+ * @param chatId - the delivery target (`oc_…`).
+ * @param opts - the send's topic coordinates.
+ * @returns the target, or `undefined` for a topic send with no root id: the
+ *   channel cannot land it inside the topic, so it must not cut any card.
+ */
+export function interleaveTargetOfSend(
+  chatId: string,
+  opts?: { replyInThread?: boolean; replyTo?: string },
+): InterleaveTarget | undefined {
+  if (opts?.replyInThread !== true) return { chatId }
+  return opts.replyTo === undefined || opts.replyTo === '' ? undefined : { chatId, rootId: opts.replyTo }
+}
+
+/**
+ * The conversation a long-lived card belongs to.
+ *
+ * @param chat - the card's conversation.
+ * @returns the target, or `undefined` when the topic's root id is unknown: the
+ *   card can then never be attributed, which is safer than matching every
+ *   main-chat message.
+ */
+export function interleaveTargetOfChat(
+  chat: { chatId: string; threadId?: string; rootId?: string },
+): InterleaveTarget | undefined {
+  if (chat.threadId === undefined) return { chatId: chat.chatId }
+  return chat.rootId === undefined || chat.rootId === '' ? undefined : { chatId: chat.chatId, rootId: chat.rootId }
+}
+
+/**
+ * Whether a notice for `target` interrupts the conversation `chat` belongs to.
+ *
+ * @returns `true` only for the SAME conversation — one topic never cuts another.
+ */
+export function interleaveHits(
+  chat: { chatId: string; threadId?: string; rootId?: string },
+  target: InterleaveTarget,
+): boolean {
+  const own = interleaveTargetOfChat(chat)
+  return own !== undefined && own.chatId === target.chatId && own.rootId === target.rootId
 }

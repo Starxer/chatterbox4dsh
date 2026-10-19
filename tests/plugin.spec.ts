@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { startChannel } from '../src/channel.ts'
 import { TurnFailureError } from '../src/turn-failure.ts'
 import { translationsFor } from '../src/i18n.ts'
+import type { InterleaveTarget } from '../src/card-interleave.ts'
 import type { AttachmentId, FileAttachmentRef, ImageAttachmentRef, ImageMediaType, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 
 /** Flush the microtask queue so fire-and-forget promises settle. */
@@ -161,7 +162,7 @@ describe('startChannel', () => {
     // progress was easy to miss. `noteMessagePosted` is the signal that ends the
     // card's segment — it must fire for TEXT, not only for cards.
     const channel = fakeChannel()
-    const notes: string[] = []
+    const notes: InterleaveTarget[] = []
     const bridge = {
       reply: vi.fn(async (_message: unknown, options?: { onBusy?: (mode: 'steer' | 'queue') => void }) => {
         options?.onBusy?.('steer')
@@ -180,17 +181,48 @@ describe('startChannel', () => {
     }, bridge, () => channel as any, logger,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    (chatId: string) => notes.push(chatId))
+    (target: InterleaveTarget) => notes.push(target))
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: '插一句' })
     await flushAsync()
     expect(channel.send).toHaveBeenCalledWith('oc_1', { text: translationsFor('zh').busySteeredNotice }, expect.anything())
-    expect(notes).toEqual(['oc_1'])
+    expect(notes).toEqual([{ chatId: 'oc_1' }])
+    await stop()
+  })
+
+  it('reports a steer notice in a TOPIC against that topic, not the whole chat', async () => {
+    // One Feishu topic is one DSH session (user rule, 2026-10-19): the notice's
+    // target must carry the topic root, so the running card of another topic in
+    // the same group is not cut.
+    const channel = fakeChannel()
+    const notes: InterleaveTarget[] = []
+    const bridge = {
+      reply: vi.fn(async (_message: unknown, options?: { onBusy?: (mode: 'steer' | 'queue') => void }) => {
+        options?.onBusy?.('steer')
+        return undefined
+      }),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '', showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'compact',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    (target: InterleaveTarget) => notes.push(target))
+    await channel.handlers.get('message')!({ messageId: 'om_2', chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', rootId: 'om_root', content: '插一句' })
+    await flushAsync()
+    expect(notes).toEqual([{ chatId: 'oc_1', rootId: 'om_root' }])
     await stop()
   })
 
   it('announces a reply it posts, so no progress is written above it', async () => {
     const channel = fakeChannel()
-    const notes: string[] = []
+    const notes: InterleaveTarget[] = []
     const bridge = {
       reply: vi.fn(async () => 'the answer'),
       dispose: vi.fn(async () => undefined),
@@ -206,9 +238,9 @@ describe('startChannel', () => {
     }, bridge, () => channel as any, logger,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    (chatId: string) => notes.push(chatId))
+    (target: InterleaveTarget) => notes.push(target))
     await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
-    await vi.waitFor(() => { expect(notes).toContain('oc_1') })
+    await vi.waitFor(() => { expect(notes).toContainEqual({ chatId: 'oc_1' }) })
     await stop()
   })
 

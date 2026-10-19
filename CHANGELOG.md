@@ -11,13 +11,25 @@
 
 **根因**：分段广播（`src/card-interleave.ts`）只有在「别的模块发了一张卡」时触发。steer 的确认是一条**纯文本**通知（`channel.ts` 的 `sendOutbound`，不经 `cardChannel.send`），所以不触发——过程卡继续就地更新，新进度被写在 steer 通知的**上方**，看起来像没在动。
 
-**改法**：① `startChannel` 新增可选参数 `noteMessagePosted(chatId)`，在所有经 `sendOutbound` 发出的消息成功后回调——回复卡/续卡/Turn Complete、busy（steer/queue）通知、命令结果、错误行都走这个唯一漏斗；② `index.ts` 的 `cardChannel.send` 改为**任何消息**（卡片或文本）都广播（原来只对卡片）；③ 注释与文档统一成「任何别的消息」，模块名 `card-interleave` 作为历史名保留并在文档里说明。
+**改法**：① `startChannel` 新增可选参数 `noteMessagePosted(target)`，在所有经 `sendOutbound` 发出的消息成功后回调——回复卡/续卡/Turn Complete、busy（steer/queue）通知、命令结果、错误行都走这个唯一漏斗；② `index.ts` 的 `cardChannel.send` 改为**任何消息**（卡片或文本）都广播（原来只对卡片）；③ 注释与文档统一成「任何别的消息」，模块名 `card-interleave` 作为历史名保留并在文档里说明。
 
-**行为**：steer（以及 `/steer`、busy 文本、命令输出、错误行）之后，过程卡当前分段冻结；下一次真实进展（新 `tool/call`、新 step）在**下方新开一张卡**，只带这段新增内容。分段仍按 `chatId` 计（与卡片触发的既有口径一致）：同一群多个话题同时跑 turn 时，一个话题的消息会让另一个话题也分段——多一张卡，不会丢内容。
+**行为**：steer（以及 `/steer`、busy 文本、命令输出、错误行）之后，过程卡当前分段冻结；下一次真实进展（新 `tool/call`、新 step）在**下方新开一张卡**，只带这段新增内容。分段作用域是**会话**（chat + 话题根，见下一节），不是整个群。
 
-**验证**：新增 2 例（busy steer 文本 ⇒ `noteMessagePosted` 触发；回复卡也触发），`npm run typecheck` / `npm test`（**1174 通过 / 58 文件**）/ `npm run build` 全绿。真机待使用者 steer 一次确认（改的是消息触发条件，单测能钉住回调，分段观感只有真机能看）。
+**验证**：新增 2 例（busy steer 文本 ⇒ 回调触发；回复卡也触发），`npm run typecheck` / `npm test`（**1174 通过 / 58 文件**）/ `npm run build` 全绿。真机观感待使用者 steer 一次确认（改的是消息触发条件，单测能钉住回调，观感只有真机能看）。
 
-**English**: The compact turn card stops growing at a *segment* boundary whenever another message lands in the chat. That boundary used to be triggered by CARDS only, so a steer — whose acknowledgement is a plain TEXT notice (`sendOutbound`, not `cardChannel.send`) — did not end the segment: the running card kept updating in place, above the steer notice, which made new progress look stalled (user report, 2026-10-19). The rule is now "any other message": `startChannel` takes a `noteMessagePosted` callback fired by the single `sendOutbound` funnel (reply cards, overflow continuations, Turn Complete, busy notices, command results, error lines), and `cardChannel.send` announces text as well as cards. The next real progress row opens a NEW card below the interruption; segmentation is still chat-scoped, so concurrent turns in different topics of one chat may each get an extra card (never lost content). Two new tests pin the callbacks; typecheck, 1174 tests and build pass, and the visual result awaits one real steer.
+**English**: The compact turn card stops growing at a *segment* boundary whenever another message lands in the conversation. That boundary used to be triggered by CARDS only, so a steer — whose acknowledgement is a plain TEXT notice (`sendOutbound`, not `cardChannel.send`) — did not end the segment: the running card kept updating in place, above the steer notice, which made new progress look stalled (user report, 2026-10-19). The rule is now "any other message": `startChannel` takes a `noteMessagePosted` callback fired by the single `sendOutbound` funnel (reply cards, overflow continuations, Turn Complete, busy notices, command results, error lines), and `cardChannel.send` announces text as well as cards. The next real progress row opens a NEW card below the interruption. The scope is the CONVERSATION (chat + topic root, see the next entry), not the whole group. Two new tests pin the callbacks; typecheck, 1174 tests and build pass, and the visual result awaits one real steer.
+
+### 变更：分段作用域从「群」收紧到「会话」——一个话题不切另一个话题的卡（`src/card-interleave.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-10-19）
+
+**诉求**（使用者）：「每个话题应该互不干扰才行，一个话题对应一个 session」。
+
+**改法**：分段通知从 `chatId` 换成 `InterleaveTarget = { chatId, rootId? }`。话题内的发送本来就 reply 到该话题的**根消息**（`replyTo` = root id，关键坑 25），所以 root id 就是会话身份；没有 root 的消息属于主时间线。三个纯函数是唯一口径：`interleaveTargetOfSend()` 从发送 opts（`replyInThread`/`replyTo`）推目标、`interleaveTargetOfChat()` 从长寿命卡的会话推自身、`interleaveHits()` 只允许**同一会话**命中。话题 root id 未知时（连接后 `recoverTopicRoots()` 会补齐）不猜也不误伤：那张卡不参与分段，而「有 replyInThread 却没有 root」的 topic 发送本来会落到顶层，也不广播。
+
+**行为**：A 话题里的 steer 通知/任务卡/问题卡不再切 B 话题的过程卡；主时间线的消息也不切任何话题卡。
+
+**验证**：新增 8 例（target 透传、send/chat 推导、A 话题不动 B 话题、同一话题才切、root 未知不切），`npm run typecheck` / `npm test`（**1183 通过 / 58 文件**）/ `npm run build` 全绿。
+
+**English**: Segmentation is now scoped to one conversation instead of the whole group chat. A send into a Feishu topic replies to that topic's root message, so the root id is used as the conversation identity; a message without one belongs to the main timeline. The three helpers `interleaveTargetOfSend` / `interleaveTargetOfChat` / `interleaveHits` are the single source of truth: a notice only ends a card's segment when both resolve to the same chat AND the same topic root. When a topic's root id is unknown (recovered on connect by `recoverTopicRoots`) nothing is guessed: that card is never segmented, and a topic send without a root id — which the channel routes to the top level anyway — is not announced. Eight new tests cover the derivation and both cross-topic directions; typecheck, 1183 tests and build pass.
 
 ### 兼容：DSH `0.2.1-rc.1` 把后台 job id 换成短 UUID，插件两种格式都认（`src/feishu-jobs.ts`，2026-10-17）
 

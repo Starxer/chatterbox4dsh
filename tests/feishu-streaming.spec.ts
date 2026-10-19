@@ -2318,7 +2318,7 @@ describe('level + injection wiring through session events', () => {
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalledTimes(1) })
     // A todo card (or any other card this plugin posts) lands in the chat.
-    interleave.note('oc_1')
+    interleave.note({ chatId: 'oc_1' })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: ' part two' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalledTimes(2) })

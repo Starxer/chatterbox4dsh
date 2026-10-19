@@ -947,7 +947,7 @@ describe('createProgressCards', () => {
     cards.stepEnded('s1', 200)
     // A todo card (or a job card, a question card, a compaction card) lands in
     // the chat: the card above it must stop growing.
-    interleave.note('oc_1')
+    interleave.note({ chatId: 'oc_1' })
     cards.stepStarted('s1', 2, 300)
     cards.toolStarted('s1', 'bash', 'c2', 400)
     await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(2))
@@ -958,6 +958,49 @@ describe('createProgressCards', () => {
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
     // …and the turn's totals still count everything.
     expect(fresh.header.title.content).toBe(t.turnCardTitleRunning('400ms'))
+  })
+
+  it('never cuts a topic\'s card because another topic of the same chat got a message', async () => {
+    // One Feishu topic is one DSH session (user rule, 2026-10-19). A busy notice
+    // or a job card in topic B must not end the segment of the turn in topic A.
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    cards.beginTurn(threaded, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 10)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    cards.toolFinished('s1', 'c1', 100, false, 120)
+    cards.stepEnded('s1', 200)
+    // A message landed in ANOTHER topic of the same chat.
+    interleave.note({ chatId: 'oc_1', rootId: 'om_other_topic' })
+    // …and a main-chat message must not cut it either.
+    interleave.note({ chatId: 'oc_1' })
+    cards.stepStarted('s1', 2, 300)
+    cards.toolStarted('s1', 'bash', 'c2', 400)
+    await vi.waitFor(() => expect(channel.updateCardInstance).toHaveBeenCalled())
+    // Still ONE card: the same topic's card keeps growing in place.
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    const last = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(String(mdOf(last))).toContain('`bash`')
+  })
+
+  it('cut a topic\'s card when the message lands in that SAME topic', async () => {
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    cards.beginTurn(threaded, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 10)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    cards.toolFinished('s1', 'c1', 100, false, 120)
+    cards.stepEnded('s1', 200)
+    // The steer notice (or any other message) replies to THIS topic's root.
+    interleave.note({ chatId: 'oc_1', rootId: 'om_root' })
+    cards.stepStarted('s1', 2, 300)
+    cards.toolStarted('s1', 'bash', 'c2', 400)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(2))
+    const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
+    expect(String(mdOf(fresh))).not.toContain('`read`')
+    expect(String(mdOf(fresh))).toContain('`bash`')
   })
 
   it('keeps a running step in the new segment so its later rows still show', async () => {
@@ -973,7 +1016,7 @@ describe('createProgressCards', () => {
     // The interruption arrives mid-step (the step has not ended). The segment is
     // closed but NOT re-opened: nothing new has happened yet.
     await vi.advanceTimersByTimeAsync(120)
-    interleave.note('oc_1')
+    interleave.note({ chatId: 'oc_1' })
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     // The next call does have something new to say, so the new segment opens
@@ -995,7 +1038,7 @@ describe('createProgressCards', () => {
     cards.stepStarted('s1', 1, Date.now())
     cards.toolStarted('s1', 'ask_user_question', 'c1', Date.now())
     await vi.advanceTimersByTimeAsync(0)
-    interleave.note('oc_1')
+    interleave.note({ chatId: 'oc_1' })
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS)
     // Same card, same rows — only the elapsed clock moved on.
     const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
@@ -1015,9 +1058,9 @@ describe('createProgressCards', () => {
     await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
     // A question card, then its confirmation card, then a retirement notice: the
     // three of them used to spawn three identical cards.
-    interleave.note('oc_1')
-    interleave.note('oc_1')
-    interleave.note('oc_1')
+    interleave.note({ chatId: 'oc_1' })
+    interleave.note({ chatId: 'oc_1' })
+    interleave.note({ chatId: 'oc_1' })
     await cards.finish('s1', 900_000, false)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const updated = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]

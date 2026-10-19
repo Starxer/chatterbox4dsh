@@ -45,7 +45,7 @@
 
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
-import type { CardInterleave } from './card-interleave.ts'
+import { interleaveHits, type CardInterleave, type InterleaveTarget } from './card-interleave.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
 import { truncateInline } from './text-chunk.ts'
@@ -1160,9 +1160,12 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
    * reported (2026-10-09): several identical cards carrying the same running
    * step and no new row at all.
    */
-  const endSegment = (chatId: string, at: number): void => {
+  const endSegment = (target: InterleaveTarget, at: number): void => {
     for (const [sessionId, turn] of turns) {
-      if (turn.chat.chatId !== chatId) continue
+      // One topic is one session: a message in ANOTHER topic of the same chat
+      // (or in the main timeline) must never cut this turn's card (user rule,
+      // 2026-10-19).
+      if (!interleaveHits(turn.chat, target)) continue
       const facts = turn.facts
       const entry = cards.get(sessionId)
       if (entry !== undefined) {
@@ -1198,7 +1201,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }
   }
 
-  const unsubscribe = deps.interleave?.onNotice(chatId => endSegment(chatId, Date.now()))
+  const unsubscribe = deps.interleave?.onNotice(target => endSegment(target, Date.now()))
 
   const stop = (): void => {
     // A late event must not re-open a card: this module is disposed with the
