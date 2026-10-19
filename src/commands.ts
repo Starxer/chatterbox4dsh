@@ -740,7 +740,7 @@ async function handleDetachCommand(
  */
 const FEISHU_OWNED_COMMANDS = new Set<string>([
   'model', 'new', 'session', 'detach', 'help', 'approve', 'deny', 'approvals',
-  'status', 'reasoning', 'display', 'busy', 'steer', 'queue', 'permission', 'stop',
+  'status', 'reasoning', 'display', 'busy', 'steer', 'queue', 'permission', 'stop', 'fork',
 ])
 export { FEISHU_OWNED_COMMANDS }
 
@@ -758,6 +758,7 @@ const FEISHU_INTERCEPTED_COMMANDS: Array<{ name: string; description: string; hi
   { name: 'permission', description: '切换本会话的权限（沙箱）模式', hint: '[read-only|workspace-write|danger-full-access]' },
   { name: 'subagents', description: zh.subagentsCommandDescription, hint: '[tree]' },
   { name: 'lang', description: '切换语言（中文 / English，或跟随 DSH）', hint: '[zh|en|auto]' },
+  { name: 'fork', description: '分叉会话：不带参数打开可预览的轮次选择卡片；/fork <轮次> 直接分叉', hint: '[turn]' },
 ]
 export { FEISHU_INTERCEPTED_COMMANDS }
 

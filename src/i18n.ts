@@ -69,6 +69,20 @@ export interface Translations {
   sessionRename: string
   sessionPin: string
   sessionUnpin: string
+
+  // ---- `/fork` turn picker (feishu-fork.ts) ----
+  forkCardTitle: string
+  forkCardHint: string
+  forkRowTitle: (turn: number) => string
+  forkRowNoPreview: string
+  forkEmptyTurns: string
+  forkUnsupported: string
+  forkNoSession: string
+  forkMoreTurns: (count: number) => string
+  forkUnknownTurn: (turn: number) => string
+  forkUsage: string
+  forkSuccess: (turn: number, sessionId: string) => string
+  forkFailed: (reason: string) => string
   sessionConfirmTitle: (action: string) => string
   sessionConfirmBody: (action: string, name: string) => string
   sessionConfirmOk: string
@@ -743,6 +757,18 @@ export const zh = {
   sessionRename: '✏️ 改名',
   sessionPin: '📌 置顶',
   sessionUnpin: '📍 取消置顶',
+  forkCardTitle: '🍴 分叉会话',
+  forkCardHint: '点选一个分叉点：新会话会复制到**这一轮结束**为止的历史，当前会话不受影响。只列出已完成的轮次。',
+  forkRowTitle: turn => `**第 ${turn} 轮**`,
+  forkRowNoPreview: '（这一轮没有可见文字）',
+  forkEmptyTurns: '当前会话还没有已完成的轮次，暂时没法分叉。',
+  forkUnsupported: '这个 DSH 部署没有提供分叉能力（sessionController.fork 缺失）。',
+  forkNoSession: '这个聊天还没有绑定会话，先发一条普通消息再试。',
+  forkMoreTurns: count => `…更早的 ${count} 轮没有列出。`,
+  forkUnknownTurn: turn => `第 ${turn} 轮不存在，或还没有完成。`,
+  forkUsage: '用法：`/fork` 打开轮次选择卡片；`/fork <轮次>` 直接以该轮结束为界分叉。',
+  forkSuccess: (turn, sessionId) => `🍴 已分叉：新会话包含到第 ${turn} 轮为止的历史。\n新会话 ID：\`${sessionId}\``,
+  forkFailed: reason => `⚠️ 分叉失败：${reason}`,
   sessionConfirmTitle: action => `确认${action}？`,
   sessionConfirmBody: (action, name) => `确定要${action}「${name}」吗？`,
   sessionConfirmOk: '确认',
@@ -1248,6 +1274,18 @@ export const en: Translations = {
   sessionRename: '✏️ Rename',
   sessionPin: '📌 Pin',
   sessionUnpin: '📍 Unpin',
+  forkCardTitle: '🍴 Fork session',
+  forkCardHint: 'Pick a fork point: the new session copies history up to the END of that turn; the current session is untouched. Only completed turns are listed.',
+  forkRowTitle: turn => `**Turn ${turn}**`,
+  forkRowNoPreview: '(no visible text in this turn)',
+  forkEmptyTurns: 'This session has no completed turns yet, so there is nothing to fork.',
+  forkUnsupported: 'This DSH deployment exposes no fork capability (sessionController.fork is missing).',
+  forkNoSession: 'This chat has no bound session yet — send a normal message first.',
+  forkMoreTurns: count => `…${count} older turn${count === 1 ? '' : 's'} not shown.`,
+  forkUnknownTurn: turn => `Turn ${turn} does not exist or has not completed.`,
+  forkUsage: 'Usage: `/fork` opens the turn picker; `/fork <turn>` forks at the end of that turn.',
+  forkSuccess: (turn, sessionId) => `🍴 Forked: the new session contains history through turn ${turn}.\nNew session ID: \`${sessionId}\``,
+  forkFailed: reason => `⚠️ Fork failed: ${reason}`,
   sessionConfirmTitle: action => `Confirm ${action}?`,
   sessionConfirmBody: (action, name) => `Are you sure you want to ${action} "${name}"?`,
   sessionConfirmOk: 'Confirm',

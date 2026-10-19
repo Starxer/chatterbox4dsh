@@ -57,6 +57,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [穿插通知](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/card-interleave.ts>) | 其它卡片落入聊天时关闭长寿命卡的当前分段 |
 | [提问](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-questions.ts>) / [审批](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-approvals.ts>) / [双端协调](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/dual-answerer.ts>) | 飞书与 Web UI 同时展示、谁先处理谁生效 |
 | [会话面板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-session.ts>) / [新建流程](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-onboarding.ts>) / [模型选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-model-select.ts>) | 会话与工作区操作、模型选择与创建确认 |
+| [分叉选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-fork.ts>) / [轮次历史](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-history.ts>) | `/fork` 的轮次选择卡（每轮带头部文本预览）与分叉执行；事件窗口归约为「已完成轮次」，`turn/end` 的 seq 即切点 |
 | [显示控制](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-display.ts>) / [Todo](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-todos.ts>) | 展示配置卡与进度清单 |
 | [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查 |
 | [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子代理](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册；子代理生命周期、模型、树与手动目录合并 |

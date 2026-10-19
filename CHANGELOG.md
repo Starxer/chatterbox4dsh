@@ -5,6 +5,22 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：`/fork [轮次]` 分叉命令 + 带预览的轮次选择卡片（`src/feishu-fork.ts` / `src/turn-history.ts` / `src/harness.ts`，2026-10-20）
+
+**诉求**（使用者）：「实现个 `/fork <turn idx>` 命令吧，也支持卡片，选择 fork 的 turn，可以看见 turn 的前一定数量内容的预览」。
+
+**背景**：DSH 没有「撤回上一轮」——会话日志是 append-only；它支持的机制是 `sessionController.fork({sessionId, atSeq})`：把某个事件前缀复制到一个**新会话**，原会话完全不动。所以 `/fork` = 以某一轮**结束**为界分叉，用来「回到上一轮之前重来」。
+
+**实现**：
+- `src/turn-history.ts`（纯函数）：把一段事件窗口归约成**已完成轮次**——只认 `turn/start`…`turn/end` 成对的轮次（末尾进行中的轮次永不出现），每项带 `endSeq`（fork 切点，inclusive）和**预览**（该轮第一条用户文本；没有就用第一条 assistant 文本；压成一行、截到 80 字符）。
+- `src/harness.ts` `listTurns(chat, limit)`：实时会话用 `snapshotEvents(from, to)` **带窗口**读取（从 2000 条起按需 ×4、上限 20 万；无参快照会缓存整份日志，关键坑 8）；会话不在内存（重启后首条消息/冷绑定）时退回 `sessionPersistence` 冷读。
+- `src/feishu-fork.ts`：`/fork`（无参）发一张选择卡——每行一个轮次（`第 N 轮` + 预览），只列最近 12 轮、更早的用一行汇总；点行即在该轮结束处分叉（一行一次，关键坑 55），随后发结果卡（新会话 id，绿/红）。`/fork <n>` 直接分叉并回文本。无 fork 能力、未绑定会话、轮次不存在都有明确提示。
+- `src/index.ts`：`/fork` 在 `executeSlashCommand` 里拦截（与 `/session`、`/busy` 等既有卡片命令同型），并登记进 `FEISHU_INTERCEPTED_COMMANDS`，所以 `/help` 能看到。
+
+**验证**：新增 14 例（turn 归约 6 例：完成轮/进行中排除/assistant 兜底/折叠截断/limit/错配 end；fork 模块 8 例：卡片行与顺序与省略汇总、点行分叉的 `atSeq`、直接 `/fork <n>`、未知轮不 fork、无 fork 能力降级、无绑定会话提示、非本模块卡片点击忽略），`npm run typecheck` / `npm test`（**1202 通过 / 60 文件**）/ `npm run build` 全绿。**未重启**：线上要重启后才出现该命令（同一次重启也会让挂起的 MiniMax 512K/256K 限额生效——热载观测不到 `apply()`）。
+
+**English**: New `/fork [turn]` command and a picker card. DSH has no "undo last turn" (the log is append-only); the supported mechanism is `sessionController.fork({sessionId, atSeq})`, which copies an event prefix into a NEW session and leaves the original untouched — so `/fork` forks at the END of a completed turn, which is the "go back to before that turn" workflow. `src/turn-history.ts` reduces an event window to completed turns only (paired `turn/start`/`turn/end`; the in-progress tail never appears), each with its inclusive `endSeq` and an 80-char single-line preview (first user text, else first assistant text). `HarnessConversationService.listTurns()` reads a live session through bounded `snapshotEvents(from, to)` windows (2k, ×4, capped at 200k — an unbounded snapshot caches the whole log) and falls back to persistence for cold sessions. The picker card lists the newest 12 completed turns (older ones summarised in one line); tapping a row forks at that turn's end and posts the new session id, and `/fork <n>` does the same directly. No fork capability, no bound session, or an unknown turn each get an explicit message. 14 new tests; typecheck, 1202 tests / 60 files and build pass. Not restarted yet — the command ships with the next restart, which is also what will apply the pending MiniMax 512K/256K limits (hot reload is currently not firing).
+
 ### 改进：后台任务面板在表格下方给出完整命令（`src/feishu-jobs.ts` / `src/i18n.ts`，2026-10-19）
 
 **诉求**（使用者）：「后台任务表看不见完整命令，查一下看看能不能改」。

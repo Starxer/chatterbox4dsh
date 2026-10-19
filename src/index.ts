@@ -83,6 +83,7 @@ import { startFeishuPermission, SANDBOX_MODES, PERMISSION_LABELS, describePermis
 import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
 import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
 import { startFeishuSession, renderSessionListCard, renderSessionResultCard, type FeishuSessionHandle } from './feishu-session.ts'
+import { startFeishuFork, type FeishuForkHandle } from './feishu-fork.ts'
 import { startFeishuOnboarding, type FeishuOnboardingHandle } from './feishu-onboarding.ts'
 import { createCardTopicRegistry, resolveCardTopic, type CardTopicRegistry, type TopicCoords } from './card-topics.ts'
 import { fetchThreadRootId } from './topic-roots.ts'
@@ -240,6 +241,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let busyHandle: FeishuBusyHandle | undefined = undefined
   let displayHandle: FeishuDisplayHandle | undefined = undefined
   let sessionHandle: FeishuSessionHandle | undefined = undefined
+  let forkHandle: FeishuForkHandle | undefined = undefined
   /** `/subagents`: the on-demand subagent panel (Host catalog ∪ this roster). */
   let subagentsPanel: SubagentPanelHandle | undefined = undefined
   /** `present` deliverable delivery (planning + auto-send + confirm taps). */
@@ -708,7 +710,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         onboardingHandle, workspaceRegistry, agentPresets, approvalControl, showReasoningControl, displayControl, displayHandle, sessionHandle,
         subagentsPanel,
         { current: currentLocale, set: setPluginLocale },
-        permissionPresets, cardTopics),
+        permissionPresets, cardTopics, forkHandle),
         attachments,
         replyCardMeta,
         undefined,  // consumeReasoning (unused; bridge handles intermediate tracking)
@@ -861,6 +863,17 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     bridge: () => bridgeHolder.current,
     sessionController,
     workspaceRegistry,
+    logger: ctx.logger('dsh-feishu'),
+    getTranslations: () => translationsFor(currentLocale().id),
+  })
+  // `/fork` turn picker: lists the session's completed turns (with a preview of
+  // each turn's opening text) and forks at the tapped turn's end. Independent of
+  // the questions/approvals seams; only needs the card channel, the bridge's
+  // turn reader and DSH's session controller.
+  forkHandle = startFeishuFork({
+    channel: cardChannel,
+    bridgeHolder,
+    sessionController,
     logger: ctx.logger('dsh-feishu'),
     getTranslations: () => translationsFor(currentLocale().id),
   })
@@ -1292,6 +1305,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     busyHandle?.stop()
     displayHandle?.stop()
     sessionHandle?.stop()
+    forkHandle?.stop()
     deliverHandle?.dispose()
     stopNewSessionConfirmer?.()
   }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + external turns + surface prompt + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
@@ -1620,6 +1634,7 @@ async function executeSlashCommand(
   },
   permissionPresets?: { current?: (session: any) => string; set?: (session: any, name: string) => void },
   cardTopics?: CardTopicRegistry,
+  fork?: FeishuForkHandle,
 ): Promise<
   | { kind: 'success' | 'error'; text: string; card?: object }
   | { kind: 'consumed' }
@@ -1747,6 +1762,19 @@ async function executeSlashCommand(
       ...(message.threadId === undefined ? {} : { rootId: message.rootId ?? message.messageId }),
     })
     return { kind: 'consumed' }
+  }
+  if (parsed.name === 'fork') {
+    // Fresh `/fork` surface: no argument opens the turn picker (each row previews
+    // the turn), a turn number forks that chat's session at the turn's end.
+    const input = parsed.rawInput.trim()
+    const t = translationsFor(localeControl?.current().id ?? 'zh')
+    if (fork === undefined) return { kind: 'error', text: t.forkUnsupported }
+    if (input === '') {
+      await fork.openCard(chatMessage)
+      return { kind: 'consumed' }
+    }
+    if (!/^[1-9]\d*$/.test(input)) return { kind: 'error', text: t.forkUsage }
+    return await fork.forkAtTurn(chatMessage, Number.parseInt(input, 10))
   }
   if (parsed.name === 'session') {
     const input = parsed.rawInput.trim()

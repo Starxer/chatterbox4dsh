@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './conversation.ts'
 import type { ConversationMessage } from './conversation.ts'
+import { collectCompletedTurns, type CompletedTurn, type TurnEventLike } from './turn-history.ts'
 import type { DomainName } from './config.ts'
 import { TurnFailureError, displayFailure } from './turn-failure.ts'
 import { noteDirectFeishuDispatch, noteFeishuPrompt } from './feishu-turn-origin.ts'
@@ -481,6 +482,49 @@ export class HarnessConversationService {
       return fromSeq === undefined ? session.snapshotEvents() : session.snapshotEvents(fromSeq)
     }
     return []
+  }
+
+  /**
+   * Completed turns of one chat's session, oldest first, each with the seq a
+   * `/fork` should cut at and a short preview for the picker card.
+   *
+   * Reads a live session's log through BOUNDED windows (`snapshotEvents(from,
+   * to)`); the host deprecates unbounded synchronous reads and an unbounded
+   * snapshot caches a copy of the whole log (关键坑 8). A session that is not
+   * live (first message after a restart, or a cold binding) is read from
+   * persistence instead.
+   *
+   * @param message - chat coordinates; the bound session is resolved from them.
+   * @param limit - how many completed turns to keep (newest last).
+   * @returns the completed turns, `[]` when the session cannot be read.
+   */
+  async listTurns(message: ConversationMessage, limit = 12): Promise<readonly CompletedTurn[]> {
+    const sessionId = this.resolveSessionIdFor(message)
+    if (sessionId === '') return []
+    const agent = this.deps.agents.get(sessionId as never) as unknown as AgentLike | undefined
+    const session = agent?.session as unknown as {
+      readonly seq?: number
+      events?: readonly TurnEventLike[]
+      snapshotEvents?: (from?: number, to?: number) => readonly TurnEventLike[]
+    } | undefined
+    const fromLive = async (): Promise<readonly TurnEventLike[] | undefined> => {
+      if (session === undefined) return undefined
+      if (Array.isArray(session.events)) return session.events
+      const snapshot = session.snapshotEvents
+      const total = session.seq
+      if (typeof snapshot !== 'function' || typeof total !== 'number' || total <= 0) return undefined
+      let windowSize = 2_000
+      while (true) {
+        const from = Math.max(0, total - windowSize)
+        const events = snapshot(from, total)
+        if (from === 0 || collectCompletedTurns(events, { limit }).length >= limit || windowSize > 200_000) return events
+        windowSize *= 4
+      }
+    }
+    const live = await fromLive()
+    if (live !== undefined) return collectCompletedTurns(live, { limit })
+    const cold = await this.readColdSession(sessionId)
+    return cold === undefined ? [] : collectCompletedTurns(cold.events, { limit })
   }
 
   /** Resolve the durable session id from a `sessionPersistence.list()` row.

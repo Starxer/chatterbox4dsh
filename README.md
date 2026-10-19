@@ -47,7 +47,7 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 | 过程透明 / Work details | 推理、文本、工具与结果按档位展示；步骤卡附耗时、token、速度和上下文；思考 token 无上游数据时不估算 | Reasoning, text, calls and results follow the detail level; cards carry time, tokens, speed and context; no invented thinking-token counts |
 | 实时相位 / Live phases | 区分“正在分析请求 → 等待输出 → 思考中 → 回复中”，工具调用另示状态；**不逐 token 更新正文** | Distinguishes preparing, awaiting output, thinking and replying, plus tool states; **not token-by-token text streaming** |
 | 上下文与压缩 / Context & compaction | 注入只显示来源提示、不贴注入正文；压缩卡就地更新，摘要折叠，正文预算 22,000 UTF-8 字节，超出会注明 | Injection notices show the source, not the payload; compaction updates one card, with a folded summary capped at 22,000 UTF-8 bytes and an explicit truncation notice |
-| 会话管理 / Session management | 切换、断开绑定、归档、分叉、改名、置顶；新会话可选工作区、预设与模型 | Switch, detach, archive, fork, rename and pin; new sessions select workspace, preset and model |
+| 会话管理 / Session management | 切换、断开绑定、归档、分叉（`/fork` 可选任一已完成轮次并预览该轮开头，分叉出包含到该轮为止历史的新会话）、改名、置顶；新会话可选工作区、预设与模型 | Switch, detach, archive, fork (`/fork` picks any completed turn with a preview of its opening and copies history through that turn into a new session), rename and pin; new sessions select workspace, preset and model |
 | 新建工作区 / Workspace creation | 不存在的手输路径先确认、最终创建会话时才建目录并注册；浏览器“新建文件夹”是独立的立即操作 | A missing typed path is confirmed, then created/registered at final session creation; the browser's **New folder** is a separate immediate action |
 | 后台任务与子代理 / Jobs & subagents | 每类一张名册快照，名册变更发新卡、不就地更新；只列真正后台任务；子代理显示模型和树形关系，支持 `/subagents tree` | Send-only roster snapshots, not one card per job; foreground tool jobs are excluded; subagents show model and nesting, with `/subagents tree` |
 | 审批 / Approvals | 与 Web UI 共享 pending 状态，两端都显示，谁先处理谁生效；中止后卡片作废 | Shared pending state on both surfaces; the first answer wins and aborted requests retire their cards |
@@ -85,6 +85,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 | `/model [list\|<provider>/<model>]` | 查看、列出、切换模型；无参打开向导 | View/list/switch models; no args opens the picker |
 | `/new [--workspace <path>] [--preset <id>]` | 新会话；无参走卡片流程，带参数路径需已注册工作区 | New session; card flow without args, registered workspace required for the text path |
 | `/session [N\|list]` | 会话管理面板、列表或按编号切换 | Session panel, list or switch by index |
+| `/fork [<轮次>]` | 分叉会话：无参发轮次选择卡（每行带该轮开头预览），点选后以该轮**结束**为界复制到新会话；带轮次则直接分叉 | Fork a session: no args opens the turn picker (each row previews that turn's opening), tapping forks at the turn's **end**; a turn number forks directly |
 | `/status` | 会话与性能指标、权限、运行中发送模式 | Session metrics, permissions and busy-message mode |
 | `/reasoning [档位 / effort]` | 支持的推理强度随模型而变；`show on\|off` 控制思考显示 | Supported efforts depend on the model; `show on\|off` controls display |
 | `/display [compact\|standard\|detailed\|verbose]` | 切档；无参发控制卡 | Switch level; no args opens controls |
