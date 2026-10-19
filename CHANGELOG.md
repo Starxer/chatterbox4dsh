@@ -2,8 +2,22 @@
 
 ## Unreleased
 
-> 当前未发布主线：已验证 DSH `0.2.1-rc.1`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.1 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
-> Current unreleased main is verified with DSH `0.2.1-rc.1`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+> 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
+> Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+
+### 变更：紧凑过程卡的「分段」触发从「别的卡片」扩到「别的消息」（`src/channel.ts` / `src/index.ts` / `src/card-interleave.ts`，2026-10-19）
+
+**诉求**（使用者）：「当 steer 插入一条消息后，紧凑模式的步骤卡片会在原卡片上更新，导致不方便看到新的进度」⇒ 以后「凡是出现了别的消息，就重新发新的步骤卡片」（旧规则是「凡是出现了别的卡片」）。
+
+**根因**：分段广播（`src/card-interleave.ts`）只有在「别的模块发了一张卡」时触发。steer 的确认是一条**纯文本**通知（`channel.ts` 的 `sendOutbound`，不经 `cardChannel.send`），所以不触发——过程卡继续就地更新，新进度被写在 steer 通知的**上方**，看起来像没在动。
+
+**改法**：① `startChannel` 新增可选参数 `noteMessagePosted(chatId)`，在所有经 `sendOutbound` 发出的消息成功后回调——回复卡/续卡/Turn Complete、busy（steer/queue）通知、命令结果、错误行都走这个唯一漏斗；② `index.ts` 的 `cardChannel.send` 改为**任何消息**（卡片或文本）都广播（原来只对卡片）；③ 注释与文档统一成「任何别的消息」，模块名 `card-interleave` 作为历史名保留并在文档里说明。
+
+**行为**：steer（以及 `/steer`、busy 文本、命令输出、错误行）之后，过程卡当前分段冻结；下一次真实进展（新 `tool/call`、新 step）在**下方新开一张卡**，只带这段新增内容。分段仍按 `chatId` 计（与卡片触发的既有口径一致）：同一群多个话题同时跑 turn 时，一个话题的消息会让另一个话题也分段——多一张卡，不会丢内容。
+
+**验证**：新增 2 例（busy steer 文本 ⇒ `noteMessagePosted` 触发；回复卡也触发），`npm run typecheck` / `npm test`（**1174 通过 / 58 文件**）/ `npm run build` 全绿。真机待使用者 steer 一次确认（改的是消息触发条件，单测能钉住回调，分段观感只有真机能看）。
+
+**English**: The compact turn card stops growing at a *segment* boundary whenever another message lands in the chat. That boundary used to be triggered by CARDS only, so a steer — whose acknowledgement is a plain TEXT notice (`sendOutbound`, not `cardChannel.send`) — did not end the segment: the running card kept updating in place, above the steer notice, which made new progress look stalled (user report, 2026-10-19). The rule is now "any other message": `startChannel` takes a `noteMessagePosted` callback fired by the single `sendOutbound` funnel (reply cards, overflow continuations, Turn Complete, busy notices, command results, error lines), and `cardChannel.send` announces text as well as cards. The next real progress row opens a NEW card below the interruption; segmentation is still chat-scoped, so concurrent turns in different topics of one chat may each get an extra card (never lost content). Two new tests pin the callbacks; typecheck, 1174 tests and build pass, and the visual result awaits one real steer.
 
 ### 兼容：DSH `0.2.1-rc.1` 把后台 job id 换成短 UUID，插件两种格式都认（`src/feishu-jobs.ts`，2026-10-17）
 

@@ -292,6 +292,15 @@ export async function startChannel(
    * deliverable rows move to their own titled card (`src/turn-summary.ts`).
    */
   compactFooter?: () => boolean,
+  /**
+   * A message this module just posted landed in the chat: the reply, an overflow
+   * continuation, a Turn Complete footer, a busy notice, a command result, an
+   * error line. Long-lived progress cards above it are closed segments from here
+   * on (see `src/card-interleave.ts`): their next content opens a NEW card below
+   * the message instead of writing above it. Optional so a bare channel keeps
+   * working without a card registry.
+   */
+  noteMessagePosted?: (chatId: string) => void,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -375,12 +384,24 @@ export async function startChannel(
    * stays pending forever. A handler that awaits it is stuck forever too, and
    * the user's reply never arrives (key pitfall 29).
    */
-  const sendOutbound = (
+  const sendOutbound = async (
     to: string,
     input: { card: object } | { text: string },
     opts?: { replyInThread?: boolean; replyTo?: string },
-  ): Promise<{ messageId?: string }> =>
-    withLinkTimeout(channel.send(to, input, opts), 'send message', OUTBOUND_TIMEOUT_MS)
+  ): Promise<{ messageId?: string }> => {
+    const sent = await withLinkTimeout(channel.send(to, input, opts), 'send message', OUTBOUND_TIMEOUT_MS)
+    // This funnel is the single place every message `channel.ts` posts goes
+    // through, so it is also the right place to announce it: a long-lived
+    // progress card above it must not keep writing (see `noteMessagePosted`).
+    // Text counts exactly like a card — a steer notice is the case that started
+    // this rule (user request, 2026-10-19).
+    try {
+      noteMessagePosted?.(to)
+    } catch {
+      // A listener must never break the send that fired it.
+    }
+    return sent
+  }
 
   /**
    * Send a card, first letting the image hydrator inline whatever local paths it

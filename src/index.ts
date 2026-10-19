@@ -318,7 +318,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     onTimeout: reason => console.log(`dsh-feishu: pending card flush gave up: ${reason}`),
   })
   /**
-   * "Another module posted a card into this chat" (`src/card-interleave.ts`).
+   * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * One instance for the whole plugin: the modules that post interrupting cards
    * (todos, jobs, panels, questions, compactions) are not the module that owns
    * the long-lived compact card, so the notice travels through here.
@@ -417,13 +417,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     send: async (to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }> => {
       // The bound covers the barrier plus the HTTP call it precedes.
       const sent = await withLinkTimeout(cardBarrier.run(to, pendingCardFlush, () => rawChannelSend(to, input, opts)), 'send card or text', CARD_SEND_TIMEOUT_MS)
-      // This path is what every OTHER module posts a card through (todos, jobs,
-      // subagent panels, questions). A card that lands here sits after the
-      // long-lived compact cards, so their next content must not be written
-      // above it: announce it (see `src/card-interleave.ts`). Text messages are
-      // not announced — a busy notice or an error line does not reorder cards,
-      // and treating those as interruptions would multiply cards for nothing.
-      if ('card' in input && input.card !== undefined) cardInterleave.note(to)
+      // This path is what every OTHER module posts through (todos, jobs,
+      // subagent panels, questions, compaction cards). A message that lands here
+      // sits after the long-lived compact cards, so their next content must not
+      // be written above it: announce it (see `src/card-interleave.ts`). Text
+      // counts exactly like a card — the rule is "any other message" (user
+      // request, 2026-10-19; a steer notice was the case that started it).
+      cardInterleave.note(to)
       return sent
     },
     /**
@@ -759,6 +759,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // posting a Turn Complete card, and moves the deliverable rows to their
         // own titled card (`src/turn-summary.ts`).
         () => currentSettings().transcriptView === 'compact',
+        // Every message `channel.ts` posts — the reply, an overflow
+        // continuation, the Turn Complete footer, a busy (steer/queue) notice, a
+        // command result, an error line — ends the compact card's current
+        // segment, so the next progress row opens a NEW card below it instead of
+        // being written above it (see `src/card-interleave.ts`). This is the path
+        // that covers the steer notice; "any other message", not only cards
+        // (user request, 2026-10-19).
+        chatId => cardInterleave.note(chatId),
       )
     },
   })

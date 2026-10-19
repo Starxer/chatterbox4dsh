@@ -165,7 +165,7 @@ export interface CompactionCardChannel {
 
 export interface CompactionCardsDeps {
   /**
-   * "Another module posted a card into this chat" (`src/card-interleave.ts`):
+   * "Another message was posted into this chat" (`src/card-interleave.ts`):
    * the compact turn card ends its current segment on this notice. Optional.
    */
   interleave?: CardInterleave | undefined

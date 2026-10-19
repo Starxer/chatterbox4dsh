@@ -206,7 +206,7 @@ export interface ProgressFacts {
   now: number
   /**
    * Index into {@link steps} where THIS card's content begins. Another module
-   * posting a card into the chat ends the segment: the card that is on screen
+   * posting a message into the chat ends the segment: the card that is on screen
    * above it stops growing and the next event opens a new one carrying only what
    * happened since (see `src/card-interleave.ts`).
    */
@@ -620,7 +620,7 @@ interface CardEntry {
   /** The send itself failed: stop updating and answer in text at the end. */
   dead: boolean
   /**
-   * Another module posted a card after this one: it is a closed segment. Writes
+   * Another message was posted after this one: it is a closed segment. Writes
    * already in flight may land; nothing new is scheduled.
    */
   superseded: boolean
@@ -696,7 +696,7 @@ export interface ProgressCardsDeps {
   /** Strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
   /**
-   * "Another module posted a card into this chat" (`src/card-interleave.ts`).
+   * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
    * new one below the interruption.
    */
@@ -1151,7 +1151,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   const hasCard = (sessionId: string): boolean => cards.has(sessionId)
 
   /**
-   * Another module posted a card into this chat: close this segment. What is on
+   * Another message was posted into this chat: close this segment. What is on
    * screen stays as it is (it now sits above the interruption), and the next
    * event that really has something new — a tool call, a step — opens a new card
    * below it. Nothing is opened here on purpose: a question card, its

@@ -190,7 +190,7 @@ export interface FeishuStreamingDeps {
    */
   warmImages?: (card: object, scope: { sessionId?: string }) => void
   /**
-   * "Another module posted a card into this chat" (`src/card-interleave.ts`).
+   * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * The compact turn card uses it to end one segment and continue in a new card
    * below the interruption. Optional: without it, that card just keeps updating
    * in place.
@@ -1430,7 +1430,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       return
     }
     if (state.supersededFrom !== undefined) {
-      // Another module posted a card after this one: writing here would put the
+      // Another message was posted after this one: writing here would put the
       // newest line ABOVE it. Retire this card and let the content since the
       // interruption go out as a NEW card below (see `src/card-interleave.ts`).
       retireStepCard(state)
@@ -2345,7 +2345,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /**
-   * Another module posted a card into a chat: under `compact` the answer card
+   * Another message was posted into a chat: under `compact` the answer card
    * that is on screen for a step of that chat is a closed segment from here on
    * (see `src/card-interleave.ts`). Nothing is written to it any more; the next
    * content of that step opens a new card below the interruption.

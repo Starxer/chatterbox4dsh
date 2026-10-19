@@ -155,6 +155,63 @@ describe('startChannel', () => {
     await stop()
   })
 
+  it('announces the busy notice a steer posts, so the running card starts a new segment', async () => {
+    // The 2026-10-19 user report: steering a message into a running turn posts a
+    // notice, but the compact step card kept writing IN PLACE above it, so new
+    // progress was easy to miss. `noteMessagePosted` is the signal that ends the
+    // card's segment — it must fire for TEXT, not only for cards.
+    const channel = fakeChannel()
+    const notes: string[] = []
+    const bridge = {
+      reply: vi.fn(async (_message: unknown, options?: { onBusy?: (mode: 'steer' | 'queue') => void }) => {
+        options?.onBusy?.('steer')
+        return undefined
+      }),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '', showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'compact',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    (chatId: string) => notes.push(chatId))
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: '插一句' })
+    await flushAsync()
+    expect(channel.send).toHaveBeenCalledWith('oc_1', { text: translationsFor('zh').busySteeredNotice }, expect.anything())
+    expect(notes).toEqual(['oc_1'])
+    await stop()
+  })
+
+  it('announces a reply it posts, so no progress is written above it', async () => {
+    const channel = fakeChannel()
+    const notes: string[] = []
+    const bridge = {
+      reply: vi.fn(async () => 'the answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '', showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'compact',
+    }, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    (chatId: string) => notes.push(chatId))
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await vi.waitFor(() => { expect(notes).toContain('oc_1') })
+    await stop()
+  })
+
   it('posts the full reply when no step card was confirmed delivered', async () => {
     // The 2026-09-21 failure: streaming marked the text as "on screen", the
     // card never reached Feishu, and streaming withdrew the mark from
