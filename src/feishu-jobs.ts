@@ -280,8 +280,59 @@ export function jobRosterSignature(rows: readonly JobPanelRow[]): string {
     .join('\u0002')
 }
 
+/** Longest task cell the table keeps; a longer command moves to a detail block. */
+const JOB_LABEL_TABLE_MAX = 48
+
+/**
+ * Longest command one detail block carries. A card is capped at ~30KB and the
+ * roster can hold {@link PANEL_MAX_ROWS} rows, so 2000 characters each leaves
+ * room for the table and the marks regardless of how long the scripts are.
+ */
+const JOB_COMMAND_DETAIL_MAX = 2_000
+
+/**
+ * A fence long enough that the command cannot close it early.
+ *
+ * Feishu renders fenced code blocks like CommonMark: only a fence at least as
+ * long as the opener closes the block, so the opener must be longer than any
+ * backtick run inside the command (关键坑 68 is the reverse failure — a glued
+ * closer swallowing the rest of the card).
+ *
+ * @param command - the code that will sit inside the block.
+ * @returns a backtick run of at least three, longer than any run in `command`.
+ */
+function commandFence(command: string): string {
+  let longest = 0
+  for (const match of command.matchAll(/`+/g)) longest = Math.max(longest, match[0].length)
+  return '`'.repeat(Math.max(3, longest + 1))
+}
+
+/**
+ * One job's full command as a markdown block: a header naming the job, then the
+ * command verbatim in a fenced code block (its lines stay its lines).
+ *
+ * @param t - active locale strings (status word, cut note).
+ * @param view - the job the block belongs to.
+ * @param label - the producer label, already trimmed and non-empty.
+ * @returns markdown content for one card element.
+ */
+function renderJobCommandDetail(t: Translations, view: JobViewLike, label: string): string {
+  const status = statusPresentation(view.status, t)
+  const total = label.length
+  const shown = total > JOB_COMMAND_DETAIL_MAX ? label.slice(0, JOB_COMMAND_DETAIL_MAX) : label
+  const fence = commandFence(shown)
+  const note = total > JOB_COMMAND_DETAIL_MAX ? `\n_${t.jobPanelCommandTruncated(total)}_` : ''
+  return `**${status.icon} \`${view.id}\`** · ${status.text}\n${fence}\n${shown}\n${fence}${note}`
+}
+
 /**
  * Render the background-task panel card: one row per known background task.
+ *
+ * A task's label is the producer's command, and the table has to stay readable,
+ * so its cell is capped at {@link JOB_LABEL_TABLE_MAX}. A command longer than
+ * that is printed in full BELOW the table (fenced, line breaks preserved) — the
+ * user could not read it otherwise (report 2026-10-19: "后台任务表看不见完整
+ * 命令"). Short commands are not repeated.
  *
  * @param rows - the roster's rows.
  * @param t - the active locale's strings.
@@ -300,7 +351,7 @@ export function renderJobPanelCard(rows: readonly JobPanelRow[], t: Translations
     const label = view.label.trim()
     return [
       `${status.icon} ${status.text}`,
-      tableCell(label === '' ? t.jobUntitled : label, { code: true, max: 48 }),
+      tableCell(label === '' ? t.jobUntitled : label, { code: true, max: JOB_LABEL_TABLE_MAX }),
       tableCell(view.id, { code: true }),
       formatDuration(end - view.startedAt),
       dynamic.trim() === '' ? '—' : tableCell(dynamic, { max: 48 }),
@@ -310,6 +361,19 @@ export function renderJobPanelCard(rows: readonly JobPanelRow[], t: Translations
   const lines = [`**${t.jobPanelSummary(running, sorted.length)}**`, '', renderTable(headers, body)]
   if (sorted.length > shown.length) lines.push('', `_${t.panelMoreRows(sorted.length - shown.length)}_`)
   const elements: object[] = [{ tag: 'markdown', content: lines.join('\n') }]
+  // A row needs its detail block when the table cannot show the command as it
+  // is: the cell was cut, or line breaks (a script / heredoc) would be flattened
+  // into one line.
+  const truncated = shown.filter(({ view }) => {
+    const trimmed = view.label.trim()
+    return trimmed.includes('\n') || trimmed.replace(/\s+/g, ' ').length > JOB_LABEL_TABLE_MAX
+  })
+  if (truncated.length > 0) {
+    elements.push({ tag: 'markdown', content: `**${t.jobPanelFullCommands}**` })
+    for (const { view } of truncated) {
+      elements.push({ tag: 'markdown', content: renderJobCommandDetail(t, view, view.label.trim()) })
+    }
+  }
   // The "clear finished" action mirrors the WebUI's job list, which hides its
   // settled tail on demand. It is only offered when there IS a settled row to
   // clear — a button that cannot do anything is worse than no button. Card 2.0

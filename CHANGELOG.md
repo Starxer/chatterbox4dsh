@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：后台任务面板在表格下方给出完整命令（`src/feishu-jobs.ts` / `src/i18n.ts`，2026-10-19）
+
+**诉求**（使用者）：「后台任务表看不见完整命令，查一下看看能不能改」。
+
+**根因**：面板的「任务」列是**卡片表格单元格**，`tableCell(..., { max: 48 })` 把命令截到 47 字符 + `…`；表格本身又只有一列宽，长命令/多行脚本在格子里必然读不全。**数据侧是完整的**：DSH 的 job label 就是 `args.command` 原文（`packages/shell/tool-bash/src/index.ts` 直接 `label: args.command`），插件这里只是在展示时截断。
+
+**改法**：表格保持紧凑（仍 48 字符）作索引；对**被截断或含换行**的行，在表格下方新增 `📜 完整命令` 段：每个任务的完整命令放进**围栏代码块**（换行原样保留），块头是 `状态图标 + 编号 + 状态词`。围栏长度按命令里最长的反引号串动态加长（≥3），保证命令自己关不掉代码块（坑 68 的反向失败）；单条超过 2000 字符时截断并在块后注明「完整命令共 N 字符，单卡放不下，已截断」（卡片 ~30KB 上限）；短命令（表格已完整显示且无换行）**不重复**。多行命令即使折叠后短于 48 也算「表格显示不全」，同样进详情块。
+
+**验证**：单测 +6（完整命令出现、多行原样、短命令不重复、含 ` ``` ` 的命令用 4 反引号围栏、超长截断注明），`npm run typecheck` / `npm test`（**1188 通过 / 58 文件**）/ `npm run build` 全绿。另把**真实渲染产物**（两个任务：长单行命令 + heredoc 多行脚本）发到一次性测试群做结构探针：`im.v1.message.create` **code=0** 接受、随即撤回（视觉观感——代码块里长行怎么换行——只能真机看）。**尚未重启**（使用者要求），线上仍是旧面板。
+
+**English**: The background-jobs panel could not show a task's full command: its task cell is a card TABLE cell capped at 48 characters, so long commands and multi-line scripts were cut to `…`. The data was never truncated — DSH's job label is the raw `args.command`; only the rendering was. The table stays compact as an index and a `📜 Full commands` section is now appended for rows whose cell was cut or whose command has line breaks: each command verbatim in a fenced code block (line breaks preserved), headed by status icon + job id + status word. The fence is lengthened past the longest backtick run inside the command so the command cannot close its own block (the reverse of 关键坑 68); a command over 2000 chars is cut with an explicit "N characters, truncated to fit one card" note; short single-line commands are not repeated. Six new tests, typecheck / 1188 tests / build green, and the real rendered card (long single-line + heredoc) was accepted by `im.v1.message.create` with `code=0` in a throwaway group and then deleted — visual line-wrapping still needs a real screen. Not restarted yet, per the operator.
+
 ### 变更：紧凑过程卡的「分段」触发从「别的卡片」扩到「别的消息」（`src/channel.ts` / `src/index.ts` / `src/card-interleave.ts`，2026-10-19）
 
 **诉求**（使用者）：「当 steer 插入一条消息后，紧凑模式的步骤卡片会在原卡片上更新，导致不方便看到新的进度」⇒ 以后「凡是出现了别的消息，就重新发新的步骤卡片」（旧规则是「凡是出现了别的卡片」）。

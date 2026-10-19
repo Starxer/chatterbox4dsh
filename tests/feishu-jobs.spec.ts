@@ -233,6 +233,46 @@ describe('renderJobPanelCard', () => {
     expect(text).toContain('`grep a ｜ wc -l`')
     expect(text.split('\n').find(line => line.includes('grep'))?.split('|')).toHaveLength(7)
   })
+
+  it('prints the full command below the table when its cell had to be cut', () => {
+    // Report 2026-10-19: "后台任务表看不见完整命令". The table keeps a compact
+    // cell, the DETAIL block carries the whole command.
+    const command = 'python3 scripts/audit.py --workspace /srv/app --since 2026-10-01 --strict --report out.json'
+    const text = markdownOf(renderJobPanelCard([row({ label: command })], zh, 2_000) as any)
+    expect(text).toContain(zh.jobPanelFullCommands)
+    expect(text).toContain(command)
+    // The table cell itself is still capped.
+    expect(text).toContain('…')
+  })
+
+  it('keeps a multi-line command on its own lines in the detail block', () => {
+    const command = 'set -e\nfor i in 1 2 3; do\n  echo "$i"\ndone'
+    const text = markdownOf(renderJobPanelCard([row({ label: command })], zh, 2_000) as any)
+    // Verbatim: the code block, not a collapsed one-line cell.
+    expect(text).toContain(command)
+  })
+
+  it('does not repeat a command the table already shows in full', () => {
+    const text = markdownOf(renderJobPanelCard([row({ label: 'npm run build' })], zh, 2_000) as any)
+    expect(text).not.toContain(zh.jobPanelFullCommands)
+    expect(text.split('npm run build')).toHaveLength(2)
+  })
+
+  it('opens a fence the command itself cannot close early', () => {
+    const command = 'cat <<EOF > /tmp/x\n```\nnot a closer\n```\nEOF'
+    const text = markdownOf(renderJobPanelCard([row({ label: command })], zh, 2_000) as any)
+    // Backtick runs of three inside the command force a four-backtick fence,
+    // and the block has exactly one opener and one closer.
+    expect(text.split('\n').filter(line => /^`{4}$/.test(line))).toHaveLength(2)
+    expect(text).toContain(command)
+  })
+
+  it('caps a huge command and says it was cut', () => {
+    const command = 'x '.repeat(3_000).trim()
+    const text = markdownOf(renderJobPanelCard([row({ label: command })], zh, 2_000) as any)
+    expect(text).toContain(zh.jobPanelCommandTruncated(command.length))
+    expect(text.length).toBeLessThan(4_000)
+  })
 })
 
 describe('jobRosterSignature', () => {

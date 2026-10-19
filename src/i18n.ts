@@ -659,6 +659,10 @@ export interface Translations {
   jobPanelColProgress: string
   jobPanelClearButton: string
   jobPanelCleared: (count: number) => string
+  /** Heading above the full-command blocks printed below the table. */
+  jobPanelFullCommands: string
+  /** Note under a command block that had to be shortened to fit one card. */
+  jobPanelCommandTruncated: (total: number) => string
   jobUntitled: string
   jobStatusRunning: string
   jobStatusStopping: string
@@ -1171,6 +1175,8 @@ export const zh = {
   jobPanelColProgress: '进度 / 结果',
   jobPanelClearButton: '🧹 清理已完成',
   jobPanelCleared: count => `🧹 已清理 ${count} 个已完成的后台任务`,
+  jobPanelFullCommands: '📜 完整命令',
+  jobPanelCommandTruncated: total => `（完整命令共 ${total} 字符，单卡放不下，已截断）`,
   jobUntitled: '未命名任务',
   jobStatusRunning: '运行中',
   jobStatusStopping: '正在停止',
@@ -1679,6 +1685,8 @@ export const en: Translations = {
   jobPanelColProgress: 'Progress / result',
   jobPanelClearButton: '🧹 Clear finished',
   jobPanelCleared: count => `🧹 Cleared ${count} finished background job${count === 1 ? '' : 's'}`,
+  jobPanelFullCommands: '📜 Full commands',
+  jobPanelCommandTruncated: total => `(full command is ${total} characters — truncated to fit one card)`,
   jobUntitled: 'Untitled job',
   jobStatusRunning: 'Running',
   jobStatusStopping: 'Stopping',
