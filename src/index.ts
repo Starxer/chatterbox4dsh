@@ -1273,6 +1273,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       sessionCurrentSelection: async (chatMessage) => bridgeHolder.current?.sessionCurrentSelection(chatMessage),
       recentRoutes: async (chatMessage, limit) => bridgeHolder.current?.recentRoutes(chatMessage, limit) ?? [],
       switchRoute: async (chatMessage, route) => bridgeHolder.current?.switchRoute(chatMessage, route) ?? { ok: false as const, reason: 'no-agent' as const },
+      rememberModelRoute: route => bridgeHolder.current?.rememberModelRoute(route),
       resolveAgent: async (chatMessage) => bridgeHolder.current?.resolveAgent(chatMessage),
       resolveSessionIdFor: (chatMessage) => bridgeHolder.current?.resolveSessionIdFor(chatMessage) ?? '',
     },
@@ -2080,7 +2081,7 @@ async function executeSlashCommand(
         provider: current.provider,
         model: current.model,
         ...(current.reasoningEffort !== undefined ? { reasoningEffort: String(current.reasoningEffort) } : {}),
-      }, undefined, translationsFor(localeControl?.current().id ?? 'zh'), { lastUsed }) }
+      }, undefined, translationsFor(localeControl?.current().id ?? 'zh'), { lastUsed, recent: await bridge.recentModelChoices(chatMessage) }) }
     }
     // V2 flow: create card instance + send by card_id reference.
     const providers = llm.listProviders()
@@ -2088,7 +2089,7 @@ async function executeSlashCommand(
       provider: current.provider,
       model: current.model,
       ...(current.reasoningEffort !== undefined ? { reasoningEffort: String(current.reasoningEffort) } : {}),
-    }, undefined, translationsFor(localeControl?.current().id ?? 'zh'), { lastUsed })
+    }, undefined, translationsFor(localeControl?.current().id ?? 'zh'), { lastUsed, recent: bridge.recentModelRoutes({ provider: current.provider, model: current.model }) })
     try {
       await sendModelCardV2(cardChannel, chatMessage, card, modelSelectMaps.cardByMessage, modelSelectMaps.sequenceByCard, cardTopics)
       // V2 card was sent directly via cardkit. Signal "consumed" so channel.ts

@@ -8,6 +8,7 @@ import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './con
 import type { ConversationMessage } from './conversation.ts'
 import { collectCompletedTurns, type CompletedTurn, type TurnEventLike } from './turn-history.ts'
 import { collectRecentRoutes, type RecentRoute, type RouteEntry } from './route-history.ts'
+import { isRecentModelEntry, mergeRecentModels, rememberModel, topRecentModels, type ModelRoute, type RecentModelEntry } from './recent-models.ts'
 import type { DomainName } from './config.ts'
 import { TurnFailureError, displayFailure } from './turn-failure.ts'
 import { noteDirectFeishuDispatch, noteFeishuPrompt } from './feishu-turn-origin.ts'
@@ -301,6 +302,8 @@ export class HarnessConversationService {
    * sessions to avoid duplication.
    */
   private readonly intermediateSent = new Set<string>()
+  /** Global (across Feishu sessions) recently used models, newest first. */
+  private recentModels: RecentModelEntry[] = []
 
   constructor(private readonly deps: HarnessDependencies, private readonly config: HarnessBridgeConfig) {
     this.loadSessionMap()
@@ -336,6 +339,7 @@ export class HarnessConversationService {
         seenChatKeys?: string[]
         busyMode?: Record<string, string>
         chatToRootId?: Record<string, string>
+        recentModels?: unknown[]
       }
       for (const [k, v] of Object.entries(parsed.chatToSession ?? {})) this.chatToSession.set(k, v)
       for (const k of parsed.seenChatKeys ?? []) this.seenChatKeys.add(k)
@@ -345,6 +349,9 @@ export class HarnessConversationService {
       // Insertion order is preserved by JSON, so the topic recency order
       // written by `noteTopic` survives the restart.
       for (const [k, v] of Object.entries(parsed.chatToRootId ?? {})) this.chatToRootId.set(k, v)
+      if (Array.isArray(parsed.recentModels)) {
+        this.recentModels = parsed.recentModels.filter(isRecentModelEntry)
+      }
       this.loadedBindings = this.chatToSession.size
       // Logged because a binding that silently fails to load is indistinguishable
       // from one that was never made — the 2026-09-23 wipe had to be
@@ -406,6 +413,7 @@ export class HarnessConversationService {
         seenChatKeys: [...this.seenChatKeys],
         busyMode: Object.fromEntries(this.chatToBusyMode),
         chatToRootId: Object.fromEntries(this.chatToRootId),
+        recentModels: this.recentModels,
       })
       // Atomic: a restart (or SIGKILL) landing mid-write must never leave a
       // truncated JSON behind, because the next boot would then lose EVERY
@@ -572,6 +580,62 @@ export class HarnessConversationService {
   }
 
   /**
+   * Remember a model route the plugin just applied — the GLOBAL recency list
+   * (across Feishu sessions), persisted with the chat→session map.
+   *
+   * @param route - the route that was used or selected.
+   */
+  rememberModelRoute(route: ModelRoute): void {
+    const next = rememberModel(this.recentModels, route, Date.now())
+    // Headers repeat for a route that is already at the front (every request
+    // series appends one); rewriting the state file for those would be pure
+    // disk churn. Compare route identity, not `usedAt`.
+    const unchanged = next.length === this.recentModels.length && next.every((entry, index) => {
+      const previous = this.recentModels[index]
+      return previous !== undefined
+        && previous.provider === entry.provider
+        && previous.model === entry.model
+        && (previous.reasoningEffort ?? '') === (entry.reasoningEffort ?? '')
+    })
+    this.recentModels = next
+    if (!unchanged) this.saveSessionMap()
+  }
+
+  /**
+   * The picker shortlist for one chat: the GLOBAL list merged with the routes
+   * this Session's own log shows (newest first, de-duplicated, current route
+   * included so a single known route still renders), and the session-only
+   * routes pushed into the global memory so later opens (in any chat) see them.
+   *
+   * @param message - chat coordinates.
+   * @param limit - how many entries to return (default 3).
+   * @returns up to `limit` distinct routes, newest first.
+   */
+  async recentModelChoices(message: ConversationMessage, limit = 3): Promise<readonly RecentModelEntry[]> {
+    const sessionRoutes = await this.recentRoutes(message, 6).catch(() => [] as readonly RecentRoute[])
+    const merged = mergeRecentModels(this.recentModels, sessionRoutes, limit)
+    // Backfill: the global memory only knows routes the plugin applied itself,
+    // so the first open after a restart would otherwise show nothing at all.
+    for (const route of sessionRoutes) {
+      if (this.recentModels.some(entry => entry.provider === route.provider && entry.model === route.model)) continue
+      this.rememberModelRoute(route)
+    }
+    return merged
+  }
+
+  /**
+   * The GLOBAL recently used models, newest first, de-duplicated by
+   * provider+model, excluding the route this Session already runs.
+   *
+   * @param exclude - current route of the Session asking (omitted = no filter).
+   * @param limit - how many entries to return (default 3).
+   * @returns up to `limit` distinct routes.
+   */
+  recentModelRoutes(exclude?: ModelRoute, limit = 3): readonly RecentModelEntry[] {
+    return topRecentModels(this.recentModels, exclude, limit)
+  }
+
+  /**
    * Recent model routes of this chat's Session, newest first (`/model last`).
    *
    * @param message - chat coordinates.
@@ -610,6 +674,7 @@ export class HarnessConversationService {
     if (agent === undefined) return { ok: false, reason: 'no-agent' }
     if (agent.ctx === undefined || typeof agent.ctx.on !== 'function') return { ok: false, reason: 'unsupported' }
     installRouteSelection(agent, route)
+    this.rememberModelRoute(route)
     return { ok: true }
   }
 
@@ -1964,6 +2029,11 @@ export class HarnessConversationService {
     try {
       await selectModel.call(this.deps.sessionController, {
         sessionId,
+        provider: creation.provider,
+        model: creation.model,
+        ...(creation.reasoningEffort !== undefined ? { reasoningEffort: creation.reasoningEffort } : {}),
+      })
+      this.rememberModelRoute({
         provider: creation.provider,
         model: creation.model,
         ...(creation.reasoningEffort !== undefined ? { reasoningEffort: creation.reasoningEffort } : {}),

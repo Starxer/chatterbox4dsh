@@ -59,6 +59,9 @@ function harness(overrides: {
       resolveSessionIdFor: () => 'sess-1',
       recentRoutes: async () => [],
       switchRoute: async () => ({ ok: true }),
+      recentModelRoutes: () => [],
+      rememberModelRoute: vi.fn(),
+      recentModelChoices: async () => [],
       ...(overrides.bridge ?? {}),
     },
   } as any
@@ -363,6 +366,55 @@ describe('last-used quick action', () => {
     const last = cards.at(-1)
     expect(last.header.template).toBe('red')
     expect(JSON.stringify(last)).toContain(t.modelSelectLastUsedFailedNoSession)
+    handle.dispose()
+  })
+})
+
+
+describe('global recent-model rows', () => {
+  it('renders one tappable row per remembered route', () => {
+    const providers = [{ id: 'provA', name: 'A' }] as never
+    const current = { provider: 'provA', model: 'a1' }
+    const card = renderProviderSelectCard(providers, current, undefined, t, {
+      recent: [
+        { provider: 'provB', model: 'b1', reasoningEffort: 'high', usedAt: 2 },
+        { provider: 'provC', model: 'c1', usedAt: 1 },
+      ],
+    }) as any
+    const rows = card.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provB', model: 'b1', effort: 'high' })
+    expect(rows[1].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provC', model: 'c1' })
+    expect(JSON.stringify(card)).toContain(t.modelSelectRecentHeader)
+    // `/new` reuses this card but must not offer a switch of the CURRENT session.
+    const newSession = renderProviderSelectCard(providers, current, 'new-session', t, { recent: [{ provider: 'provB', model: 'b1', usedAt: 2 }] }) as any
+    expect(newSession.body.elements.filter((element: any) => element.tag === 'interactive_container')).toHaveLength(0)
+  })
+
+  it('marks the current route instead of dropping it (single-route memory still renders)', () => {
+    const providers = [{ id: 'provA', name: 'A' }] as never
+    const current = { provider: 'provA', model: 'a1' }
+    const card = renderProviderSelectCard(providers, current, undefined, t, {
+      recent: [{ provider: 'provA', model: 'a1', usedAt: 1 }],
+    }) as any
+    const rows = card.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(rows).toHaveLength(0)
+    const text = JSON.stringify(card)
+    expect(text).toContain(t.modelSelectRecentHeader)
+    expect(text).toContain(t.modelSelectRecentCurrent('provA', 'a1'))
+  })
+
+  it('switches the session locally when a row is tapped', async () => {
+    const switchRoute = vi.fn(async () => ({ ok: true }))
+    const { fire, cards, handle, sessionController } = harness({
+      bridge: { recentModelRoutes: () => [{ provider: 'provB', model: 'b1', usedAt: 2 }], switchRoute },
+    })
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { value: { action: 'switch-recent', provider: 'provB', model: 'b1', effort: 'high' } } })
+    expect(switchRoute).toHaveBeenCalledWith(expect.anything(), { provider: 'provB', model: 'b1', reasoningEffort: 'high' })
+    expect(sessionController.selectModel).not.toHaveBeenCalled()
+    const last = cards.at(-1)
+    expect(last.header.template).toBe('green')
+    expect(JSON.stringify(last)).toContain(t.modelSelectRecentSwitched)
     handle.dispose()
   })
 })

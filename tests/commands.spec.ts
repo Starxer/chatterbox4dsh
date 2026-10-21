@@ -176,6 +176,7 @@ function fakeBridge(overrides?: {
       sessionCurrentSelection: overrides?.sessionCurrentSelection ?? vi.fn(async () => undefined),
       recentRoutes: overrides?.recentRoutes ?? vi.fn(async () => []),
       switchRoute: overrides?.switchRoute ?? vi.fn(async () => ({ ok: true as const })),
+      rememberModelRoute: vi.fn(),
       describeChatKey: (key: string) => (key.startsWith('thread:') ? `topic:${key.slice(7, 15)}` : 'main'),
     },
     setCurrentSelection,

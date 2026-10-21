@@ -5,6 +5,16 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：模型卡的「最近使用（全局）」三行（`src/recent-models.ts` / `src/harness.ts` / `src/feishu-model-select.ts`，2026-10-21）
+
+**背景**：`/model last` 与「↺ 切回上次使用」取的是**本会话自己的日志**（最后一条 `model/selection` / `request/header`），本来就是会话内的；这次按使用者要求再加一份**全局**（跨飞书会话）的最近使用列表。
+
+**实现**：① 插件自维护全局列表（最多 12 条，卡片只用前 3）：来源是插件每次真正应用的路线（`/model` 切换、卡片确认、`/new` 创建、快捷切回）＋每个飞书会话日志里观察到的 `request/header`；持久化沿用 `lark-session-map.json`（同一状态文件、原子写、损坏隔离、disposed/空表拒写），重启后仍在。② 去重口径是 **`provider/model`**：effort 只是「最近一次使用带的参数」，随记录更新而不占名额 ⇒ 3 个名额 = 3 个不同模型（否则同一模型的 low/high 会把短名单占满）。③ 卡片在「↺ 切回上次使用」下方加 `🕘 最近使用（全局）` + 最多 3 行（`provider/model · 💡 effort`）：**当前会话正在跑的路线也显示**（标 `✅ 当前`、不可点），其余行点一下直接切；短名单 = 全局记忆 ∪ 本会话日志里的最近路线（首次打开空栏的根因：全局记忆只有「插件自己应用过的路线」，重启后只剩当前这一条，再排除当前就全空了），打开时把仅存在于会话日志的路线回填进全局记忆。点行仍走 `switchRoute`（**只改本会话**，不写全局默认、不调 `selectModel`），成功卡明说这一点；`/new` 流程不显示。④ 边界：**「全局」= 跨飞书会话**；纯 WebUI、从未在飞书会话里跑过的模型不会进列表（不为此扫描全部会话日志）；依旧**绝不读写 DSH 的全局默认**。
+
+**验证**：新增 13 例（`recent-models` 9：置顶/按 provider+model 去重/上限、top3 与 merge 去重/limit/保留当前、持久化值校验；模型卡 3：三行渲染与 `/new` 不显示、**单条记忆时当前行仍显示为 `✅ 当前`**、点行本地切换且**断言未调 `selectModel`**；harness 2：重启后恢复全局列表并去重、短名单保留当前并回填），`typecheck` / **1228 测试 / 62 文件** 全绿。
+
+**English**: The `/model last` route is read from THIS session's own log (last `model/selection` / `request/header`), so it was already session-scoped; this adds the GLOBAL (cross-Feishu-session) recent list the user asked for. The plugin keeps at most 12 entries (the card shows the top 3), fed by every route it really applies (`/model`, card confirm, `/new`, quick switch-back) plus the `request/header` observed in each Feishu session, persisted in the same atomically-written state file as the chat→session map. De-duplication is by **provider+model**: the effort is just the parameter of the most recent use, so three slots mean three different models. The picker card shows up to three rows under “↺ Back to last used”; the session's current route is shown as `✅ current` rather than dropped, and the shortlist merges the global memory with this session's own log so the first open after a restart is not empty (session-only routes are backfilled into the global memory). A tap still goes through `switchRoute` — this session only, never the global default, never `selectModel`; the `/new` flow does not show them. Scope: “global” means across Feishu sessions; a model used only in the Web UI and never in a Feishu session does not enter the list (scanning every session log is not worth it). 10 new tests; typecheck and 1224 tests / 62 files pass. Deployed by hot reload (build + HMR partialReload, no restart).
+
 ### 新增：`/model last` 一键切回本会话上次使用的模型（`src/route-history.ts` / `src/harness.ts` / `src/commands.ts`，2026-10-21）
 
 **诉求**（使用者）：「快速选择上次使用的模型」；并明确警告不要重犯老毛病——一次快捷选择变成全局默认、导致所有 session 的模型都被改。

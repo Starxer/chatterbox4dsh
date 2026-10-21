@@ -251,7 +251,7 @@ export function registerLarkCommands(
   agentDefaultModel: AgentDefaultModelConfig,
   bridge: Pick<
     HarnessConversationService,
-    'startNewSession' | 'switchToSession' | 'detachSession' | 'listSessions' | 'getSessionMeta' | 'sessionCurrentSelection' | 'recentRoutes' | 'switchRoute' | 'resolveAgent' | 'resolveSessionIdFor' | 'describeChatKey'
+    'startNewSession' | 'switchToSession' | 'detachSession' | 'listSessions' | 'getSessionMeta' | 'sessionCurrentSelection' | 'recentRoutes' | 'switchRoute' | 'rememberModelRoute' | 'resolveAgent' | 'resolveSessionIdFor' | 'describeChatKey'
   >,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
@@ -355,7 +355,7 @@ export async function handleModelCommand(
   invocation: CommandInvocation,
   llm: LlmDirectoryLike,
   agentDefaultModel: AgentDefaultModelConfig,
-  bridge: Pick<HarnessConversationService, 'resolveAgent' | 'resolveSessionIdFor' | 'sessionCurrentSelection' | 'recentRoutes' | 'switchRoute'>,
+  bridge: Pick<HarnessConversationService, 'resolveAgent' | 'resolveSessionIdFor' | 'sessionCurrentSelection' | 'recentRoutes' | 'switchRoute' | 'rememberModelRoute'>,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
   sessionController: SessionControllerLike,
@@ -443,6 +443,11 @@ export async function handleModelCommand(
       provider: route.provider,
       model: route.model,
       ...route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort },
+    })
+    bridge.rememberModelRoute({
+      provider: route.provider,
+      model: route.model,
+      ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
     })
     return { kind: 'success', text: `${t.modelSwitched(route.provider, route.model)}\n${t.modelLiveApplied}` }
   } catch {

@@ -759,6 +759,32 @@ describe('HarnessConversationService', () => {
     expect(service2.sessionOwnerKey(defaultId)).toBe('thread:a:t1')
   })
 
+  it('persists and restores the global recently used models across restarts', () => {
+    const statePath = join(tmpdir(), `lark-recent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    service.rememberModelRoute({ provider: 'p1', model: 'm1' })
+    service.rememberModelRoute({ provider: 'p2', model: 'm2', reasoningEffort: 'high' })
+    // Re-using the first model moves it back to the front instead of duplicating.
+    service.rememberModelRoute({ provider: 'p1', model: 'm1' })
+    const service2 = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    const restored = service2.recentModelRoutes(undefined, 3)
+    expect(restored.map(item => `${item.provider}/${item.model}`)).toEqual(['p1/m1', 'p2/m2'])
+    expect(restored[1]!.reasoningEffort).toBe('high')
+    // The route the session already runs is not offered back to it.
+    expect(service2.recentModelRoutes({ provider: 'p1', model: 'm1' }, 3).map(item => item.model)).toEqual(['m2'])
+  })
+
+  it('builds the picker shortlist from the global memory and keeps the current route', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    service.rememberModelRoute({ provider: 'p1', model: 'm1' })
+    service.rememberModelRoute({ provider: 'p2', model: 'm2' })
+    const chat = { chatId: 'a', chatType: 'p2p' as const }
+    const choices = await service.recentModelChoices(chat, 3)
+    expect(choices.map(item => item.model)).toEqual(['m2', 'm1'])
+  })
+
   it('resolveChat carries the topic root so WebUI-driven cards stay in the topic', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })

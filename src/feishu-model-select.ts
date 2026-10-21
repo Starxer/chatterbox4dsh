@@ -17,6 +17,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { renderSupersededCard } from './card-supersede.ts'
 import type { CardTopicRegistry } from './card-topics.ts'
+import type { RecentModelEntry } from './recent-models.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -114,6 +115,7 @@ type ModelCardAction =
   | { type: 'go-back' }
   | { type: 'confirm-select'; provider: string; model: string; reasoningEffort?: string }
   | { type: 'switch-last' }
+  | { type: 'switch-recent'; provider: string; model: string; reasoningEffort?: string }
 
 /** Flow marker embedded in card action values. `undefined` = the standalone
  *  `/model` switch flow; `'new-session'` = the `/new` card flow reusing the
@@ -145,7 +147,7 @@ export function renderProviderSelectCard(
   current: ModelSelection,
   flow: ModelCardFlow | undefined,
   t: Translations,
-  options: { lastUsed?: ModelSelection | undefined } = {},
+  options: { lastUsed?: ModelSelection | undefined; recent?: readonly RecentModelEntry[] | undefined } = {},
 ): object {
   const effort = current.reasoningEffort !== undefined && current.reasoningEffort !== ''
     ? current.reasoningEffort
@@ -179,6 +181,37 @@ export function renderProviderSelectCard(
               type: 'default',
               behaviors: [{ type: 'callback', value: { action: 'switch-last' } }],
             },
+          ]
+          : []),
+        // GLOBAL recently used models (across Feishu sessions), one tappable row
+        // each. They switch THIS session only — the global default stays put.
+        ...(flow === undefined && (options.recent?.length ?? 0) > 0
+          ? [
+            { tag: 'markdown', content: t.modelSelectRecentHeader },
+            ...(options.recent ?? []).map(entry => {
+              // The current route is a recent use too: show it marked instead of
+              // dropping it (dropping it made the whole section vanish whenever
+              // the memory held only the route the Session already runs).
+              if (entry.provider === current.provider && entry.model === current.model) {
+                return { tag: 'markdown', content: t.modelSelectRecentCurrent(entry.provider, entry.model) }
+              }
+              return {
+                tag: 'interactive_container',
+                elements: [{
+                  tag: 'markdown',
+                  content: `\`${entry.provider}/${entry.model}\`${entry.reasoningEffort === undefined ? '' : ` · 💡 ${entry.reasoningEffort}`}`,
+                }],
+                behaviors: [{
+                  type: 'callback',
+                  value: {
+                    action: 'switch-recent',
+                    provider: entry.provider,
+                    model: entry.model,
+                    ...(entry.reasoningEffort === undefined ? {} : { effort: entry.reasoningEffort }),
+                  },
+                }],
+              }
+            }),
           ]
           : []),
         { tag: 'hr' },
@@ -413,6 +446,7 @@ function parseCardAction(evt: CardActionLike): { action: ModelCardAction; flow?:
   if (valueObj === undefined) return undefined
   const actionType = typeof valueObj.action === 'string' ? valueObj.action : (typeof valueObj.type === 'string' ? valueObj.type : undefined)
   const provider = typeof valueObj.provider === 'string' ? valueObj.provider : undefined
+  const model = typeof valueObj.model === 'string' ? valueObj.model : undefined
   const option = evt.action?.option
   const flow = valueObj.flow === 'new-session' ? 'new-session' as const : undefined
 
@@ -420,6 +454,10 @@ function parseCardAction(evt: CardActionLike): { action: ModelCardAction; flow?:
   if (actionType === 'select-provider' && typeof option === 'string') return { action: { type: 'select-provider', provider: option }, flow }
   if (actionType === 'go-back') return { action: { type: 'go-back' }, flow }
   if (actionType === 'switch-last') return { action: { type: 'switch-last' }, flow }
+  if (actionType === 'switch-recent' && typeof provider === 'string' && typeof model === 'string') {
+    const effort = typeof valueObj.effort === 'string' && valueObj.effort !== '' ? valueObj.effort : undefined
+    return { action: { type: 'switch-recent', provider, model, ...(effort === undefined ? {} : { reasoningEffort: effort }) }, flow }
+  }
   return undefined
 }
 
@@ -696,7 +734,8 @@ export function startFeishuModelSelect(deps: {
     const current = await resolveCurrent(chatMessage)
     const providers = await discoverProviders()
     const lastUsed = await lastUsedRoute(chatMessage, current)
-    const card = renderProviderSelectCard(providers, current, flow, getTranslations(), { lastUsed })
+    const recent = await recentModelChoices(chatMessage)
+    const card = renderProviderSelectCard(providers, current, flow, getTranslations(), { lastUsed, recent })
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 
@@ -734,6 +773,56 @@ export function startFeishuModelSelect(deps: {
     // mode was a quick pick silently becoming every session's model.
     card.body.elements.push({ tag: 'markdown', content: t.modelSelectLastUsedSwitched })
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
+  }
+
+  /** Quick row: switch to one of the GLOBAL recently used models, session-locally. */
+  async function handleSwitchRecent(
+    chatMessage: ConversationMessage,
+    messageId: string | undefined,
+    provider: string,
+    model: string,
+    reasoningEffort?: string,
+  ): Promise<void> {
+    const t = getTranslations()
+    const bridge = bridgeHolder.current
+    if (bridge === undefined) return
+    const providers = new Set((await discoverProviders()).map(entry => entry.id))
+    if (!providers.has(provider)) {
+      logger.warn(`dsh-feishu: model-select recent row names unknown provider ${provider}`)
+      return
+    }
+    const outcome = await bridge.switchRoute(chatMessage, {
+      provider,
+      model,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    })
+    if (!outcome.ok) {
+      const card = {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: t.modelSelectTitle(false) }, template: 'red' },
+        body: { elements: [{ tag: 'markdown', content: t.modelSelectLastUsedFailed(outcome.reason === 'no-agent' ? t.modelSelectLastUsedFailedNoSession : t.modelSelectLastUsedFailedUnsupported) }] },
+      }
+      await updateCardInstanceOnMessage(messageId, chatMessage, card as object)
+      return
+    }
+    let modelName: string | undefined
+    try {
+      const discovered = await discoverModels(provider)
+      modelName = discovered.models.find(entry => entry.id === model)?.name
+    } catch {
+      modelName = undefined
+    }
+    const card = renderSwitchedCard(provider, model, modelName, reasoningEffort, t) as { body: { elements: object[] } }
+    card.body.elements.push({ tag: 'markdown', content: t.modelSelectRecentSwitched })
+    await updateCardInstanceOnMessage(messageId, chatMessage, card)
+  }
+
+  /** The global+session shortlist for this chat (current route included, marked). */
+  async function recentModelChoices(chatMessage: ConversationMessage): Promise<readonly RecentModelEntry[]> {
+    const bridge = bridgeHolder.current
+    if (bridge === undefined) return []
+    return bridge.recentModelChoices(chatMessage)
   }
 
   /** Step 3: confirm button clicked, apply the selection. */
@@ -802,6 +891,11 @@ export function startFeishuModelSelect(deps: {
       const sessionId = bridge.resolveSessionIdFor(chatMessage)
       await sessionController.selectModel({
         sessionId,
+        provider,
+        model,
+        ...(effectiveReasoningEffort !== undefined ? { reasoningEffort: effectiveReasoningEffort } : {}),
+      })
+      bridge.rememberModelRoute({
         provider,
         model,
         ...(effectiveReasoningEffort !== undefined ? { reasoningEffort: effectiveReasoningEffort } : {}),
@@ -875,7 +969,8 @@ export function startFeishuModelSelect(deps: {
               const current = await resolveCurrent(item.chatMessage)
               const providers = await discoverProviders()
               const lastUsed = await lastUsedRoute(item.chatMessage, current)
-              const card = renderProviderSelectCard(providers, current, item.flow, getTranslations(), { lastUsed })
+              const recent = await recentModelChoices(item.chatMessage)
+              const card = renderProviderSelectCard(providers, current, item.flow, getTranslations(), { lastUsed, recent })
               await updateCardInstanceOnMessage(item.messageId, item.chatMessage, card)
               break
             }
@@ -887,6 +982,9 @@ export function startFeishuModelSelect(deps: {
               break
             case 'switch-last':
               await handleSwitchLast(item.chatMessage, item.messageId)
+              break
+            case 'switch-recent':
+              await handleSwitchRecent(item.chatMessage, item.messageId, item.action.provider, item.action.model, item.action.reasoningEffort)
               break
             case 'confirm-select':
               await handleConfirmSelect(item.chatMessage, item.messageId, item.action.provider, item.action.model, item.action.reasoningEffort, item.flow)

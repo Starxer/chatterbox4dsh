@@ -491,6 +491,12 @@ export interface Translations {
   modelSelectLastUsedSwitched: string
   /** The quick action could not switch. */
   modelSelectLastUsedFailed: (reason: string) => string
+  /** Section header above the GLOBAL recently-used models on the picker card. */
+  modelSelectRecentHeader: string
+  /** The row of the recently-used list that is the Session's current route. */
+  modelSelectRecentCurrent: (provider: string, model: string) => string
+  /** Confirmation that a recent-model row switched only this session. */
+  modelSelectRecentSwitched: string
   /** Why the quick switch could not run (no live Session). */
   modelSelectLastUsedFailedNoSession: string
   /** Why the quick switch could not run (host has no request hooks). */
@@ -1055,6 +1061,9 @@ export const zh = {
   modelSelectLastUsed: (provider, model) => `↺ 上次使用：\`${provider}/${model}\`（点下方按钮切回，**只改本会话**）`,
   modelSelectLastUsedSwitched: '已切回本会话上次使用的模型（**只改本会话**，没有改全局默认）。',
   modelSelectLastUsedFailed: reason => `⚠️ 切回上次模型失败：${reason}`,
+  modelSelectRecentHeader: '🕘 **最近使用（全局）** — 点一行直接切换（只改本会话）',
+  modelSelectRecentCurrent: (provider, model) => `✅ 当前：\`${provider}/${model}\``,
+  modelSelectRecentSwitched: '本会话已切到该模型（**只改本会话**，没有改全局默认）。',
   modelSelectLastUsedFailedNoSession: '这个会话当前没有加载（重启后还没收过消息）。先发一条普通消息让它恢复。',
   modelSelectLastUsedFailedUnsupported: '这个宿主的 agent 不支持会话内切换模型。',
   modelSelectEffortLine: effort => `🧠 思考强度：\`${effort}\``,
@@ -1582,6 +1591,9 @@ export const en: Translations = {
   modelSelectLastUsed: (provider, model) => `↺ Last used: \`${provider}/${model}\` (tap below to switch back — **this session only**)`,
   modelSelectLastUsedSwitched: 'Switched back to this session\'s last used model (**this session only** — the global default is untouched).',
   modelSelectLastUsedFailed: reason => `⚠️ Could not switch back: ${reason}`,
+  modelSelectRecentHeader: '🕘 **Recently used (global)** — tap a row to switch (this session only)',
+  modelSelectRecentCurrent: (provider, model) => `✅ Current: \`${provider}/${model}\``,
+  modelSelectRecentSwitched: 'This session switched to that model (**this session only** — the global default is untouched).',
   modelSelectLastUsedFailedNoSession: 'This session is not loaded right now (nothing since the restart). Send a normal message first.',
   modelSelectLastUsedFailedUnsupported: 'The agent of this host exposes no in-session model switch.',
   modelSelectEffortLine: effort => `🧠 Reasoning effort: \`${effort}\``,

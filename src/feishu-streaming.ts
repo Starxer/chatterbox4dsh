@@ -2008,6 +2008,20 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (typeof headerProvider === 'string' && headerProvider !== ''
           && typeof headerModel === 'string' && headerModel !== '') {
           state.requestRoute = { provider: headerProvider, model: headerModel }
+          // Global recency (across Feishu sessions): a header is the cheapest
+          // authoritative "this route was really used" signal, so a model used
+          // in this chat also appears in another chat's picker. Guarded because
+          // streaming accepts partial bridge doubles (and older bridges).
+          const bridge = bridgeHolder.current
+          if (bridge !== undefined && typeof bridge.rememberModelRoute === 'function') {
+            bridge.rememberModelRoute({
+              provider: headerProvider,
+              model: headerModel,
+              ...(typeof cfg?.reasoningEffort === 'string' && cfg.reasoningEffort !== ''
+                ? { reasoningEffort: cfg.reasoningEffort }
+                : {}),
+            })
+          }
         }
         if (typeof cfg?.reasoningEffort === 'string' && cfg.reasoningEffort !== '') {
           state.requestEffort = cfg.reasoningEffort
