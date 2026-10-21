@@ -148,6 +148,40 @@ const DELIVER_DOC_MAX_MB = {
 	max: 30,
 	default: 30
 };
+/**
+* Bounds and defaults of the three PREVIEW character caps, mirroring
+* `PREVIEW_CHARS` in `src/config.ts`.
+*
+* They are one family: how much of a long block shows before it is cut
+* (reasoning head, tool result, tool arguments). The maxima keep one block well
+* inside the card's ~30 KB budget.
+*/
+const PREVIEW_CHARS = {
+	reasoningPreviewChars: {
+		min: 80,
+		max: 4e3,
+		default: 200
+	},
+	resultPreviewChars: {
+		min: 200,
+		max: 6e3,
+		default: 1500
+	},
+	argsPreviewChars: {
+		min: 200,
+		max: 6e3,
+		default: 2e3
+	}
+};
+/** Clamp one staged preview cap; blank/unparsable falls back to its default. */
+function clampPreviewChars(field, raw) {
+	const bounds = PREVIEW_CHARS[field];
+	const text = raw.trim();
+	if (text === "") return bounds.default;
+	const value = Number(text);
+	if (!Number.isFinite(value)) return bounds.default;
+	return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)));
+}
 /** Clamp the staged document auto-delivery limit the way the Host schema would. */
 function clampDeliverDocMaxMb(raw) {
 	const text = raw.trim();
@@ -192,6 +226,9 @@ const EDITABLE_FIELDS = [
 	"cardVideoMaxMb",
 	"cardAudioMaxMb",
 	"deliverDocMaxMb",
+	"reasoningPreviewChars",
+	"resultPreviewChars",
+	"argsPreviewChars",
 	"produceCard"
 ];
 /** Bridges the `lark-channel` form and the credentials domain onto the page. */
@@ -431,6 +468,9 @@ var LarkSettingsCardController = class {
 			cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
 			cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
 			deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
+			reasoningPreviewChars: String(value?.reasoningPreviewChars ?? PREVIEW_CHARS.reasoningPreviewChars.default),
+			resultPreviewChars: String(value?.resultPreviewChars ?? PREVIEW_CHARS.resultPreviewChars.default),
+			argsPreviewChars: String(value?.argsPreviewChars ?? PREVIEW_CHARS.argsPreviewChars.default),
 			produceCard: parseProduceCardMode(value?.produceCard),
 			...this.edits
 		};
@@ -481,6 +521,9 @@ function writeValue(field, form) {
 		case "cardVideoMaxMb":
 		case "cardAudioMaxMb": return clampCardMediaMaxMb(field, form[field]);
 		case "deliverDocMaxMb": return clampDeliverDocMaxMb(form.deliverDocMaxMb);
+		case "reasoningPreviewChars":
+		case "resultPreviewChars":
+		case "argsPreviewChars": return clampPreviewChars(field, form[field]);
 		case "groupAllowlist": return lines(form.groupAllowlist);
 		case "dmAllowlist": return lines(form.dmAllowlist);
 		default: return form[field];
@@ -520,6 +563,27 @@ function LarkSettingsCard(props) {
 			type: "number",
 			min: CARD_MEDIA_MAX_MB[field].min,
 			max: CARD_MEDIA_MAX_MB[field].max,
+			step: 1,
+			inputMode: "numeric",
+			disabled: blocked,
+			value: form[field],
+			onChange: (event) => {
+				props.edit(field, event.target.value);
+			}
+		}),
+		/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+			className: "dsh-feishu-toggle-hint",
+			children: hint
+		})
+	] });
+	/** One numeric row of the three preview caps (reasoning / result / args). */
+	const previewCharsRow = (field, label, hint) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+		/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: label }),
+		/* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Input, {
+			"aria-label": field,
+			type: "number",
+			min: PREVIEW_CHARS[field].min,
+			max: PREVIEW_CHARS[field].max,
 			step: 1,
 			inputMode: "numeric",
 			disabled: blocked,
@@ -750,6 +814,9 @@ function LarkSettingsCard(props) {
 								disabled: blocked || toolsOff,
 								nested: true
 							}),
+							previewCharsRow("reasoningPreviewChars", t("reasoningPreviewChars"), t("reasoningPreviewCharsHint")),
+							previewCharsRow("resultPreviewChars", t("resultPreviewChars"), t("resultPreviewCharsHint")),
+							previewCharsRow("argsPreviewChars", t("argsPreviewChars"), t("argsPreviewCharsHint")),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("transcriptView") }),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
@@ -2711,6 +2778,12 @@ const dictionaries = {
 		showToolArgsHint: "展示每个工具调用的入参 JSON",
 		showToolResults: "显示结果",
 		showToolResultsHint: "展示每个工具调用的结果预览",
+		reasoningPreviewChars: "推理预览长度（字）",
+		reasoningPreviewCharsHint: "详细档里折叠的推理只保留前 N 个字（默认 200，范围 80–4000）；完全展开档显示全文，不受此限。",
+		resultPreviewChars: "工具结果预览长度（字）",
+		resultPreviewCharsHint: "单个工具结果预览的字数上限（默认 1500，范围 200–6000）；完全展开档最多显示 4 倍（封顶 6000，卡片整体约 30KB 会被拒收）。",
+		argsPreviewChars: "工具参数预览长度（字）",
+		argsPreviewCharsHint: "单个工具调用参数块的字符上限（默认 2000，范围 200–6000）；完全展开档最多 4 倍（封顶 6000）。",
 		requiresToolCalls: "需先开启「显示工具调用」",
 		cardImages: "正文里的媒体",
 		cardImagesHint: "飞书卡片只能显示上传过的媒体：这里决定正文里 ![图](路径)、[视频](路径)、[语音](路径) 这类引用怎么处理。图片与 MP4 视频直接内联，音频转成 Opus 播放器（需要 ffmpeg）；无论选哪档，卡片都不会因为媒体语法被拒收。",
@@ -2807,6 +2880,12 @@ const dictionaries = {
 		showToolArgsHint: "Show each tool call's argument JSON",
 		showToolResults: "Show results",
 		showToolResultsHint: "Show each tool call's result preview",
+		reasoningPreviewChars: "Reasoning preview length (chars)",
+		reasoningPreviewCharsHint: "The folded reasoning head at the detailed level keeps this many characters (default 200, range 80-4000); the verbose level shows the whole chain and ignores it.",
+		resultPreviewChars: "Tool result preview length (chars)",
+		resultPreviewCharsHint: "Character cap for one tool result preview (default 1500, range 200-6000). The verbose level shows up to 4x, capped at 6000 because a card near 30 KB is refused whole.",
+		argsPreviewChars: "Tool arguments length (chars)",
+		argsPreviewCharsHint: "Character cap for one tool call's arguments block (default 2000, range 200-6000). The verbose level shows up to 4x, capped at 6000.",
 		requiresToolCalls: "Enable \"Show tool calls\" first",
 		cardImages: "Media in card text",
 		cardImagesHint: "A Feishu card can only render media it uploaded itself: this decides what happens to `![alt](path)`, `[clip](path)` and `[voice](path)` references in the model's text. Images and MP4 video are inlined, audio becomes an Opus player (needs ffmpeg). Whichever mode you pick, a card is never rejected over media syntax.",

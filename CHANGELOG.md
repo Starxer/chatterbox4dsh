@@ -5,6 +5,21 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：推理 / 工具预览长度可配置（O8，`src/config.ts` / `src/feishu-streaming.ts` / `src/client/*`，2026-10-22）
+
+**诉求**（TODO O8）：详细档的推理是固定 200 字预览、verbose 才给全文；顺便把同族的「一次长块显示多少」一起做成可配置。
+
+**实现**：新增三个同族设置（设置页可改、`.volatile()` 热生效、不动思考 token 估算）：
+- `reasoningPreviewChars`（80–4000，默认 200）：详细档折叠面板里推理保留的字符数；完全展开档仍显示整条推理链，不受此限；
+- `resultPreviewChars`（200–6000，默认 1500）：单个工具结果预览的字符上限；
+- `argsPreviewChars`（200–6000，默认 2000）：单个工具调用参数块的字符上限；
+- 后两者在完全展开档按 **4×** 展开，但**封顶 6000**：卡片 JSON 接近 30KB 会被飞书**整卡拒收**（关键坑 42），「不截断」在这里只能是「4 倍但仍留在预算内」；
+- 越界/不可读的值按各自默认值回落（不是最小值），与既有数字设置同一套 clamp 口径；三处上限集中在 `PREVIEW_CHARS`（Host 侧）与同构的客户端常量，避免设置页与运行值漂移。
+
+**验证**：新增 3 例（默认值 + 越界 clamp + NaN 回落；渲染器按配置裁推理头；渲染器按配置裁结果/参数块），`typecheck`（含 client）/ **1235 测试 / 62 文件** / build 全绿。
+
+**English**: Old O8 made configurable what was hardcoded: the detailed level's reasoning head (200 chars), plus the two sibling preview caps (tool result 1500, tool arguments 2000). Three live settings (`reasoningPreviewChars` 80-4000, `resultPreviewChars` 200-6000, `argsPreviewChars` 200-6000) are clamped with the same default-fallback rule as the other numeric settings and are read per render, so a save applies to the next card without a remount. The verbose level still expands them 4× but hard-caps at 6000, because a card near 30 KB is refused whole (关键坑 42) — "untruncated" can only mean "4×, still inside the budget". Three new tests; typecheck (including client), 1235 tests / 62 files and build pass.
+
 ### 改进：`/reasoning` 无参发「推理强度」一键切换卡；切档位改为只在当前会话生效（`src/feishu-model-select.ts` / `src/commands.ts` / `src/index.ts`，2026-10-21）
 
 **背景**（使用者问「有没有快速切换推理强度的开关」）：原来只有 `/reasoning <level>` 文本命令（无参只回一段说明），且它读的是**全局默认**、切换时先 `agentDefaultModel.saveSelection()` 再 `sessionController.selectModel()`——和其他会话共享，属于「一次快捷切换变成全局改动」的老问题。

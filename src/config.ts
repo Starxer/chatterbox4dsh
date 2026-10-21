@@ -60,6 +60,12 @@ export interface Config {
    * ever show LESS, never more (see {@link ../display-level.ts}).
    */
   transcriptView?: TranscriptView
+  /** Characters of the detailed level's reasoning head (see {@link PREVIEW_CHARS}). */
+  reasoningPreviewChars?: number
+  /** Characters of one tool result preview (verbose shows up to 4×, hard max 6000). */
+  resultPreviewChars?: number
+  /** Characters of one tool-call arguments block (verbose up to 4×, hard max 6000). */
+  argsPreviewChars?: number
   /** Plugin language; `auto` (default) follows the DSH browser-language preference. */
   locale?: PluginLocale
   /** How media (image / video / audio) referenced in card text is handled; see {@link CardImageMode}. */
@@ -103,6 +109,19 @@ export interface Config {
   mirrorExternalTurns?: boolean
 }
 
+/**
+ * Bounds and defaults of the three PREVIEW caps (characters). They are one
+ * family: "how much of a long block shows before it is cut", for reasoning
+ * heads, tool results and tool arguments. Hard maxima keep a single block well
+ * inside the ~30 KB card budget (关键坑 42); the verbose level multiplies the
+ * base cap by four but never past 6000.
+ */
+export const PREVIEW_CHARS = {
+  reasoningHead: { min: 80, max: 4000, default: 200 },
+  result: { min: 200, max: 6000, default: 1500 },
+  args: { min: 200, max: 6000, default: 2000 },
+} as const
+
 /** Every value the `produceCard` setting accepts. */
 export const PRODUCE_CARD_MODES = ['off', 'summary', 'delivery'] as const
 
@@ -145,6 +164,13 @@ export const DELIVER_DOC_MAX_MB = { min: 1, max: 30, default: 30 } as const
 export function clampDeliverDocMaxMb(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return DELIVER_DOC_MAX_MB.default
   return Math.min(DELIVER_DOC_MAX_MB.max, Math.max(DELIVER_DOC_MAX_MB.min, Math.trunc(value)))
+}
+
+/** Clamp one preview cap: unknown/missing falls back to its default, not the min. */
+export function clampPreviewChars(field: keyof typeof PREVIEW_CHARS, value: number | undefined): number {
+  const bounds = PREVIEW_CHARS[field]
+  if (value === undefined || !Number.isFinite(value)) return bounds.default
+  return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
 }
 
 /**
@@ -235,6 +261,10 @@ export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
   'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
   'showToolArgs' | 'showToolResults' | 'transcriptView'>> {
+  /** Preview caps; optional in the type, always filled by resolveSettingsConfig. */
+  reasoningPreviewChars?: number
+  resultPreviewChars?: number
+  argsPreviewChars?: number
   appSecret?: string
   provider?: string
   model?: string
@@ -305,6 +335,9 @@ export const ConfigSchema = z.object({
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
   transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact counts tool calls only, standard adds one summary line per call, detailed (default) adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
+  reasoningPreviewChars: z.number().min(PREVIEW_CHARS.reasoningHead.min).max(PREVIEW_CHARS.reasoningHead.max).default(PREVIEW_CHARS.reasoningHead.default).volatile().description('Characters of the reasoning head shown (collapsed) at the detailed level. The verbose level shows the whole chain. Range 80-4000, default 200; keep it modest because every preview byte counts toward the card\'s ~30 KB budget.'),
+  resultPreviewChars: z.number().min(PREVIEW_CHARS.result.min).max(PREVIEW_CHARS.result.max).default(PREVIEW_CHARS.result.default).volatile().description('Characters of one tool result preview on a step card. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 1500.'),
+  argsPreviewChars: z.number().min(PREVIEW_CHARS.args.min).max(PREVIEW_CHARS.args.max).default(PREVIEW_CHARS.args.default).volatile().description('Characters of one tool call\'s arguments block. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 2000.'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
   cardImages: z.union(['text', 'workspace', 'any']).default('workspace').volatile().description('Media the model references in card text (image / video / audio): text leaves the path as readable text and never uploads, workspace uploads only files inside the session workspace, any uploads any readable media path'),
   cardMediaLimit: z.number().min(CARD_MEDIA_LIMIT.min).max(CARD_MEDIA_LIMIT.max).default(CARD_MEDIA_LIMIT.default).volatile().description('Most media (image / video / audio) one card may inline; anything past the limit stays readable text. Feishu itself allows about 66 videos per card.'),
@@ -343,6 +376,9 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
     transcriptView: parseTranscriptView(readField(config.transcriptView)),
+    reasoningPreviewChars: clampPreviewChars('reasoningHead', readField(config.reasoningPreviewChars)),
+    resultPreviewChars: clampPreviewChars('result', readField(config.resultPreviewChars)),
+    argsPreviewChars: clampPreviewChars('args', readField(config.argsPreviewChars)),
     cardImages: readField(config.cardImages) ?? 'workspace',
     // Clamped rather than trusted: `ConfigInput` also admits a plain object, so
     // a value that never went through the schema must not reach the hydrator.

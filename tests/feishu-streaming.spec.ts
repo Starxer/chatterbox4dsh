@@ -2914,3 +2914,29 @@ describe('turn ownership across a plugin re-mount', () => {
     streaming.stop()
   })
 })
+
+
+describe('preview limits', () => {
+  it('trims the detailed reasoning head to the configured cap', () => {
+    const reasoning = 'x'.repeat(500)
+    const card = renderStepCard(t, reasoning, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+      previewLimits: { reasoningHead: 120, result: 1500, args: 2000 },
+    }) as any
+    const text = mdOf(card)
+    expect(text).toContain('x'.repeat(120))
+    expect(text).not.toContain('x'.repeat(121))
+  })
+
+  it('trims tool result and argument blocks to their configured caps', () => {
+    const card = renderStepCard(t, undefined, undefined, [{
+      toolName: 'bash', callId: 'c1', arguments: JSON.stringify({ command: 'y'.repeat(400) }), startedAt: 0,
+      result: { isError: false, content: 'z'.repeat(300), elapsed: 5 },
+    }], undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+      previewLimits: { reasoningHead: 200, result: 50, args: 60 },
+    }) as any
+    const blocks = codeBlocksOf(card).join('\n')
+    expect(blocks).toContain('z'.repeat(50))
+    expect(blocks).not.toContain('z'.repeat(51))
+    expect(blocks).not.toContain('y'.repeat(200))
+  })
+})

@@ -159,6 +159,12 @@ export interface FeishuStreamingDeps {
    */
   transcriptView?: () => TranscriptView
   /**
+   * Live preview caps (characters): reasoning head, tool result, tool arguments.
+   * Read per render so a settings write applies to the next card without a
+   * remount. Omitted falls back to the historical constants.
+   */
+  previewLimits?: () => PreviewLimits
+  /**
    * Live `produceCard` setting. `compact` prints the count of files the turn
    * produced without `present` in the summary it folds into the answer card
    * (`src/turn-summary.ts`); at every other level `channel.ts` owns that line.
@@ -486,6 +492,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
   const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
+  /** Live caps; read per render so a settings write needs no remount. */
+  const previewLimits = (): PreviewLimits => deps.previewLimits?.() ?? DEFAULT_PREVIEW_LIMITS
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
   const sessionStates = new Map<string, SessionStepState>()
 
@@ -748,6 +756,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // to say the same thing is how a renderer starts disagreeing with the
         // settings page.
         display: displayPolicy(),
+        previewLimits: previewLimits(),
         ...(shownInjections.length > 0 ? { injections: shownInjections } : {}),
         ...(turnTriggerNote === undefined ? {} : { turnTriggerNote }),
         // The live phase only has meaning on the content-free form; passing it
@@ -2518,6 +2527,29 @@ const ARGS_DISPLAY_CAP = 2000
 /** Cap for one tool call's args under the `verbose` level (characters). */
 const ARGS_DISPLAY_CAP_FULL = 6000
 
+/** Characters of one reasoning/preview block, configurable (see `config.ts`). */
+export interface PreviewLimits {
+  /** Detailed level's collapsed reasoning head. */
+  reasoningHead: number
+  /** Tool result preview; verbose shows 4×, clamped to {@link PREVIEW_LIMIT_MAX}. */
+  result: number
+  /** Tool arguments block; verbose shows 4×, clamped to {@link PREVIEW_LIMIT_MAX}. */
+  args: number
+}
+
+/**
+ * Hard ceiling for the ×4 verbose expansion. A card whose JSON passes ~30 KB is
+ * refused WHOLE (关键坑 42), so "4×" must never mean "unbounded".
+ */
+const PREVIEW_LIMIT_MAX = 6000
+
+/** Defaults, mirroring the constants above; used when no setting is read. */
+export const DEFAULT_PREVIEW_LIMITS: PreviewLimits = {
+  reasoningHead: REASONING_HEAD_CAP,
+  result: RESULT_PREVIEW_CAP,
+  args: ARGS_DISPLAY_CAP,
+}
+
 /** Cap for the text section of a step card (characters). Overflow is sent as
  *  follow-up "continued" cards so no content is silently dropped. The cap is a
  *  *budget*, not a slice offset: `chunkText` picks the boundary so no table,
@@ -2552,9 +2584,9 @@ function summarizeValue(value: unknown, maxLen: number = 200): string {
  * instead of one line; passes through plain strings unchanged. Capped at
  * `ARGS_DISPLAY_CAP` characters so a single args block never blows the card.
  */
-function formatToolArgs(value: unknown, full = false): string {
+function formatToolArgs(value: unknown, full = false, limits: PreviewLimits = DEFAULT_PREVIEW_LIMITS): string {
   if (value === undefined || value === null) return ''
-  const cap = full ? ARGS_DISPLAY_CAP_FULL : ARGS_DISPLAY_CAP
+  const cap = full ? Math.min(PREVIEW_LIMIT_MAX, limits.args * 4) : limits.args
   let str: string
   if (typeof value === 'string') {
     // Try to pretty-print a JSON string so multi-arg calls stay legible.
@@ -2898,6 +2930,8 @@ export function renderStepCard(
      * when no policy is passed.
      */
     display?: DisplayPolicy
+    /** Live preview caps; omitted falls back to {@link DEFAULT_PREVIEW_LIMITS}. */
+    previewLimits?: PreviewLimits
     /**
      * Context-injection notice lines for THIS step, one per injected message,
      * rendered before everything else. Metadata only — never the injected text.
@@ -2933,6 +2967,8 @@ export function renderStepCard(
    * element spacing) only adds emptiness. See 关键坑 58 for the spacing fields.
    */
   const tight = display.turnCard
+  /** Preview caps for this render (live settings; defaults when a caller omits them). */
+  const limits = options?.previewLimits ?? DEFAULT_PREVIEW_LIMITS
 
   // Context-injection notices, FIRST: they are why this request carries what it
   // carries, so they read as the preamble of the step rather than as one more
@@ -3014,8 +3050,8 @@ export function renderStepCard(
     } else {
       const body = display.reasoning === 'full'
         ? reasoning
-        : reasoning.length > REASONING_HEAD_CAP
-          ? `${reasoning.slice(0, REASONING_HEAD_CAP)}\n…(truncated)`
+        : reasoning.length > limits.reasoningHead
+          ? `${reasoning.slice(0, limits.reasoningHead)}\n…(truncated)`
           : reasoning
       // Collapsed by default: the header (with its duration and token count)
       // is the summary, the chain is one tap away. `foldedPanel` gives every
@@ -3087,7 +3123,7 @@ export function renderStepCard(
       // resolved policy allows argument blocks (level `detailed`/`verbose` AND
       // the `showToolArgs` switch on).
       if (display.toolArgs) {
-        const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments, display.fullToolOutput))
+        const argsCode = sanitizeCodeblock(formatToolArgs(tool.arguments, display.fullToolOutput, limits))
         if (argsCode !== '') {
           elements.push({ tag: 'markdown', content: `${t.stepToolArgsHeader}\n\`\`\`\n${argsCode}\n\`\`\`` })
         }
@@ -3097,7 +3133,7 @@ export function renderStepCard(
       // block(s) as the tool result so it is not confused with the args block.
       // Suppressed unless the resolved policy allows result previews.
       if (tool.result !== undefined && display.toolResults) {
-        const resultElements = renderResultPreview(tool, display.fullToolOutput)
+        const resultElements = renderResultPreview(tool, display.fullToolOutput, limits)
         if (resultElements.length > 0) {
           elements.push({ tag: 'markdown', content: t.stepToolResultHeader })
           elements.push(...resultElements)
@@ -3260,9 +3296,9 @@ function formatMsShort(ms: number): string {
 /**
  * Render one tool result's raw text as a fenced code block, capped.
  */
-function renderRawCode(content: string, lang = '', full = false): object[] {
+function renderRawCode(content: string, lang = '', full = false, limits: PreviewLimits = DEFAULT_PREVIEW_LIMITS): object[] {
   if (content === '') return []
-  const cap = full ? RESULT_PREVIEW_CAP_FULL : RESULT_PREVIEW_CAP
+  const cap = full ? Math.min(PREVIEW_LIMIT_MAX, limits.result * 4) : limits.result
   const output = content.length > cap ? content.slice(0, cap) + '…' : content
   return [{ tag: 'markdown', content: `\`\`\`${lang}\n${sanitizeCodeblock(output)}\n\`\`\`` }]
 }
@@ -3277,12 +3313,12 @@ function renderRawCode(content: string, lang = '', full = false): object[] {
  * when the shape is unknown. Every branch ends in `finish`, which guarantees
  * the raw content is shown when a matched shape renders nothing.
  */
-function renderResultPreview(tool: StepToolCall, full = false): object[] {
+function renderResultPreview(tool: StepToolCall, full = false, limits: PreviewLimits = DEFAULT_PREVIEW_LIMITS): object[] {
   const rv = tool.resultView
   const elements: object[] = []
   const finish = (els: object[]): object[] => {
     if (els.length === 0 && tool.result !== undefined && tool.result.content !== '') {
-      els.push(...renderRawCode(tool.result.content, '', full))
+      els.push(...renderRawCode(tool.result.content, '', full, limits))
     }
     return els
   }
@@ -3351,7 +3387,7 @@ function renderResultPreview(tool: StepToolCall, full = false): object[] {
 
   // Last resort: the raw result text is the authoritative source.
   if (tool.result !== undefined && tool.result.content !== '') {
-    elements.push(...renderRawCode(tool.result.content, '', full))
+    elements.push(...renderRawCode(tool.result.content, '', full, limits))
   }
 
   return elements

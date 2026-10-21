@@ -10,7 +10,7 @@
 
 import * as React from 'react'
 import { Button, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, DELIVER_DOC_MAX_MB, type CardMediaMaxField } from './LarkSettingsCardController.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, DELIVER_DOC_MAX_MB, PREVIEW_CHARS, type CardMediaMaxField, type PreviewCharsField } from './LarkSettingsCardController.ts'
 import type { LarkCardProps, LarkFormValues } from './LarkSettingsCardController.ts'
 
 /**
@@ -34,6 +34,13 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
   const mediaMaxRow = (field: CardMediaMaxField, label: string, hint: string) => <label>
     <span>{label}</span>
     <Input aria-label={field} type="number" min={CARD_MEDIA_MAX_MB[field].min} max={CARD_MEDIA_MAX_MB[field].max} step={1} inputMode="numeric" disabled={blocked} value={form[field]} onChange={event => { props.edit(field, event.target.value) }} />
+    <span className="dsh-feishu-toggle-hint">{hint}</span>
+  </label>
+
+  /** One numeric row of the three preview caps (reasoning / result / args). */
+  const previewCharsRow = (field: PreviewCharsField, label: string, hint: string) => <label>
+    <span>{label}</span>
+    <Input aria-label={field} type="number" min={PREVIEW_CHARS[field].min} max={PREVIEW_CHARS[field].max} step={1} inputMode="numeric" disabled={blocked} value={form[field]} onChange={event => { props.edit(field, event.target.value) }} />
     <span className="dsh-feishu-toggle-hint">{hint}</span>
   </label>
 
@@ -144,6 +151,9 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
           disabled: blocked || toolsOff,
           nested: true,
         })}
+        {previewCharsRow('reasoningPreviewChars', t('reasoningPreviewChars'), t('reasoningPreviewCharsHint'))}
+        {previewCharsRow('resultPreviewChars', t('resultPreviewChars'), t('resultPreviewCharsHint'))}
+        {previewCharsRow('argsPreviewChars', t('argsPreviewChars'), t('argsPreviewCharsHint'))}
         {/* The work-detail level comes FIRST: it is the baseline the four
             switches below refine, so reading the block top-down matches how it
             is applied (level sets the ceiling, switches can only take away). */}

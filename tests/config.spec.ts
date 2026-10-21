@@ -32,6 +32,20 @@ describe('resolveSettingsConfig', () => {
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'nope' as any }).transcriptView).toBe('detailed')
   })
 
+  it('defaults and clamps the three preview caps', () => {
+    const defaults = resolveSettingsConfig({ appId: 'id' })
+    expect(defaults.reasoningPreviewChars).toBe(200)
+    expect(defaults.resultPreviewChars).toBe(1500)
+    expect(defaults.argsPreviewChars).toBe(2000)
+    // Out-of-range values are clamped the way the Host schema would, and an
+    // unreadable value falls back to the default rather than to the minimum.
+    expect(resolveSettingsConfig({ appId: 'id', reasoningPreviewChars: 10 }).reasoningPreviewChars).toBe(80)
+    expect(resolveSettingsConfig({ appId: 'id', reasoningPreviewChars: 99999 }).reasoningPreviewChars).toBe(4000)
+    expect(resolveSettingsConfig({ appId: 'id', resultPreviewChars: 99999 }).resultPreviewChars).toBe(6000)
+    expect(resolveSettingsConfig({ appId: 'id', argsPreviewChars: Number.NaN }).argsPreviewChars).toBe(2000)
+    expect(resolveSettingsConfig({ appId: 'id', argsPreviewChars: 640 }).argsPreviewChars).toBe(640)
+  })
+
   it('defaults the card image mode to workspace-only uploads', () => {
     expect(resolveSettingsConfig({ appId: 'id' }).cardImages).toBe('workspace')
     expect(resolveSettingsConfig({ appId: 'id', cardImages: 'text' }).cardImages).toBe('text')

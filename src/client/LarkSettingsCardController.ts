@@ -127,6 +127,33 @@ export type CardMediaMaxField = keyof typeof CARD_MEDIA_MAX_MB
  */
 export const DELIVER_DOC_MAX_MB = { min: 1, max: 30, default: 30 } as const
 
+/**
+ * Bounds and defaults of the three PREVIEW character caps, mirroring
+ * `PREVIEW_CHARS` in `src/config.ts`.
+ *
+ * They are one family: how much of a long block shows before it is cut
+ * (reasoning head, tool result, tool arguments). The maxima keep one block well
+ * inside the card's ~30 KB budget.
+ */
+export const PREVIEW_CHARS = {
+  reasoningPreviewChars: { min: 80, max: 4000, default: 200 },
+  resultPreviewChars: { min: 200, max: 6000, default: 1500 },
+  argsPreviewChars: { min: 200, max: 6000, default: 2000 },
+} as const
+
+/** One preview cap field, in the order the form shows them. */
+export type PreviewCharsField = keyof typeof PREVIEW_CHARS
+
+/** Clamp one staged preview cap; blank/unparsable falls back to its default. */
+function clampPreviewChars(field: PreviewCharsField, raw: string): number {
+  const bounds = PREVIEW_CHARS[field]
+  const text = raw.trim()
+  if (text === '') return bounds.default
+  const value = Number(text)
+  if (!Number.isFinite(value)) return bounds.default
+  return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
+}
+
 /** Clamp the staged document auto-delivery limit the way the Host schema would. */
 function clampDeliverDocMaxMb(raw: string): number {
   const text = raw.trim()
@@ -179,6 +206,12 @@ export interface LarkSettingsValues {
   cardAudioMaxMb?: number
   /** Largest document (MB) `present` may deliver without asking. */
   deliverDocMaxMb?: number
+  /** Detailed level's reasoning head cap (characters). */
+  reasoningPreviewChars?: number
+  /** One tool result preview cap (characters). */
+  resultPreviewChars?: number
+  /** One tool-call arguments block cap (characters). */
+  argsPreviewChars?: number
   /** What to do with files a turn produced without declaring them via `present`. */
   produceCard?: ProduceCardMode
 }
@@ -215,6 +248,10 @@ export interface LarkFormValues {
   cardAudioMaxMb: string
   /** Raw input text, for the same reason as {@link cardMediaLimit}. */
   deliverDocMaxMb: string
+  /** Raw input text, for the same reason as {@link cardMediaLimit}. */
+  reasoningPreviewChars: string
+  resultPreviewChars: string
+  argsPreviewChars: string
   /** Produced-file handling; see `src/produced-files.ts`. */
   produceCard: ProduceCardMode
 }
@@ -226,6 +263,7 @@ const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'cardMediaLimit',
   'cardImageMaxMb', 'cardVideoMaxMb', 'cardAudioMaxMb',
   'deliverDocMaxMb',
+  'reasoningPreviewChars', 'resultPreviewChars', 'argsPreviewChars',
   'produceCard',
 ]
 
@@ -538,6 +576,9 @@ export class LarkSettingsCardController {
       cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
       cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
       deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
+      reasoningPreviewChars: String(value?.reasoningPreviewChars ?? PREVIEW_CHARS.reasoningPreviewChars.default),
+      resultPreviewChars: String(value?.resultPreviewChars ?? PREVIEW_CHARS.resultPreviewChars.default),
+      argsPreviewChars: String(value?.argsPreviewChars ?? PREVIEW_CHARS.argsPreviewChars.default),
       produceCard: parseProduceCardMode(value?.produceCard),
     }
     return { ...base, ...this.edits }
@@ -595,6 +636,10 @@ function writeValue(field: keyof LarkFormValues, form: LarkFormValues): unknown 
       return clampCardMediaMaxMb(field, form[field])
     case 'deliverDocMaxMb':
       return clampDeliverDocMaxMb(form.deliverDocMaxMb)
+    case 'reasoningPreviewChars':
+    case 'resultPreviewChars':
+    case 'argsPreviewChars':
+      return clampPreviewChars(field, form[field])
     case 'groupAllowlist': return lines(form.groupAllowlist)
     case 'dmAllowlist': return lines(form.dmAllowlist)
     default: return form[field]

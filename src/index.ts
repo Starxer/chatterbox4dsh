@@ -16,7 +16,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel, defaultHttpInstance } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
-import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, resolveSettingsConfig } from './config.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, PREVIEW_CHARS, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -1000,6 +1000,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
       transcriptView: () => currentSettings().transcriptView,
+      // Live preview caps: a settings write applies to the next card without a
+      // remount (same contract as transcriptView).
+      previewLimits: () => ({
+        reasoningHead: currentSettings().reasoningPreviewChars ?? PREVIEW_CHARS.reasoningHead.default,
+        result: currentSettings().resultPreviewChars ?? PREVIEW_CHARS.result.default,
+        args: currentSettings().argsPreviewChars ?? PREVIEW_CHARS.args.default,
+      }),
       getTranslations: () => translationsFor(currentLocale().id),
       interleave: cardInterleave,
       ...(noteDetachedJob === undefined ? {} : { noteDetachedJob }),

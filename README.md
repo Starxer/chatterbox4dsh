@@ -141,6 +141,9 @@ Example configuration entry for a profile patch; credentials use references, nev
 | `showToolCalls` | `true` | 显示工具；关闭也不发简洁过程卡 | Tools; disabling also suppresses compact progress |
 | `showToolArgs` | `true` | 参数块，需工具开启且档位允许 | Args, when tools and level allow |
 | `showToolResults` | `true` | 结果预览，需工具开启且档位允许 | Result previews, when tools and level allow |
+| `reasoningPreviewChars` | `200` | 80–4000；详细档折叠推理保留的前 N 字（完全展开档全文，不受限） | 80–4000; collapsed reasoning head at the detailed level (verbose shows the whole chain) |
+| `resultPreviewChars` | `1500` | 200–6000；单个工具结果预览字数（完全展开档 4×，封顶 6000） | 200–6000; one tool result preview (verbose 4×, capped at 6000) |
+| `argsPreviewChars` | `2000` | 200–6000；单个工具参数块字数（完全展开档 4×，封顶 6000） | 200–6000; one tool arguments block (verbose 4×, capped at 6000) |
 | `locale` | `auto` | `auto` 跟随 Harness，或 `zh` / `en` | Follow Harness or force `zh` / `en` |
 | `cardImages` | `workspace` | `text` 不自动上传 / `workspace` 只传区内 / `any` 允许区外媒体 | `text`: no automatic uploads; `workspace`: workspace-only; `any`: outside paths allowed |
 | `cardMediaLimit` | `12` | 1–30；图片一组、音视频合为一组，各按此数 | 1–30, separately for images and combined audio/video |
