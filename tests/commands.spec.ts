@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { registerLarkCommands, handleDisplayCommand, handleModelCommand, type ApprovalControl, type CommandTranslations, type DisplayControl } from '../src/commands.ts'
+import { registerLarkCommands, handleDisplayCommand, handleModelCommand, handleReasoningCommand, type ApprovalControl, type CommandTranslations, type DisplayControl } from '../src/commands.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -75,6 +75,8 @@ const translations: CommandTranslations = {
   reasoningCurrent: (effort: string) => `Current: ${effort}`,
   reasoningCurrentDefault: '(default)',
   reasoningSwitched: (effort: string) => `Switched to ${effort}`,
+  reasoningNoSession: 'no session',
+  reasoningUnsupported: 'no in-session switch',
   reasoningLevels: 'Levels: off, low, high, max',
   reasoningLevelsFrom: (effortIds: readonly string[]) => `Levels: ${effortIds.join(', ')}`,
   reasoningUnknown: (level: string) => `Unknown: ${level}`,
@@ -780,5 +782,44 @@ describe('/model last', () => {
     const unsupported = await handleModelCommand(invocation('last'), fakeLlmDirectory(), fakeDefaultModel(), fakeUnsupported.bridge as never, () => chat as never, translations, fakeSessionController() as never)
     expect(unsupported.kind).toBe('error')
     expect(unsupported.kind === 'error' ? unsupported.text : '').toBe(translations.modelLastUnsupported)
+  })
+})
+
+
+describe('/reasoning (session-local)', () => {
+  const invocation = (rawInput: string) => ({ name: 'reasoning', rawInput } as never)
+  const chat = { chatId: 'oc_1', chatType: 'p2p' as const }
+  const showReasoning = { get: () => true, toggle: vi.fn() }
+
+  it('switches this session only: no global save, no session-controller call', async () => {
+    const switched: Array<{ provider: string; model: string; reasoningEffort?: string }> = []
+    const fake = fakeBridge({
+      sessionCurrentSelection: vi.fn(async () => ({ provider: 'p1', model: 'm1', reasoningEffort: 'low' })),
+      switchRoute: vi.fn(async (_message: unknown, route: { provider: string; model: string; reasoningEffort?: string }) => {
+        switched.push(route)
+        return { ok: true as const }
+      }),
+    })
+    const defaultModel = fakeDefaultModel()
+    const controller = fakeSessionController()
+    const result = await handleReasoningCommand(invocation('high'), fakeLlmDirectory({ modelEfforts: { 'p1/m1': { efforts: [{ id: 'low' }, { id: 'high' }] } } }), defaultModel, fake.bridge as never, () => chat as never, translations, showReasoning, controller as never)
+    expect(result.kind).toBe('success')
+    expect(switched).toEqual([{ provider: 'p1', model: 'm1', reasoningEffort: 'high' }])
+    // The old failure mode persisted the effort as the global default.
+    expect(defaultModel.saveSelection).not.toHaveBeenCalled()
+    expect(controller.selectModel).not.toHaveBeenCalled()
+  })
+
+  it('reports an unloaded session and rejects an unknown level', async () => {
+    const fake = fakeBridge({
+      sessionCurrentSelection: vi.fn(async () => ({ provider: 'p1', model: 'm1' })),
+      switchRoute: vi.fn(async () => ({ ok: false as const, reason: 'no-agent' as const })),
+    })
+    const noSession = await handleReasoningCommand(invocation('high'), fakeLlmDirectory({ modelEfforts: { 'p1/m1': { efforts: [{ id: 'high' }] } } }), fakeDefaultModel(), fake.bridge as never, () => chat as never, translations, showReasoning, fakeSessionController() as never)
+    expect(noSession.kind).toBe('error')
+    expect(noSession.kind === 'error' ? noSession.text : '').toBe(translations.reasoningNoSession)
+
+    const unknown = await handleReasoningCommand(invocation('nope'), fakeLlmDirectory({ modelEfforts: { 'p1/m1': { efforts: [{ id: 'high' }] } } }), fakeDefaultModel(), fake.bridge as never, () => chat as never, translations, showReasoning, fakeSessionController() as never)
+    expect(unknown.kind).toBe('error')
   })
 })

@@ -157,6 +157,10 @@ export interface CommandTranslations {
   readonly reasoningLevelsFrom: (effortIds: readonly string[]) => string
   readonly reasoningUnknown: (level: string) => string
   readonly reasoningShowToggled: (enabled: boolean) => string
+  /** The quick effort switch needs a live agent. */
+  readonly reasoningNoSession: string
+  /** The host exposes no request hooks for an in-session switch. */
+  readonly reasoningUnsupported: string
   readonly displayDescription: string
   readonly displayHeader: string
   readonly displayUsage: string
@@ -467,14 +471,23 @@ export async function handleReasoningCommand(
   invocation: CommandInvocation,
   llm: LlmDirectoryLike,
   agentDefaultModel: AgentDefaultModelConfig,
-  bridge: Pick<HarnessConversationService, 'resolveSessionIdFor'>,
+  bridge: Pick<HarnessConversationService, 'resolveSessionIdFor' | 'sessionCurrentSelection' | 'switchRoute'>,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
   showReasoning: { get: () => boolean; toggle: () => void },
   sessionController: SessionControllerLike,
 ): Promise<CommandResult> {
   const rawInput = invocation.rawInput.trim().toLowerCase()
-  const current = agentDefaultModel.currentSelection()
+  const message = chatMessageFor(invocation)
+  // Prefer the route THIS session runs: the global default is only the fallback
+  // for a session that never recorded one.
+  const sessionRoute = await bridge.sessionCurrentSelection(message).catch(() => undefined)
+  const fallback = agentDefaultModel.currentSelection()
+  const current = sessionRoute ?? {
+    provider: fallback.provider,
+    model: fallback.model,
+    ...(fallback.reasoningEffort !== undefined ? { reasoningEffort: String(fallback.reasoningEffort) } : {}),
+  }
   const currentEffort = current.reasoningEffort ? String(current.reasoningEffort) : undefined
 
   // Resolve this model's actual supported efforts dynamically.
@@ -550,24 +563,17 @@ export async function handleReasoningCommand(
   }
 
   // Preserve existing provider/model, only change reasoningEffort
-  const selection: { provider: string; model: string; reasoningEffort?: string } = {
+  // Session-local on purpose: the old path saved the effort as the GLOBAL
+  // default and rebuilt other sessions from it. `switchRoute` installs the
+  // route on the live agent only; the next request records it, which is what a
+  // later resume reads.
+  const outcome = await bridge.switchRoute(message, {
     provider: current.provider,
     model: current.model,
-    ...(effectiveLevel !== undefined ? { reasoningEffort: effectiveLevel } : {}),
-  }
-  await agentDefaultModel.saveSelection(selection as never)
-  // Sync to live agent + WebUI via session controller (atomic).
-  try {
-    const message = chatMessageFor(invocation)
-    const sessionId = bridge.resolveSessionIdFor(message)
-    await sessionController.selectModel({
-      sessionId,
-      provider: current.provider,
-      model: current.model,
-      ...(effectiveLevel !== undefined ? { reasoningEffort: effectiveLevel } : {}),
-    })
-  } catch {
-    // Non-fatal: reasoning effort is already saved to settings.
+    ...(effectiveLevel === undefined ? {} : { reasoningEffort: effectiveLevel }),
+  })
+  if (!outcome.ok) {
+    return { kind: 'error', text: outcome.reason === 'no-agent' ? t.reasoningNoSession : t.reasoningUnsupported }
   }
   return { kind: 'success', text: t.reasoningSwitched(level) }
 }

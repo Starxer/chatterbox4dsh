@@ -116,6 +116,7 @@ type ModelCardAction =
   | { type: 'confirm-select'; provider: string; model: string; reasoningEffort?: string }
   | { type: 'switch-last' }
   | { type: 'switch-recent'; provider: string; model: string; reasoningEffort?: string }
+  | { type: 'switch-effort'; effort: string }
 
 /** Flow marker embedded in card action values. `undefined` = the standalone
  *  `/model` switch flow; `'new-session'` = the `/new` card flow reusing the
@@ -231,6 +232,46 @@ export function renderProviderSelectCard(
         },
       ],
     },
+  }
+}
+
+/** The `/reasoning` quick-effort card: one tappable row per declared effort. */
+export function renderReasoningCard(
+  current: ModelSelection,
+  efforts: readonly { readonly id: string; readonly name?: string }[],
+  currentEffort: string | undefined,
+  t: Translations,
+): object {
+  const rows: object[] = [
+    { tag: 'markdown', content: `${t.reasoningCardHint}\n\n${t.modelSelectCurrent(current.provider, current.model, currentEffort ?? 'default')}` },
+    { tag: 'hr' },
+  ]
+  if (efforts.length === 0) {
+    rows.push({ tag: 'markdown', content: t.reasoningCardEmpty })
+  } else {
+    if (currentEffort === undefined) {
+      rows.push({ tag: 'markdown', content: t.reasoningCardCurrent(t.reasoningCardDefault) })
+    }
+    for (const effort of efforts) {
+      const label = effort.name !== undefined && effort.name !== '' && effort.name !== effort.id
+        ? `${effort.name} (${effort.id})`
+        : effort.id
+      if (effort.id === currentEffort) {
+        rows.push({ tag: 'markdown', content: t.reasoningCardCurrent(label) })
+        continue
+      }
+      rows.push({
+        tag: 'interactive_container',
+        elements: [{ tag: 'markdown', content: `\`${label}\`` }],
+        behaviors: [{ type: 'callback', value: { action: 'switch-effort', effort: effort.id } }],
+      })
+    }
+  }
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: t.reasoningCardTitle }, template: 'blue' },
+    body: { elements: rows },
   }
 }
 
@@ -454,6 +495,9 @@ function parseCardAction(evt: CardActionLike): { action: ModelCardAction; flow?:
   if (actionType === 'select-provider' && typeof option === 'string') return { action: { type: 'select-provider', provider: option }, flow }
   if (actionType === 'go-back') return { action: { type: 'go-back' }, flow }
   if (actionType === 'switch-last') return { action: { type: 'switch-last' }, flow }
+  if (actionType === 'switch-effort' && typeof valueObj.effort === 'string' && valueObj.effort !== '') {
+    return { action: { type: 'switch-effort', effort: valueObj.effort }, flow }
+  }
   if (actionType === 'switch-recent' && typeof provider === 'string' && typeof model === 'string') {
     const effort = typeof valueObj.effort === 'string' && valueObj.effort !== '' ? valueObj.effort : undefined
     return { action: { type: 'switch-recent', provider, model, ...(effort === undefined ? {} : { reasoningEffort: effort }) }, flow }
@@ -818,6 +862,40 @@ export function startFeishuModelSelect(deps: {
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 
+  /** Quick effort switch: same provider/model, new reasoning effort, this session only. */
+  async function handleSwitchEffort(chatMessage: ConversationMessage, messageId: string | undefined, effort: string): Promise<void> {
+    const t = getTranslations()
+    const bridge = bridgeHolder.current
+    if (bridge === undefined) return
+    const current = await resolveCurrent(chatMessage)
+    const discovered = await discoverModels(current.provider)
+    const supported = await discovered.reasoning(current.model).catch(() => undefined)
+    const effortIds = supported?.efforts.map(entry => entry.id) ?? []
+    if (effortIds.length > 0 && !effortIds.includes(effort)) {
+      logger.warn(`dsh-feishu: reasoning switch to unsupported effort ${effort}`)
+      return
+    }
+    const outcome = await bridge.switchRoute(chatMessage, {
+      provider: current.provider,
+      model: current.model,
+      reasoningEffort: effort,
+    })
+    const card = outcome.ok
+      ? {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: t.reasoningCardTitle }, template: 'green' },
+        body: { elements: [{ tag: 'markdown', content: t.reasoningCardSwitched(effort) }] },
+      }
+      : {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: t.reasoningCardTitle }, template: 'red' },
+        body: { elements: [{ tag: 'markdown', content: outcome.reason === 'no-agent' ? t.reasoningCardNoAgent : t.reasoningCardUnsupported }] },
+      }
+    await updateCardInstanceOnMessage(messageId, chatMessage, card as object)
+  }
+
   /** The global+session shortlist for this chat (current route included, marked). */
   async function recentModelChoices(chatMessage: ConversationMessage): Promise<readonly RecentModelEntry[]> {
     const bridge = bridgeHolder.current
@@ -985,6 +1063,9 @@ export function startFeishuModelSelect(deps: {
               break
             case 'switch-recent':
               await handleSwitchRecent(item.chatMessage, item.messageId, item.action.provider, item.action.model, item.action.reasoningEffort)
+              break
+            case 'switch-effort':
+              await handleSwitchEffort(item.chatMessage, item.messageId, item.action.effort)
               break
             case 'confirm-select':
               await handleConfirmSelect(item.chatMessage, item.messageId, item.action.provider, item.action.model, item.action.reasoningEffort, item.flow)

@@ -5,6 +5,16 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：`/reasoning` 无参发「推理强度」一键切换卡；切档位改为只在当前会话生效（`src/feishu-model-select.ts` / `src/commands.ts` / `src/index.ts`，2026-10-21）
+
+**背景**（使用者问「有没有快速切换推理强度的开关」）：原来只有 `/reasoning <level>` 文本命令（无参只回一段说明），且它读的是**全局默认**、切换时先 `agentDefaultModel.saveSelection()` 再 `sessionController.selectModel()`——和其他会话共享，属于「一次快捷切换变成全局改动」的老问题。
+
+**实现**：① `/reasoning` 无参改为发一张卡：一行一个该模型**声明**的档位（`llm.resolveModelInfo` 动态取，不硬编码），当前档位标 `✅ 当前`，其余行点一下直接切；provider 默认的模型也能看到「provider 默认」提示；② 点行与 `/reasoning <level>` 都改走 `harness.switchRoute()`（只覆盖**本会话下一次请求**的 route，不写 session 事件、不写全局默认、不调 `selectModel`），与 `/model last`、最近使用一致；③ 当前路线优先读本会话（`sessionCurrentSelection`），全局默认仅作兜底；④ 失败有明确提示：会话未加载 / 宿主无钩子 / 档位不被该模型支持；`show on|off` 行为不变。
+
+**验证**：新增 4 例（卡片按档位渲染并标当前、点行切档位且**断言未调 `selectModel`**；命令切档位同样**断言 `saveSelection` 与 `selectModel` 都没被调用**、未加载会话报错、未知档位报错），`typecheck` / **1232 测试 / 62 文件** / build 全绿。
+
+**English**: `/reasoning` with no argument now opens a one-tap effort card (one row per effort the model actually declares, via `llm.resolveModelInfo`, current marked `✅ current`), and both the card and `/reasoning <level>` go through `harness.switchRoute()` — they override only THIS session's next request and never write the global default or call `selectModel` (the old path saved the effort globally and rebuilt other sessions from it). The current route is read from the session first, the global default is only a fallback; unloaded sessions, hosts without request hooks and unsupported efforts all get explicit messages. `show on|off` is unchanged. Four new tests (card rendering/current marker, local switch asserting no `selectModel`; command path asserting neither `saveSelection` nor `selectModel`, unloaded-session and unknown-level errors); typecheck, 1232 tests / 62 files and build pass.
+
 ### 新增：模型卡的「最近使用（全局）」三行（`src/recent-models.ts` / `src/harness.ts` / `src/feishu-model-select.ts`，2026-10-21）
 
 **背景**：`/model last` 与「↺ 切回上次使用」取的是**本会话自己的日志**（最后一条 `model/selection` / `request/header`），本来就是会话内的；这次按使用者要求再加一份**全局**（跨飞书会话）的最近使用列表。

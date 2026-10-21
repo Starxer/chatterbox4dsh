@@ -87,7 +87,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 | `/session [N\|list]` | 会话管理面板、列表或按编号切换 | Session panel, list or switch by index |
 | `/fork [<轮次>]` | 分叉会话：无参发轮次选择卡（每行带该轮开头预览），点选后以该轮**结束**为界复制到新会话；带轮次则直接分叉 | Fork a session: no args opens the turn picker (each row previews that turn's opening), tapping forks at the turn's **end**; a turn number forks directly |
 | `/status` | 会话与性能指标、权限、运行中发送模式 | Session metrics, permissions and busy-message mode |
-| `/reasoning [档位 / effort]` | 支持的推理强度随模型而变；`show on\|off` 控制思考显示 | Supported efforts depend on the model; `show on\|off` controls display |
+| `/reasoning [档位 / effort]` | 支持的推理强度随模型而变；无参发一键切换卡（点一行即切，**只改本会话**、不动全局默认）；`show on\|off` 控制思考显示 | Supported efforts depend on the model; no args opens a one-tap effort card (**this session only**, never the global default); `show on\|off` controls display |
 | `/display [compact\|standard\|detailed\|verbose]` | 切档；无参发控制卡 | Switch level; no args opens controls |
 | `/display [reasoning\|tools\|args\|results] [on\|off]` | 切四个显示开关 | Toggle the four display switches |
 | `/stop` | 中止本轮并丢弃排队消息 | Abort the turn and drop queued messages |

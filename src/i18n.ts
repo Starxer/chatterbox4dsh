@@ -495,6 +495,16 @@ export interface Translations {
   modelSelectRecentHeader: string
   /** The row of the recently-used list that is the Session's current route. */
   modelSelectRecentCurrent: (provider: string, model: string) => string
+  /** `/reasoning` quick-effort card. */
+  reasoningCardTitle: string
+  reasoningCardHint: string
+  reasoningCardCurrent: (effort: string) => string
+  reasoningCardDefault: string
+  reasoningCardSwitched: (effort: string) => string
+  reasoningCardOnlySession: string
+  reasoningCardEmpty: string
+  reasoningCardNoAgent: string
+  reasoningCardUnsupported: string
   /** Confirmation that a recent-model row switched only this session. */
   modelSelectRecentSwitched: string
   /** Why the quick switch could not run (no live Session). */
@@ -1063,6 +1073,15 @@ export const zh = {
   modelSelectLastUsedFailed: reason => `⚠️ 切回上次模型失败：${reason}`,
   modelSelectRecentHeader: '🕘 **最近使用（全局）** — 点一行直接切换（只改本会话）',
   modelSelectRecentCurrent: (provider, model) => `✅ 当前：\`${provider}/${model}\``,
+  reasoningCardTitle: '🧠 推理强度',
+  reasoningCardHint: '点一行直接切换（只改本会话，不动全局默认）',
+  reasoningCardCurrent: effort => `✅ 当前：**${effort}**`,
+  reasoningCardDefault: 'provider 默认',
+  reasoningCardSwitched: effort => `🧠 本会话推理强度已切到 **${effort}**（只改本会话，没有改全局默认）。`,
+  reasoningCardOnlySession: '只改本会话',
+  reasoningCardEmpty: '这个模型的 provider 没有声明可调推理档位。',
+  reasoningCardNoAgent: '这个会话当前没有加载（重启后还没收过消息）。先发一条普通消息让它恢复。',
+  reasoningCardUnsupported: '这个宿主的 agent 不支持会话内切换。',
   modelSelectRecentSwitched: '本会话已切到该模型（**只改本会话**，没有改全局默认）。',
   modelSelectLastUsedFailedNoSession: '这个会话当前没有加载（重启后还没收过消息）。先发一条普通消息让它恢复。',
   modelSelectLastUsedFailedUnsupported: '这个宿主的 agent 不支持会话内切换模型。',
@@ -1593,6 +1612,15 @@ export const en: Translations = {
   modelSelectLastUsedFailed: reason => `⚠️ Could not switch back: ${reason}`,
   modelSelectRecentHeader: '🕘 **Recently used (global)** — tap a row to switch (this session only)',
   modelSelectRecentCurrent: (provider, model) => `✅ Current: \`${provider}/${model}\``,
+  reasoningCardTitle: '🧠 Reasoning effort',
+  reasoningCardHint: 'Tap a row to switch (this session only — the global default is untouched)',
+  reasoningCardCurrent: effort => `✅ Current: **${effort}**`,
+  reasoningCardDefault: 'provider default',
+  reasoningCardSwitched: effort => `🧠 This session now uses **${effort}** (this session only — the global default is untouched).`,
+  reasoningCardOnlySession: 'this session only',
+  reasoningCardEmpty: 'This model\'s provider declares no selectable reasoning efforts.',
+  reasoningCardNoAgent: 'This session is not loaded right now (nothing since the restart). Send a normal message first.',
+  reasoningCardUnsupported: 'The agent of this host exposes no in-session switch.',
   modelSelectRecentSwitched: 'This session switched to that model (**this session only** — the global default is untouched).',
   modelSelectLastUsedFailedNoSession: 'This session is not loaded right now (nothing since the restart). Send a normal message first.',
   modelSelectLastUsedFailedUnsupported: 'The agent of this host exposes no in-session model switch.',

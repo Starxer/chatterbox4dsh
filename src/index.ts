@@ -75,7 +75,7 @@ const CARD_SEND_TIMEOUT_MS = CARD_BARRIER_TIMEOUT_MS + OUTBOUND_TIMEOUT_MS
 import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool, sendWorkspaceFile } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
-import { startFeishuModelSelect, renderProviderSelectCard, sendModelCardV2, type ModelSelectChannel } from './feishu-model-select.ts'
+import { startFeishuModelSelect, renderProviderSelectCard, renderReasoningCard, sendModelCardV2, type ModelSelectChannel } from './feishu-model-select.ts'
 import { renderSupersededCard } from './card-supersede.ts'
 import { decodeCardValue } from './card-action.ts'
 import { renderNewSessionConfirmCard, renderNewSessionCancelledCard, NEW_SESSION_CONFIRM_ACTION, NEW_SESSION_CANCEL_ACTION } from './new-session-card.ts'
@@ -2100,6 +2100,35 @@ async function executeSlashCommand(
       const msg = error instanceof Error ? error.message : String(error)
       // Fallback: send as embedded card (old format).
       return { kind: 'success', text: '', card }
+    }
+  }
+  if (parsed.name === 'reasoning' && parsed.rawInput.trim() === '' && llm !== undefined && agentDefaultModel !== undefined) {
+    // Quick effort switch card. The rows switch through harness.switchRoute, so
+    // they change THIS session only; the global default is never written.
+    const sessionRoute = await bridge.sessionCurrentSelection(chatMessage).catch(() => undefined)
+    const fallback = agentDefaultModel.currentSelection()
+    const current = sessionRoute ?? {
+      provider: fallback.provider,
+      model: fallback.model,
+      ...(fallback.reasoningEffort !== undefined ? { reasoningEffort: String(fallback.reasoningEffort) } : {}),
+    }
+    let efforts: readonly { id: string; name?: string }[] = []
+    try {
+      const info = await llm.resolveModelInfo(current.provider, current.model)
+      efforts = info.reasoning?.efforts ?? []
+    } catch {
+      efforts = []
+    }
+    const effort = current.reasoningEffort !== undefined ? String(current.reasoningEffort) : undefined
+    return {
+      kind: 'success',
+      text: '',
+      card: renderReasoningCard(
+        { provider: current.provider, model: current.model, ...(effort === undefined ? {} : { reasoningEffort: effort }) },
+        efforts,
+        effort,
+        translationsFor(localeControl?.current().id ?? 'zh'),
+      ),
     }
   }
   // ── Conversation-free slash commands ────────────────────────────────

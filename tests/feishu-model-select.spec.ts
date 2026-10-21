@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { renderProviderSelectCard, sendModelCardV2, startFeishuModelSelect } from '../src/feishu-model-select.ts'
+import { renderProviderSelectCard, renderReasoningCard, sendModelCardV2, startFeishuModelSelect } from '../src/feishu-model-select.ts'
 import { createCardTopicRegistry } from '../src/card-topics.ts'
 import { translationsFor } from '../src/i18n.ts'
 
@@ -415,6 +415,28 @@ describe('global recent-model rows', () => {
     const last = cards.at(-1)
     expect(last.header.template).toBe('green')
     expect(JSON.stringify(last)).toContain(t.modelSelectRecentSwitched)
+    handle.dispose()
+  })
+})
+
+
+describe('reasoning quick card', () => {
+  it('renders one tappable row per effort and marks the current one', () => {
+    const card = renderReasoningCard({ provider: 'p1', model: 'm1' }, [{ id: 'low' }, { id: 'high' }, { id: 'max' }], 'high', t) as any
+    const rows = card.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(rows.map((row: any) => row.behaviors[0].value.effort)).toEqual(['low', 'max'])
+    expect(JSON.stringify(card)).toContain(t.reasoningCardCurrent('high'))
+  })
+
+  it('switches the effort for this session only', async () => {
+    const switchRoute = vi.fn(async () => ({ ok: true }))
+    const { fire, cards, handle, sessionController } = harness({ bridge: { switchRoute } })
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { value: { action: 'switch-effort', effort: 'low' } } })
+    expect(switchRoute).toHaveBeenCalledWith(expect.anything(), { provider: 'provA', model: 'a1', reasoningEffort: 'low' })
+    expect(sessionController.selectModel).not.toHaveBeenCalled()
+    const last = cards.at(-1)
+    expect(last.header.template).toBe('green')
+    expect(JSON.stringify(last)).toContain(t.reasoningCardSwitched('low'))
     handle.dispose()
   })
 })
