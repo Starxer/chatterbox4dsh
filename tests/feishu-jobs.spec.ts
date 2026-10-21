@@ -267,6 +267,18 @@ describe('renderJobPanelCard', () => {
     expect(text).toContain(command)
   })
 
+  it('can carry the detail for named rows only', () => {
+    const first = 'python3 scripts/audit.py --workspace /srv/app --since 2026-10-01 --strict'
+    const second = 'python3 scripts/backup.py --target /srv/backups --keep 7 --verbose'
+    const card = renderJobPanelCard([
+      row({ id: 'bash-1', label: first }),
+      row({ id: 'bash-2', label: second, startedAt: 2_000 }),
+    ], zh, 3_000, { detailJobIds: new Set(['bash-2']) }) as any
+    const text = markdownOf(card)
+    expect(text).toContain(second)
+    expect(text).not.toContain(first)
+  })
+
   it('caps a huge command and says it was cut', () => {
     const command = 'x '.repeat(3_000).trim()
     const text = markdownOf(renderJobPanelCard([row({ label: command })], zh, 2_000) as any)
@@ -274,6 +286,34 @@ describe('renderJobPanelCard', () => {
     expect(text.length).toBeLessThan(4_000)
   })
 })
+
+  it('carries a job\'s full command once, on the card that introduces it', async () => {
+    const h = buildHarness()
+    const first = 'python3 scripts/audit.py --workspace /srv/app --since 2026-10-01 --strict'
+    h.emit({ type: 'registered', job: job({ id: 'bash-1', label: first }) })
+    h.confirm('bash-1')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    expect(markdownOf(h.sent[0]!.card)).toContain(first)
+
+    // Progress and settlement of the SAME job must not repeat the command: the
+    // card that introduced it already carries the full text.
+    h.emit({ type: 'progress', job: job({ id: 'bash-1', label: first, progress: '1/3' }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    expect(markdownOf(h.sent[1]!.card)).not.toContain(first)
+    h.emit({ type: 'settled', job: job({ id: 'bash-1', label: first, status: 'completed', finishedAt: 4_000 }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(3) })
+    expect(markdownOf(h.sent[2]!.card)).not.toContain(first)
+
+    // A NEW job brings its own command; the older one stays omitted.
+    const second = 'python3 scripts/backup.py --target /srv/backups --keep 7 --verbose'
+    h.emit({ type: 'registered', job: job({ id: 'bash-2', label: second, startedAt: 5_000 }) })
+    h.confirm('bash-2')
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(4) })
+    const last = markdownOf(h.sent[3]!.card)
+    expect(last).toContain(second)
+    expect(last).not.toContain(first)
+    h.mirror.dispose()
+  })
 
 describe('jobRosterSignature', () => {
   it('ignores the clock but follows every visible fact', () => {

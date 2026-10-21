@@ -284,6 +284,13 @@ export function jobRosterSignature(rows: readonly JobPanelRow[]): string {
 const JOB_LABEL_TABLE_MAX = 48
 
 /**
+ * How many delivered detail ids one chat remembers. A job id never comes back,
+ * so the set only grows; the oldest entries are dropped past this bound (a
+ * forgotten id can merely repeat its command on a later card).
+ */
+const JOB_DETAIL_MEMORY = 256
+
+/**
  * Longest command one detail block carries. A card is capped at ~30KB and the
  * roster can hold {@link PANEL_MAX_ROWS} rows, so 2000 characters each leaves
  * room for the table and the marks regardless of how long the scripts are.
@@ -326,6 +333,18 @@ function renderJobCommandDetail(t: Translations, view: JobViewLike, label: strin
 }
 
 /**
+ * Whether a row's command needs the detail block: its table cell would be cut,
+ * or line breaks (a script / heredoc) would be flattened into one line.
+ *
+ * @param view - the job to judge.
+ * @returns `true` when the table cannot carry the command as it is.
+ */
+export function jobNeedsDetail(view: JobViewLike): boolean {
+  const trimmed = view.label.trim()
+  return trimmed.includes('\n') || trimmed.replace(/\s+/g, ' ').length > JOB_LABEL_TABLE_MAX
+}
+
+/**
  * Render the background-task panel card: one row per known background task.
  *
  * A task's label is the producer's command, and the table has to stay readable,
@@ -338,9 +357,18 @@ function renderJobCommandDetail(t: Translations, view: JobViewLike, label: strin
  * @param t - the active locale's strings.
  * @param now - epoch ms used for a live row's elapsed time, so the caller owns
  *   the clock and the output stays testable.
+ * @param options - `detailJobIds` names the rows whose full command this card
+ *   should carry (the roster tracks which jobs already had one delivered, so a
+ *   later snapshot never repeats them). Omitted renders every truncated row —
+ *   the standalone/test shape.
  * @returns the Card JSON 2.0 object.
  */
-export function renderJobPanelCard(rows: readonly JobPanelRow[], t: Translations, now: number): object {
+export function renderJobPanelCard(
+  rows: readonly JobPanelRow[],
+  t: Translations,
+  now: number,
+  options: { readonly detailJobIds?: ReadonlySet<string> | undefined } = {},
+): object {
   const sorted = [...rows].sort((a, b) => a.view.startedAt - b.view.startedAt)
   const shown = sorted.slice(-PANEL_MAX_ROWS)
   const headers = [t.jobPanelColStatus, t.jobPanelColTask, t.jobPanelColId, t.jobPanelColDuration, t.jobPanelColProgress]
@@ -364,10 +392,9 @@ export function renderJobPanelCard(rows: readonly JobPanelRow[], t: Translations
   // A row needs its detail block when the table cannot show the command as it
   // is: the cell was cut, or line breaks (a script / heredoc) would be flattened
   // into one line.
-  const truncated = shown.filter(({ view }) => {
-    const trimmed = view.label.trim()
-    return trimmed.includes('\n') || trimmed.replace(/\s+/g, ' ').length > JOB_LABEL_TABLE_MAX
-  })
+  const truncated = shown.filter(({ view }) => options.detailJobIds === undefined
+    ? jobNeedsDetail(view)
+    : options.detailJobIds.has(view.id) && jobNeedsDetail(view))
   if (truncated.length > 0) {
     elements.push({ tag: 'markdown', content: `**${t.jobPanelFullCommands}**` })
     for (const { view } of truncated) {
@@ -404,6 +431,10 @@ export function renderJobPanelCard(rows: readonly JobPanelRow[], t: Translations
 export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
   const { jobs, channel, logger, getTranslations } = deps
   const rosters = new Map<string, JobRoster>()
+  /** Job ids whose full command a DELIVERED card already carried, per chat. */
+  const detailedJobs = new Map<string, Set<string>>()
+  /** Detail ids of the snapshot being built, per chat; committed by `onSent`. */
+  const pendingDetails = new Map<string, Set<string>>()
   /**
    * Latest projection of every job the registry announced, confirmed or not. A
    * background job is confirmed by its TOOL RESULT, which arrives after
@@ -440,6 +471,22 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
     logger,
     ...(deps.debounceMs === undefined ? {} : { debounceMs: deps.debounceMs }),
     ...(deps.refreshMs === undefined ? {} : { refreshMs: deps.refreshMs }),
+    onSent: (key: string): void => {
+      const pending = pendingDetails.get(key)
+      if (pending === undefined) return
+      pendingDetails.delete(key)
+      let shown = detailedJobs.get(key)
+      if (shown === undefined) {
+        shown = new Set()
+        detailedJobs.set(key, shown)
+      }
+      for (const id of pending) shown.add(id)
+      while (shown.size > JOB_DETAIL_MEMORY) {
+        const oldest = shown.values().next()
+        if (oldest.done === true) break
+        shown.delete(oldest.value)
+      }
+    },
     build: (key): PanelSnapshot | undefined => {
       const roster = rosters.get(key)
       if (roster === undefined) return undefined
@@ -448,9 +495,23 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
       const rows = [...roster.rows.values()]
       if (rows.length === 0) {
         rosters.delete(key)
+        detailedJobs.delete(key)
+        pendingDetails.delete(key)
         return undefined
       }
-      return { card: renderJobPanelCard(rows, getTranslations(), now), signature: jobRosterSignature(rows), chat: roster.chat }
+      // Only jobs whose command has not been delivered yet get a detail block: a
+      // snapshot that merely follows an existing job (progress, settle) stays the
+      // compact table. Committed in `onSent`, so a failed send retries it.
+      const shownBefore = detailedJobs.get(key)
+      const detailIds = new Set(rows
+        .filter(({ view }) => jobNeedsDetail(view) && shownBefore?.has(view.id) !== true)
+        .map(({ view }) => view.id))
+      pendingDetails.set(key, detailIds)
+      return {
+        card: renderJobPanelCard(rows, getTranslations(), now, { detailJobIds: detailIds }),
+        signature: jobRosterSignature(rows),
+        chat: roster.chat,
+      }
     },
   })
 
@@ -499,6 +560,8 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
         return
       }
       rosters.delete(key)
+      detailedJobs.delete(key)
+      pendingDetails.delete(key)
       const t = getTranslations()
       await channel.send(roster.chat.chatId, { text: t.jobPanelCleared(cleared) }, replyOptsForChat(roster.chat))
     } catch (error: unknown) {

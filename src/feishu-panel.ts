@@ -83,6 +83,12 @@ export interface PanelDeps {
    */
   build: (key: string) => PanelSnapshot | undefined
   /**
+   * One snapshot was DELIVERED (the send resolved). Panels whose content
+   * depends on what earlier cards carried use this to commit that state only
+   * after the card really landed.
+   */
+  onSent?: (key: string) => void
+  /**
    * Coalescing window for triggers that arrive in the same burst. Test seam;
    * production callers omit it and get {@link PANEL_DEBOUNCE_MS}.
    */
@@ -301,6 +307,12 @@ export function createPanelSender(deps: PanelDeps): PanelSender {
     try {
       const sent = await channel.send(snapshot.chat.chatId, { card: snapshot.card }, replyOptsForChat(snapshot.chat))
       state.sentSignature = snapshot.signature
+      try {
+        deps.onSent?.(key)
+      } catch (error: unknown) {
+        // A delivered card must not be un-delivered by a bookkeeping hook.
+        logger.warn(`dsh-feishu: panel post-send hook failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
       state.sentCount += 1
       state.lastSentAt = Date.now()
       // A card carrying a button must stay addressable by the id its callback

@@ -59,8 +59,8 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [会话面板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-session.ts>) / [新建流程](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-onboarding.ts>) / [模型选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-model-select.ts>) | 会话与工作区操作、模型选择与创建确认 |
 | [分叉选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-fork.ts>) / [轮次历史](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-history.ts>) | `/fork` 的轮次选择卡（每轮带头部文本预览）与分叉执行；事件窗口归约为「已完成轮次」，`turn/end` 的 seq 即切点 |
 | [显示控制](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-display.ts>) / [Todo](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-todos.ts>) | 展示配置卡与进度清单 |
-| [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查 |
-| [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子代理](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册；子代理生命周期、模型、树与手动目录合并 |
+| [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查；`onSent(key)` 交付后钩子（内容依赖「之前发过什么」的模块用它提交记忆，发送失败则下次重试） |
+| [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子代理](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子代理生命周期、模型、树与手动目录合并 |
 
 ### 渲染、交付与可靠性
 
@@ -135,9 +135,9 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 | 多选 | 每个选项一个 `checker`，各有 name；一次表单提交全部勾选，中途不重绘 |
 | 双端问答/审批 | 外层 listener `prepend`，飞书先展示再 `next()` 交 Web；先答者胜出，另一端退休；取消批内问题/回执/最终卡 |
 | 交互流程 | 通常每步发新卡，旧卡去按钮/退休；已点过可点行的卡不能复用。部分控制卡残余就地更新风险见待办 O4 |
-| 后台任务 | 一个聊天一份名册快照，变化发新消息；只认模型确实获得 job handle 的后台调用；前台 bash/pwsh 不列 |
+| 后台任务 | 一个聊天一份名册快照，变化发新消息；只认模型确实获得 job handle 的后台调用；前台 bash/pwsh 不列。表格的「任务」列截到 48 字符，被截断或多行的命令改到表格下方 `📜 完整命令` 代码块——**只在任务首次出现的那张卡上给一次**，后续进度/完成快照只留表格（命令仍可在首卡回看） |
 | 子代理 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录，`tree` 读 descendants |
-| 名册容量 | 最多 8 行、已结算 30 分钟后退出内存名册；历史消息不更新。后台任务可“清理已完成”，仅清名册不清宿主记录 |
+| 名册容量 | 最多 8 行、已结算 30 分钟后退出内存名册；历史消息不更新。后台任务可“清理已完成”，仅清名册不清宿主记录。「完整命令」记忆按聊天存已交付的 job id、上限 256（id 不复用，超限丢最旧 ⇒ 最坏多显示一次），名册清空时一并忘掉 |
 
 卡片实体只能发送一次且仅 14 天可操作；长寿命过程卡不带按钮、不跨轮或跨重启复用，引用不落盘（关键坑 11 / 54 / 55 / 57）。
 

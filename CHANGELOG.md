@@ -5,6 +5,16 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 优化：后台任务面板的「完整命令」只在新任务首次出现时给出（`src/feishu-jobs.ts` / `src/feishu-panel.ts`，2026-10-21）
+
+**判断**（使用者问「只显示新增任务的命令，这样是否合理」）：**合理**。面板卡是**只发不更新**的快照日志，名册每次变化都会重发整张卡；之前每张卡都重复所有被截断命令的详情块，卡越滚越长，且信息在任务首次出现时已经给过。改成「只给本次新出现、且尚未给过详情的任务」后，卡片回到紧凑表格；完整命令仍留在**它第一次出现的那张卡**上，可回看。
+
+**实现**：① `renderJobPanelCard(rows, t, now, { detailJobIds })`——`detailJobIds` 由调用方点名要带详情的行，省略时保持旧形状（全部截断行）供单测/独立使用；② `startFeishuJobs` 维护 per-chat「已交付详情的 job id 集合」，构建快照时只挑未交付过的新行；③ `createPanelSender` 新增 `onSent(key)` 钩子——**发送成功后才提交**这份记忆，发送失败会在下次快照重试，命令不会静默丢掉；④ 集合上限 256（job id 不复用，超限丢最旧 ⇒ 至多多显示一次），roster 清空/清理时一并忘记；⑤ 判定抽成 `jobNeedsDetail(view)`，渲染器与模块共用一份。
+
+**验证**：新增 2 例（渲染器按 id 子集出详情；模块级：同一 job 的 progress/settle 快照不再重复命令、新 job 只带自己的命令），`npm run typecheck` / `npm test`（**1204 通过 / 60 文件**）/ `npm run build` 全绿。**未重启**，线上要下次重启才生效。
+
+**English**: The background-task panel is a send-only snapshot log, so every roster change re-sends the whole card. Repeating every truncated row's full-command block on every card made the cards grow while adding nothing (the command was already delivered when the job first appeared). Now only jobs that are NEW in this snapshot AND have not had their command delivered yet get a detail block; later progress/settle snapshots keep just the table. `renderJobPanelCard` takes an optional `detailJobIds` set (omitted keeps the old render-everything shape for standalone use), and `createPanelSender` gained an `onSent(key)` hook so the per-chat memory of delivered job ids is committed only after the card really landed — a failed send retries on the next snapshot instead of silently dropping the command. The set is bounded (256 ids, oldest forgotten; a job id never returns, so the cost is at most one repeated block) and cleared with the roster. `jobNeedsDetail()` is shared by the renderer and the module. Two new tests; typecheck, 1204 tests / 60 files and build pass. Not restarted yet — ships with the next restart.
+
 ### 新增：`/fork [轮次]` 分叉命令 + 带预览的轮次选择卡片（`src/feishu-fork.ts` / `src/turn-history.ts` / `src/harness.ts`，2026-10-20）
 
 **诉求**（使用者）：「实现个 `/fork <turn idx>` 命令吧，也支持卡片，选择 fork 的 turn，可以看见 turn 的前一定数量内容的预览」。
