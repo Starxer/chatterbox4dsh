@@ -84,6 +84,14 @@ export interface CommandTranslations {
   readonly modelUnknown: (route: string) => string
   readonly modelPersisted: string
   readonly modelLiveApplied: string
+  /** `/model last` reported no earlier route to go back to. */
+  readonly modelLastNone: string
+  /** `/model last` needs a live Session; this chat's has to be resumed first. */
+  readonly modelLastNoAgent: string
+  /** The host's agent exposes no request hooks (older host). */
+  readonly modelLastUnsupported: string
+  /** Confirmation that only THIS session's route changed. */
+  readonly modelLastSwitched: (provider: string, model: string) => string
   readonly newDescription: string
   readonly newUsage: string
   readonly newSessionReady: (sessionId: string) => string
@@ -243,7 +251,7 @@ export function registerLarkCommands(
   agentDefaultModel: AgentDefaultModelConfig,
   bridge: Pick<
     HarnessConversationService,
-    'startNewSession' | 'switchToSession' | 'detachSession' | 'listSessions' | 'getSessionMeta' | 'sessionCurrentSelection' | 'resolveAgent' | 'resolveSessionIdFor' | 'describeChatKey'
+    'startNewSession' | 'switchToSession' | 'detachSession' | 'listSessions' | 'getSessionMeta' | 'sessionCurrentSelection' | 'recentRoutes' | 'switchRoute' | 'resolveAgent' | 'resolveSessionIdFor' | 'describeChatKey'
   >,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
@@ -347,7 +355,7 @@ export async function handleModelCommand(
   invocation: CommandInvocation,
   llm: LlmDirectoryLike,
   agentDefaultModel: AgentDefaultModelConfig,
-  bridge: Pick<HarnessConversationService, 'resolveAgent' | 'resolveSessionIdFor' | 'sessionCurrentSelection'>,
+  bridge: Pick<HarnessConversationService, 'resolveAgent' | 'resolveSessionIdFor' | 'sessionCurrentSelection' | 'recentRoutes' | 'switchRoute'>,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
   sessionController: SessionControllerLike,
@@ -356,6 +364,34 @@ export async function handleModelCommand(
   if (rawInput === 'list') {
     const list = await buildModelCatalog(llm, t)
     return { kind: 'success', text: list }
+  }
+  if (rawInput === 'last') {
+    // Quick switch back to the previous route. Deliberately Session-local: the
+    // global default is never written here, so no other chat (and no rebuilt
+    // session after a restart) can pick this up.
+    const message = chatMessageFor(invocation)
+    const routes = await bridge.recentRoutes(message)
+    let current: { provider?: string; model?: string } | undefined
+    try {
+      current = await bridge.sessionCurrentSelection(message)
+    } catch {
+      current = undefined
+    }
+    const target = routes.find(candidate => candidate.provider !== current?.provider || candidate.model !== current?.model)
+    if (target === undefined) return { kind: 'error', text: t.modelLastNone }
+    const providers = new Set(llm.listProviders().map(provider => provider.id))
+    if (!providers.has(target.provider)) {
+      return { kind: 'error', text: `${t.modelUnknown(`${target.provider}/${target.model}`)}\n${t.modelUsage}` }
+    }
+    const outcome = await bridge.switchRoute(message, {
+      provider: target.provider,
+      model: target.model,
+      ...(target.reasoningEffort === undefined ? {} : { reasoningEffort: target.reasoningEffort }),
+    })
+    if (!outcome.ok) {
+      return { kind: 'error', text: outcome.reason === 'no-agent' ? t.modelLastNoAgent : t.modelLastUnsupported }
+    }
+    return { kind: 'success', text: t.modelLastSwitched(target.provider, target.model) }
   }
   const route = parseModelRoute(rawInput)
   if (rawInput !== '' && route === undefined) {
@@ -821,7 +857,7 @@ export async function handleHelpCommand(
 export function renderFeishuCommandsOnly(t: CommandTranslations): string {
   const names: Array<{ name: string; description: string; hint?: string }> = [
     { name: 'help', description: t.helpDescription },
-    { name: 'model', description: t.modelDescription, hint: '[list|provider/model]' },
+    { name: 'model', description: t.modelDescription, hint: '[list|last|provider/model]' },
     { name: 'status', description: t.statusDescription },
     { name: 'reasoning', description: t.reasoningDescription, hint: '[off|low|high|max]' },
     { name: 'display', description: t.displayDescription, hint: '[reasoning|tools|args|results] [on|off]' },

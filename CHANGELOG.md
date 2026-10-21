@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：`/model last` 一键切回本会话上次使用的模型（`src/route-history.ts` / `src/harness.ts` / `src/commands.ts`，2026-10-21）
+
+**诉求**（使用者）：「快速选择上次使用的模型」；并明确警告不要重犯老毛病——一次快捷选择变成全局默认、导致所有 session 的模型都被改。
+
+**为什么以前会全局改**：DSH 的 `sessionController.selectModel` 是「会话内选择 + `agentDefaultModel.saveSelection()` 持久化成全局默认」的原子接口。插件若用它做快捷切换，重启后按默认值重建会话就会把所有会话切过去（关键坑 59 的旧事故）。所以本功能**完全不调用 `selectModel`，也不写全局默认**。
+
+**实现**：① `src/route-history.ts`（纯函数）从会话日志取最近的模型路线——`request/header` 证明「用过」、`model/selection` 表示「刚选还没跑」，连续重复折叠，最新在前；② `harness.recentRoutes()` 复用带窗口的 `snapshotEvents` 读取（冷会话退回持久化）；③ `harness.switchRoute()` 在**活着的 agent** 上安装两个请求装配钩子（`system-prompt/assemble` + `agent/request`），只覆盖**下一次请求**的 provider/model/effort——不追加会话事件、不写全局默认；钩子由插件自己实现而不是 import 宿主 `installModelSelection`，避免关键坑 28 的模块二次求值；④ `/model last` 与**模型卡顶部的「↺ 切回上次使用」按钮**（无参 `/model` 的 provider 卡；仅当存在不同的历史路线时出现，`/new` 流程不显示；**按钮文字保持简短，目标路线写在卡片正文里**——飞书会截断按钮文字）共用同一条 `switchRoute` 路径；成功卡会明说「只改本会话」，失败（会话未加载/宿主无钩子/无历史路线）都有明确提示。
+
+**验证**：新增 10 例（route-history 4：解析/折叠/limit+effort/忽略无效事件；`/model last` 3：成功切换且**断言 `saveSelection` 与 `selectModel` 都没被调用**、无可回退路线、未加载/不支持两种失败；模型卡 3：快捷按钮只在有不同历史时出现、点击走 `switchRoute` 且**不调 `selectModel`**、未加载时报错卡），`typecheck` / **1214 测试 / 61 文件** / build 全绿。**未重启**，线上要下次重启才生效。
+
+**English**: New `/model last` quickly switches back to the previous model route of THIS session. The old failure mode it must never repeat is a quick pick becoming the global default and every rebuilt session inheriting it. DSH's `sessionController.selectModel` persists a global default, so this feature calls neither it nor `saveSelection`: `src/route-history.ts` reduces the session log to recent routes (`request/header` = used, `model/selection` = just picked; consecutive duplicates collapse), `harness.recentRoutes()` reads a bounded event window (persistence fallback for cold sessions), and `harness.switchRoute()` installs two request-assembly hooks on the live agent (`system-prompt/assemble` + `agent/request`) that override only the next request's provider/model/effort — no session event, no global write. The plugin spells those hooks out rather than importing the host's `installModelSelection`, avoiding a second evaluation of a host module (关键坑 28). `/model last` — and the same "↺ Back to last used" one-tap action on the picker card opened by `/model` (shown only when a different earlier route exists; not in the `/new` flow) — picks the newest route that differs from the current one and reports explicit errors for no history, an unloaded session, an unsupported host, or a removed provider. The success card states plainly that only this session changed. Ten new tests (4 route-history, 3 command, 3 card — including explicit assertions that neither `saveSelection` nor `selectModel` runs); typecheck, 1214 tests / 61 files and build pass. Not restarted yet.
+
 ### 优化：后台任务面板的「完整命令」只在新任务首次出现时给出（`src/feishu-jobs.ts` / `src/feishu-panel.ts`，2026-10-21）
 
 **判断**（使用者问「只显示新增任务的命令，这样是否合理」）：**合理**。面板卡是**只发不更新**的快照日志，名册每次变化都会重发整张卡；之前每张卡都重复所有被截断命令的详情块，卡越滚越长，且信息在任务首次出现时已经给过。改成「只给本次新出现、且尚未给过详情的任务」后，卡片回到紧凑表格；完整命令仍留在**它第一次出现的那张卡**上，可回看。

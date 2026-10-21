@@ -481,6 +481,20 @@ export interface Translations {
   modelSelectBack: string
   modelSelectSwitchedHeader: string
   modelSelectSwitchedNext: string
+  /** Button label for the quick "back to the previous route" action. Kept
+   *  short because Feishu truncates button captions; the route itself goes in
+   *  the card body. */
+  modelSelectLastUsedButton: string
+  /** Card-body line naming the route the button switches back to. */
+  modelSelectLastUsed: (provider: string, model: string) => string
+  /** The quick action succeeded — and changed only this session. */
+  modelSelectLastUsedSwitched: string
+  /** The quick action could not switch. */
+  modelSelectLastUsedFailed: (reason: string) => string
+  /** Why the quick switch could not run (no live Session). */
+  modelSelectLastUsedFailedNoSession: string
+  /** Why the quick switch could not run (host has no request hooks). */
+  modelSelectLastUsedFailedUnsupported: string
   modelSelectEffortLine: (effort: string) => string
   modelSelectFailHeader: string
   modelEffortDefault: string
@@ -1037,6 +1051,12 @@ export const zh = {
   modelSelectBack: '← 返回选择 Provider',
   modelSelectSwitchedHeader: '✅ **已切换**',
   modelSelectSwitchedNext: '下一轮对话将使用新模型。',
+  modelSelectLastUsedButton: '↺ 切回上次使用',
+  modelSelectLastUsed: (provider, model) => `↺ 上次使用：\`${provider}/${model}\`（点下方按钮切回，**只改本会话**）`,
+  modelSelectLastUsedSwitched: '已切回本会话上次使用的模型（**只改本会话**，没有改全局默认）。',
+  modelSelectLastUsedFailed: reason => `⚠️ 切回上次模型失败：${reason}`,
+  modelSelectLastUsedFailedNoSession: '这个会话当前没有加载（重启后还没收过消息）。先发一条普通消息让它恢复。',
+  modelSelectLastUsedFailedUnsupported: '这个宿主的 agent 不支持会话内切换模型。',
   modelSelectEffortLine: effort => `🧠 思考强度：\`${effort}\``,
   modelSelectFailHeader: '⚠️ **切换失败**',
   modelEffortDefault: 'default（不指定）',
@@ -1558,6 +1578,12 @@ export const en: Translations = {
   modelSelectBack: '← Back to choose provider',
   modelSelectSwitchedHeader: '✅ **Switched**',
   modelSelectSwitchedNext: 'The next round will use the new model.',
+  modelSelectLastUsedButton: '↺ Back to last used',
+  modelSelectLastUsed: (provider, model) => `↺ Last used: \`${provider}/${model}\` (tap below to switch back — **this session only**)`,
+  modelSelectLastUsedSwitched: 'Switched back to this session\'s last used model (**this session only** — the global default is untouched).',
+  modelSelectLastUsedFailed: reason => `⚠️ Could not switch back: ${reason}`,
+  modelSelectLastUsedFailedNoSession: 'This session is not loaded right now (nothing since the restart). Send a normal message first.',
+  modelSelectLastUsedFailedUnsupported: 'The agent of this host exposes no in-session model switch.',
   modelSelectEffortLine: effort => `🧠 Reasoning effort: \`${effort}\``,
   modelSelectFailHeader: '⚠️ **Switch failed**',
   modelEffortDefault: 'default (not specified)',

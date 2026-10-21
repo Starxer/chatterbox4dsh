@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { sendModelCardV2, startFeishuModelSelect } from '../src/feishu-model-select.ts'
+import { renderProviderSelectCard, sendModelCardV2, startFeishuModelSelect } from '../src/feishu-model-select.ts'
 import { createCardTopicRegistry } from '../src/card-topics.ts'
 import { translationsFor } from '../src/i18n.ts'
 
@@ -15,6 +15,7 @@ const t = translationsFor('zh')
 function harness(overrides: {
   models?: unknown
   sessionController?: unknown
+  bridge?: Record<string, unknown>
   topicFor?: (message: { chatId: string; messageId?: string }) => { rootId?: string; threadId?: string }
   onNewSessionConfirm?: (chatMessage: any, selection: any, messageId: string | undefined) => Promise<void>
 } = {}) {
@@ -51,10 +52,14 @@ function harness(overrides: {
     listModels: vi.fn(async (provider: string) => models[provider] ?? []),
     resolveModelInfo: vi.fn(async () => ({ reasoning: { efforts: [{ id: 'low' }], defaultEffort: 'low' } })),
   } as any
+  const sessionController = (overrides.sessionController ?? { selectModel: vi.fn(async () => undefined), fork: undefined }) as any
   const bridgeHolder = {
     current: {
       sessionCurrentSelection: async () => ({ provider: 'provA', model: 'a1' }),
       resolveSessionIdFor: () => 'sess-1',
+      recentRoutes: async () => [],
+      switchRoute: async () => ({ ok: true }),
+      ...(overrides.bridge ?? {}),
     },
   } as any
   const onNewSessionConfirm = overrides.onNewSessionConfirm ?? vi.fn(async () => undefined)
@@ -62,7 +67,7 @@ function harness(overrides: {
     llm,
     agentDefaultModel: { currentSelection: () => ({ provider: 'provA', model: 'a1' }) } as any,
     bridgeHolder,
-    sessionController: (overrides.sessionController ?? {}) as any,
+    sessionController,
     channel,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
     getTranslations: () => t,
@@ -70,7 +75,7 @@ function harness(overrides: {
     topicFor: overrides.topicFor ?? (() => ({})),
   })
   const fire = (evt: any) => Promise.all(handlers.map(h => h(evt)))
-  return { channel, cards, fire, handle, onNewSessionConfirm, llm }
+  return { channel, cards, fire, handle, onNewSessionConfirm, llm, bridgeHolder, sessionController }
 }
 
 /** The `model` <select_static> of the most recently rendered card. */
@@ -307,6 +312,57 @@ describe('feishu-model-select model catalog discovery', () => {
       model: 'a1',
       reasoningEffort: 'high',
     })
+    handle.dispose()
+  })
+})
+
+
+describe('last-used quick action', () => {
+  it('renders the quick button only when a different earlier route exists', () => {
+    const providers = [{ id: 'provA', name: 'A' }] as never
+    const current = { provider: 'provA', model: 'a1' }
+    const withLast = renderProviderSelectCard(providers, current, undefined, t, {
+      lastUsed: { provider: 'provB', model: 'b1' },
+    }) as any
+    const buttons = withLast.body.elements.filter((element: any) => element.tag === 'button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].behaviors[0].value).toEqual({ action: 'switch-last' })
+    // Short caption: Feishu truncates buttons, so the route must live in the
+    // card body instead.
+    expect(buttons[0].text.content).toBe(t.modelSelectLastUsedButton)
+    expect(buttons[0].text.content).not.toContain('b1')
+    const body = JSON.stringify(withLast.body.elements)
+    expect(body).toContain('b1')
+    expect(body).toContain(t.modelSelectLastUsed('provB', 'b1'))
+
+    const same = renderProviderSelectCard(providers, current, undefined, t, { lastUsed: current }) as any
+    expect(same.body.elements.filter((element: any) => element.tag === 'button')).toHaveLength(0)
+  })
+
+  it('switches this session locally and says the global default is untouched', async () => {
+    const switchRoute = vi.fn(async () => ({ ok: true }))
+    const { fire, cards, handle, sessionController } = harness({
+      bridge: { recentRoutes: async () => [{ provider: 'provB', model: 'b1' }], switchRoute },
+    })
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { value: { action: 'switch-last' } } })
+    expect(switchRoute).toHaveBeenCalledWith(expect.anything(), { provider: 'provB', model: 'b1' })
+    // The old bug: a quick pick persisted as the global default. This path must
+    // never call the session controller.
+    expect(sessionController.selectModel).not.toHaveBeenCalled()
+    const last = cards.at(-1)
+    expect(last.header.template).toBe('green')
+    expect(JSON.stringify(last)).toContain(t.modelSelectLastUsedSwitched)
+    handle.dispose()
+  })
+
+  it('reports an unloaded session instead of pretending to switch', async () => {
+    const { fire, cards, handle } = harness({
+      bridge: { recentRoutes: async () => [{ provider: 'provB', model: 'b1' }], switchRoute: async () => ({ ok: false, reason: 'no-agent' }) },
+    })
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { value: { action: 'switch-last' } } })
+    const last = cards.at(-1)
+    expect(last.header.template).toBe('red')
+    expect(JSON.stringify(last)).toContain(t.modelSelectLastUsedFailedNoSession)
     handle.dispose()
   })
 })

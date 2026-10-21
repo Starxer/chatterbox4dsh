@@ -82,7 +82,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 
 | 命令 / Command | 中文 | English |
 |---|---|---|
-| `/model [list\|<provider>/<model>]` | 查看、列出、切换模型；无参打开向导 | View/list/switch models; no args opens the picker |
+| `/model [list\|last\|<provider>/<model>]` | 查看、列出、切换模型；`last` 一键切回**本会话**上次使用的模型（只改本会话、不动全局默认），无参打开的模型卡顶部同样有「↺ 切回上次使用」快捷按钮；无参打开向导 | View/list/switch models; `last` jumps back to this session's previous route (session-local, never the global default), and the picker card opened without args shows the same one-tap “↺ Back to last used” action; no args opens the picker |
 | `/new [--workspace <path>] [--preset <id>]` | 新会话；无参走卡片流程，带参数路径需已注册工作区 | New session; card flow without args, registered workspace required for the text path |
 | `/session [N\|list]` | 会话管理面板、列表或按编号切换 | Session panel, list or switch by index |
 | `/fork [<轮次>]` | 分叉会话：无参发轮次选择卡（每行带该轮开头预览），点选后以该轮**结束**为界复制到新会话；带轮次则直接分叉 | Fork a session: no args opens the turn picker (each row previews that turn's opening), tapping forks at the turn's **end**; a turn number forks directly |

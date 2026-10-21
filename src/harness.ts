@@ -7,6 +7,7 @@ import { dirname } from 'node:path'
 import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './conversation.ts'
 import type { ConversationMessage } from './conversation.ts'
 import { collectCompletedTurns, type CompletedTurn, type TurnEventLike } from './turn-history.ts'
+import { collectRecentRoutes, type RecentRoute, type RouteEntry } from './route-history.ts'
 import type { DomainName } from './config.ts'
 import { TurnFailureError, displayFailure } from './turn-failure.ts'
 import { noteDirectFeishuDispatch, noteFeishuPrompt } from './feishu-turn-origin.ts'
@@ -20,6 +21,9 @@ const PRESET_SCAN_EVENTS = 64
 /** Minimum surface of {@link Agent} the conversation service depends on. */
 interface AgentLike {
   session: { id: unknown; seq: number; events?: readonly { seq: number; type: string; data: any }[] }
+  /** Agent-scoped Cordis context; absent on older hosts that expose only the
+   *  session surface (a quick model switch then reports "unsupported"). */
+  ctx?: { on(event: string, handler: (...args: any[]) => unknown): () => void }
   whenIdle(): Promise<void>
   followup(message: ReturnType<typeof createUserMessage>): void
   steer(message: ReturnType<typeof createUserMessage>): void
@@ -151,6 +155,68 @@ export interface ChatCreationOptions {
   provider?: string
   model?: string
   reasoningEffort?: ReasoningEffortId
+}
+
+/**
+ * One live agent's pending model route, installed by `/model last`.
+ *
+ * `assembled` is captured by the system-prompt hook so the request hook only
+ * overrides a request whose assembly actually saw the selection (the same
+ * two-phase shape DSH's own `installModelSelection()` uses). The plugin spells
+ * it out instead of importing the host module: a second evaluation of a host
+ * package inside this process is the 关键坑 28 hazard.
+ */
+interface RouteOverride {
+  current?: RouteEntry | undefined
+  assembled?: RouteEntry | undefined
+}
+
+/** Per-agent override state, so repeated quick picks reuse the same hooks. */
+const routeOverrides = new WeakMap<object, RouteOverride>()
+
+/**
+ * Install (once per agent) the hooks that make the next request use `route`;
+ * later calls only update the pending selection.
+ *
+ * @param agent - live DSH agent owning the Session.
+ * @param route - the model route to apply.
+ */
+function installRouteSelection(agent: AgentLike, route: RouteEntry): void {
+  const ctx = agent.ctx
+  if (ctx === undefined) return
+  const existing = routeOverrides.get(agent)
+  if (existing !== undefined) {
+    existing.current = route
+    return
+  }
+  const state: RouteOverride = { current: route }
+  routeOverrides.set(agent, state)
+  ctx.on('system-prompt/assemble', async (_assembly: unknown, _context: unknown, next: () => Promise<any>) => {
+    const selected = state.current
+    const assembled = await next()
+    state.assembled = selected
+    if (selected === undefined) return assembled
+    return {
+      ...assembled,
+      variables: {
+        ...(assembled?.variables ?? {}),
+        provider: selected.provider,
+        model: selected.model,
+      },
+    }
+  })
+  ctx.on('agent/request', async (_payload: unknown, next: () => Promise<any>) => {
+    const resolved = await next()
+    const selected = state.assembled
+    if (selected === undefined) return resolved
+    const { reasoningEffort: _inherited, ...rest } = resolved as Record<string, unknown>
+    return {
+      ...rest,
+      provider: selected.provider,
+      model: selected.model,
+      ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
+    }
+  })
 }
 
 export class HarnessConversationService {
@@ -501,30 +567,86 @@ export class HarnessConversationService {
   async listTurns(message: ConversationMessage, limit = 12): Promise<readonly CompletedTurn[]> {
     const sessionId = this.resolveSessionIdFor(message)
     if (sessionId === '') return []
+    const events = await this.readWindowedEvents(sessionId, window => collectCompletedTurns(window, { limit }).length >= limit)
+    return collectCompletedTurns(events, { limit })
+  }
+
+  /**
+   * Recent model routes of this chat's Session, newest first (`/model last`).
+   *
+   * @param message - chat coordinates.
+   * @param limit - how many distinct routes to return.
+   * @returns the routes; `[]` when the session cannot be read.
+   */
+  async recentRoutes(message: ConversationMessage, limit = 6): Promise<readonly RecentRoute[]> {
+    const sessionId = this.resolveSessionIdFor(message)
+    if (sessionId === '') return []
+    const events = await this.readWindowedEvents(sessionId, window => collectRecentRoutes(window, limit).length >= limit)
+    return collectRecentRoutes(events, limit)
+  }
+
+  /**
+   * Switch THIS Session's next model request to `route` without touching the
+   * global default or any other Session.
+   *
+   * This is the whole point of `/model last`: the old failure mode ("a quick
+   * pick changed every Session's model") came from persisting a selection as
+   * the global default and then rebuilding other chats from it. Here the
+   * override lives on the live agent (two request-assembly hooks) and is never
+   * saved; the next request records its own `request/header`, which is what a
+   * later resume reads.
+   *
+   * @param message - chat coordinates (resolves the bound Session).
+   * @param route - the model route to install for the next request.
+   * @returns `ok`, or the reason the switch could not be applied.
+   */
+  async switchRoute(
+    message: ConversationMessage,
+    route: RouteEntry,
+  ): Promise<{ ok: true } | { ok: false; reason: 'no-agent' | 'unsupported' }> {
+    const sessionId = this.resolveSessionIdFor(message)
+    if (sessionId === '') return { ok: false, reason: 'no-agent' }
+    const agent = this.deps.agents.get(sessionId as never) as unknown as AgentLike | undefined
+    if (agent === undefined) return { ok: false, reason: 'no-agent' }
+    if (agent.ctx === undefined || typeof agent.ctx.on !== 'function') return { ok: false, reason: 'unsupported' }
+    installRouteSelection(agent, route)
+    return { ok: true }
+  }
+
+  /**
+   * Read a bounded event window of one Session, widening it until `enough`
+   * accepts the window or the log start is reached.
+   *
+   * @param sessionId - durable Session identity.
+   * @param enough - acceptance test over a candidate window.
+   * @returns the window (oldest first); `[]` when nothing can be read.
+   */
+  private async readWindowedEvents(
+    sessionId: string,
+    enough: (events: readonly TurnEventLike[]) => boolean,
+  ): Promise<readonly TurnEventLike[]> {
     const agent = this.deps.agents.get(sessionId as never) as unknown as AgentLike | undefined
     const session = agent?.session as unknown as {
       readonly seq?: number
       events?: readonly TurnEventLike[]
       snapshotEvents?: (from?: number, to?: number) => readonly TurnEventLike[]
     } | undefined
-    const fromLive = async (): Promise<readonly TurnEventLike[] | undefined> => {
-      if (session === undefined) return undefined
+    if (session !== undefined) {
       if (Array.isArray(session.events)) return session.events
       const snapshot = session.snapshotEvents
       const total = session.seq
-      if (typeof snapshot !== 'function' || typeof total !== 'number' || total <= 0) return undefined
-      let windowSize = 2_000
-      while (true) {
-        const from = Math.max(0, total - windowSize)
-        const events = snapshot(from, total)
-        if (from === 0 || collectCompletedTurns(events, { limit }).length >= limit || windowSize > 200_000) return events
-        windowSize *= 4
+      if (typeof snapshot === 'function' && typeof total === 'number' && total > 0) {
+        let windowSize = 2_000
+        while (true) {
+          const from = Math.max(0, total - windowSize)
+          const events = snapshot(from, total)
+          if (from === 0 || enough(events) || windowSize > 200_000) return events
+          windowSize *= 4
+        }
       }
     }
-    const live = await fromLive()
-    if (live !== undefined) return collectCompletedTurns(live, { limit })
     const cold = await this.readColdSession(sessionId)
-    return cold === undefined ? [] : collectCompletedTurns(cold.events, { limit })
+    return cold?.events ?? []
   }
 
   /** Resolve the durable session id from a `sessionPersistence.list()` row.

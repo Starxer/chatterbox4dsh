@@ -1271,6 +1271,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       listSessions: async () => bridgeHolder.current?.listSessions() ?? [],
       getSessionMeta: async (chatMessage) => bridgeHolder.current?.getSessionMeta(chatMessage) ?? { sessionId: '', workspace: '', agentPreset: '', model: '', reasoningEffort: '', title: '', turns: 0, steps: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, contextWindow: 0, lastInputTokens: 0, cacheHitRate: 0, ttftAvgMs: 0, tokensPerSecond: 0, llmDurationMs: 0, toolDurationMs: 0 },
       sessionCurrentSelection: async (chatMessage) => bridgeHolder.current?.sessionCurrentSelection(chatMessage),
+      recentRoutes: async (chatMessage, limit) => bridgeHolder.current?.recentRoutes(chatMessage, limit) ?? [],
+      switchRoute: async (chatMessage, route) => bridgeHolder.current?.switchRoute(chatMessage, route) ?? { ok: false as const, reason: 'no-agent' as const },
       resolveAgent: async (chatMessage) => bridgeHolder.current?.resolveAgent(chatMessage),
       resolveSessionIdFor: (chatMessage) => bridgeHolder.current?.resolveSessionIdFor(chatMessage) ?? '',
     },
@@ -2058,6 +2060,19 @@ async function executeSlashCommand(
       model: defaultCurrent.model,
       ...(defaultCurrent.reasoningEffort !== undefined ? { reasoningEffort: String(defaultCurrent.reasoningEffort) } : {}),
     }
+    // Quick "back to the last used route" action: derived from THIS session's
+    // own log and applied session-locally by the card module (never the global
+    // default, 关键坑 59).
+    const lastUsedEntry = await bridge.recentRoutes(chatMessage)
+      .then(routes => routes.find(route => route.provider !== current.provider || route.model !== current.model))
+      .catch(() => undefined)
+    const lastUsed = lastUsedEntry === undefined
+      ? undefined
+      : {
+        provider: lastUsedEntry.provider,
+        model: lastUsedEntry.model,
+        ...(lastUsedEntry.reasoningEffort === undefined ? {} : { reasoningEffort: lastUsedEntry.reasoningEffort }),
+      }
     if (cardChannel === undefined || modelSelectMaps === undefined) {
       // Fallback: return the card in the old format (embedded JSON).
       const providers = llm.listProviders()
@@ -2065,7 +2080,7 @@ async function executeSlashCommand(
         provider: current.provider,
         model: current.model,
         ...(current.reasoningEffort !== undefined ? { reasoningEffort: String(current.reasoningEffort) } : {}),
-      }, undefined, translationsFor(localeControl?.current().id ?? 'zh')) }
+      }, undefined, translationsFor(localeControl?.current().id ?? 'zh'), { lastUsed }) }
     }
     // V2 flow: create card instance + send by card_id reference.
     const providers = llm.listProviders()
@@ -2073,7 +2088,7 @@ async function executeSlashCommand(
       provider: current.provider,
       model: current.model,
       ...(current.reasoningEffort !== undefined ? { reasoningEffort: String(current.reasoningEffort) } : {}),
-    }, undefined, translationsFor(localeControl?.current().id ?? 'zh'))
+    }, undefined, translationsFor(localeControl?.current().id ?? 'zh'), { lastUsed })
     try {
       await sendModelCardV2(cardChannel, chatMessage, card, modelSelectMaps.cardByMessage, modelSelectMaps.sequenceByCard, cardTopics)
       // V2 card was sent directly via cardkit. Signal "consumed" so channel.ts

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { registerLarkCommands, handleDisplayCommand, type ApprovalControl, type CommandTranslations, type DisplayControl } from '../src/commands.ts'
+import { registerLarkCommands, handleDisplayCommand, handleModelCommand, type ApprovalControl, type CommandTranslations, type DisplayControl } from '../src/commands.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -14,6 +14,10 @@ const translations: CommandTranslations = {
   modelUnknown: route => `unknown ${route}`,
   modelPersisted: 'persisted',
   modelLiveApplied: 'live applied',
+  modelLastNone: 'no earlier model',
+  modelLastNoAgent: 'session not loaded',
+  modelLastUnsupported: 'not supported',
+  modelLastSwitched: (provider, model) => `back to ${provider}/${model}`,
   newDescription: 'new desc',
   newUsage: 'Usage: /new <workspace> <preset> [model]',
   newSessionReady: sessionId => `ready ${sessionId}`,
@@ -149,6 +153,8 @@ function fakeBridge(overrides?: {
   listSessions?: ReturnType<typeof vi.fn>
   getSessionMeta?: ReturnType<typeof vi.fn>
   sessionCurrentSelection?: ReturnType<typeof vi.fn>
+  recentRoutes?: ReturnType<typeof vi.fn>
+  switchRoute?: ReturnType<typeof vi.fn>
 }) {
   const setCurrentSelection = overrides?.setCurrentSelection ?? vi.fn(() => undefined)
   const startNewSession = overrides?.startNewSession ?? vi.fn(() => 'new-session-id')
@@ -168,6 +174,8 @@ function fakeBridge(overrides?: {
       resolveAgent: vi.fn(async () => undefined),
       resolveSessionIdFor: vi.fn(() => 'test-session'),
       sessionCurrentSelection: overrides?.sessionCurrentSelection ?? vi.fn(async () => undefined),
+      recentRoutes: overrides?.recentRoutes ?? vi.fn(async () => []),
+      switchRoute: overrides?.switchRoute ?? vi.fn(async () => ({ ok: true as const })),
       describeChatKey: (key: string) => (key.startsWith('thread:') ? `topic:${key.slice(7, 15)}` : 'main'),
     },
     setCurrentSelection,
@@ -703,5 +711,73 @@ describe('/help command', () => {
     const result = await handler(fakeInvocation('anything here'))
     expect(result).toMatchObject({ kind: 'success' })
     expect(cmds.list).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+describe('/model last', () => {
+  const invocation = (rawInput: string) => ({ name: 'model', rawInput } as never)
+  const chat = { chatId: 'oc_1', chatType: 'p2p' as const }
+
+  it('switches THIS session only: no global default write, no session-controller call', async () => {
+    const switched: Array<{ provider: string; model: string }> = []
+    const fake = fakeBridge({
+      sessionCurrentSelection: vi.fn(async () => ({ provider: 'p1', model: 'm1' })),
+      recentRoutes: vi.fn(async () => [
+        { provider: 'p1', model: 'm1', seq: 9 },
+        { provider: 'p2', model: 'm2', reasoningEffort: 'high', seq: 4 },
+      ]),
+      switchRoute: vi.fn(async (_message: unknown, route: { provider: string; model: string }) => {
+        switched.push(route)
+        return { ok: true as const }
+      }),
+    })
+    const defaultModel = fakeDefaultModel()
+    const controller = fakeSessionController()
+    const result = await handleModelCommand(
+      invocation('last'),
+      fakeLlmDirectory(),
+      defaultModel,
+      fake.bridge as never,
+      () => chat as never,
+      translations,
+      controller as never,
+    )
+    expect(result.kind).toBe('success')
+    expect(result.kind === 'success' ? result.text : '').toContain('p2/m2')
+    expect(switched).toEqual([{ provider: 'p2', model: 'm2', reasoningEffort: 'high' }])
+    // The old failure mode: a quick pick persisted globally and every rebuilt
+    // session picked it up. Neither call may happen here.
+    expect(defaultModel.saveSelection).not.toHaveBeenCalled()
+    expect(controller.selectModel).not.toHaveBeenCalled()
+  })
+
+  it('reports when there is no earlier route', async () => {
+    const fake = fakeBridge({
+      sessionCurrentSelection: vi.fn(async () => ({ provider: 'p1', model: 'm1' })),
+      recentRoutes: vi.fn(async () => [{ provider: 'p1', model: 'm1', seq: 9 }]),
+    })
+    const result = await handleModelCommand(invocation('last'), fakeLlmDirectory(), fakeDefaultModel(), fake.bridge as never, () => chat as never, translations, fakeSessionController() as never)
+    expect(result.kind).toBe('error')
+  })
+
+  it('explains an unloaded session and an unsupported host', async () => {
+    const fake = fakeBridge({
+      sessionCurrentSelection: vi.fn(async () => ({ provider: 'p1', model: 'm1' })),
+      recentRoutes: vi.fn(async () => [{ provider: 'p2', model: 'm2', seq: 4 }]),
+      switchRoute: vi.fn(async () => ({ ok: false as const, reason: 'no-agent' as const })),
+    })
+    const notLoaded = await handleModelCommand(invocation('last'), fakeLlmDirectory(), fakeDefaultModel(), fake.bridge as never, () => chat as never, translations, fakeSessionController() as never)
+    expect(notLoaded.kind).toBe('error')
+    expect(notLoaded.kind === 'error' ? notLoaded.text : '').toBe(translations.modelLastNoAgent)
+
+    const fakeUnsupported = fakeBridge({
+      sessionCurrentSelection: vi.fn(async () => ({ provider: 'p1', model: 'm1' })),
+      recentRoutes: vi.fn(async () => [{ provider: 'p2', model: 'm2', seq: 4 }]),
+      switchRoute: vi.fn(async () => ({ ok: false as const, reason: 'unsupported' as const })),
+    })
+    const unsupported = await handleModelCommand(invocation('last'), fakeLlmDirectory(), fakeDefaultModel(), fakeUnsupported.bridge as never, () => chat as never, translations, fakeSessionController() as never)
+    expect(unsupported.kind).toBe('error')
+    expect(unsupported.kind === 'error' ? unsupported.text : '').toBe(translations.modelLastUnsupported)
   })
 })
