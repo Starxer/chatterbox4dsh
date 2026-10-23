@@ -34,6 +34,24 @@ export interface LarkRuntimeStart {
   channel: LarkChannel
 }
 
+/**
+ * Backoff for a channel START that failed (ms).
+ *
+ * This is NOT the WebSocket dropping — the SDK reconnects that itself. It is
+ * `start()` returning no channel at all: no bot identity, no DNS, credentials
+ * briefly unreachable. Without a retry such a failure left the bot SILENTLY
+ * offline until someone restarted the process. Real case (2026-10-23): the
+ * host lost DNS, the 15:03 startup failed with `getaddrinfo ENOTFOUND
+ * open.feishu.cn`, the network came back at 15:12, and the channel stayed dead
+ * for 2 h 55 m — the plugin logged not one line in between — until a manual
+ * restart at 17:58.
+ *
+ * The last entry is the steady-state interval. Retrying forever is deliberate:
+ * the conditions this recovers from (no network, host suspended, link down)
+ * are fixed by time, not by us.
+ */
+export const CHANNEL_RETRY_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000] as const
+
 export interface LarkRuntimeDependencies {
   settings(): SettingsConfig
   resolveSecret(ref: string): Promise<string | undefined>
@@ -45,6 +63,10 @@ export class LarkRuntime {
   private snapshot: RuntimeStatus = { state: 'unconfigured', message: 'App ID and App Secret are required' }
   private operations = Promise.resolve()
   private disposed = false
+  /** Pending start-retry timer; at most one at a time. */
+  private retryTimer: ReturnType<typeof setTimeout> | undefined
+  /** How many start retries failed in a row (0 while healthy). */
+  private retryAttempt = 0
   /** Notified whenever the active Lark channel changes (initial connect or
    *  post-reconcile reconnect). The Feishu questions listener subscribes
    *  here so it always uses the channel's card send + cardAction handler. */
@@ -100,6 +122,14 @@ export class LarkRuntime {
         }
         this.current = { fingerprint, start }
         this.snapshot = { state: 'connected' }
+        // Healthy again: a retry that was scheduled by an earlier failure must
+        // not fire on top of a live channel, and the backoff restarts from the
+        // shortest step if it ever fails again.
+        this.clearRetryTimer()
+        if (this.retryAttempt > 0) {
+          console.warn(`dsh-feishu: channel start recovered after ${this.retryAttempt} failed attempt(s)`)
+          this.retryAttempt = 0
+        }
         this.onChannelChange?.(start.channel)
       } catch (error) {
         let failure = error
@@ -114,15 +144,53 @@ export class LarkRuntime {
         const message = failure instanceof Error ? failure.message : String(failure)
         const redacted = secret === undefined || secret === '' ? message : message.split(secret).join('[redacted]')
         console.error('dsh-feishu: reconcile failed:', redacted)
-        this.snapshot = invalidConfig
-          ? { state: 'unconfigured', message: redacted }
-          : { state: 'error', message: redacted }
+        if (invalidConfig) {
+          // A missing/blank configuration cannot be fixed by waiting; retrying
+          // it only floods the log.
+          this.clearRetryTimer()
+          this.retryAttempt = 0
+          this.snapshot = { state: 'unconfigured', message: redacted }
+          return
+        }
+        this.snapshot = { state: 'error', message: redacted }
+        this.scheduleRetry()
       }
     })
   }
 
+  /**
+   * Schedule the next start attempt after a failed one.
+   *
+   * Single-flight by construction: a timer already pending is never replaced,
+   * and a disposed runtime schedules nothing. The timer is `unref`ed so a
+   * pending retry never keeps the process (or a test worker) alive.
+   */
+  private scheduleRetry(): void {
+    if (this.disposed || this.retryTimer !== undefined) return
+    const attempt = this.retryAttempt + 1
+    this.retryAttempt = attempt
+    const index = Math.min(attempt - 1, CHANNEL_RETRY_BACKOFF_MS.length - 1)
+    const delay = CHANNEL_RETRY_BACKOFF_MS[index]!
+    console.warn(`dsh-feishu: channel start failed; retrying in ${delay}ms (attempt ${attempt})`)
+    const timer = setTimeout(() => {
+      this.retryTimer = undefined
+      if (this.disposed) return
+      void this.reconcile()
+    }, delay)
+    timer.unref?.()
+    this.retryTimer = timer
+  }
+
+  /** Drop a pending retry timer without touching the attempt counter. */
+  private clearRetryTimer(): void {
+    const timer = this.retryTimer
+    this.retryTimer = undefined
+    if (timer !== undefined) clearTimeout(timer)
+  }
+
   dispose(): Promise<void> {
     this.disposed = true
+    this.clearRetryTimer()
     return this.enqueue(async () => {
       await this.stopCurrent()
       this.snapshot = { state: 'stopped' }

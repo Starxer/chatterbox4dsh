@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
-import { LarkRuntime, type LarkRuntimeStart } from '../src/runtime.ts'
+import { CHANNEL_RETRY_BACKOFF_MS, LarkRuntime, type LarkRuntimeStart } from '../src/runtime.ts'
 import { resolveSettingsConfig } from '../src/config.ts'
 
 function fakeStart(stop: () => Promise<void>): LarkRuntimeStart {
@@ -108,6 +108,9 @@ describe('LarkRuntime', () => {
     await runtime.reconcile()
     expect(JSON.stringify(runtime.status())).not.toContain('actual-secret')
     expect(runtime.status()).toMatchObject({ state: 'error' })
+    // A failed start schedules a retry; dispose clears it so the test leaves no
+    // timer behind.
+    await runtime.dispose()
   })
 
   it('moves to an error state when credential resolution fails', async () => {
@@ -118,6 +121,7 @@ describe('LarkRuntime', () => {
     })
     await runtime.reconcile()
     expect(runtime.status()).toEqual({ state: 'error', message: 'credential backend unavailable' })
+    await runtime.dispose()
   })
 
   it('moves to an error state when stopping the old channel fails', async () => {
@@ -131,6 +135,7 @@ describe('LarkRuntime', () => {
     config = { ...config, requireMention: false }
     await runtime.reconcile()
     expect(runtime.status()).toEqual({ state: 'error', message: 'disconnect failed' })
+    await runtime.dispose()
   })
 
   // The snapshot is a BOOT verdict: it says the WebSocket handshake succeeded
@@ -203,5 +208,122 @@ describe('LarkRuntime', () => {
       await runtime.dispose()
       expect(runtime.status()).toEqual({ state: 'stopped' })
     })
+  })
+})
+
+/**
+ * A start failure is not the WebSocket dropping (the SDK reconnects that): it is
+ * `start()` returning no channel at all — no bot identity, no DNS, credentials
+ * briefly unreachable. On 2026-10-23 the host lost DNS, the 15:03 startup failed
+ * with `getaddrinfo ENOTFOUND`, the network returned at 15:12, and the channel
+ * stayed dead for 2 h 55 m — silently, because nothing retried — until a manual
+ * restart. These cases pin the retry loop down.
+ */
+describe('retrying a failed channel start', () => {
+  it('retries with backoff until the start succeeds, then stops', async () => {
+    vi.useFakeTimers()
+    try {
+      let attempt = 0
+      const start = vi.fn(async () => {
+        attempt += 1
+        if (attempt < 3) throw new Error('getaddrinfo ENOTFOUND open.feishu.cn')
+        return fakeStart(async () => undefined)
+      })
+      const runtime = new LarkRuntime({
+        settings: () => resolveSettingsConfig({ appId: 'id' }),
+        resolveSecret: async () => 'secret',
+        start,
+      })
+      await runtime.reconcile()
+      expect(runtime.status()).toMatchObject({ state: 'error' })
+      expect(start).toHaveBeenCalledTimes(1)
+
+      // Nothing before the first backoff step elapses.
+      await vi.advanceTimersByTimeAsync(CHANNEL_RETRY_BACKOFF_MS[0]! - 1)
+      expect(start).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(start).toHaveBeenCalledTimes(2)
+      expect(runtime.status()).toMatchObject({ state: 'error' })
+
+      // Second failure waits one step longer.
+      await vi.advanceTimersByTimeAsync(CHANNEL_RETRY_BACKOFF_MS[1]!)
+      expect(start).toHaveBeenCalledTimes(3)
+      expect(runtime.status()).toMatchObject({ state: 'connected' })
+
+      // Healthy again: the loop is over, however long we wait.
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
+      expect(start).toHaveBeenCalledTimes(3)
+      await runtime.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('caps the backoff at the steady interval instead of growing forever', async () => {
+    vi.useFakeTimers()
+    try {
+      const start = vi.fn(async () => { throw new Error('offline') })
+      const runtime = new LarkRuntime({
+        settings: () => resolveSettingsConfig({ appId: 'id' }),
+        resolveSecret: async () => 'secret',
+        start,
+      })
+      await runtime.reconcile()
+      expect(start).toHaveBeenCalledTimes(1)
+      const steady = CHANNEL_RETRY_BACKOFF_MS[CHANNEL_RETRY_BACKOFF_MS.length - 1]!
+      // One failing attempt per scheduled step, including the capped ones.
+      for (let index = 0; index < CHANNEL_RETRY_BACKOFF_MS.length; index += 1) {
+        const delay = CHANNEL_RETRY_BACKOFF_MS[Math.min(index, CHANNEL_RETRY_BACKOFF_MS.length - 1)]!
+        await vi.advanceTimersByTimeAsync(delay)
+        expect(start).toHaveBeenCalledTimes(index + 2)
+      }
+      // The next wait is the capped interval, not a larger one.
+      await vi.advanceTimersByTimeAsync(steady - 1)
+      expect(start).toHaveBeenCalledTimes(CHANNEL_RETRY_BACKOFF_MS.length + 1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(start).toHaveBeenCalledTimes(CHANNEL_RETRY_BACKOFF_MS.length + 2)
+      await runtime.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry a configuration that cannot start the channel', async () => {
+    vi.useFakeTimers()
+    try {
+      const start = vi.fn()
+      const runtime = new LarkRuntime({
+        settings: () => resolveSettingsConfig({}),
+        resolveSecret: async () => undefined,
+        start,
+      })
+      await runtime.reconcile()
+      expect(runtime.status()).toMatchObject({ state: 'unconfigured' })
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
+      expect(start).not.toHaveBeenCalled()
+      await runtime.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels a pending retry when the runtime is disposed', async () => {
+    vi.useFakeTimers()
+    try {
+      const start = vi.fn(async () => { throw new Error('offline') })
+      const runtime = new LarkRuntime({
+        settings: () => resolveSettingsConfig({ appId: 'id' }),
+        resolveSecret: async () => 'secret',
+        start,
+      })
+      await runtime.reconcile()
+      expect(start).toHaveBeenCalledTimes(1)
+      await runtime.dispose()
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
+      expect(start).toHaveBeenCalledTimes(1)
+      expect(runtime.status()).toMatchObject({ state: 'stopped' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

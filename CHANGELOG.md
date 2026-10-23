@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：飞书通道启动失败不再静默——按退避自动重试（`src/runtime.ts`，2026-10-23）
+
+**现场**（2026-10-23）：14:29 服务被停，15:03:32 又启动，但当时主机 **DNS 断了**——插件 `apply()` 正常，`channel.connect()` 却失败：`getaddrinfo ENOTFOUND open.feishu.cn`（取 tenant token 的请求连域名都解析不了）→ 拿不到 bot identity（`/open-apis/bot/v3/info`）→ `WebSocket connection failed` → `reconcile failed`。系统日志同期的 DNS 转发一直报 `server failure` / `network is unreachable`，最晚到 15:12:17 还在失败。设置页里那句「启动失败」就是它。
+
+**根因不是网络本身，而是「失败后没有下一次」**：`LarkRuntime.reconcile()` 失败只把快照置成 `error`，**不重试**；再试只有三条路——插件重新 apply（重启）、凭据引用更新、任意设置写入。网络恢复不触发任何一条 ⇒ **15:04–17:58 插件日志零行**，通道静默离线 2 小时 55 分，直到人工重启（注意这与「长连接掉了 SDK 自己重连」是两件事：那次连通道都没建起来）。
+
+**实现**：`reconcile()` 的失败分支改为**有界自动重试**——退避 `5s → 10s → 20s → 40s → 80s → 160s → 300s`（之后固定 300s，一直重试：这类故障靠时间自己好），单飞（同一时刻只有一个待触发 timer，不叠加），成功或 `dispose()` 立即取消并重置计数，每次安排重试 log 一行、恢复后 log 一次失败次数；**`unconfigured`（配置缺失/无效）不重试**，那种情况等不来结果、只会刷日志。timer 一律 `unref()`，不阻止进程（或测试 worker）退出。
+
+**验证**：新增 4 例（按退避重试直到成功且成功后停止、退避封顶在 300s、配置无效不重试、dispose 取消待触发重试），并把三个既有的失败态用例补上 `dispose()`（不留真实 timer）；`typecheck`（含 client）/ **1252 测试 / 62 文件** / build 全绿。**未重启**，下次重启生效。
+
+**English**: A channel START failure no longer leaves the bot silently offline. On 2026-10-23 the host lost DNS: the 15:03:32 startup had a healthy plugin `apply()` but `channel.connect()` failed with `getaddrinfo ENOTFOUND open.feishu.cn` (the tenant-token request could not even resolve), so no bot identity, no WebSocket, `reconcile failed`. The real defect was that `LarkRuntime.reconcile()` only records the `error` snapshot and never tries again — the only triggers for another attempt were a plugin re-apply (restart), a credential-reference update or a settings write, so the network coming back did nothing: the plugin logged zero lines between 15:04 and 17:58 and the bot stayed offline for 2 h 55 m until a manual restart. (This is distinct from a dropped WebSocket, which the SDK reconnects by itself: here no channel was ever created.) The failure path now schedules a bounded retry with backoff 5s → 10s → 20s → 40s → 80s → 160s → 300s, then every 300s — retrying indefinitely is deliberate because this class of failure is fixed by time — single-flight (never more than one pending timer), cancelled and reset on success or `dispose()`, one log line per scheduled retry and one when it recovers. An `unconfigured` configuration is NOT retried (waiting cannot fix it, only log noise). All timers are `unref`ed so a pending retry never keeps the process alive. 4 new tests (backoff until success then stop, capped interval, no retry for an invalid configuration, dispose cancels) plus `dispose()` added to the three existing error-state cases; typecheck (with client), 1252 tests / 62 files and build pass. Not restarted yet.
+
 ### 修复：`/new` 模型卡上「默认模型」只是一行死文字，点不了；模型卡返回时还会丢流程标记（`src/feishu-model-select.ts` / `src/i18n.ts`，2026-10-23）
 
 **反馈**（使用者）：「模型选择器还是没法点击选择默认模型」。真机取证（`~/.dsh/read-card.py` 读回 + journal）：`/new` 的模型步骤上「最近使用」只有一条 `✅ 当前：deepseek-official/deepseek-flash`，是 markdown **死行**——而这张卡上「默认模型」恰恰是新会话要继承的那个路线，于是唯一想选的东西点不动，只能绕 provider/model 两级下拉。
