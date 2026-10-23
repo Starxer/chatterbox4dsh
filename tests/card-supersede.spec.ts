@@ -74,6 +74,36 @@ describe('card-supersede', () => {
     expect(updateCardInstance).toHaveBeenCalledTimes(1)
   })
 
+  it('paints the settle payload in place of the retired card (mode: replace)', async () => {
+    // A card where the operator DECIDED something is rewritten, like an answered
+    // question card: the whole card becomes the decision, so the visible change
+    // is the first thing on it instead of a footnote under a long list.
+    const updateCardInstance = vi.fn(async () => undefined)
+    const superseder = createCardSuperseder({ channel: { updateCardInstance }, logger: logger(), getTranslations: () => t, sequenceByCard: new Map() })
+    superseder.note('oc_1', { cardId: 'card-1', messageId: 'm-1', card: pickerCard() })
+    const settled = {
+      schema: '2.0',
+      header: { title: { tag: 'plain_text', content: t.newSessionSettledWorkspaceTitle }, template: 'green' },
+      body: {
+        elements: [
+          { tag: 'markdown', content: t.newSessionSettledWorkspace('/ws-2') },
+          // Even a payload that carries a binding itself is painted inert: the
+          // card was already edited, so a tap would never reach us (关键坑 11).
+          { tag: 'button', text: { tag: 'plain_text', content: 'x' }, behaviors: [{ type: 'callback', value: { kind: 'x' } }] },
+        ],
+      },
+    }
+    await superseder.supersedePrevious('oc_1', { mode: 'replace', card: settled })
+    expect(updateCardInstance).toHaveBeenCalledTimes(1)
+    const painted = JSON.stringify((updateCardInstance.mock.calls[0] as unknown[])[1])
+    expect(painted).toContain(t.newSessionSettledWorkspaceTitle)
+    expect(painted).toContain('/ws-2')
+    expect(painted).not.toContain('behaviors')
+    // The picker's own content is not appended to a settle payload.
+    expect(painted).not.toContain('选择工作区')
+    expect(JSON.parse(painted).header.template).toBe('green')
+  })
+
   it('falls back to the generic notice when the payload was not handed over', async () => {
     const updateCardInstance = vi.fn(async () => undefined)
     const superseder = createCardSuperseder({ channel: { updateCardInstance }, logger: logger(), getTranslations: () => t, sequenceByCard: new Map() })

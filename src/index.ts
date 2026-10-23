@@ -75,10 +75,16 @@ const CARD_SEND_TIMEOUT_MS = CARD_BARRIER_TIMEOUT_MS + OUTBOUND_TIMEOUT_MS
 import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool, sendWorkspaceFile } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
-import { startFeishuModelSelect, renderProviderSelectCard, renderReasoningCard, sendModelCardV2, type ModelSelectChannel } from './feishu-model-select.ts'
-import { renderSupersededCard } from './card-supersede.ts'
+import { startFeishuModelSelect, renderProviderSelectCard, renderReasoningCard, sendModelCardV2, type FeishuModelSelectHandle, type ModelSelectChannel } from './feishu-model-select.ts'
 import { decodeCardValue } from './card-action.ts'
-import { renderNewSessionConfirmCard, renderNewSessionCancelledCard, NEW_SESSION_CONFIRM_ACTION, NEW_SESSION_CANCEL_ACTION } from './new-session-card.ts'
+import {
+  renderNewSessionConfirmCard,
+  renderNewSessionCancelledCard,
+  renderPresetSettledCard,
+  renderModelSettledCard,
+  NEW_SESSION_CONFIRM_ACTION,
+  NEW_SESSION_CANCEL_ACTION,
+} from './new-session-card.ts'
 import { startFeishuPermission, SANDBOX_MODES, PERMISSION_LABELS, describePermissionSwitchFailure, type FeishuPermissionHandle } from './feishu-permission.ts'
 import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
 import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
@@ -235,7 +241,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopSubagents: () => void = () => undefined
   let stopSendFileTool: () => void = () => undefined
   let stopReceiveFileTool: () => void = () => undefined
-  let modelSelectHandle: { dispose: () => void; cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> } | undefined = undefined
+  let modelSelectHandle: FeishuModelSelectHandle | undefined = undefined
   let onboardingHandle: FeishuOnboardingHandle | undefined = undefined
   let permissionHandle: FeishuPermissionHandle | undefined = undefined
   let busyHandle: FeishuBusyHandle | undefined = undefined
@@ -1056,18 +1062,26 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     consumeLastStepHadContent = streamingResult.consumeLastStepHadContent
     flushRef.current = streamingResult.flushed
     /**
-     * Retire the model card once the final confirmation card carries every
-     * setting. Unlike the cards that recorded a decision, this one is a mere
-     * step of the wizard, so it is repainted as the bare stale notice.
+     * Turn the model card into its settlement card ("✅ 模型已选定") once the
+     * final confirmation card carries every setting.
+     *
+     * It used to collapse to the bare stale notice, which threw away the record
+     * of a real decision — the same "the card where I chose says nothing" gap
+     * the workspace and preset steps had.
      */
-    const retireModelCard = async (messageId: string | undefined, t: Translations): Promise<void> => {
+    const settleModelCard = async (
+      messageId: string | undefined,
+      selection: { provider: string; model: string; reasoningEffort?: string | undefined },
+      t: Translations,
+    ): Promise<void> => {
       if (messageId === undefined || modelSelectHandle === undefined) return
       const cardId = modelSelectHandle.cardByMessage.get(messageId)
       if (cardId === undefined) return
       const sequence = (modelSelectHandle.sequenceByCard.get(cardId) ?? 0) + 1
       modelSelectHandle.sequenceByCard.set(cardId, sequence)
-      await cardChannel.updateCardInstance(cardId, renderSupersededCard(t), sequence).catch((error: unknown) => {
-        console.log(`dsh-feishu: could not retire the model card: ${error instanceof Error ? error.message : String(error)}`)
+      const settled = renderModelSettledCard(selection.provider, selection.model, selection.reasoningEffort, t)
+      await cardChannel.updateCardInstance(cardId, settled, sequence).catch((error: unknown) => {
+        console.log(`dsh-feishu: could not settle the model card: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
     modelSelectHandle = startFeishuModelSelect({
@@ -1095,7 +1109,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           model: selection.model,
           ...(selection.reasoningEffort !== undefined ? { reasoningEffort: selection.reasoningEffort as never } : {}),
         }
-        await retireModelCard(messageId, t)
+        await settleModelCard(messageId, selection, t)
         const card = renderNewSessionConfirmCard(options, t, flowOptions.workspaceMissing === true)
         const topic = chatTopicFor(chatMessage)
         const opts = topic.threadId !== undefined && topic.rootId !== undefined
@@ -1135,37 +1149,25 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         provider: currentSettings().provider,
         model: currentSettings().model,
       },
-      onModelStep: async (chatMessage, messageId, flowState) => {
-        // Advance the `/new` flow to the model card, reusing the
-        // model-select provider card with the `new-session` flow marker.
-        const bridge = bridgeHolder.current
-        if (bridge === undefined || modelSelectHandle === undefined) return
-        const current = defaultModel.currentSelection()
-        const card = renderProviderSelectCard(llm.listProviders(), current, 'new-session', translationsFor(currentLocale().id))
-        const cardId = await cardChannel.createCardInstance(card)
-        const topic = chatTopicFor(chatMessage)
-        const opts = topic.threadId !== undefined && topic.rootId !== undefined
-          ? { replyInThread: true, replyTo: topic.rootId }
-          : {}
-        const result = await cardChannel.sendCardByReference(chatMessage.chatId, cardId, opts)
-        const sentId = result.messageId ?? ''
-        cardTopics.note(sentId, topic)
-        if (sentId !== '') {
-          modelSelectHandle.cardByMessage.set(sentId, cardId)
-          modelSelectHandle.sequenceByCard.set(cardId, 0)
-        }
+      onModelStep: async (chatMessage, _messageId, flowState) => {
+        // Advance the `/new` flow to the model step. The provider card is sent
+        // by the model-select module (not rendered here) so this step carries
+        // EXACTLY what `/model` carries: the route in effect, the
+        // previous-model quick action and the global recently-used rows.
+        if (bridgeHolder.current === undefined || modelSelectHandle === undefined) return
+        await modelSelectHandle.sendNewSessionProviderCard(chatMessage)
         // The preset picker recorded a real decision — which mode the session
-        // gets — so freeze it on that choice instead of collapsing it into the
-        // bare grey notice (the operator must still be able to read back what
-        // was picked). Only cards that were walked through are discarded.
+        // gets — so it is rewritten into its settlement card (title + choice)
+        // instead of keeping a list of dead buttons or collapsing into the bare
+        // grey notice. Only cards that were merely walked through are discarded.
         const presetId = flowState?.agentPreset ?? agentPresets.defaultId
         const presetRow = (await agentPresets.list()).find(p => p.id === presetId)
         const presetLabel = presetRow !== undefined && presetRow.name !== undefined && presetRow.name !== ''
           ? presetRow.name
           : presetId
         await onboardingHandle?.supersedePrevious(chatMessage.chatId, {
-          mode: 'keep',
-          note: translationsFor(currentLocale().id).cardSettledNote(presetLabel),
+          mode: 'replace',
+          card: renderPresetSettledCard(presetLabel, translationsFor(currentLocale().id)),
         })
       },
     })

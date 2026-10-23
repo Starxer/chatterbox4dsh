@@ -581,25 +581,34 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('freezes the workspace decision card on the chosen value, non-editable', async () => {
+  it('rewrites the workspace card into the settled decision card, non-editable', async () => {
     const { channel, handlers } = fakeChannel()
     const handle = startFeishuOnboarding(deps(channel, fakeBridge()))
     // First card (workspace picker) — nothing to supersede yet.
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
 
-    // Second card (preset picker) — the card the operator decided on keeps its
-    // content, is marked with the chosen workspace and stops being editable.
+    // Second card (preset picker) — the picker the operator decided on is
+    // REWRITTEN, the way an answered question card is: green header naming the
+    // decision, then the choice itself. The old shape (keep the whole picker,
+    // append one notice line below a dozen rows, grey the header) drew the only
+    // visible change at the bottom of the card, so a tap looked like nothing
+    // happened.
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
     const [cardId, card, sequence] = channel.updateCardInstance.mock.calls[0]! as [string, any, number]
     expect(cardId).toBe('card-1')
     expect(sequence).toBe(1)
+    expect(card.header.title.content).toBe(t.newSessionSettledWorkspaceTitle)
+    expect(card.header.template).toBe('green')
     const text = JSON.stringify(card)
-    expect(text).toContain(t.cardSettledNote('/ws-2'))
-    // The record survives: the original picker body is still there...
-    expect(text).toContain('选择工作区')
-    // ...but no callback binding does.
+    expect(text).toContain(t.newSessionSettledWorkspace('/ws-2'))
+    expect(text).toContain(t.newSessionSettledHint)
+    // The long picker body is GONE — that is the whole point — and no callback
+    // binding survives.
+    expect(text).not.toContain('选择工作区')
+    // The existing path is not going to be created, so no mkdir line.
+    expect(text).not.toContain(t.newSessionSettledWillCreate)
     expect(text).not.toContain('behaviors')
     expect(text).not.toContain('callback')
 
@@ -636,7 +645,7 @@ describe('feishu-onboarding', () => {
     handle.dispose()
   })
 
-  it('freezes the folder-browser page the operator settled on, not a bare notice', async () => {
+  it('rewrites the folder-browser page the operator settled on, not a bare notice', async () => {
     // Regression: a browser page is posted as "pure navigation", and its
     // payload used to be dropped from the remembered ref. Tapping
     // "✅ 用这个目录" on that very page then silently degraded to the generic
@@ -655,23 +664,28 @@ describe('feishu-onboarding', () => {
     const [cardId, painted] = channel.updateCardInstance.mock.calls[0]! as [string, any, number]
     // card-1 = home page, card-2 = the projects page the operator settled on.
     expect(cardId).toBe('card-2')
+    expect(painted.header.title.content).toBe(t.newSessionSettledWorkspaceTitle)
     const text = JSON.stringify(painted)
-    expect(text).toContain(t.cardSettledNote('/home/me/projects'))
-    // The listing stays as the readable record of the decision...
-    expect(text).toContain('my-app')
-    // ...but nothing on it can be tapped any more.
+    expect(text).toContain(t.newSessionSettledWorkspace('/home/me/projects'))
+    // The fake backend lists a tree that does not exist on disk, so this is the
+    // "it will be created" case (O16) and the card says so.
+    expect(text).toContain(t.newSessionSettledWillCreate)
+    // The listing is gone with the picker — only the decision stays readable.
+    expect(text).not.toContain('my-app')
     expect(text).not.toContain('behaviors')
     expect(text).not.toContain('callback')
     handle.dispose()
   })
 
-  it('uses the active locale for the settled-decision notice', async () => {
+  it('uses the active locale for the settlement card', async () => {
     const { channel, handlers } = fakeChannel()
     const handle = startFeishuOnboarding({ ...deps(channel, fakeBridge()), getTranslations: () => translationsFor('en') })
     await fire(handlers, { chatId: 'oc_1', action: { value: JSON.stringify({ kind: 'new' }) } })
     await fire(handlers, { chatId: 'oc_1', messageId: 'm-ref', action: { value: JSON.stringify({ kind: 'pick-workspace', value: '/ws-2' }) } })
+    const en = translationsFor('en')
     const text = JSON.stringify((channel.updateCardInstance.mock.calls[0]! as [string, any, number])[1])
-    expect(text).toContain(translationsFor('en').cardSettledNote('/ws-2'))
+    expect(text).toContain(en.newSessionSettledWorkspaceTitle)
+    expect(text).toContain(en.newSessionSettledHint)
     expect(text).toContain('locked')
     handle.dispose()
   })
@@ -820,6 +834,11 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
       await expect(stat(join(root, 'brand-new'))).rejects.toThrow()
       expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain('选择 Agent 预设')
       expect(handle.creationOptionsFor('oc_1').workspaceMissing).toBe(true)
+      // The "create this missing path?" card records the confirmation as its
+      // own settlement card, with the will-create line.
+      const settled = JSON.stringify((channel.updateCardInstance.mock.calls.at(-1)! as [string, any, number])[1])
+      expect(settled).toContain(t.newSessionSettledWorkspace(target))
+      expect(settled).toContain(t.newSessionSettledWillCreate)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

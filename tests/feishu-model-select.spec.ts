@@ -386,9 +386,32 @@ describe('global recent-model rows', () => {
     expect(rows[0].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provB', model: 'b1', effort: 'high' })
     expect(rows[1].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provC', model: 'c1' })
     expect(JSON.stringify(card)).toContain(t.modelSelectRecentHeader)
-    // `/new` reuses this card but must not offer a switch of the CURRENT session.
+    // `/new` reuses the card and offers the SAME rows (the model step must not
+    // drift from `/model`), but each click carries the flow marker so it picks
+    // the route of the session about to be created instead of switching the
+    // running one.
     const newSession = renderProviderSelectCard(providers, current, 'new-session', t, { recent: [{ provider: 'provB', model: 'b1', usedAt: 2 }] }) as any
-    expect(newSession.body.elements.filter((element: any) => element.tag === 'interactive_container')).toHaveLength(0)
+    const newRows = newSession.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(newRows).toHaveLength(1)
+    expect(newRows[0].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provB', model: 'b1', flow: 'new-session' })
+    const text = JSON.stringify(newSession)
+    expect(text).toContain(t.modelSelectRecentHeaderNewSession)
+    expect(text).toContain(t.modelSelectNewSessionTitle)
+  })
+
+  it('offers the previous-model quick action on the /new card too, with its own wording', () => {
+    const providers = [{ id: 'provA', name: 'A' }, { id: 'provB', name: 'B' }] as never
+    const current = { provider: 'provA', model: 'a1' }
+    const card = renderProviderSelectCard(providers, current, 'new-session', t, {
+      lastUsed: { provider: 'provB', model: 'b1', reasoningEffort: 'high' },
+    }) as any
+    const text = JSON.stringify(card)
+    expect(text).toContain(t.modelSelectLastUsedNewSession('provB', 'b1'))
+    expect(text).toContain(t.modelSelectLastUsedButtonNewSession)
+    // A `/new` card must not borrow the "switch back (this session only)" words.
+    expect(text).not.toContain(t.modelSelectLastUsedSwitched)
+    const button = card.body.elements.find((element: any) => element.tag === 'button')
+    expect(button.behaviors[0].value).toEqual({ action: 'switch-last', flow: 'new-session' })
   })
 
   it('marks the current route instead of dropping it (single-route memory still renders)', () => {
@@ -415,6 +438,84 @@ describe('global recent-model rows', () => {
     const last = cards.at(-1)
     expect(last.header.template).toBe('green')
     expect(JSON.stringify(last)).toContain(t.modelSelectRecentSwitched)
+    handle.dispose()
+  })
+})
+
+
+describe('new-session model step', () => {
+  it('sends a provider card that carries the /model sections', async () => {
+    const { handle, channel } = harness({
+      bridge: {
+        recentRoutes: async () => [{ provider: 'provB', model: 'b1', reasoningEffort: 'high' }],
+        recentModelChoices: async () => [{ provider: 'provB', model: 'b1', usedAt: 3 }],
+      },
+    })
+    const sent = await handle.sendNewSessionProviderCard({ chatId: 'oc_1', chatType: 'p2p' })
+    expect(sent.messageId).not.toBe('')
+    // Registered like any other model card, so a later in-place update (go back)
+    // and the settlement repaint can find the CardKit instance.
+    expect(handle.cardByMessage.get(sent.messageId)).toBe(sent.cardId)
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const text = JSON.stringify(card)
+    expect(text).toContain(t.modelSelectNewSessionTitle)
+    // The same three sections `/model` renders.
+    // (the line has an embedded newline, which JSON escapes — match its parts)
+    expect(text).toContain('**当前模型**')
+    expect(text).toContain('`provA/a1`')
+    expect(text).toContain(t.modelSelectLastUsedNewSession('provB', 'b1'))
+    expect(text).toContain(t.modelSelectRecentHeaderNewSession)
+    expect(text).toContain(`\`provB/b1\``)
+    handle.dispose()
+  })
+
+  it('picks the route for the NEW session from a recent row, touching nothing running', async () => {
+    const switchRoute = vi.fn(async () => ({ ok: true }))
+    const { fire, handle, onNewSessionConfirm, sessionController } = harness({ bridge: { switchRoute } })
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { value: { action: 'switch-recent', provider: 'provB', model: 'b1', effort: 'high', flow: 'new-session' } },
+    })
+    expect(onNewSessionConfirm).toHaveBeenCalledTimes(1)
+    const [, selection, messageId] = (onNewSessionConfirm as any).mock.calls[0]
+    expect(selection).toEqual({ provider: 'provB', model: 'b1', reasoningEffort: 'high' })
+    expect(messageId).toBe('m-1')
+    // A `/new` pick is not a switch: neither the session-local override nor the
+    // global default may move here (`关键坑 59`).
+    expect(switchRoute).not.toHaveBeenCalled()
+    expect(sessionController.selectModel).not.toHaveBeenCalled()
+    handle.dispose()
+  })
+
+  it('picks the previous model for the new session from the quick action', async () => {
+    const switchRoute = vi.fn(async () => ({ ok: true }))
+    const { fire, handle, onNewSessionConfirm } = harness({
+      bridge: {
+        switchRoute,
+        recentRoutes: async () => [{ provider: 'provB', model: 'b1' }],
+        recentModelChoices: async () => [],
+      },
+    })
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { value: { action: 'switch-last', flow: 'new-session' } } })
+    expect(onNewSessionConfirm).toHaveBeenCalledTimes(1)
+    const [, selection] = (onNewSessionConfirm as any).mock.calls[0]
+    expect(selection).toEqual({ provider: 'provB', model: 'b1' })
+    expect(switchRoute).not.toHaveBeenCalled()
+    handle.dispose()
+  })
+
+  it('says so when a remembered route is no longer offered, instead of doing nothing', async () => {
+    const { fire, cards, handle, onNewSessionConfirm } = harness()
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { value: { action: 'switch-recent', provider: 'gone-provider', model: 'x1', flow: 'new-session' } },
+    })
+    expect(onNewSessionConfirm).not.toHaveBeenCalled()
+    const last = cards.at(-1)
+    expect(last.header.template).toBe('red')
+    expect(JSON.stringify(last)).toContain(t.newSessionRouteUnavailable)
     handle.dispose()
   })
 })

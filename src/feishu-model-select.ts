@@ -142,7 +142,14 @@ function buildModelOptions(models: readonly LlmModelInfo[]): object[] {
 }
 
 /** Step 1 — Provider selection card. `flow` distinguishes the standalone
- *  `/model` switch from the `/new` card flow reusing the same card. */
+ *  `/model` switch from the `/new` card flow reusing the same card.
+ *
+ *  Both flows get the same three sections — the route in effect, the
+ *  "previous model" quick action and the GLOBAL recently-used rows — because
+ *  the `/new` model step is the same decision, only the consequence differs:
+ *  a `/model` pick switches the running Session, a `/new` pick becomes the
+ *  route of the session that is about to be created. The action values carry
+ *  the flow marker so the handlers never apply one to the other. */
 export function renderProviderSelectCard(
   providers: readonly LlmProviderInfo[],
   current: ModelSelection,
@@ -153,6 +160,10 @@ export function renderProviderSelectCard(
   const effort = current.reasoningEffort !== undefined && current.reasoningEffort !== ''
     ? current.reasoningEffort
     : 'default'
+  // A `/new` card must never read like a switch: these variants say "this is
+  // the model the new session gets", and their confirm button creates.
+  const forNewSession = flow === 'new-session'
+  const flowMarker = forNewSession ? { flow: 'new-session' as const } : {}
 
   return {
     schema: '2.0',
@@ -169,26 +180,35 @@ export function renderProviderSelectCard(
         },
         // The route goes in the card body: Feishu truncates button captions, so
         // a long "↺ 切回上次使用：provider/model" label was unreadable.
-        ...(flow === undefined && options.lastUsed !== undefined
+        ...(options.lastUsed !== undefined
           && (options.lastUsed.provider !== current.provider || options.lastUsed.model !== current.model)
           ? [
             {
               tag: 'markdown',
-              content: t.modelSelectLastUsed(options.lastUsed.provider, options.lastUsed.model),
+              content: forNewSession
+                ? t.modelSelectLastUsedNewSession(options.lastUsed.provider, options.lastUsed.model)
+                : t.modelSelectLastUsed(options.lastUsed.provider, options.lastUsed.model),
             },
             {
               tag: 'button',
-              text: { tag: 'plain_text', content: t.modelSelectLastUsedButton },
+              text: {
+                tag: 'plain_text',
+                content: forNewSession ? t.modelSelectLastUsedButtonNewSession : t.modelSelectLastUsedButton,
+              },
               type: 'default',
-              behaviors: [{ type: 'callback', value: { action: 'switch-last' } }],
+              behaviors: [{ type: 'callback', value: { action: 'switch-last', ...flowMarker } }],
             },
           ]
           : []),
         // GLOBAL recently used models (across Feishu sessions), one tappable row
-        // each. They switch THIS session only — the global default stays put.
-        ...(flow === undefined && (options.recent?.length ?? 0) > 0
+        // each. In `/model` they switch THIS session only (the global default
+        // stays put); in `/new` they become the new session's route.
+        ...((options.recent?.length ?? 0) > 0
           ? [
-            { tag: 'markdown', content: t.modelSelectRecentHeader },
+            {
+              tag: 'markdown',
+              content: forNewSession ? t.modelSelectRecentHeaderNewSession : t.modelSelectRecentHeader,
+            },
             ...(options.recent ?? []).map(entry => {
               // The current route is a recent use too: show it marked instead of
               // dropping it (dropping it made the whole section vanish whenever
@@ -209,6 +229,7 @@ export function renderProviderSelectCard(
                     provider: entry.provider,
                     model: entry.model,
                     ...(entry.reasoningEffort === undefined ? {} : { effort: entry.reasoningEffort }),
+                    ...flowMarker,
                   },
                 }],
               }
@@ -547,6 +568,21 @@ export async function sendModelCardV2(
 // Main entry point
 // ---------------------------------------------------------------------------
 
+/** What {@link startFeishuModelSelect} hands back to the plugin. */
+export interface FeishuModelSelectHandle {
+  dispose(): void
+  /** message id → CardKit card id, for in-place updates and retirement. */
+  cardByMessage: Map<string, string>
+  /** CardKit sequence per card id, shared with the retirement path. */
+  sequenceByCard: Map<string, number>
+  /** Send the `/new` flow's step-1 (provider) card. It carries the same
+   *  sections the standalone `/model` card does — the route in effect, the
+   *  previous-model quick action and the global recently-used rows — with the
+   *  `new-session` flow marker, so a pick becomes the new session's route
+   *  instead of switching the running one. */
+  sendNewSessionProviderCard(chatMessage: ConversationMessage): Promise<{ messageId: string; cardId: string }>
+}
+
 export function startFeishuModelSelect(deps: {
   llm: LlmDirectoryLike
   agentDefaultModel: AgentDefaultModelConfig
@@ -571,7 +607,7 @@ export function startFeishuModelSelect(deps: {
   /** Shared `messageId → topic` registry; cards sent from here are recorded so
    *  a click on them resolves to their own topic. */
   cardTopics?: CardTopicRegistry
-}): { dispose: () => void; cardByMessage: Map<string, string>; sequenceByCard: Map<string, number> } {
+}): FeishuModelSelectHandle {
   const { llm, agentDefaultModel, bridgeHolder, sessionController, channel, logger, getTranslations, onNewSessionConfirm, topicFor, cardTopics } = deps
 
   /**
@@ -647,15 +683,6 @@ export function startFeishuModelSelect(deps: {
   const MIN_UPDATE_INTERVAL_MS = 500
 
   /**
-   * Resolve the model that THIS chat's session actually runs, falling back to
-   * the global default. `agentDefaultModel.currentSelection()` is only the
-   * default for agents without a session-specific selection; a WebUI switch or
-   * session creation can set a per-session model that never touches that
-   * default, so reading the session's own `request/header` (the authority,
-   * matching `/status` and the reply card) is what keeps the selector's
-   * "当前模型" line truthful.
-   */
-  /**
    * The newest route this Session used that differs from `current`, if any.
    *
    * Read from the Session log, never from the global default: this is what
@@ -674,7 +701,39 @@ export function startFeishuModelSelect(deps: {
     }
   }
 
-  async function resolveCurrent(chatMessage: ConversationMessage): Promise<ModelSelection> {
+  /**
+   * The route a NEW session would start with: DSH's global default.
+   *
+   * A `/new` flow builds a session from scratch, so the Session this chat runs
+   * right now is NOT the reference — its route only wins if it was persisted as
+   * the default (explicit `/model <provider>/<model>`), and a session-local
+   * quick pick deliberately never is (`关键坑 59`).
+   */
+  function newSessionCurrent(): ModelSelection {
+    const fallback = agentDefaultModel.currentSelection()
+    return {
+      provider: fallback.provider,
+      model: fallback.model,
+      ...(fallback.reasoningEffort !== undefined && fallback.reasoningEffort !== ''
+        ? { reasoningEffort: String(fallback.reasoningEffort) }
+        : {}),
+    }
+  }
+
+  /**
+   * Resolve the route the CARD should show as "current".
+   *
+   * `/model`: the model THIS chat's session actually runs, falling back to the
+   * global default. `agentDefaultModel.currentSelection()` is only the default
+   * for agents without a session-specific selection; a WebUI switch or session
+   * creation can set a per-session model that never touches that default, so
+   * reading the session's own `request/header` (the authority, matching
+   * `/status` and the reply card) is what keeps the "当前模型" line truthful.
+   *
+   * `/new`: the global default — see {@link newSessionCurrent}.
+   */
+  async function resolveCurrent(chatMessage: ConversationMessage, flow?: ModelCardFlow): Promise<ModelSelection> {
+    if (flow === 'new-session') return newSessionCurrent()
     const bridge = bridgeHolder.current
     const sessionSel = bridge !== undefined
       ? await bridge.sessionCurrentSelection(chatMessage).catch(() => undefined)
@@ -734,7 +793,7 @@ export function startFeishuModelSelect(deps: {
   ): Promise<void> {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
-    const current = await resolveCurrent(chatMessage)
+    const current = await resolveCurrent(chatMessage, flow)
 
     const { models, reasoning } = await discoverModels(provider)
 
@@ -767,6 +826,22 @@ export function startFeishuModelSelect(deps: {
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 
+  /**
+   * Build the step-1 (provider) card for `chatMessage`.
+   *
+   * Always includes the same three sections — the route in effect, the
+   * "previous model" quick action and the GLOBAL recently-used rows — for the
+   * standalone `/model` flow and for the `/new` model step alike; only the
+   * wording and what a pick DOES differ (see renderProviderSelectCard).
+   */
+  async function renderProviderCard(chatMessage: ConversationMessage, flow?: ModelCardFlow): Promise<object> {
+    const current = await resolveCurrent(chatMessage, flow)
+    const providers = await discoverProviders()
+    const lastUsed = await lastUsedRoute(chatMessage, current)
+    const recent = await recentModelChoices(chatMessage)
+    return renderProviderSelectCard(providers, current, flow, getTranslations(), { lastUsed, recent })
+  }
+
   /** Step 2 → Step 1: back button (form reset). */
   async function handleGoBack(
     chatMessage: ConversationMessage,
@@ -775,19 +850,52 @@ export function startFeishuModelSelect(deps: {
   ): Promise<void> {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
-    const current = await resolveCurrent(chatMessage)
-    const providers = await discoverProviders()
-    const lastUsed = await lastUsedRoute(chatMessage, current)
-    const recent = await recentModelChoices(chatMessage)
-    const card = renderProviderSelectCard(providers, current, flow, getTranslations(), { lastUsed, recent })
-    await updateCardInstanceOnMessage(messageId, chatMessage, card)
+    await updateCardInstanceOnMessage(messageId, chatMessage, await renderProviderCard(chatMessage, flow))
+  }
+
+  /**
+   * A quick pick on the `/new` model card CHOOSES the route of the session that
+   * is about to be created. It must not touch the session that is running (no
+   * `switchRoute`, no global default) — the caller collects the choice into the
+   * final confirmation card, where creating the session is still an explicit
+   * tap (`src/new-session-card.ts`).
+   */
+  async function commitNewSessionRoute(
+    chatMessage: ConversationMessage,
+    messageId: string | undefined,
+    route: { provider: string; model: string; reasoningEffort?: string | undefined },
+  ): Promise<void> {
+    if (onNewSessionConfirm === undefined) {
+      logger.warn('dsh-feishu: new-session quick pick received but no onNewSessionConfirm callback registered')
+      return
+    }
+    await onNewSessionConfirm(chatMessage, {
+      provider: route.provider,
+      model: route.model,
+      ...(route.reasoningEffort === undefined || route.reasoningEffort === ''
+        ? {}
+        : { reasoningEffort: route.reasoningEffort }),
+    }, messageId)
   }
 
   /** Quick action: switch back to the previous route of THIS session only. */
-  async function handleSwitchLast(chatMessage: ConversationMessage, messageId: string | undefined): Promise<void> {
+  async function handleSwitchLast(
+    chatMessage: ConversationMessage,
+    messageId: string | undefined,
+    flow?: ModelCardFlow,
+  ): Promise<void> {
     const t = getTranslations()
     const bridge = bridgeHolder.current
     if (bridge === undefined) return
+    if (flow === 'new-session') {
+      const target = await lastUsedRoute(chatMessage, newSessionCurrent())
+      if (target === undefined) {
+        logger.info('dsh-feishu: new-session quick pick has no previous route to reuse')
+        return
+      }
+      await commitNewSessionRoute(chatMessage, messageId, target)
+      return
+    }
     const current = await resolveCurrent(chatMessage)
     const target = await lastUsedRoute(chatMessage, current)
     if (target === undefined) {
@@ -819,13 +927,15 @@ export function startFeishuModelSelect(deps: {
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 
-  /** Quick row: switch to one of the GLOBAL recently used models, session-locally. */
+  /** Quick row: switch to one of the GLOBAL recently used models, session-locally.
+   *  On the `/new` card the same row instead becomes the new session's route. */
   async function handleSwitchRecent(
     chatMessage: ConversationMessage,
     messageId: string | undefined,
     provider: string,
     model: string,
     reasoningEffort?: string,
+    flow?: ModelCardFlow,
   ): Promise<void> {
     const t = getTranslations()
     const bridge = bridgeHolder.current
@@ -833,6 +943,24 @@ export function startFeishuModelSelect(deps: {
     const providers = new Set((await discoverProviders()).map(entry => entry.id))
     if (!providers.has(provider)) {
       logger.warn(`dsh-feishu: model-select recent row names unknown provider ${provider}`)
+      if (flow === 'new-session') {
+        // Silence is the worst answer here: the row is gone but the operator
+        // must not be left staring at a dead card.
+        await updateCardInstanceOnMessage(messageId, chatMessage, {
+          schema: '2.0',
+          config: { wide_screen_mode: true },
+          header: { title: { tag: 'plain_text', content: t.modelSelectNewSessionTitle }, template: 'red' },
+          body: { elements: [{ tag: 'markdown', content: t.newSessionRouteUnavailable }] },
+        })
+      }
+      return
+    }
+    if (flow === 'new-session') {
+      await commitNewSessionRoute(chatMessage, messageId, {
+        provider,
+        model,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      })
       return
     }
     const outcome = await bridge.switchRoute(chatMessage, {
@@ -996,6 +1124,20 @@ export function startFeishuModelSelect(deps: {
     await updateCardInstanceOnMessage(messageId, chatMessage, card)
   }
 
+  /**
+   * Send the `/new` flow's step-1 model card.
+   *
+   * The preset step calls this instead of rendering its own provider card, so
+   * the `/new` model step and `/model` cannot drift apart: both show the route
+   * in effect, the previous-model quick action and the global recently-used
+   * rows, and both send through the same card bookkeeping (the card id map
+   * that later in-place updates and retirements rely on).
+   */
+  async function sendNewSessionProviderCard(chatMessage: ConversationMessage): Promise<{ messageId: string; cardId: string }> {
+    const card = await renderProviderCard(chatMessage, 'new-session')
+    return sendModelCardV2(channel, chatMessage, card, cardByMessage, sequenceByCard, cardTopics)
+  }
+
   const onCardAction = async (evt: CardActionLike): Promise<void> => {
     const parsed = parseCardAction(evt)
     if (parsed === undefined) return
@@ -1044,12 +1186,7 @@ export function startFeishuModelSelect(deps: {
             case 'enter-select': {
               const bridge = bridgeHolder.current
               if (bridge === undefined) break
-              const current = await resolveCurrent(item.chatMessage)
-              const providers = await discoverProviders()
-              const lastUsed = await lastUsedRoute(item.chatMessage, current)
-              const recent = await recentModelChoices(item.chatMessage)
-              const card = renderProviderSelectCard(providers, current, item.flow, getTranslations(), { lastUsed, recent })
-              await updateCardInstanceOnMessage(item.messageId, item.chatMessage, card)
+              await updateCardInstanceOnMessage(item.messageId, item.chatMessage, await renderProviderCard(item.chatMessage, item.flow))
               break
             }
             case 'select-provider':
@@ -1059,10 +1196,10 @@ export function startFeishuModelSelect(deps: {
               await handleGoBack(item.chatMessage, item.messageId, item.flow)
               break
             case 'switch-last':
-              await handleSwitchLast(item.chatMessage, item.messageId)
+              await handleSwitchLast(item.chatMessage, item.messageId, item.flow)
               break
             case 'switch-recent':
-              await handleSwitchRecent(item.chatMessage, item.messageId, item.action.provider, item.action.model, item.action.reasoningEffort)
+              await handleSwitchRecent(item.chatMessage, item.messageId, item.action.provider, item.action.model, item.action.reasoningEffort, item.flow)
               break
             case 'switch-effort':
               await handleSwitchEffort(item.chatMessage, item.messageId, item.action.effort)
@@ -1094,5 +1231,6 @@ export function startFeishuModelSelect(deps: {
     },
     cardByMessage,
     sequenceByCard,
+    sendNewSessionProviderCard,
   }
 }

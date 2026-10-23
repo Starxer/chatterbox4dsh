@@ -495,6 +495,16 @@ export interface Translations {
   modelSelectRecentHeader: string
   /** The row of the recently-used list that is the Session's current route. */
   modelSelectRecentCurrent: (provider: string, model: string) => string
+  /** The `/new` flow's variant of the recent-models header: tapping a row picks
+   *  the route for the session that is ABOUT TO be created — it does not switch
+   *  the session that is running. */
+  modelSelectRecentHeaderNewSession: string
+  /** The `/new` flow's variant of the "back to last used" button. */
+  modelSelectLastUsedButtonNewSession: string
+  /** The `/new` flow's variant of the card-body line above that button. */
+  modelSelectLastUsedNewSession: (provider: string, model: string) => string
+  /** A quick pick in the `/new` flow names a route this Host no longer offers. */
+  newSessionRouteUnavailable: string
   /** `/reasoning` quick-effort card. */
   reasoningCardTitle: string
   reasoningCardHint: string
@@ -608,6 +618,19 @@ export interface Translations {
   newSessionConfirmModel: (route: string) => string
   newSessionConfirmEffort: (effort: string) => string
   newSessionConfirmDefaults: string
+  /** Step cards of the `/new` flow: the card where a choice was made is
+   *  REWRITTEN into one of these settlement cards (title + the decision), the
+   *  same way an answered question card is rewritten. */
+  newSessionSettledWorkspaceTitle: string
+  newSessionSettledWorkspace: (path: string) => string
+  /** Extra line when that workspace does not exist yet (O16). */
+  newSessionSettledWillCreate: string
+  newSessionSettledPresetTitle: string
+  newSessionSettledPreset: (preset: string) => string
+  newSessionSettledModelTitle: string
+  newSessionSettledModel: (provider: string, model: string) => string
+  /** Footer of every settlement card: it is inert, continue below. */
+  newSessionSettledHint: string
   onboardingAttachedTitle: string
   onboardingTakeover: (owner: string) => string
   onboardingAttachedBody: (sessionId: string, takeover: string) => string
@@ -1073,6 +1096,10 @@ export const zh = {
   modelSelectLastUsedFailed: reason => `⚠️ 切回上次模型失败：${reason}`,
   modelSelectRecentHeader: '🕘 **最近使用（全局）** — 点一行直接切换（只改本会话）',
   modelSelectRecentCurrent: (provider, model) => `✅ 当前：\`${provider}/${model}\``,
+  modelSelectRecentHeaderNewSession: '🕘 **最近使用（全局）** — 点一行直接选中，作为新会话的模型',
+  modelSelectLastUsedButtonNewSession: '↺ 用上次的模型',
+  modelSelectLastUsedNewSession: (provider, model) => `↺ 上次使用：\`${provider}/${model}\`（点下方按钮，作为新会话的模型）`,
+  newSessionRouteUnavailable: '⚠️ 这个模型已经不在可选列表里了，请用下方列表重新选择。',
   reasoningCardTitle: '🧠 推理强度',
   reasoningCardHint: '点一行直接切换（只改本会话，不动全局默认）',
   reasoningCardCurrent: effort => `✅ 当前：**${effort}**`,
@@ -1176,6 +1203,14 @@ export const zh = {
   newSessionConfirmModel: route => `🤖 **模型**：\`${route}\``,
   newSessionConfirmEffort: effort => `🧠 **推理等级**：\`${effort}\``,
   newSessionConfirmDefaults: '_未指定工作区/预设，将使用默认值。_',
+  newSessionSettledWorkspaceTitle: '✅ 工作区已选定',
+  newSessionSettledWorkspace: path => `📁 \`${path}\``,
+  newSessionSettledWillCreate: '🧱 这个目录还不存在，点「创建会话」时会一并创建。',
+  newSessionSettledPresetTitle: '✅ Agent 模式已选定',
+  newSessionSettledPreset: preset => `🧩 **${preset}**`,
+  newSessionSettledModelTitle: '✅ 模型已选定',
+  newSessionSettledModel: (provider, model) => `🔹 \`${provider}/${model}\``,
+  newSessionSettledHint: '这张卡片已锁定 · 继续请用下方最新的卡片。',
   onboardingAttachedTitle: '📎 会话已绑定',
   onboardingTakeover: owner => `\n\n🔓 已从 ${owner} 接管该会话（原占用者已被重置为新会话）。`,
   onboardingAttachedBody: (sessionId, takeover) => `已绑定到会话 \`${sessionId}\`。${takeover}\n\n现在可以发送消息继续对话了。`,
@@ -1612,6 +1647,10 @@ export const en: Translations = {
   modelSelectLastUsedFailed: reason => `⚠️ Could not switch back: ${reason}`,
   modelSelectRecentHeader: '🕘 **Recently used (global)** — tap a row to switch (this session only)',
   modelSelectRecentCurrent: (provider, model) => `✅ Current: \`${provider}/${model}\``,
+  modelSelectRecentHeaderNewSession: '🕘 **Recently used (global)** — tap a row to use it for the new session',
+  modelSelectLastUsedButtonNewSession: '↺ Use previous model',
+  modelSelectLastUsedNewSession: (provider, model) => `↺ Last used: \`${provider}/${model}\` (tap below to use it for the new session)`,
+  newSessionRouteUnavailable: '⚠️ That model is no longer offered — pick one from the list below.',
   reasoningCardTitle: '🧠 Reasoning effort',
   reasoningCardHint: 'Tap a row to switch (this session only — the global default is untouched)',
   reasoningCardCurrent: effort => `✅ Current: **${effort}**`,
@@ -1715,6 +1754,14 @@ export const en: Translations = {
   newSessionConfirmModel: route => `🤖 **Model**: \`${route}\``,
   newSessionConfirmEffort: effort => `🧠 **Reasoning effort**: \`${effort}\``,
   newSessionConfirmDefaults: '_No workspace/preset chosen; the defaults will be used._',
+  newSessionSettledWorkspaceTitle: '✅ Workspace chosen',
+  newSessionSettledWorkspace: path => `📁 \`${path}\``,
+  newSessionSettledWillCreate: '🧱 This directory does not exist yet; it is created together with the session.',
+  newSessionSettledPresetTitle: '✅ Agent preset chosen',
+  newSessionSettledPreset: preset => `🧩 **${preset}**`,
+  newSessionSettledModelTitle: '✅ Model chosen',
+  newSessionSettledModel: (provider, model) => `🔹 \`${provider}/${model}\``,
+  newSessionSettledHint: 'This card is locked · continue with the newest card below.',
   onboardingAttachedTitle: '📎 Session attached',
   onboardingTakeover: owner => `\n\n🔓 Took over this session from ${owner} (the previous owner was reset to a brand-new session).`,
   onboardingAttachedBody: (sessionId, takeover) => `Attached to session \`${sessionId}\`.${takeover}\n\nYou can now send a message to continue chatting.`,

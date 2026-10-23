@@ -7,13 +7,21 @@
  * cards stay in the chat — the operator prefers that to a recalled card — but
  * they keep showing live-looking buttons that no longer lead anywhere.
  *
- * This module retires such a superseded card IN PLACE: it keeps the card's own
- * content, strips every callback binding, greys the header and appends a short
- * localized notice pointing at the newest card. Replacing the whole payload
- * with a generic notice erased the record of what the operator had picked (a
- * `/new` flow leaves a dozen cards behind), so the content is preserved. It is
- * deliberately best-effort: failing to repaint the old card must never break
- * the flow that already succeeded.
+ * This module retires such a superseded card IN PLACE. Three shapes exist:
+ *
+ * - `replace` — the caller hands over the payload to paint. A card where the
+ *   operator actually DECIDED something is rewritten into a settlement card
+ *   that shows only the decision ("✅ 工作区已选定 / 📁 path"), the same way an
+ *   answered question card is rewritten. Keeping the old content and appending
+ *   one notice line (the previous behaviour) left the visible change at the
+ *   bottom of a long list, so nobody could tell anything had happened.
+ * - `keep` — the card's own content, with every callback binding stripped, a
+ *   grey header and one localized notice line pointing at the newest card.
+ * - the bare {@link renderSupersededCard} notice, for cards merely walked
+ *   through (folder-browser pages).
+ *
+ * It is deliberately best-effort: failing to repaint the old card must never
+ * break the flow that already succeeded.
  *
  * @module @starxer/chatterbox4dsh/card-supersede
  */
@@ -170,6 +178,22 @@ export interface CardSupersederDeps {
   sequenceByCard: Map<string, number>
 }
 
+/**
+ * How a superseded card is repainted.
+ *
+ * @property mode - `'replace'` paints {@link card} verbatim (minus callback
+ *   bindings) — the settlement shape; `'keep'` freezes the card's own content
+ *   with a notice line; `'notice'` replaces it with the bare generic notice.
+ * @property note - notice line for the `'keep'` shape.
+ * @property card - payload for the `'replace'` shape. Omitted (or with no
+ *   `mode`) it falls back to the default shape.
+ */
+export interface SupersedeOptions {
+  mode?: 'keep' | 'notice' | 'replace'
+  note?: string
+  card?: object
+}
+
 export interface CardSuperseder {
   /** Remember the card most recently posted in this chat. */
   note(chatId: string, ref: CardRef): void
@@ -179,15 +203,11 @@ export interface CardSuperseder {
    * Call it AFTER the new card has been posted so the user never sees a gap,
    * and BEFORE {@link note}-ing the new card.
    *
-   * @param options.mode - `'keep'` freezes the noted card with its own content
-   *   so the decision it recorded stays readable; `'notice'` replaces it with
-   *   the generic grey stale notice. Omit it to get `'keep'`, except for a card
-   *   noted with `navigation: true` (a folder-browser page), which then
-   *   collapses to the notice.
-   * @param options.note - notice line for the `'keep'` shape; e.g. the
-   *   "✅ selected X, no longer editable" line on a settled decision card.
+   * @param options - see {@link SupersedeOptions}. Omit it to get `'keep'`,
+   *   except for a card noted with `navigation: true` (a folder-browser page),
+   *   which then collapses to the notice.
    */
-  supersedePrevious(chatId: string, options?: { mode?: 'keep' | 'notice'; note?: string }): Promise<void>
+  supersedePrevious(chatId: string, options?: SupersedeOptions): Promise<void>
   /** Drop the remembered card without repainting it (terminal result cards
    *  such as "session created" stay readable). */
   forget(chatId: string): void
@@ -212,18 +232,23 @@ export function createCardSuperseder(deps: CardSupersederDeps): CardSuperseder {
       if (previous === undefined) return
       lastByChat.delete(chatId)
       const t = deps.getTranslations()
-      // Freeze the payload as a settled record when the caller asked for it
-      // (and handed one over). With no explicit mode, a card that was only a
-      // navigation step collapses to the bare notice; an explicit keep still
-      // wins, because that page may be exactly where the operator decided.
+      // A settle payload is painted as-is (minus callback bindings): it is the
+      // WHOLE card now, so the decision is the first thing on screen. Otherwise
+      // freeze the payload as a settled record when the caller asked for it
+      // (and handed one over); with no explicit mode, a card that was only a
+      // navigation step collapses to the bare notice, while an explicit keep
+      // still wins, because that page may be exactly where the operator decided.
+      const settled = options?.mode === 'replace' ? options.card : undefined
       const keep = options?.mode === 'notice'
         ? false
         : options?.mode === 'keep'
           ? previous.card !== undefined
           : previous.navigation !== true && previous.card !== undefined
-      const card = keep
-        ? renderStaleCard(previous.card!, t, options?.note)
-        : renderSupersededCard(t)
+      const card = settled !== undefined
+        ? stripBehaviors(settled) as object
+        : keep
+          ? renderStaleCard(previous.card!, t, options?.note)
+          : renderSupersededCard(t)
       try {
         if (deps.channel.updateCardInstance !== undefined) {
           const sequence = (deps.sequenceByCard.get(previous.cardId) ?? 0) + 1

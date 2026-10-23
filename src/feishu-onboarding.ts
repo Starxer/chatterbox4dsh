@@ -23,7 +23,8 @@ import type { DirectoryEntry, DirectoryListing } from '@deepseek-ai/dsh-host-dir
 import { mkdir, opendir, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
-import { createCardSuperseder, type SupersedeChannel } from './card-supersede.ts'
+import { createCardSuperseder, type SupersedeChannel, type SupersedeOptions } from './card-supersede.ts'
+import { renderWorkspaceSettledCard } from './new-session-card.ts'
 import { createCardTopicRegistry, type CardTopicRegistry } from './card-topics.ts'
 
 /** Minimal logger surface. */
@@ -864,11 +865,12 @@ export interface FeishuOnboardingHandle {
    * the model card (which is rendered by feishu-model-select, not by this
    * module) so the preset card does not keep showing live-looking buttons.
    *
-   * @param options - same shape as the internal superseder: `keep` freezes the
-   *   card with its content (optionally with a settled note), `notice` replaces
-   *   it with the bare stale notice.
+   * @param options - see {@link SupersedeOptions}: `replace` paints the given
+   *   payload (the settlement card of the step that just happened), `keep`
+   *   freezes the card with its content, `notice` replaces it with the bare
+   *   stale notice.
    */
-  supersedePrevious(chatId: string, options?: { mode?: 'keep' | 'notice'; note?: string }): Promise<void>
+  supersedePrevious(chatId: string, options?: SupersedeOptions): Promise<void>
 }
 
 export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboardingHandle {
@@ -932,16 +934,19 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
    * @param navigation - true for a pure navigation card (a folder-browser page
    *   or "up one level"). Such a card, and the page it replaces, collapse to
    *   the bare notice — unless the operator settles on that very page, whose
-   *   `settlePrevious` freezes it instead.
-   * @param settlePrevious - set when the card being retired is the one the
+   *   `settledCard` then replaces it.
+   * @param settledCard - set when the card being retired is the one the
    *   operator just used to COMMIT a value (picking a workspace, confirming a
-   *   directory). It is frozen on screen with that value and stops being
-   *   editable — the readable record of the decision.
+   *   directory). It is REWRITTEN IN PLACE into this payload — a green
+   *   "✅ chosen: X" card — and stops being editable. Rewriting the whole card
+   *   (instead of appending one notice line to the bottom of a long list of
+   *   rows) is what makes the decision visible: at the bottom of the picker a
+   *   footnote reads as "nothing happened".
    */
   async function sendCard(
     chatMessage: ConversationMessage,
     card: object,
-    options?: { terminal?: boolean; navigation?: boolean; settlePrevious?: string },
+    options?: { terminal?: boolean; navigation?: boolean; settledCard?: object },
   ): Promise<void> {
     const topic = topicOf(chatMessage)
     const cardId = await channel.createCardInstance(card)
@@ -952,9 +957,8 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     cardTopics.note(result.messageId, topic)
     // Repaint the previous card only AFTER the new one is on screen, and
     // before remembering the new card (supersedePrevious consumes the note).
-    const t = getTranslations()
-    await superseder.supersedePrevious(chatMessage.chatId, options?.settlePrevious !== undefined
-      ? { mode: 'keep', note: t.cardSettledNote(options.settlePrevious) }
+    await superseder.supersedePrevious(chatMessage.chatId, options?.settledCard !== undefined
+      ? { mode: 'replace', card: options.settledCard }
       : options?.navigation === true ? { mode: 'notice' } : {})
     if (options?.terminal === true) {
       superseder.forget(chatMessage.chatId)
@@ -1088,7 +1092,11 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     newFlow.set(chatKey, flowState)
     const presets = await agentPresets.list()
     const card = renderPresetPicker(presets, flowState.agentPreset ?? agentPresets.defaultId, getTranslations())
-    await sendCard(action.chatMessage, card, { settlePrevious: path })
+    // The card that recorded the workspace decision is rewritten into the
+    // settlement card (the folder browser page, or the picker card).
+    await sendCard(action.chatMessage, card, {
+      settledCard: renderWorkspaceSettledCard(path, options?.missing === true, getTranslations()),
+    })
   }
 
   /** The red card for a path the operator cannot use as a workspace. */
@@ -1149,7 +1157,9 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
       browseState.delete(chatKey)
       const siblings = await siblingDirectories(path)
       logger.info(`dsh-feishu: workspace ${path} does not exist; asked before creating (${siblings.length} neighbours offered)`)
-      await sendCard(action.chatMessage, renderNewWorkspaceConfirmCard(path, siblings, t), { settlePrevious: path })
+      await sendCard(action.chatMessage, renderNewWorkspaceConfirmCard(path, siblings, t), {
+        settledCard: renderWorkspaceSettledCard(path, true, t),
+      })
       return
     }
     await advanceToPresets(action, path)
@@ -1189,10 +1199,12 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     const presets = await agentPresets.list()
     const defaultPreset = flowState.agentPreset ?? agentPresets.defaultId
     const card = renderPresetPicker(presets, defaultPreset, getTranslations())
-    // The workspace picker is the card the operator just decided on: freeze it
-    // on that choice instead of turning it into a dead grey notice.
+    // The workspace picker is the card the operator just decided on: rewrite it
+    // into the settlement card showing THAT choice, instead of appending a
+    // notice below a long list of now-dead rows.
+    const chosen = flowState.workspace ?? action.value ?? ''
     await sendCard(action.chatMessage, card, {
-      settlePrevious: flowState.workspace ?? action.value ?? '',
+      settledCard: renderWorkspaceSettledCard(chosen, flowState.workspaceMissing === true, getTranslations()),
     })
   }
 
@@ -1395,7 +1407,7 @@ export function startFeishuOnboarding(deps: FeishuOnboardingDeps): FeishuOnboard
     noteTopic: (chatMessage: ConversationMessage): void => {
       recordTopic(chatMessage)
     },
-    supersedePrevious: (chatId: string, options?: { mode?: 'keep' | 'notice'; note?: string }): Promise<void> =>
+    supersedePrevious: (chatId: string, options?: SupersedeOptions): Promise<void> =>
       superseder.supersedePrevious(chatId, options),
   }
 }
