@@ -164,6 +164,12 @@ export function renderProviderSelectCard(
   // the model the new session gets", and their confirm button creates.
   const forNewSession = flow === 'new-session'
   const flowMarker = forNewSession ? { flow: 'new-session' as const } : {}
+  // `/model` shows the current route MARKED inside the list (dropping it made
+  // the whole section vanish when the memory held only that route). `/new`
+  // already shows it as its own tappable row above, so it is filtered out here
+  // instead of appearing twice — once dead.
+  const recentRows = (options.recent ?? []).filter(entry =>
+    !(forNewSession && entry.provider === current.provider && entry.model === current.model))
 
   return {
     schema: '2.0',
@@ -174,10 +180,33 @@ export function renderProviderSelectCard(
     },
     body: {
       elements: [
-        {
-          tag: 'markdown',
-          content: t.modelSelectCurrent(current.provider, current.model, effort),
-        },
+        // The route in effect is context on `/model` (it is already applied,
+        // so a tap would be a no-op). On `/new` it is a CHOICE: the default
+        // route is exactly what the new session would inherit, so leaving it as
+        // a dead line forced the operator through the provider/model dropdowns
+        // just to accept what the card had already told them ("还是没法点击选择
+        // 默认模型", 2026-10-23). A tappable row is the one-tap way to accept it.
+        ...(forNewSession
+          ? [{
+            tag: 'interactive_container',
+            elements: [{ tag: 'markdown', content: t.modelSelectNewSessionDefault(current.provider, current.model, effort) }],
+            behaviors: [{
+              type: 'callback',
+              value: {
+                action: 'switch-recent',
+                provider: current.provider,
+                model: current.model,
+                ...(current.reasoningEffort === undefined || current.reasoningEffort === ''
+                  ? {}
+                  : { effort: current.reasoningEffort }),
+                ...flowMarker,
+              },
+            }],
+          }]
+          : [{
+            tag: 'markdown',
+            content: t.modelSelectCurrent(current.provider, current.model, effort),
+          }]),
         // The route goes in the card body: Feishu truncates button captions, so
         // a long "↺ 切回上次使用：provider/model" label was unreadable.
         ...(options.lastUsed !== undefined
@@ -203,16 +232,14 @@ export function renderProviderSelectCard(
         // GLOBAL recently used models (across Feishu sessions), one tappable row
         // each. In `/model` they switch THIS session only (the global default
         // stays put); in `/new` they become the new session's route.
-        ...((options.recent?.length ?? 0) > 0
+        ...(recentRows.length > 0
           ? [
             {
               tag: 'markdown',
               content: forNewSession ? t.modelSelectRecentHeaderNewSession : t.modelSelectRecentHeader,
             },
-            ...(options.recent ?? []).map(entry => {
-              // The current route is a recent use too: show it marked instead of
-              // dropping it (dropping it made the whole section vanish whenever
-              // the memory held only the route the Session already runs).
+            ...recentRows.map(entry => {
+              // Already in effect: a mark, not an action.
               if (entry.provider === current.provider && entry.model === current.model) {
                 return { tag: 'markdown', content: t.modelSelectRecentCurrent(entry.provider, entry.model) }
               }
@@ -388,14 +415,20 @@ export function renderModelSelectCard(
       name: `model_form_${selectedProvider}`,
       elements: formElements,
     },
-    // Back button — outside the form so it triggers a regular callback.
+    // Back button — outside the form so it triggers a regular callback. It MUST
+    // carry the flow marker: without it, stepping back from the `/new` model
+    // card re-rendered the provider card as the standalone `/model` one (wrong
+    // title and wording) and, worse, its rows would then switch the RUNNING
+    // session instead of choosing the route of the session being created
+    // (true on 2026-10-23: the operator went back and the card silently turned
+    // into `/model`).
     {
       tag: 'button',
       text: { tag: 'plain_text', content: t.modelSelectBack },
       type: 'default',
       behaviors: [{
         type: 'callback',
-        value: { action: 'go-back' },
+        value: { action: 'go-back', ...(flow === undefined ? {} : { flow }) },
       }],
     },
   ]

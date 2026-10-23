@@ -390,10 +390,16 @@ describe('global recent-model rows', () => {
     // drift from `/model`), but each click carries the flow marker so it picks
     // the route of the session about to be created instead of switching the
     // running one.
-    const newSession = renderProviderSelectCard(providers, current, 'new-session', t, { recent: [{ provider: 'provB', model: 'b1', usedAt: 2 }] }) as any
+    const newSession = renderProviderSelectCard(providers, current, 'new-session', t, { recent: [
+      { provider: 'provA', model: 'a1', usedAt: 3 },
+      { provider: 'provB', model: 'b1', usedAt: 2 },
+    ] }) as any
     const newRows = newSession.body.elements.filter((element: any) => element.tag === 'interactive_container')
-    expect(newRows).toHaveLength(1)
-    expect(newRows[0].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provB', model: 'b1', flow: 'new-session' })
+    // The default route gets its own row (so it can be CHOSEN, not just read),
+    // and it is not repeated in the recent list.
+    expect(newRows).toHaveLength(2)
+    expect(newRows[0].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provA', model: 'a1', flow: 'new-session' })
+    expect(newRows[1].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provB', model: 'b1', flow: 'new-session' })
     const text = JSON.stringify(newSession)
     expect(text).toContain(t.modelSelectRecentHeaderNewSession)
     expect(text).toContain(t.modelSelectNewSessionTitle)
@@ -460,12 +466,66 @@ describe('new-session model step', () => {
     const text = JSON.stringify(card)
     expect(text).toContain(t.modelSelectNewSessionTitle)
     // The same three sections `/model` renders.
-    // (the line has an embedded newline, which JSON escapes — match its parts)
-    expect(text).toContain('**当前模型**')
+    // The default route is a tappable choice here (not just context), so the
+    // line is named "默认模型" rather than "当前模型".
+    expect(text).toContain('**默认模型**')
     expect(text).toContain('`provA/a1`')
+    expect(text).toContain('新会话将继承')
     expect(text).toContain(t.modelSelectLastUsedNewSession('provB', 'b1'))
     expect(text).toContain(t.modelSelectRecentHeaderNewSession)
     expect(text).toContain(`\`provB/b1\``)
+    handle.dispose()
+  })
+
+  it('always offers the default route as a tappable row, even with no history at all', async () => {
+    // The regression the operator reported: the only route on the `/new` card
+    // was the default, rendered as a dead `✅ 当前` line — "还是没法点击选择默认
+    // 模型". It is a real choice for a new session, so it must be tappable.
+    const { handle, channel } = harness({ bridge: { recentRoutes: async () => [], recentModelChoices: async () => [] } })
+    const sent = await handle.sendNewSessionProviderCard({ chatId: 'oc_1', chatType: 'p2p' })
+    expect(sent.messageId).not.toBe('')
+    const card = channel.createCardInstance.mock.calls.at(-1)![0] as any
+    const rows = card.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].behaviors[0].value).toEqual({ action: 'switch-recent', provider: 'provA', model: 'a1', flow: 'new-session' })
+    // (the line has embedded newlines, which JSON escapes — match its parts)
+    expect(JSON.stringify(card)).toContain('**默认模型**')
+    expect(JSON.stringify(card)).toContain('新会话将继承')
+    handle.dispose()
+  })
+
+  it('accepts the default model with one tap and creates nothing by itself', async () => {
+    const switchRoute = vi.fn(async () => ({ ok: true }))
+    const { fire, handle, onNewSessionConfirm, sessionController } = harness({ bridge: { switchRoute } })
+    await fire({
+      chatId: 'oc_1',
+      messageId: 'm-1',
+      action: { value: { action: 'switch-recent', provider: 'provA', model: 'a1', flow: 'new-session' } },
+    })
+    expect(onNewSessionConfirm).toHaveBeenCalledTimes(1)
+    const [, selection, messageId] = (onNewSessionConfirm as any).mock.calls[0]
+    expect(selection).toEqual({ provider: 'provA', model: 'a1' })
+    expect(messageId).toBe('m-1')
+    expect(switchRoute).not.toHaveBeenCalled()
+    expect(sessionController.selectModel).not.toHaveBeenCalled()
+    handle.dispose()
+  })
+
+  it('keeps the flow marker on the back button of the model card', async () => {
+    // Without it, going back from the `/new` model card re-rendered the card as
+    // the standalone `/model` one (wrong wording) and its rows would switch the
+    // RUNNING session instead of choosing the new session's route.
+    const { fire, cards, handle } = harness()
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { tag: 'button', option: 'provB', value: { action: 'select-provider', flow: 'new-session' } } })
+    const modelCard = cards.at(-1) as any
+    const back = modelCard.body.elements.find((element: any) => element.tag === 'button')
+    expect(back.behaviors[0].value).toEqual({ action: 'go-back', flow: 'new-session' })
+    await fire({ chatId: 'oc_1', messageId: 'm-1', action: { value: { action: 'go-back', flow: 'new-session' } } })
+    const providerCard = cards.at(-1) as any
+    expect(providerCard.header.title.content).toBe(t.modelSelectNewSessionTitle)
+    expect(JSON.stringify(providerCard)).toContain('**默认模型**')
+    const rows = providerCard.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(rows[0].behaviors[0].value.flow).toBe('new-session')
     handle.dispose()
   })
 

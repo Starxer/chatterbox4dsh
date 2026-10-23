@@ -503,6 +503,9 @@ export interface Translations {
   modelSelectLastUsedButtonNewSession: string
   /** The `/new` flow's variant of the card-body line above that button. */
   modelSelectLastUsedNewSession: (provider: string, model: string) => string
+  /** The `/new` flow's DEFAULT route as a tappable row: the default is a
+   *  choice there (it is what the new session inherits), not just context. */
+  modelSelectNewSessionDefault: (provider: string, model: string, effort: string) => string
   /** A quick pick in the `/new` flow names a route this Host no longer offers. */
   newSessionRouteUnavailable: string
   /** `/reasoning` quick-effort card. */
@@ -1099,6 +1102,8 @@ export const zh = {
   modelSelectRecentHeaderNewSession: '🕘 **最近使用（全局）** — 点一行直接选中，作为新会话的模型',
   modelSelectLastUsedButtonNewSession: '↺ 用上次的模型',
   modelSelectLastUsedNewSession: (provider, model) => `↺ 上次使用：\`${provider}/${model}\`（点下方按钮，作为新会话的模型）`,
+  modelSelectNewSessionDefault: (provider, model, effort) =>
+    `⭐ **默认模型**　\`${provider}/${model}\`\n🧭 思考强度：\`${effort}\`\n点这一行就直接用它（新会话将继承这个默认模型）`,
   newSessionRouteUnavailable: '⚠️ 这个模型已经不在可选列表里了，请用下方列表重新选择。',
   reasoningCardTitle: '🧠 推理强度',
   reasoningCardHint: '点一行直接切换（只改本会话，不动全局默认）',
@@ -1650,6 +1655,8 @@ export const en: Translations = {
   modelSelectRecentHeaderNewSession: '🕘 **Recently used (global)** — tap a row to use it for the new session',
   modelSelectLastUsedButtonNewSession: '↺ Use previous model',
   modelSelectLastUsedNewSession: (provider, model) => `↺ Last used: \`${provider}/${model}\` (tap below to use it for the new session)`,
+  modelSelectNewSessionDefault: (provider, model, effort) =>
+    `⭐ **Default model**　\`${provider}/${model}\`\n🧭 Reasoning effort: \`${effort}\`\nTap this row to use it for the new session`,
   newSessionRouteUnavailable: '⚠️ That model is no longer offered — pick one from the list below.',
   reasoningCardTitle: '🧠 Reasoning effort',
   reasoningCardHint: 'Tap a row to switch (this session only — the global default is untouched)',

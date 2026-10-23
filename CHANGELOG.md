@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：`/new` 模型卡上「默认模型」只是一行死文字，点不了；模型卡返回时还会丢流程标记（`src/feishu-model-select.ts` / `src/i18n.ts`，2026-10-23）
+
+**反馈**（使用者）：「模型选择器还是没法点击选择默认模型」。真机取证（`~/.dsh/read-card.py` 读回 + journal）：`/new` 的模型步骤上「最近使用」只有一条 `✅ 当前：deepseek-official/deepseek-flash`，是 markdown **死行**——而这张卡上「默认模型」恰恰是新会话要继承的那个路线，于是唯一想选的东西点不动，只能绕 provider/model 两级下拉。
+
+同时发现一个连带 bug：**模型卡的「← 返回选择 Provider」按钮不带 `flow` 标记**。点它之后 provider 卡按「独立 `/model` 流程」重画（标题/措辞都变回 `/model`），再点上面的行会去**切当前会话**而不是选新会话的路线——真机日志里 `{"action":"select-provider","flow":"new-session"}` 之后紧跟着 `{"action":"go-back"}`（无 flow）就是这个。
+
+**实现**：① `/new` 的卡片把「默认模型」从死行改成**可点行**（`⭐ 默认模型 \`p/m\` · 🧭 强度` + 「点这一行就直接用它（新会话将继承这个默认模型）」），动作走 `switch-recent`（带 `flow: 'new-session'`）⇒ 直接进最终确认卡，**不切当前会话、不写全局默认**；即使全局记忆和会话日志都为空也总是出现（这正是最容易卡住的首次状态）；该路线不再在「最近使用」里重复出现；② 模型卡的返回按钮补上 `flow` 标记，返回后仍是「新建会话」卡片、行仍按新会话语义生效；③ `/model` 卡片行为不变（当前路线仍是 `✅ 当前` 标记，因为它已经在生效）。
+
+**验证**：新增 3 例（无任何历史时默认行仍可点且带 flow 标记、点它只进确认卡且断言 `switchRoute`/`selectModel` 均未调用、返回按钮带 `flow` 且返回后卡片仍是新建会话样式），`typecheck`（含 client）/ **1248 测试 / 62 文件** / build 全绿。**未重启**。
+
+**English**: Reported: “the model selector still cannot click to select the default model”. Evidence from the live card and journal: on the `/new` model step the "recently used" section held only `✅ 当前: deepseek-official/deepseek-flash` as a dead markdown line — yet on that card the default route is exactly what the new session would inherit, so the one route worth choosing could not be tapped, forcing the operator through the provider and model dropdowns. A second bug surfaced: the model card's "back to provider" button did not carry the `flow` marker, so going back re-rendered the provider card as the standalone `/model` one and its rows would switch the RUNNING session instead of choosing the new session's route (the journal shows `select-provider` with `flow: "new-session"` followed by a `go-back` without it). Fix: the `/new` card renders the default route as a TAPPABLE row (“⭐ default model … tap to use it for the new session”, action `switch-recent` + `flow: 'new-session'`) that goes straight to the final confirmation card without switching anything or touching the global default, and it is always present even when there is no history at all; the route is no longer repeated in the recent list; the back button now carries `flow`, so going back keeps the `/new` card and its rows keep the new-session semantics. `/model` is unchanged (its current route is already in effect). 3 new tests; typecheck (with client), 1248 tests / 62 files and build pass. Not restarted yet.
+
 ### 修复：`/new` 每步「选了没反应」——决策卡就地改写成结算卡；模型步骤与 `/model` 对齐（`src/card-supersede.ts` / `src/new-session-card.ts` / `src/feishu-onboarding.ts` / `src/feishu-model-select.ts` / `src/index.ts`，2026-10-23）
 
 **反馈**（使用者，两点）：① 选完目录和模式后「卡片只是注释」，没有像问题卡那样直接变更、固化卡片内容，卡片变化不明显 ⇒ 以为没反馈；② 到模型选择环节，没有对齐 `/model`。
