@@ -13,6 +13,7 @@ import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn
 import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadInboundResource, downloadMessageResource, type ResourceScope } from './feishu-resource.ts'
+import { fitImageToLimits } from './image-fit.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
 import { interleaveTargetOfSend, type InterleaveTarget } from './card-interleave.ts'
@@ -128,11 +129,17 @@ async function admitImagesForMessage(
   message: NormalizedMessage,
   attachments: AttachmentLike,
   signal: AbortSignal,
-): Promise<readonly ImageAttachmentRef[]> {
+): Promise<{ blocks: readonly ImageAttachmentRef[]; notes: readonly string[]; files: readonly FileAdmission[] }> {
   const resources = (message.resources ?? []).filter(resource => resource.type === 'image')
-  if (resources.length === 0) return []
+  if (resources.length === 0) return { blocks: [], notes: [], files: [] }
   const accepted = attachments.imageLimits.mediaTypes
+  const limits = {
+    maxDimension: attachments.imageLimits.maxImageDimension,
+    maxPixels: attachments.imageLimits.maxImagePixels,
+  }
   const inputs: SaveImageAttachment[] = []
+  const notes: string[] = []
+  const files: FileAdmission[] = []
   for (const resource of resources) {
     if (signal.aborted) throw new Error('dsh-feishu: image admission aborted')
     // `LarkChannel.downloadResource(fileKey, 'image')` resolves the wrong
@@ -151,15 +158,37 @@ async function admitImagesForMessage(
     if (mediaType === undefined || !accepted.includes(mediaType)) {
       throw new Error(`dsh-feishu: image type "${mediaType ?? 'unknown'}" is not accepted by the deployment`)
     }
+    const originalBytes = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    // A tall comic strip is over the store's per-side cap (600×8745 vs 8192):
+    // fit it rather than bounce the message, and keep the untouched original as
+    // a FILE next to it so the agent can crop detail out of the full-resolution
+    // copy (the scaled preview alone cannot answer "read panel 4").
+    const fitted = await fitImageToLimits({ data: originalBytes, mediaType, limits })
     inputs.push({
-      data: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-      mediaType,
+      data: fitted?.scaled === true ? fitted.data : originalBytes,
+      mediaType: fitted?.scaled === true ? (fitted.mediaType as ImageMediaTypeId) : mediaType,
       ...resource.fileName === undefined ? {} : { name: resource.fileName },
     })
+    if (fitted?.scaled === true) {
+      const index = resources.indexOf(resource) + 1
+      // Name it by its real container so the agent's file tools see what it is.
+      const extension = mediaType === 'image/png' ? 'png' : mediaType === 'image/gif' ? 'gif' : mediaType === 'image/webp' ? 'webp' : 'jpg'
+      const fileName = `image-${message.messageId.slice(-8)}-${index}-original.${extension}`
+      const fileRef = await attachments.saveFileStream({
+        data: (async function* () { yield Buffer.from(originalBytes) })(),
+        signal,
+        name: fileName,
+      })
+      const hostPath = attachments.fileHostPath(fileRef)
+      files.push({ fileRef, fileName, ...(hostPath === undefined ? {} : { hostPath }) })
+      notes.push(`[image adjusted: ${fitted.original.width}x${fitted.original.height} → ${fitted.width}x${fitted.height}`
+        + ` to fit the ${limits.maxDimension}px per-side limit`
+        + `${hostPath === undefined ? '' : `; full-resolution original: ${hostPath}`}]`)
+    }
   }
   const refs: ImageAttachmentRef[] = []
   for (const input of inputs) refs.push(await attachments.saveImage(input))
-  return refs
+  return { blocks: refs, notes, files }
 }
 
 /** The chat/thread coordinates the owner lookup needs on the failure path. */
@@ -525,8 +554,27 @@ export async function startChannel(
           return
         }
         try {
-          const imageBlocks = await admitImagesForMessage(channel, message, attachments, new AbortController().signal)
-          inboundMessage = { ...inboundMessage, imageBlocks }
+          const admission = await admitImagesForMessage(channel, message, attachments, new AbortController().signal)
+          inboundMessage = {
+            ...inboundMessage,
+            imageBlocks: admission.blocks,
+            // A fitted image's untouched original rides along as a file, so the
+            // agent keeps full resolution for any real cropping work.
+            ...(admission.files.length === 0 ? {} : {
+              fileBlocks: [
+                ...(inboundMessage.fileBlocks ?? []),
+                ...admission.files.map(f => f.hostPath === undefined
+                  ? { attachment: f.fileRef }
+                  : { attachment: f.fileRef, hostPath: f.hostPath }),
+              ],
+            }),
+            // Big images are downscaled to fit the store; say so in the turn so
+            // the model knows the pixels it sees are a reduction.
+            ...(admission.notes.length === 0 ? {} : {
+              content: [inboundMessage.content, ...admission.notes].filter(part => part !== '').join('\n\n'),
+            }),
+          }
+          for (const note of admission.notes) logger.info(`dsh-feishu: ${note}`)
         } catch (error: unknown) {
           logError(`dsh-feishu: image admission failed: ${error instanceof Error ? error.message : String(error)}`)
           await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {

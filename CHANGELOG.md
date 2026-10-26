@@ -5,6 +5,16 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：长图/超大图被附件存储拒收（`IMAGE_DIMENSION_TOO_LARGE`）——入站图片先按上限缩放，原图另存为文件（`src/image-fit.ts` / `src/channel.ts`，2026-10-27）
+
+**现象**：上一条（批处理配对）修好后，同一批长图变成「图片处理出错：Image exceeds the configured per-side pixel limit. (code: IMAGE_DIMENSION_TOO_LARGE)」。真机图尺寸 **600×8745**，而附件存储的默认单边上限是 **8192px**（`maxImageDimension`，另 6400 万像素总量），超 6.7% 就被整条消息拒收。
+
+**实现**：新增 `src/image-fit.ts`——纯 TS 读容器头拿尺寸（PNG/GIF/JPEG SOF/WebP 三种头；不引第三方解析器，猜错会误缩放）、按「单边 + 总量」算等比目标（边长取偶，给 mjpeg 用）、超限才调一次 `ffmpeg`（`scale=lanczos`，输出 JPEG，20s 超时，无 ffmpeg/失败一律回退原始字节）。`channel.ts` 的图片 admission 在 `saveImage` 前先 fit：缩放后的字节进 attachment store，**原图同时以文件形式落盘**（`saveFileStream` + `hostPath`）并作为 file block 交给会话，任务说明里追加一行 `[image adjusted: 600x8745 → 562x8192 …; full-resolution original: <path>]`——长图降到 8192 之后细节有限，真正要「截某格」时 agent 仍能从全分辨率原图裁。单张竖条/表情包等不超限的图完全不受影响（零额外开销，不 spawn 进程）。
+
+**验证**：新增 11 例（容器头解析 4；等比/双边上限 3，含 8192² 撞 6400 万像素时退到像素预算；fit 行为 4，其中有**真实 ffmpeg** 一条：600×9000 → 546×8192 且产物能被读回同尺寸），并用**真机那张 600×8745 图**跑了一遍：输出 562×8192 / 1.55 MB（远低于 20 MB 单图上限）。`typecheck`（含 client）/ **1276 测试 / 63 文件** / build 全绿。**未重启**，等确认。
+
+**English**: After the batched-pair fix landed, the same comic strips failed one step later with `IMAGE_DIMENSION_TOO_LARGE` — the real image is 600×8745 while the attachment store caps a side at 8192 px (and 64 M pixels total), so 6.7 % over was enough to reject the whole message. New `src/image-fit.ts` reads the intrinsic size from the container header (PNG/GIF/JPEG SOF/WebP VP8X-VP8-VP8L; no third-party parser, because a wrong guess would resize untouched images), computes an aspect-preserving target that satisfies both the per-side cap and the pixel budget (sides rounded to even for mjpeg), and only then runs one bounded ffmpeg pass (Lanczos, JPEG output, 20 s timeout; a missing binary falls back to the original bytes). The image admission path fits before `saveImage` and — because a 8192-px-tall preview cannot answer “crop panel 4” — also stores the untouched original as a FILE (`saveFileStream` + `hostPath`) and adds a `[image adjusted: …]` line to the turn. Images already within the limits take the old path with zero extra work. 11 new tests, including one against the real ffmpeg (600×9000 → 546×8192, read back at the same size), plus a live check of the actual 600×8745 strip (562×8192, 1.55 MB). Typecheck (with client), 1276 tests / 63 files and build pass. Not restarted yet.
+
 ### 修复：一次发多张图必「图片处理出错」——SDK 消息批处理让 (message_id, image_key) 配错对（`src/feishu-resource.ts` / `src/channel.ts` / `src/error-text.ts` / `src/log-redact.ts`，2026-10-27）
 
 **现象**（使用者报）：agent 运行时发图片，聊天里回「图片处理出错：Request failed with status code 400 (code: ERR_BAD_REQUEST)」，图片进不了会话。
