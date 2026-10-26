@@ -5,6 +5,25 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：compact 回合卡的**运行标题**改为跟随真实相位（`src/feishu-progress.ts`，2026-10-27）
+
+**反馈**（使用者）：「模型在执行工具调用的时候，步骤仍显示思考中，直到工具完成，直接显示工具完成和耗时，没有反应真正的状态。」
+
+**取证**（真机读回服务端渲染态，2026-10-27 02:48–02:49）：回合卡（`compact` 档，标题 `🐳 深度求索中 · N`）在一条 30 s `bash` 运行期间，**步骤行**是如实更新的：
+
+```
+▸ 第 40 步 · 🔧 工具调用中 · 30.0s…
+> ⏳ `bash` · sleep / echo / python3 · 25.8s…
+```
+
+但**卡片标题**从第一个 token 到工具结束一直是常量 `🐳 深度求索中 · N`（`turnCardTitleRunning`），工具跑几分钟它就"思考"几分钟——卡片上最大的一行字始终在说一件这件事没在做的事；工具一结束标题才变成终态（`⚙️ 本回合 …`），正好对上"直到工具完成，直接显示工具完成和耗时"。
+
+**实现**：`runningTitle()` 取「最新一个仍打开的步骤」的实时相位（新增 `stepLivePhase()`，与步骤行的小灯共用一份判据）：工具未结算 → `🔧 工具调用中 · 12.3s`；模型在出字 → `✍️ 回复中 · …`；等首 token → `📡 等待输出 · …`；**真在思考**（或还没收到相位）→ 保留 `🐳 深度求索中 · …`（丢失帧不臆造相位）。纯文本兜底标题同步。
+
+**验证**：更新/新增 5 例（运行中工具 → 工具标题、回复中 → 回复标题、思考中保留原措辞、无相位不臆造、回合结束后仍是终态），并修正 4 个既有用例的标题断言（它们原本断言"工具运行期间标题恒为深度求索中"——正是被本次改掉的旧行为）；`typecheck`（含 client）/ **1277 测试 / 63 文件** / build 全绿。**未重启**。
+
+**English**: The operator reported that while a tool runs the card still says "thinking" and only flips to the finished tool + duration at the end. Live evidence (reading the server-side card render at 02:48–02:49) showed the step ROW is honest — `▸ 第 40 步 · 🔧 工具调用中 · 30.0s…` with `⏳ bash … 执行中…` — but the card's TITLE was the constant `🐳 深度求索中 · N` from the first token until the tool finished, i.e. the largest text on the card kept claiming the model was thinking while a 30 s tool ran, and only became the settled title at the end. The running title now follows the live phase of the newest open step (new `stepLivePhase()` shared with the step light): a running tool → `🔧 工具调用中 · …`, emitting text → `✍️ 回复中 · …`, awaiting the first token → `📡 等待输出 · …`, and the product wording `🐳 深度求索中 · …` is kept only for genuine thinking or when no phase was reported (a lost frame must not invent one). 5 new/updated tests plus 4 fixed title assertions (they encoded the old constant-title behaviour); typecheck (with client), 1277 tests / 63 files and build pass. Not restarted yet.
+
 ### 修复：长图/超大图被附件存储拒收（`IMAGE_DIMENSION_TOO_LARGE`）——入站图片先按上限缩放，原图另存为文件（`src/image-fit.ts` / `src/channel.ts`，2026-10-27）
 
 **现象**：上一条（批处理配对）修好后，同一批长图变成「图片处理出错：Image exceeds the configured per-side pixel limit. (code: IMAGE_DIMENSION_TOO_LARGE)」。真机图尺寸 **600×8745**，而附件存储的默认单边上限是 **8192px**（`maxImageDimension`，另 6400 万像素总量），超 6.7% 就被整条消息拒收。

@@ -367,13 +367,53 @@ export const PROGRESS_QUOTE_MARKER = '> '
  * @param step - the step whose light is being rendered.
  * @returns the light text, or `''` when the step observed nothing yet.
  */
+export function stepLivePhase(step: ProgressStep): ProgressPhase | 'tool' | undefined {
+  // A tool waiting for its result outranks the stream phase: the frames that
+  // carry a tool call's deltas report `replying`, and naming that while a 30 s
+  // `bash` runs is the one thing the light must never do.
+  if (step.tools.some(tool => tool.elapsed === undefined)) return 'tool'
+  return step.phase
+}
+
 export function stepLight(t: Translations, step: ProgressStep): string {
-  if (step.tools.some(tool => tool.elapsed === undefined)) return t.turnCardPhaseTool
-  switch (step.phase) {
+  switch (stepLivePhase(step)) {
+    case 'tool': return t.turnCardPhaseTool
     case 'awaiting': return t.turnCardPhaseAwaiting
     case 'thinking': return t.turnCardPhaseThinking
     case 'replying': return t.turnCardPhaseReplying
     default: return ''
+  }
+}
+
+/** The live phase of the turn: that of its newest still-open step, if any. */
+function turnLivePhase(facts: ProgressFacts): ProgressPhase | 'tool' | undefined {
+  for (let index = facts.steps.length - 1; index >= 0; index -= 1) {
+    const step = facts.steps[index]!
+    if (step.endedAt !== undefined) continue
+    const phase = stepLivePhase(step)
+    if (phase !== undefined) return phase
+  }
+  return undefined
+}
+
+/**
+ * The RUNNING title of the turn card.
+ *
+ * It used to be the constant `🐳 深度求索中 · <elapsed>`, which says "the model is
+ * thinking" from the first token to the last — including the whole tool run.
+ * That is the thing the operator reported as 「步骤仍显示思考中，直到工具完成」
+ * (2026-10-27): the header was the only large text on the card and it was wrong
+ * for minutes at a time. So the header now names the CURRENT phase, keeping the
+ * product wording only when the model really is thinking (or when no phase has
+ * been reported yet — a lost frame must not invent one).
+ */
+function runningTitle(t: Translations, facts: ProgressFacts): string {
+  const total = formatProgressMs(facts.now - facts.turnStart)
+  switch (turnLivePhase(facts)) {
+    case 'tool': return `${t.turnCardPhaseTool} · ${total}`
+    case 'replying': return `${t.turnCardPhaseReplying} · ${total}`
+    case 'awaiting': return `${t.turnCardPhaseAwaiting} · ${total}`
+    default: return t.turnCardTitleRunning(total)
   }
 }
 
@@ -511,7 +551,7 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
   const title = running
-    ? t.turnCardTitleRunning(total)
+    ? runningTitle(t, facts)
     : facts.failedTurn
       ? t.turnCardTitleFailed(facts.calls, total)
       : t.turnCardTitleDone(facts.calls, facts.failed, total)
@@ -1224,7 +1264,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
 function renderTitle(t: Translations, facts: ProgressFacts): string {
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
-  if (facts.endedAt === undefined) return t.turnCardTitleRunning(total)
+  if (facts.endedAt === undefined) return runningTitle(t, facts)
   if (facts.failedTurn) return t.turnCardTitleFailed(facts.calls, total)
   return t.turnCardTitleDone(facts.calls, facts.failed, total)
 }

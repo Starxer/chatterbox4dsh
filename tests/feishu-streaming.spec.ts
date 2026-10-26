@@ -9,10 +9,18 @@ import { createCardInterleave, type CardInterleave } from '../src/card-interleav
 const t = translationsFor('zh')
 /**
  * The running compact turn progress card, told apart from a step card by its
- * title: `🐳 深度求索中 · 1.2s` while running, `⚙️ 本回合 · …` once settled.
+ * title: the live phase (`🔧 工具调用中 · 1.2s` / `🐳 深度求索中 · 1.2s`) while
+ * running, `⚙️ 本回合 · …` once settled.
  */
 const TURN_RUNNING = t.turnCardTitleRunning('')
-const isTurnCardTitle = (title: string): boolean => title.includes(TURN_RUNNING) || title.includes('本回合')
+/**
+ * A running turn card names the CURRENT phase (tools / replying / awaiting),
+ * and keeps `🐳 深度求索中` only while the model is really thinking (or when no
+ * phase was reported) — see `runningTitle` in `src/feishu-progress.ts`.
+ */
+const RUNNING_TITLES = [TURN_RUNNING.trimEnd(), t.turnCardPhaseTool, t.turnCardPhaseReplying, t.turnCardPhaseAwaiting, t.turnCardPhaseThinking]
+const isTurnCardTitle = (title: string): boolean =>
+  title.includes('本回合') || RUNNING_TITLES.some(prefix => title.startsWith(prefix))
 
 function codeBlocksOf(card: any): string[] {
   return card.body.elements

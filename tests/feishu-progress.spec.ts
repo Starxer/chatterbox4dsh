@@ -143,6 +143,44 @@ describe('renderProgressCard', () => {
     expect(card.header.title.content).not.toContain('3 个工具')
   })
 
+  it('names the live phase in the running title, keeping the thinking wording for thinking', () => {
+    // A running tool: the header must stop claiming the model is thinking.
+    const runningTool = renderProgressCard(t, facts({
+      endedAt: undefined,
+      now: 12_300,
+      steps: [{ step: 1, startedAt: 0, endedAt: undefined, tools: [{ name: 'bash', startedAt: 3_000 }] }],
+    })) as any
+    expect(runningTool.header.title.content).toBe(`${t.turnCardPhaseTool} · 12.3s`)
+
+    // Emitting prose: reply wording.
+    const replying = renderProgressCard(t, facts({
+      endedAt: undefined,
+      now: 2_000,
+      steps: [{ step: 1, startedAt: 0, endedAt: undefined, phase: 'replying', tools: [] }],
+    })) as any
+    expect(replying.header.title.content).toBe(`${t.turnCardPhaseReplying} · 2.0s`)
+
+    // Really thinking: keep the product wording.
+    const thinking = renderProgressCard(t, facts({
+      endedAt: undefined,
+      now: 4_000,
+      steps: [{ step: 1, startedAt: 0, endedAt: undefined, phase: 'thinking', tools: [] }],
+    })) as any
+    expect(thinking.header.title.content).toBe(t.turnCardTitleRunning('4.0s'))
+
+    // No live phase reported (lost frame): never invent one.
+    const unknown = renderProgressCard(t, facts({
+      endedAt: undefined,
+      now: 1_000,
+      steps: [{ step: 1, startedAt: 0, endedAt: undefined, tools: [] }],
+    })) as any
+    expect(unknown.header.title.content).toBe(t.turnCardTitleRunning('1.0s'))
+
+    // The turn ending wins over any phase: no live phase after `turn/end`.
+    const done = renderProgressCard(t, facts()) as any
+    expect(done.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
+  })
+
   it('freezes green with the totals once the turn ended', () => {
     const card: any = renderProgressCard(t, facts())
     expect(card.header.template).toBe('green')
@@ -785,7 +823,9 @@ describe('createProgressCards', () => {
     await vi.waitFor(() => expect(channel.sendCardByReference).toHaveBeenCalledTimes(1))
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const card = (channel.createCardInstance.mock.calls[0] as any)[0]
-    expect(card.header.title.content).toBe(t.turnCardTitleRunning('100ms'))
+    // The header names what is happening NOW (the tool is running), not the
+    // constant "thinking" wording the operator reported as wrong (2026-10-27).
+    expect(card.header.title.content).toBe(`${t.turnCardPhaseTool} · 100ms`)
   })
 
   it('opens a NEW card for the next turn and never reuses the entity', async () => {
@@ -827,6 +867,8 @@ describe('createProgressCards', () => {
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
     // The single write carried the LATEST state, not the first event.
     const card = (channel.updateCardInstance.mock.calls[0] as any)[1]
+    // Both calls settled before the write: no tool is running, and the step
+    // reported no other phase, so the header keeps the thinking wording.
     expect(card.header.title.content).toBe(t.turnCardTitleRunning('700ms'))
     expect(mdOf(card)).toContain(t.turnCardToolFailed('`bash`', '100ms'))
     // CardKit needs a monotonically increasing sequence per card instance.
@@ -956,8 +998,9 @@ describe('createProgressCards', () => {
     expect(String(mdOf(fresh))).toContain('`bash`')
     // The first card was left exactly as it was.
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
-    // …and the turn's totals still count everything.
-    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning('400ms'))
+    // …and the turn's totals still count everything, with the NEW card naming
+    // the tool that is running right now.
+    expect(fresh.header.title.content).toBe(`${t.turnCardPhaseTool} · 400ms`)
   })
 
   it('never cuts a topic\'s card because another topic of the same chat got a message', async () => {
