@@ -181,6 +181,19 @@ describe('renderProgressCard', () => {
     expect(done.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
   })
 
+  it('renders the live tool phase pushed by the assistant stream', () => {
+    // The streaming layer now reports `tool` while the model is EMITTING a tool
+    // call (a `tool-call-delta`), before any `tool/call` exists for the row
+    // model: without this the step read 思考中 for the whole argument block.
+    const card = renderProgressCard(t, facts({
+      endedAt: undefined,
+      now: 3_000,
+      steps: [{ step: 1, startedAt: 0, endedAt: undefined, phase: 'tool', tools: [] }],
+    })) as any
+    expect(card.header.title.content).toBe(`${t.turnCardPhaseTool} · 3.0s`)
+    expect(mdOf(card)).toContain(t.turnCardPhaseTool)
+  })
+
   it('freezes green with the totals once the turn ended', () => {
     const card: any = renderProgressCard(t, facts())
     expect(card.header.template).toBe('green')

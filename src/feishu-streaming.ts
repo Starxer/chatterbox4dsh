@@ -320,11 +320,25 @@ interface AssistantStreamSource {
  * - `thinking` — the first `reasoning-delta` arrived; the model really started
  *   to reason.
  * - `replying` — the first `text-delta` arrived.
+ * - `tool` — the first `tool-call-delta` arrived: the model is EMITTING a tool
+ *   call. This is not `replying` for the same reason `tool/call` is not: a long
+ *   argument block can stream for tens of seconds, and calling that "回复中"
+ *   (or, worse, leaving the previous `thinking`) is exactly the mismatch the
+ *   operator reported on 2026-10-27 — the step read 思考中 while the agent was
+ *   visibly building a tool call, then jumped straight to the finished row.
  *
  * Only a card with no visible content reads this (the placeholder), so a step
  * whose content already landed is unaffected by late frames.
  */
-type StepLivePhase = 'none' | 'awaiting' | 'thinking' | 'replying'
+type StepLivePhase = 'none' | 'awaiting' | 'thinking' | 'replying' | 'tool'
+
+/** Forward-only order inside one attempt: a later phase may not be undone by a late frame. */
+const STEP_LIVE_PHASE_RANK: Record<Exclude<StepLivePhase, 'none'>, number> = {
+  awaiting: 1,
+  thinking: 2,
+  replying: 3,
+  tool: 4,
+}
 
 interface SessionStepState {
   /**
@@ -2261,10 +2275,20 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (state.livePhase === 'awaiting') return
         state.livePhase = 'awaiting'
       } else if (frame.type === 'chunk') {
-        const wanted: StepLivePhase | undefined = frame.chunk?.type === 'reasoning-delta'
+        // `tool-call-delta` is the live signal that the model is building a
+        // tool call: name it as such instead of letting the previous phase
+        // linger (see StepLivePhase).
+        const chunkType = frame.chunk?.type
+        const wanted: StepLivePhase | undefined = chunkType === 'reasoning-delta'
           ? 'thinking'
-          : frame.chunk?.type === 'text-delta' ? 'replying' : undefined
-        if (wanted === undefined || state.livePhase === wanted || state.livePhase === 'replying') return
+          : chunkType === 'text-delta'
+            ? 'replying'
+            : chunkType === 'tool-call-delta' || chunkType === 'tool-call' ? 'tool' : undefined
+        if (wanted === undefined || state.livePhase === wanted) return
+        // Forward only: reasoning may arrive after text, and text may arrive
+        // after a tool-call block, but none of them un-does a later phase.
+        const currentRank = state.livePhase === 'none' ? 0 : STEP_LIVE_PHASE_RANK[state.livePhase]
+        if (STEP_LIVE_PHASE_RANK[wanted] <= currentRank) return
         state.livePhase = wanted
       } else if (frame.type === 'end') {
         if (frame.outcome?.kind !== 'abandoned' || state.livePhase === 'none') return
@@ -3003,7 +3027,8 @@ export function renderStepCard(
         : phase === 'awaiting' ? t.stepAwaitingBody
           : phase === 'thinking' ? t.stepThinkingBody
             : phase === 'replying' ? t.stepReplyingBody
-              : t.stepPlaceholderBody,
+              : phase === 'tool' ? t.stepToolBody
+                : t.stepPlaceholderBody,
       text_size: 'notation',
     })
     // The route belongs to the wait: it answers "which model is this request
@@ -3245,8 +3270,11 @@ export function renderStepCard(
     title = phase === 'awaiting' ? t.stepAwaitingTitle
       : phase === 'thinking' ? t.stepThinkingTitle
         : phase === 'replying' ? t.stepReplyingTitle
-          : t.stepPlaceholderTitle
-    template = phase === 'replying' ? 'blue' : phase === 'awaiting' ? 'wathet' : 'violet'
+          : phase === 'tool' ? t.stepToolTitle
+            : t.stepPlaceholderTitle
+    template = phase === 'replying' ? 'blue'
+      : phase === 'tool' ? 'wathet'
+        : phase === 'awaiting' ? 'wathet' : 'violet'
   } else if (emptyPhase === 'done') {
     title = t.stepEmptyTitle
     template = 'grey'

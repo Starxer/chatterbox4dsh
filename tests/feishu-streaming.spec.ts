@@ -1873,12 +1873,15 @@ describe('step card live phases (O20)', () => {
     expect(titleOf(build('awaiting'))).toContain(t.stepAwaitingTitle)
     expect(titleOf(build('thinking'))).toContain(t.stepThinkingTitle)
     expect(titleOf(build('replying'))).toContain(t.stepReplyingTitle)
+    // Emitting a tool call is its own phase — not "thinking", not "replying".
+    expect(titleOf(build('tool'))).toContain(t.stepToolTitle)
     // The pre-request phase must not claim the model is reasoning.
     expect(titleOf(build('none'))).not.toContain('思考')
     expect(mdOf(build('none'))).toContain(t.stepPlaceholderBody)
     expect(mdOf(build('awaiting'))).toContain(t.stepAwaitingBody)
     expect(mdOf(build('thinking'))).toContain(t.stepThinkingBody)
     expect(mdOf(build('replying'))).toContain(t.stepReplyingBody)
+    expect(mdOf(build('tool'))).toContain(t.stepToolBody)
   })
 
   it('shows the route only while waiting for the first token', () => {
@@ -2360,6 +2363,45 @@ describe('level + injection wiring through session events', () => {
     const md = mdOf(lastCard(ch))
     expect(md).toContain(t.turnCardPhaseThinking)
     expect(md).not.toContain(t.turnCardPhaseAwaiting)
+    h.streaming.stop()
+  })
+
+  it('names the tool phase while the model is still EMITTING the call (compact)', async () => {
+    // Reported 2026-10-27: while the agent was building a tool call the step
+    // kept saying 思考中, then jumped to the finished row. The live signal for
+    // that window is `tool-call-delta`; before this case it was dropped, so the
+    // previous phase stayed on screen for the whole argument block.
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', { callId: 'c0', name: 'bash', arguments: '{"command":"ls"}' })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    h.emit('tool/result', { message: { toolCallId: 'c0', content: [{ type: 'text', text: 'ok' }] } })
+    h.emitStream({ type: 'start', attemptId: 'a2', revision: 1, turn: 1, step: 2 })
+    await tick(1_100)
+    h.emitStream({
+      type: 'chunk', attemptId: 'a2', revision: 2, index: 0, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '需要先列目录' },
+    })
+    await tick(1_100)
+    expect(mdOf(lastCard(ch))).toContain(t.turnCardPhaseThinking)
+    // The model starts writing the call's arguments: the step must say so.
+    h.emitStream({
+      type: 'chunk', attemptId: 'a2', revision: 3, index: 1, time: Date.now(),
+      chunk: { type: 'tool-call-delta', index: 0, id: 'call_1', argumentsDelta: '{"comm' },
+    })
+    await tick(1_100)
+    const md = mdOf(lastCard(ch))
+    expect(md).toContain(t.turnCardPhaseTool)
+    expect(md).not.toContain(t.turnCardPhaseThinking)
+    // A late reasoning chunk must not walk the phase backwards.
+    h.emitStream({
+      type: 'chunk', attemptId: 'a2', revision: 4, index: 0, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '再想一下' },
+    })
+    await tick(1_100)
+    expect(mdOf(lastCard(ch))).toContain(t.turnCardPhaseTool)
     h.streaming.stop()
   })
 

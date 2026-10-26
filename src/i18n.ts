@@ -197,6 +197,9 @@ export interface Translations {
   /** One-line body of the thinking phase. */
   stepThinkingBody: string
   /** Title once the FIRST text delta arrives (the model started answering). */
+  /** The model is EMITTING a tool call (live `tool-call-delta`), not thinking. */
+  stepToolTitle: string
+  stepToolBody: string
   stepReplyingTitle: string
   /** One-line body of the replying phase (text is streaming, not on the card yet). */
   stepReplyingBody: string
@@ -926,6 +929,8 @@ export const zh = {
   stepAwaitingBody: '模型还没返回首个 token，输出会就地更新在这张卡上',
   stepThinkingTitle: '🧠 思考中…',
   stepThinkingBody: '模型正在推理，输出会就地更新在这张卡上',
+  stepToolTitle: '🔧 工具调用中…',
+  stepToolBody: '模型正在生成工具调用，执行结果会就地更新在这张卡上',
   stepReplyingTitle: '✍️ 回复中',
   stepReplyingBody: '模型正在写回复，完成后会就地显示在这张卡上',
   stepRouteLine: (provider, model) => `📡 ${provider} / ${model}`,
@@ -1473,6 +1478,8 @@ export const en: Translations = {
   stepAwaitingBody: 'No token yet — output updates this card in place',
   stepThinkingTitle: '🧠 Thinking…',
   stepThinkingBody: 'Reasoning — output updates this card in place',
+  stepToolTitle: '🔧 Calling a tool…',
+  stepToolBody: 'The model is building a tool call — the result lands on this card when it runs',
   stepReplyingTitle: '✍️ Replying',
   stepReplyingBody: 'The model is writing — the reply lands on this card when it settles',
   stepRouteLine: (provider, model) => `📡 ${provider} / ${model}`,

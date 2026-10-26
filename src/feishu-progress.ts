@@ -131,7 +131,7 @@ export interface ProgressTool {
  * Deliberately its own type instead of the streaming module's: this module must
  * not import from the layer that drives it.
  */
-export type ProgressPhase = 'awaiting' | 'thinking' | 'replying'
+export type ProgressPhase = 'awaiting' | 'thinking' | 'replying' | 'tool'
 
 /** One step as the card renders it. */
 export interface ProgressStep {
@@ -367,7 +367,7 @@ export const PROGRESS_QUOTE_MARKER = '> '
  * @param step - the step whose light is being rendered.
  * @returns the light text, or `''` when the step observed nothing yet.
  */
-export function stepLivePhase(step: ProgressStep): ProgressPhase | 'tool' | undefined {
+export function stepLivePhase(step: ProgressStep): ProgressPhase | undefined {
   // A tool waiting for its result outranks the stream phase: the frames that
   // carry a tool call's deltas report `replying`, and naming that while a 30 s
   // `bash` runs is the one thing the light must never do.
@@ -386,7 +386,7 @@ export function stepLight(t: Translations, step: ProgressStep): string {
 }
 
 /** The live phase of the turn: that of its newest still-open step, if any. */
-function turnLivePhase(facts: ProgressFacts): ProgressPhase | 'tool' | undefined {
+function turnLivePhase(facts: ProgressFacts): ProgressPhase | undefined {
   for (let index = facts.steps.length - 1; index >= 0; index -= 1) {
     const step = facts.steps[index]!
     if (step.endedAt !== undefined) continue
