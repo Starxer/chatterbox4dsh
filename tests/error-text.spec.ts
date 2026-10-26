@@ -25,6 +25,28 @@ describe('errorText', () => {
     expect(errorText(err, 'fallback')).toBe('upstream reject code:230021')
   })
 
+  it('prefers the Feishu business code over axios ERR_BAD_REQUEST', () => {
+    // 2026-10-27: a batched image download was rejected as (message_id, key)
+    // mismatch. The user saw only "Request failed with status code 400 (code:
+    // ERR_BAD_REQUEST)" because the axios code won and the download's streamed
+    // body was never parsed.
+    const err = Object.assign(new Error('Request failed with status code 400'), {
+      code: 'ERR_BAD_REQUEST',
+      response: { status: 400, data: { code: 234003, msg: 'File not in msg.' } },
+    })
+    expect(errorText(err, 'fallback')).toBe('Request failed with status code 400 — File not in msg. (code: 234003)')
+  })
+
+  it('parses a streamed (string / Buffer) response body instead of dropping it', () => {
+    const body = JSON.stringify({ code: 234003, msg: 'File not in msg.' })
+    for (const data of [body, Buffer.from(body)]) {
+      const err = Object.assign(new Error('Request failed with status code 400'), {
+        response: { status: 400, data },
+      })
+      expect(errorText(err, 'fallback')).toBe('Request failed with status code 400 — File not in msg. (code: 234003)')
+    }
+  })
+
   it('falls back when the error yields no detail', () => {
     expect(errorText(new Error('   '), '抱歉，处理这条消息时遇到了问题。')).toBe('抱歉，处理这条消息时遇到了问题。')
     expect(errorText(undefined, 'fallback')).toBe('fallback')

@@ -216,6 +216,37 @@ describe('createSafeChannelLogger', () => {
     }
   })
 
+  it('renders an ARRAY of axios errors with the status and Feishu msg, never config.data', () => {
+    // What the SDK hands over on a failed pipeline task: [error, ...]. A cycle
+    // in the object graph used to degrade the whole line to
+    // "[object Object],[object Object]", which hid 234003 "File not in msg."
+    // during the 2026-10-27 image investigation.
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const error = Object.assign(new Error('Request failed with status code 400'), {
+        code: 'ERR_BAD_REQUEST',
+        config: { method: 'get', url: 'https://open.feishu.cn/open-apis/im/v1/messages/x/resources/y', data: JSON.stringify({ app_secret: SECRET }) },
+      })
+      // Self-reference: exactly what made JSON.stringify throw.
+      ;(error as unknown as { self?: unknown }).self = error
+      ;(error as unknown as { response?: unknown }).response = {
+        status: 400,
+        data: Buffer.from(JSON.stringify({ code: 234003, msg: 'File not in msg.' })),
+        config: error,
+      }
+      createSafeChannelLogger([SECRET]).error([error, { note: 'safety: message handler threw' }])
+      const printed = spy.mock.calls.flat().join(' ')
+      expect(printed).not.toContain('[object Object]')
+      expect(printed).toContain('234003')
+      expect(printed).toContain('File not in msg.')
+      expect(printed).toContain('resources/y')
+      expect(printed).not.toContain(SECRET)
+      expect(printed).not.toContain('app_secret')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('scrubs a secret that survives into a serialized object', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     try {

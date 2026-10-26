@@ -56,6 +56,32 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object'
 }
 
+/**
+ * The Feishu/axios response envelope, when there is one.
+ *
+ * A DOWNLOAD endpoint answers with a stream, so on a 400 the SDK's error
+ * carries the body as a Buffer (or a JSON string) instead of a parsed object —
+ * which is exactly the case where the business code (`234003 File not in msg.`)
+ * is the only thing that explains the failure. Parse those shapes too; only
+ * `code`/`msg` are ever read from the result.
+ */
+function responseEnvelope(error: unknown): Record<string, unknown> | undefined {
+  if (!isObject(error)) return undefined
+  const data = (error as { response?: { data?: unknown } }).response?.data
+  if (data === undefined || data === null) return undefined
+  if (isObject(data) && !Buffer.isBuffer(data)) return data
+  let text: string | undefined
+  if (typeof data === 'string') text = data
+  else if (Buffer.isBuffer(data)) text = data.toString('utf8')
+  if (text === undefined || text.trim() === '') return undefined
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return isObject(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** The error's own message, trimmed; `''` when there is nothing to show. */
 function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message.trim()
@@ -69,12 +95,14 @@ function messageOf(error: unknown): string {
  */
 function codeOf(error: unknown): string | undefined {
   if (!isObject(error)) return undefined
+  // The BUSINESS code wins: an axios error's own `code` is the useless
+  // `ERR_BAD_REQUEST`, while Feishu's `234003` is what says "file not in msg".
+  const envelope = responseEnvelope(error)?.code
+  if (typeof envelope === 'number') return String(envelope)
+  if (typeof envelope === 'string' && envelope.trim() !== '') return envelope.trim()
   const own = error.code
   if (typeof own === 'number') return String(own)
   if (typeof own === 'string' && own.trim() !== '') return own.trim()
-  const envelope = (error as { response?: { data?: { code?: unknown } } }).response?.data?.code
-  if (typeof envelope === 'number') return String(envelope)
-  if (typeof envelope === 'string' && envelope.trim() !== '') return envelope.trim()
   return undefined
 }
 
@@ -84,8 +112,7 @@ function codeOf(error: unknown): string | undefined {
  * (and, on the token endpoint, the app secret; key pitfall 29).
  */
 function responseReasonOf(error: unknown): string {
-  if (!isObject(error)) return ''
-  const message = (error as { response?: { data?: { msg?: unknown } } }).response?.data?.msg
+  const message = responseEnvelope(error)?.msg
   return typeof message === 'string' ? message.trim() : ''
 }
 

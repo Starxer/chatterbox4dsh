@@ -12,7 +12,7 @@ import { errorText } from './error-text.ts'
 import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn-failure.ts'
 import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
-import { downloadMessageResource } from './feishu-resource.ts'
+import { downloadInboundResource, downloadMessageResource, type ResourceScope } from './feishu-resource.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
 import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
 import { interleaveTargetOfSend, type InterleaveTarget } from './card-interleave.ts'
@@ -138,11 +138,10 @@ async function admitImagesForMessage(
     // `LarkChannel.downloadResource(fileKey, 'image')` resolves the wrong
     // endpoint (`im.v1.image.get`) which 400s for user-sent keys. The
     // `im.v1.messageResource.get` endpoint takes the message id plus the file
-    // key, so reach into the raw HTTP client directly.
-    const raw = await channel.rawClient.im.v1.messageResource.get({
-      params: { type: 'image' },
-      path: { message_id: message.messageId, file_key: resource.fileKey },
-    })
+    // key — and a BATCHED dispatch hands us the LAST message's id with the
+    // union of every resource, so the pair can be wrong; `downloadInboundResource`
+    // recovers the owning message before giving up (see its module doc).
+    const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'image')
     if (signal.aborted) throw new Error('dsh-feishu: image admission aborted')
     const bytes = await readDownloadStream(raw)
     // Resolve the media type FROM THE BYTES, not a guessed MIME. The
@@ -161,6 +160,15 @@ async function admitImagesForMessage(
   const refs: ImageAttachmentRef[] = []
   for (const input of inputs) refs.push(await attachments.saveImage(input))
   return refs
+}
+
+/** The chat/thread coordinates the owner lookup needs on the failure path. */
+function scopeOf(message: NormalizedMessage): ResourceScope {
+  return {
+    messageId: message.messageId,
+    ...(message.chatId === undefined ? {} : { chatId: message.chatId }),
+    ...(message.threadId === undefined ? {} : { threadId: message.threadId }),
+  }
 }
 
 /** One admitted inbound file. The bytes are persisted via the native
@@ -200,7 +208,7 @@ async function admitFilesForMessage(
   const results: FileAdmission[] = []
   for (const resource of resources) {
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
-    const raw = await downloadMessageResource(channel, message.messageId, resource.fileKey)
+    const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'file')
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
     const rawName = resource.fileName ?? resource.fileKey
     // A video/audio resource sometimes arrives without a file_name; keep a
