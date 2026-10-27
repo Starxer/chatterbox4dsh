@@ -5,6 +5,16 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 恢复：compact 回合卡的标题回到原措辞 `🐳 深度求索中 · 12.3s`（`src/feishu-progress.ts`，2026-10-27）
+
+**背景**：同日为解决「工具调用期间步骤显示思考中」，先把卡片**标题**改成了相位文案（`🔧 工具调用中 · …` / `✍️ 回复中 · …`）。使用者指出方向错了：**要修的是步骤行反映的事实，不是卡片标题**（「步骤卡片的标题，你没有给我恢复」）。
+
+**实现**：撤回标题改动——运行中始终是原来的 `🐳 深度求索中 · <已用时>`，纯文本兜底标题同样；**保留**步骤行小灯的相位修复（`tool-call-delta → 🔧 工具调用中` 等）。`runningTitle()` / `turnLivePhase()` 删除；`stepLivePhase()` 保留（步骤行与工具行的判据）。
+
+**验证**：progress 测试改为钉住原措辞（工具运行 / tool / 回复 / 思考 / 等待五种相位下标题都必须是 `turnCardTitleRunning`，回合结束后仍是终态标题），`typecheck`（含 client）/ 全量测试 / build 全绿。**未重启**。
+
+**English**: Same day, the running TITLE of the compact turn card had been made phase-aware while fixing 「工具调用期间显示思考中」. The operator corrected the direction: what matters is the STEP line's facts, not the header — “the step card's title, you did not restore it”. The title is back to the original constant `🐳 深度求索中 · <elapsed>` (plain-text fallback too), and the step-light fix (a live `tool-call-delta` names the tool phase) stays. `runningTitle()`/`turnLivePhase()` are deleted; `stepLivePhase()` remains as the shared judge for the step light. Progress tests now pin the original wording across every phase. Not restarted yet.
+
 ### 修复：模型**正在生成工具调用**时，步骤仍显示「思考中」——现在有独立的 `工具调用中` 相位（`src/feishu-streaming.ts` / `src/feishu-progress.ts` / `src/i18n.ts`，2026-10-27）
 
 **反馈更正**：使用者澄清——不是标题的问题，是**步骤行反映的事实不准**：Agent 正在做工具调用时，步骤仍显示「思考中」，直到工具跑完才直接跳到「✅ + 耗时」。
@@ -17,7 +27,7 @@
 
 **English**: Correction from the operator: the complaint was not the title but the STEP line's facts — while the agent is doing a tool call the step still reads 「思考中」, and only when the tool finishes does it jump to `✅` + duration. Root cause: the plugin's live `agent/assistant-stream` handler mapped only `reasoning-delta → thinking` and `text-delta → replying`; **`tool-call-delta` was dropped** (`wanted === undefined → return`), yet those deltas are the only signal for the window in which the model is writing the tool call (both DSH routes, llm-deepseek and llm-pi-ai, emit them). So that window kept the previous phase (思考中); by the time `tool/call` lands the tool is often already finished (read_image 217 ms, sed 150 ms), which is exactly the reported "thinking → finished + duration" jump. New `tool` phase: `tool-call-delta`/`tool-call` map to it, phases inside one attempt may only move FORWARD (`awaiting < thinking < replying < tool`, so a late reasoning delta cannot undo 工具调用中), the compact card shows `🔧 工具调用中 · …` in both the title and the step light, and the placeholder step card at the other levels names it too (`stepToolTitle` / `stepToolBody`). 3 new tests; typecheck (with client), 1279 tests / 63 files and build pass. Not restarted yet.
 
-### 改进：compact 回合卡的**运行标题**改为跟随真实相位（`src/feishu-progress.ts`，2026-10-27）
+### 改进（**已撤回**）：compact 回合卡的运行标题改为跟随相位（`src/feishu-progress.ts`，2026-10-27；同日按使用者要求恢复原样，见下一条）
 
 **反馈**（使用者）：「模型在执行工具调用的时候，步骤仍显示思考中，直到工具完成，直接显示工具完成和耗时，没有反应真正的状态。」
 

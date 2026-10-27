@@ -143,40 +143,26 @@ describe('renderProgressCard', () => {
     expect(card.header.title.content).not.toContain('3 个工具')
   })
 
-  it('names the live phase in the running title, keeping the thinking wording for thinking', () => {
-    // A running tool: the header must stop claiming the model is thinking.
-    const runningTool = renderProgressCard(t, facts({
-      endedAt: undefined,
-      now: 12_300,
-      steps: [{ step: 1, startedAt: 0, endedAt: undefined, tools: [{ name: 'bash', startedAt: 3_000 }] }],
-    })) as any
-    expect(runningTool.header.title.content).toBe(`${t.turnCardPhaseTool} · 12.3s`)
-
-    // Emitting prose: reply wording.
-    const replying = renderProgressCard(t, facts({
-      endedAt: undefined,
-      now: 2_000,
-      steps: [{ step: 1, startedAt: 0, endedAt: undefined, phase: 'replying', tools: [] }],
-    })) as any
-    expect(replying.header.title.content).toBe(`${t.turnCardPhaseReplying} · 2.0s`)
-
-    // Really thinking: keep the product wording.
-    const thinking = renderProgressCard(t, facts({
-      endedAt: undefined,
-      now: 4_000,
-      steps: [{ step: 1, startedAt: 0, endedAt: undefined, phase: 'thinking', tools: [] }],
-    })) as any
-    expect(thinking.header.title.content).toBe(t.turnCardTitleRunning('4.0s'))
-
-    // No live phase reported (lost frame): never invent one.
-    const unknown = renderProgressCard(t, facts({
-      endedAt: undefined,
-      now: 1_000,
-      steps: [{ step: 1, startedAt: 0, endedAt: undefined, tools: [] }],
-    })) as any
-    expect(unknown.header.title.content).toBe(t.turnCardTitleRunning('1.0s'))
-
-    // The turn ending wins over any phase: no live phase after `turn/end`.
+  it('keeps the ORIGINAL constant running title, whatever the live phase is', () => {
+    // 2026-10-27: the title was briefly made phase-aware (`🔧 工具调用中 · …`) and
+    // the operator asked for the original wording back. The live facts belong to
+    // the step's own light, not to the header.
+    const cases: Array<{ phase?: 'tool' | 'replying' | 'thinking' | 'awaiting'; tools: Array<{ name: string; startedAt: number }> }> = [
+      { tools: [{ name: 'bash', startedAt: 3_000 }] },
+      { phase: 'tool', tools: [] },
+      { phase: 'replying', tools: [] },
+      { phase: 'thinking', tools: [] },
+      { phase: 'awaiting', tools: [] },
+    ]
+    for (const item of cases) {
+      const card = renderProgressCard(t, facts({
+        endedAt: undefined,
+        now: 12_300,
+        steps: [{ step: 1, startedAt: 0, endedAt: undefined, ...(item.phase === undefined ? {} : { phase: item.phase }), tools: item.tools }],
+      })) as any
+      expect(card.header.title.content, String(item.phase)).toBe(t.turnCardTitleRunning('12.3s'))
+    }
+    // The turn ending still wins over any phase.
     const done = renderProgressCard(t, facts()) as any
     expect(done.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
   })
@@ -190,7 +176,8 @@ describe('renderProgressCard', () => {
       now: 3_000,
       steps: [{ step: 1, startedAt: 0, endedAt: undefined, phase: 'tool', tools: [] }],
     })) as any
-    expect(card.header.title.content).toBe(`${t.turnCardPhaseTool} · 3.0s`)
+    // Title unchanged (the product wording); the STEP LIGHT names the phase.
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('3.0s'))
     expect(mdOf(card)).toContain(t.turnCardPhaseTool)
   })
 
@@ -836,9 +823,7 @@ describe('createProgressCards', () => {
     await vi.waitFor(() => expect(channel.sendCardByReference).toHaveBeenCalledTimes(1))
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const card = (channel.createCardInstance.mock.calls[0] as any)[0]
-    // The header names what is happening NOW (the tool is running), not the
-    // constant "thinking" wording the operator reported as wrong (2026-10-27).
-    expect(card.header.title.content).toBe(`${t.turnCardPhaseTool} · 100ms`)
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('100ms'))
   })
 
   it('opens a NEW card for the next turn and never reuses the entity', async () => {
@@ -1011,9 +996,9 @@ describe('createProgressCards', () => {
     expect(String(mdOf(fresh))).toContain('`bash`')
     // The first card was left exactly as it was.
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
-    // …and the turn's totals still count everything, with the NEW card naming
-    // the tool that is running right now.
-    expect(fresh.header.title.content).toBe(`${t.turnCardPhaseTool} · 400ms`)
+    // …and the turn's totals still count everything; the header keeps the same
+    // constant wording, and the running tool is named in the step light.
+    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning('400ms'))
   })
 
   it('never cuts a topic\'s card because another topic of the same chat got a message', async () => {

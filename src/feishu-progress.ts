@@ -385,38 +385,6 @@ export function stepLight(t: Translations, step: ProgressStep): string {
   }
 }
 
-/** The live phase of the turn: that of its newest still-open step, if any. */
-function turnLivePhase(facts: ProgressFacts): ProgressPhase | undefined {
-  for (let index = facts.steps.length - 1; index >= 0; index -= 1) {
-    const step = facts.steps[index]!
-    if (step.endedAt !== undefined) continue
-    const phase = stepLivePhase(step)
-    if (phase !== undefined) return phase
-  }
-  return undefined
-}
-
-/**
- * The RUNNING title of the turn card.
- *
- * It used to be the constant `🐳 深度求索中 · <elapsed>`, which says "the model is
- * thinking" from the first token to the last — including the whole tool run.
- * That is the thing the operator reported as 「步骤仍显示思考中，直到工具完成」
- * (2026-10-27): the header was the only large text on the card and it was wrong
- * for minutes at a time. So the header now names the CURRENT phase, keeping the
- * product wording only when the model really is thinking (or when no phase has
- * been reported yet — a lost frame must not invent one).
- */
-function runningTitle(t: Translations, facts: ProgressFacts): string {
-  const total = formatProgressMs(facts.now - facts.turnStart)
-  switch (turnLivePhase(facts)) {
-    case 'tool': return `${t.turnCardPhaseTool} · ${total}`
-    case 'replying': return `${t.turnCardPhaseReplying} · ${total}`
-    case 'awaiting': return `${t.turnCardPhaseAwaiting} · ${total}`
-    default: return t.turnCardTitleRunning(total)
-  }
-}
-
 /** Flatten the facts into ordered lines. */
 function buildLines(t: Translations, facts: ProgressFacts): Line[] {
   const lines: Line[] = []
@@ -550,8 +518,13 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
   const running = facts.endedAt === undefined
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
+  // The running title is the product's own wording and stays CONSTANT for the
+  // whole turn (`🐳 深度求索中 · 12.3s`). The live facts belong to the step's own
+  // light below (which names the running tool), NOT to the header: changing the
+  // header per phase was tried on 2026-10-27 and the operator asked for the
+  // original wording back.
   const title = running
-    ? runningTitle(t, facts)
+    ? t.turnCardTitleRunning(total)
     : facts.failedTurn
       ? t.turnCardTitleFailed(facts.calls, total)
       : t.turnCardTitleDone(facts.calls, facts.failed, total)
@@ -1264,7 +1237,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
 function renderTitle(t: Translations, facts: ProgressFacts): string {
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
-  if (facts.endedAt === undefined) return runningTitle(t, facts)
+  if (facts.endedAt === undefined) return t.turnCardTitleRunning(total)
   if (facts.failedTurn) return t.turnCardTitleFailed(facts.calls, total)
   return t.turnCardTitleDone(facts.calls, facts.failed, total)
 }
