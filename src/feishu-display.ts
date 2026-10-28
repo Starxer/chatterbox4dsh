@@ -31,6 +31,7 @@ import { TRANSCRIPT_VIEWS, type TranscriptView } from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { decodeCardValue } from './card-action.ts'
+import { ELAPSED_REFRESH_SECONDS, isElapsedRefreshSeconds, parseElapsedRefreshSeconds } from './config.ts'
 
 /** The switches in card order (same order as the WebUI settings panel). */
 export const DISPLAY_KEYS: readonly DisplayToggleKey[] = ['reasoning', 'tools', 'args', 'results']
@@ -79,6 +80,8 @@ export interface DisplayCardState {
   level: TranscriptView
   /** The four card-display switches. */
   switches: Record<DisplayToggleKey, boolean>
+  /** Missing on older callers; rendered as the default five seconds. */
+  elapsedRefreshSeconds?: number
 }
 
 /** True when `value` is one of the four levels. */
@@ -90,7 +93,7 @@ function isLevel(value: unknown): value is TranscriptView {
  * Render the display card: the four levels on top, the four switches below.
  *
  * The levels are buttons like the switches, and for the same reason: this card
- * invites several taps in a row and every tap posts a FRESH card (关键坑 11), so
+ * invites several taps in a row and every tap repaints the SAME card, so
  * a payload carrying the target value is idempotent under a duplicated click.
  */
 export function renderDisplayCard(state: DisplayCardState, t: Translations): object {
@@ -142,6 +145,20 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
   if (!switches.tools) {
     elements.push({ tag: 'markdown', content: t.displayCardHiddenByTools, text_size: 'notation' })
   }
+  elements.push({ tag: 'hr' })
+  elements.push({ tag: 'markdown', content: t.displayCardTickTitle })
+  elements.push({ tag: 'markdown', content: t.displayCardTickHint, text_size: 'notation' })
+  const currentTick = parseElapsedRefreshSeconds(state.elapsedRefreshSeconds)
+  for (const seconds of ELAPSED_REFRESH_SECONDS) {
+    const active = seconds === currentTick
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardTickButton(seconds, active) },
+      type: active ? 'primary' : 'default',
+      ...(active ? { disabled: true } : {}),
+      behaviors: [{ type: 'callback', value: { p: 'display', tick: seconds } }],
+    })
+  }
   elements.push({ tag: 'markdown', content: t.displayCardNote, text_size: 'notation' })
   return {
     schema: '2.0',
@@ -173,7 +190,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
 
   /** The card as the CURRENT settings read right now. */
   const currentCard = (): object =>
-    renderDisplayCard({ level: display.getLevel(), switches: display.get() }, getTranslations())
+    renderDisplayCard({ level: display.getLevel(), switches: display.get(), elapsedRefreshSeconds: display.getElapsedRefreshSeconds() }, getTranslations())
 
   /**
    * Repaint the clicked card from the persisted settings — in place, the way
@@ -205,6 +222,17 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     //
     // Past this point the payload is ours, so a rejection is worth a log line:
     // a silently ignored click is exactly how this card first failed.
+    if (parsed.tick !== undefined) {
+      if (!isElapsedRefreshSeconds(parsed.tick)) return
+      try {
+        await display.setElapsedRefreshSeconds(parsed.tick)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display refresh interval write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      return
+    }
     const level = parsed.level
     if (isLevel(level) && typeof parsed.value === 'boolean') {
       try {

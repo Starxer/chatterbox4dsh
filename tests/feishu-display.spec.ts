@@ -45,7 +45,28 @@ function buttonFor(card: any, key: DisplayToggleKey): any {
 
 const ALL_ON: Record<DisplayToggleKey, boolean> = { reasoning: true, tools: true, args: true, results: true }
 
+it('localizes pending-attachment notices and omits zero-count kinds', () => {
+  expect(t.pendingAttachmentsNotice(2, 0)).toContain('2 张图片，')
+  expect(t.pendingAttachmentsNotice(2, 0)).not.toContain('0 个文件')
+  expect(t.pendingAttachmentsNotice(0, 1)).toContain('1 个文件，')
+  expect(t.pendingAttachmentsNotice(2, 1)).toContain('2 张图片、1 个文件')
+  expect(tEn.pendingAttachmentsNotice(1, 0)).toContain('1 image,')
+  expect(tEn.pendingAttachmentsNotice(0, 2)).toContain('2 files,')
+  expect(tEn.pendingAttachmentsNotice(1, 1)).toContain('1 image and 1 file,')
+  expect(t.pendingAttachmentsDiscarded).toBe('已清除上一会话暂存的附件。')
+})
+
 describe('renderDisplayCard', () => {
+  it('shows the four refresh options with the current option disabled, in both locales', () => {
+    for (const strings of [t, tEn]) {
+      const card = renderDisplayCard({ ...cardFor(ALL_ON), elapsedRefreshSeconds: 10 }, strings)
+      const ticks = buttonsOf(card).filter(b => b.behaviors[0].value.tick !== undefined)
+      expect(ticks.map(b => b.behaviors[0].value.tick)).toEqual([3, 5, 10, 30])
+      expect(ticks.find(b => b.behaviors[0].value.tick === 10)).toMatchObject({ disabled: true, type: 'primary' })
+      expect(ticks.find(b => b.behaviors[0].value.tick === 3).disabled).toBeUndefined()
+    }
+  })
+
   it('renders one button per switch with its state', () => {
     const card = renderDisplayCard(cardFor(ALL_ON), t) as any
     expect(card.header.title.content).toBe('📇 卡片显示')
@@ -118,10 +139,15 @@ describe('renderDisplayCard', () => {
 function makeDisplay(state: Record<DisplayToggleKey, boolean>, level: TranscriptView = 'detailed') {
   const spy = vi.fn()
   const levelSpy = vi.fn()
+  const tickSpy = vi.fn()
+  let seconds = 5
   return {
     spy,
     levelSpy,
+    tickSpy,
     control: {
+      getElapsedRefreshSeconds: () => seconds,
+      setElapsedRefreshSeconds: (next: number): void | Promise<void> => { tickSpy(next); seconds = next },
       get: () => state,
       set: (key: DisplayToggleKey, value: boolean): void => {
         spy(key, value)
@@ -154,6 +180,31 @@ function makeChannel() {
 }
 
 describe('startFeishuDisplay', () => {
+  it('persists a refresh tap then repaints the SAME card, ignoring invalid intervals', async () => {
+    const { channel, click, repainted } = makeChannel()
+    const { control, tickSpy } = makeDisplay({ ...ALL_ON })
+    let release!: () => void
+    const persisted = new Promise<void>(resolve => { release = resolve })
+    const setTick = control.setElapsedRefreshSeconds
+    control.setElapsedRefreshSeconds = next => persisted.then(() => setTick(next))
+    const handle = startFeishuDisplay({ channel, display: control, logger: { warn: vi.fn(), error: vi.fn() }, getTranslations: () => t })
+    await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
+    const pending = click({ messageId: 'om_1', action: { value: { p: 'display', tick: 3 } } })
+    await Promise.resolve()
+    expect(channel.updateCard).not.toHaveBeenCalled()
+    release()
+    await pending
+    expect(tickSpy).toHaveBeenCalledWith(3)
+    expect(channel.send).toHaveBeenCalledTimes(1)
+    expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
+    expect(buttonsOf(repainted(0)).find(b => b.behaviors[0].value.tick === 3).disabled).toBe(true)
+    for (const tick of [0, 4, 5000, '3', null]) {
+      await click({ messageId: 'om_1', action: { value: { p: 'display', tick } } })
+    }
+    expect(tickSpy).toHaveBeenCalledTimes(1)
+    handle.stop()
+  })
+
   it('posts the card as one message and returns its id', async () => {
     const { channel, sentCard } = makeChannel()
     const handle = startFeishuDisplay({
@@ -229,6 +280,8 @@ describe('startFeishuDisplay', () => {
         get: () => state,
         getLevel: () => 'detailed' as const,
         setLevel: () => undefined,
+        getElapsedRefreshSeconds: () => 5,
+        setElapsedRefreshSeconds: () => undefined,
         // Persisting is asynchronous: the readable snapshot only changes at the
         // end, exactly like `settings.mutate` / `settingsScope.get()`.
         set: (key: DisplayToggleKey, value: boolean) => persisted.then(() => { state[key] = value }),

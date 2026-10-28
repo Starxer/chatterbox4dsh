@@ -49,6 +49,7 @@ import { interleaveHits, type CardInterleave, type InterleaveTarget } from './ca
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
 import { truncateInline } from './text-chunk.ts'
+import { DEFAULT_ELAPSED_REFRESH_SECONDS, parseElapsedRefreshSeconds } from './config.ts'
 
 /** Tool lines kept visible before older ones fold away. */
 export const PROGRESS_MAX_ROWS = 40
@@ -79,7 +80,7 @@ export const PROGRESS_MAX_FOLDED = 60
  * card is live any more (no tool waiting for its result and no stream frame
  * pending), and the repaint itself goes through the normal write throttle.
  */
-export const PROGRESS_RUNNING_TICK_MS = 30_000
+export const PROGRESS_RUNNING_TICK_MS = DEFAULT_ELAPSED_REFRESH_SECONDS * 1_000
 
 /**
  * Shortest gap between two writes to the same progress card. Measured against
@@ -353,7 +354,7 @@ function toolLine(
   }
   // A call that has not been running for a measurable moment says so instead of
   // printing a frozen `0ms` — and once a tick has passed, the elapsed time it
-  // shows is real (the card repaints every PROGRESS_RUNNING_TICK_MS while
+  // shows is real (the card repaints at the configured interval while
   // anything is still running).
   const text = ms < 1_000 ? t.turnCardRunningLabel : formatProgressMs(ms)
   return t.turnCardToolRunning(label, text)
@@ -805,6 +806,8 @@ export interface ProgressCardsDeps {
   logger: { warn(message: string): unknown }
   /** Strings for the ACTIVE locale, read at render time. */
   getTranslations: () => Translations
+  /** Read on every re-arm; a live settings write needs no channel restart. */
+  elapsedRefreshSeconds?: (() => number) | undefined
   /**
    * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
@@ -880,9 +883,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       entry.facts.now = Date.now()
       // Straight to the write: this repaint is the point of the timer, so it
       // must not wait for another event to trigger the throttle.
-      writeNow(entry)
+      if (entry.writing) entry.dirty = true
+      else writeNow(entry)
       armRunningTick(entry)
-    }, PROGRESS_RUNNING_TICK_MS)
+    }, parseElapsedRefreshSeconds(deps.elapsedRefreshSeconds?.()) * 1_000)
   }
 
   /** Cancel the running tick once nothing is live any more. */

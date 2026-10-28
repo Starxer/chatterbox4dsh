@@ -91,6 +91,9 @@ const translations: CommandTranslations = {
   displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
   displayLevelSet: name => `level set to ${name}`,
   displayLevelLabel: 'Level',
+  displayTickCurrent: seconds => `refresh: ${seconds}s`,
+  displayTickSet: seconds => `refresh set to ${seconds}s`,
+  displayTickUsage: 'Usage: /display tick [3|5|10|30]',
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -109,6 +112,8 @@ const stubDisplay: DisplayControl = {
   set: vi.fn(),
   getLevel: () => 'detailed',
   setLevel: vi.fn(),
+  getElapsedRefreshSeconds: () => 5,
+  setElapsedRefreshSeconds: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -252,59 +257,67 @@ describe('registerLarkCommands', () => {
 
 describe('/display command', () => {
   const invocation = (rawInput: string) => ({ name: 'display', rawInput } as never)
+  const control = (): DisplayControl => ({ ...stubDisplay, set: vi.fn(), setLevel: vi.fn(), setElapsedRefreshSeconds: vi.fn() })
 
-  it('reports all four switches when invoked without arguments', () => {
-    const display: DisplayControl = {
-      get: () => ({ reasoning: true, tools: false, args: true, results: false }),
-      set: vi.fn(),
-      getLevel: () => 'detailed',
-      setLevel: vi.fn(),
-    }
-    const result = handleDisplayCommand(invocation(''), translations, display)
+  it('reports level, elapsed refresh and all switches without arguments', async () => {
+    const display = { ...control(), get: () => ({ reasoning: true, tools: false, args: true, results: false }) }
+    const result = await handleDisplayCommand(invocation(''), translations, display)
     expect(result.kind).toBe('success')
     expect(result.text).toContain('Card display')
     expect(result.text).toContain('reasoning: on')
     expect(result.text).toContain('tools: off')
     expect(result.text).toContain('results: off')
+    expect(result.text).toContain('refresh: 5s')
   })
 
-  it('writes the requested switch through the control', () => {
-    const set = vi.fn()
-    const display: DisplayControl = {
-      get: () => ({ reasoning: true, tools: true, args: true, results: true }),
-      set,
-      getLevel: () => 'detailed',
-      setLevel: vi.fn(),
-    }
-    const result = handleDisplayCommand(invocation('tools off'), translations, display)
-    expect(set).toHaveBeenCalledWith('tools', false)
+  it('writes the requested switch through the control', async () => {
+    const display = control()
+    const result = await handleDisplayCommand(invocation('tools off'), translations, display)
+    expect(display.set).toHaveBeenCalledWith('tools', false)
     expect(result.text).toContain('tools set to off')
   })
 
-  it('accepts aliases and on/off spellings', () => {
-    const set = vi.fn()
-    const display: DisplayControl = {
-      get: () => ({ reasoning: true, tools: true, args: true, results: true }),
-      set,
-      getLevel: () => 'detailed',
-      setLevel: vi.fn(),
-    }
-    handleDisplayCommand(invocation('arguments 0'), translations, display)
-    handleDisplayCommand(invocation('thinking 1'), translations, display)
-    expect(set).toHaveBeenNthCalledWith(1, 'args', false)
-    expect(set).toHaveBeenNthCalledWith(2, 'reasoning', true)
+  it('accepts aliases and on/off spellings', async () => {
+    const display = control()
+    await handleDisplayCommand(invocation('arguments 0'), translations, display)
+    await handleDisplayCommand(invocation('thinking 1'), translations, display)
+    expect(display.set).toHaveBeenNthCalledWith(1, 'args', false)
+    expect(display.set).toHaveBeenNthCalledWith(2, 'reasoning', true)
   })
 
-  it('rejects an unknown switch and a missing value', () => {
-    const display: DisplayControl = {
-      get: () => ({ reasoning: true, tools: true, args: true, results: true }),
-      set: vi.fn(),
-      getLevel: () => 'detailed',
-      setLevel: vi.fn(),
-    }
-    expect(handleDisplayCommand(invocation('nope on'), translations, display).kind).toBe('error')
-    expect(handleDisplayCommand(invocation('tools'), translations, display).kind).toBe('error')
+  it('rejects an unknown switch and a missing value', async () => {
+    const display = control()
+    expect((await handleDisplayCommand(invocation('nope on'), translations, display)).kind).toBe('error')
+    expect((await handleDisplayCommand(invocation('tools'), translations, display)).kind).toBe('error')
     expect(display.set).not.toHaveBeenCalled()
+  })
+
+  it('queries tick and accepts exactly the four interval options', async () => {
+    const display = control()
+    expect((await handleDisplayCommand(invocation('tick'), translations, display)).text).toContain('refresh: 5s')
+    for (const seconds of [3, 5, 10, 30]) {
+      const result = await handleDisplayCommand(invocation(`tick ${seconds}`), translations, display)
+      expect(result.kind).toBe('success')
+      expect(display.setElapsedRefreshSeconds).toHaveBeenLastCalledWith(seconds)
+    }
+    for (const raw of ['0', '4', '-1', 'NaN', 'Infinity', '3.0', '3s', '5 extra']) {
+      expect((await handleDisplayCommand(invocation(`tick ${raw}`), translations, display)).kind).toBe('error')
+    }
+    expect(display.setElapsedRefreshSeconds).toHaveBeenCalledTimes(4)
+  })
+
+  it('waits for persistence before reporting success and propagates write failures', async () => {
+    let release!: () => void
+    const persisted = new Promise<void>(resolve => { release = resolve })
+    const display = { ...control(), setElapsedRefreshSeconds: () => persisted }
+    let completed = false
+    const pending = handleDisplayCommand(invocation('tick 10'), translations, display).then(result => { completed = true; return result })
+    await Promise.resolve()
+    expect(completed).toBe(false)
+    release()
+    expect((await pending).kind).toBe('success')
+    display.setElapsedRefreshSeconds = () => Promise.reject(new Error('write failed'))
+    await expect(handleDisplayCommand(invocation('tick 30'), translations, display)).rejects.toThrow('write failed')
   })
 })
 

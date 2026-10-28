@@ -129,6 +129,8 @@ export interface HarnessDependencies {
 }
 
 export interface HarnessBridgeConfig {
+  /** Transport drafts must not follow an established chat into another Session. */
+  onBindingChanged?: (chat: ConversationMessage, sessionId: string) => void
   domain: DomainName
   workspace?: string
   agentPreset?: string
@@ -426,7 +428,7 @@ export class HarnessConversationService {
     }
   }
 
-  async reply(message: InboundMessage, opts?: { forceQueue?: boolean; onBusy?: (mode: BusyMode) => void }): Promise<string | undefined> {
+  async reply(message: InboundMessage, opts?: { forceQueue?: boolean; onBusy?: (mode: BusyMode) => void; onAccepted?: () => void }): Promise<string | undefined> {
     const key = conversationKey(message)
     // Capture the topic root id so streaming/question/approval/todo cards
     // can reply into the same Feishu topic instead of the main chat stream.
@@ -474,6 +476,7 @@ export class HarnessConversationService {
         noteDirectFeishuDispatch(String(agent.session.id))
         agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
       }
+      opts?.onAccepted?.()
       opts?.onBusy?.('steer')
       return undefined
     }
@@ -495,6 +498,7 @@ export class HarnessConversationService {
         source: { kind: 'user' },
       }))
     }
+    opts?.onAccepted?.()
     await agent.whenIdle()
     await this.deps.sessions.flush(agent.session)
     const result = summarizeTurn(this.readSessionEvents(agent, firstSeq), firstSeq)
@@ -1070,6 +1074,7 @@ export class HarnessConversationService {
     const ownerLabel = this.describeChatKey(owner)
     const newSessionId = toSessionId(this.config.domain, `${owner}\0detach-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
     this.chatToSession.set(owner, newSessionId)
+    this.config.onBindingChanged?.(this.messageFromKey(owner), newSessionId)
     this.seenChatKeys.add(owner)
     this.saveSessionMap()
     this.handles.delete(owner)
@@ -1098,10 +1103,12 @@ export class HarnessConversationService {
     // (otherwise a lingering "old session" could still push question/step
     // cards here after the switch).
     const previous = this.chatToSession.get(key)
+    const changed = (previous ?? toSessionId(this.config.domain, key)) !== sessionId
     if (previous !== undefined && previous !== sessionId) {
       this.releaseSessionForChat(previous, key, sessionId)
     }
     this.chatToSession.set(key, sessionId)
+    if (changed) this.config.onBindingChanged?.(message, sessionId)
     this.seenChatKeys.add(key)
     this.saveSessionMap()
     this.handles.delete(key)
@@ -1293,6 +1300,7 @@ export class HarnessConversationService {
     const key = conversationKey(message)
     const newSessionId = toSessionId(this.config.domain, `${key}\0${salt}`)
     this.chatToSession.set(key, newSessionId)
+    this.config.onBindingChanged?.(message, newSessionId)
     this.seenChatKeys.add(key)
     if (options !== undefined) this.chatToCreation.set(key, options)
     this.saveSessionMap()
@@ -1320,7 +1328,9 @@ export class HarnessConversationService {
     const key = conversationKey(message)
     const owner = this.sessionOwnerKey(sessionId)
     if (owner !== undefined && owner !== key) return 'occupied'
+    const changed = (this.chatToSession.get(key) ?? toSessionId(this.config.domain, key)) !== sessionId
     this.chatToSession.set(key, sessionId)
+    if (changed) this.config.onBindingChanged?.(message, sessionId)
     this.seenChatKeys.add(key)
     this.saveSessionMap()
     this.handles.delete(key)

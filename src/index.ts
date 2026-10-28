@@ -16,7 +16,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel, defaultHttpInstance } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
-import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, PREVIEW_CHARS, resolveSettingsConfig } from './config.ts'
+import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_ELAPSED_REFRESH_SECONDS, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, PREVIEW_CHARS, resolveSettingsConfig } from './config.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -210,6 +210,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     current: HarnessConversationService | undefined
     lastChatMessage: { chatId: string; chatType: 'p2p' | 'group'; threadId?: string } | undefined
   } = { current: undefined, lastChatMessage: undefined }
+  const bindingListeners = new Set<(chat: ConversationMessage, sessionId: string) => void>()
   // Channel adapter and listener registry live above `registerLarkCommands`
   // so the approval-control adapter they produce is available when the
   // command handlers register. The actual SSE iteration starts only after
@@ -690,7 +691,12 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // deprecated for new callers). `ctx.get` keeps this out of `inject`,
         // so a host without the service still boots (关键坑 2 的教训).
         ...(projectionsReader === undefined ? {} : { sessionProjections: projectionsReader }),
-      }, { ...config, statePath })
+      }, {
+        ...config, statePath,
+        onBindingChanged: (chat, sessionId) => {
+          for (const listener of bindingListeners) listener(chat, sessionId)
+        },
+      })
       bridgeHolder.current = bridge
       return startChannel(
         config,
@@ -776,6 +782,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // that covers the steer notice; "any other message", not only cards
         // (user request, 2026-10-19).
         target => cardInterleave.note(target),
+        listener => {
+          bindingListeners.add(listener)
+          return () => { bindingListeners.delete(listener) }
+        },
       )
     },
   })
@@ -1006,6 +1016,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
       transcriptView: () => currentSettings().transcriptView,
+      elapsedRefreshSeconds: () => currentSettings().elapsedRefreshSeconds ?? DEFAULT_ELAPSED_REFRESH_SECONDS,
       // Live preview caps: a settings write applies to the next card without a
       // remount (same contract as transcriptView).
       previewLimits: () => ({
@@ -1223,10 +1234,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       void settings.mutate(namespace, [{ op: 'set', path: ['showReasoning'], value: !current }], currentRevision())
     },
   }
-  // `/display` reads and writes the same five config fields the WebUI settings
-  // panel uses (`transcriptView` plus the four switches), so both surfaces stay
-  // in sync. `showReasoning` keeps its own `/reasoning show on|off` alias for
-  // backwards compatibility.
+  // `/display` writes the same settings snapshot as the WebUI: work-detail
+  // level, four visibility switches and elapsed-time refresh interval.
+  // `showReasoning` keeps its `/reasoning show on|off` compatibility alias.
   const displayControl: DisplayControl = {
     get: () => {
       const current = currentSettings()
@@ -1238,6 +1248,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       }
     },
     getLevel: () => currentSettings().transcriptView,
+    getElapsedRefreshSeconds: () => currentSettings().elapsedRefreshSeconds ?? DEFAULT_ELAPSED_REFRESH_SECONDS,
+    setElapsedRefreshSeconds: seconds => settings.mutate(namespace,
+      [{ op: 'set', path: ['elapsedRefreshSeconds'], value: seconds }], currentRevision()).then(() => undefined),
     setLevel: (level) => {
       const write = settings.mutate(namespace, [{ op: 'set', path: ['transcriptView'], value: level }], currentRevision())
       write.catch((error: unknown) => {
@@ -1251,8 +1264,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         : key === 'tools' ? 'showToolCalls' : key === 'args' ? 'showToolArgs' : 'showToolResults'
       // Return the promise (not `void`): the interactive card repaints from a
       // re-read, and `settings` only publishes the new snapshot once the write
-      // has persisted. The text path ignores the result, so keep a detached
-      // catch to avoid an unhandled rejection there.
+      // has persisted. Both card and text command paths await the write.
       const write = settings.mutate(namespace, [{ op: 'set', path: [field], value }], currentRevision())
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display write failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -2173,7 +2185,7 @@ async function executeSlashCommand(
         console.log(`dsh-feishu: /display card failed, falling back to text: ${msg}`)
       }
     }
-    return toEcho(handleDisplayCommand(freeInvocation(parsed.rawInput), activeCommandTranslations, display))
+    return toEcho(await handleDisplayCommand(freeInvocation(parsed.rawInput), activeCommandTranslations, display))
   }
   if (parsed.name === 'approvals' && approvals !== undefined) {
     return toEcho(await handleListApprovalsCommand(freeInvocation(parsed.rawInput), approvals, activeCommandTranslations))

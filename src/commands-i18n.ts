@@ -133,9 +133,9 @@ export const zhCommandTranslations: CommandTranslations = {
   reasoningLevelsFrom: (effortIds: readonly string[]) => `可用档位：${effortIds.map(id => `\`${id}\``).join(' · ')}\n使用 \`/reasoning show on|off\` 切换推理内容显示。`,
   reasoningUnknown: (level: string) => `未知推理档位 "${level}"。`,
   reasoningShowToggled: (enabled: boolean) => `🧠 推理内容显示：**${enabled ? 'on' : 'off'}**。跨重启持久化。`,
-  displayDescription: '查看或切换卡片显示级别（简洁/标准/详细/完全展开）与开关（思考过程 / 工具调用 / 参数 / 结果）',
+  displayDescription: '查看或切换卡片显示级别、思考/工具开关与耗时刷新间隔',
   displayHeader: '📇 卡片显示',
-  displayUsage: '用法：/display [compact|standard|detailed|verbose] 或 /display <开关> on|off',
+  displayUsage: '用法：/display [compact|standard|detailed|verbose] 或 /display <开关> on|off 或 /display tick [3|5|10|30]（秒）',
   displayLabel: (key: DisplayToggleKey) => ({ reasoning: '思考过程', tools: '工具调用', args: '参数', results: '结果' })[key],
   displayState: (label: string, enabled: boolean) => `• ${label}：**${enabled ? '开' : '关'}**`,
   displaySet: (label: string, enabled: boolean) => `📇 「${label}」已设为 **${enabled ? '开' : '关'}**。跨重启持久化。`,
@@ -143,6 +143,9 @@ export const zhCommandTranslations: CommandTranslations = {
   displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
   displayLevelSet: name => `📇 显示级别已设为「${name}」。跨重启持久化。`,
   displayLevelLabel: '级别',
+  displayTickCurrent: seconds => `• 耗时刷新：每 ${seconds} 秒`,
+  displayTickSet: seconds => `📇 耗时刷新已设为每 ${seconds} 秒。跨重启持久化。`,
+  displayTickUsage: '用法：/display tick [3|5|10|30]（秒；不带数值查看当前设置）。',
 }
 
 /** English implementation of `CommandTranslations`. */
@@ -262,9 +265,9 @@ export const enCommandTranslations: CommandTranslations = {
   reasoningLevelsFrom: (effortIds: readonly string[]) => `Available levels: ${effortIds.map(id => `\`${id}\``).join(' · ')}\nUse \`/reasoning show on|off\` to toggle reasoning content display.`,
   reasoningUnknown: (level: string) => `Unknown reasoning level "${level}".`,
   reasoningShowToggled: (enabled: boolean) => `🧠 Reasoning content display: **${enabled ? 'on' : 'off'}**. Persisted across restarts.`,
-  displayDescription: 'Show or change the card detail level (compact/standard/detailed/verbose) and switches (reasoning / tool calls / arguments / results)',
+  displayDescription: 'Show or change card detail level, reasoning/tool switches and elapsed-time refresh interval',
   displayHeader: '📇 Card display',
-  displayUsage: 'Usage: /display [compact|standard|detailed|verbose] or /display <switch> on|off',
+  displayUsage: 'Usage: /display [compact|standard|detailed|verbose] or /display <switch> on|off or /display tick [3|5|10|30] (seconds)',
   displayLabel: (key: DisplayToggleKey) => ({ reasoning: 'Reasoning', tools: 'Tool calls', args: 'Arguments', results: 'Results' })[key],
   displayState: (label: string, enabled: boolean) => `• ${label}: **${enabled ? 'on' : 'off'}**`,
   displaySet: (label: string, enabled: boolean) => `📇 "${label}" is now **${enabled ? 'on' : 'off'}**. Persisted across restarts.`,
@@ -272,6 +275,9 @@ export const enCommandTranslations: CommandTranslations = {
   displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
   displayLevelSet: name => `📇 Detail level set to "${name}". Persisted across restarts.`,
   displayLevelLabel: 'Level',
+  displayTickCurrent: seconds => `• Elapsed refresh: every ${seconds}s`,
+  displayTickSet: seconds => `📇 Elapsed refresh set to every ${seconds}s. Persisted across restarts.`,
+  displayTickUsage: 'Usage: /display tick [3|5|10|30] (seconds; omit the value to show the current setting).',
 }
 
 /**

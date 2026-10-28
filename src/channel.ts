@@ -13,9 +13,11 @@ import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn
 import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadInboundResource, downloadMessageResource, type ResourceScope } from './feishu-resource.ts'
+import { conversationKey } from './conversation.ts'
 import { fitImageToLimits } from './image-fit.ts'
+import { assertImageBudget, attachmentMessageText, createPendingAttachments, EMPTY_IMAGE_BUDGET, type ImageBudget } from './pending-attachments.ts'
 import { createSafeChannelLogger } from './log-redact.ts'
-import { OUTBOUND_TIMEOUT_MS, withLinkTimeout } from './outbound-timeout.ts'
+import { OUTBOUND_TIMEOUT_MS, withLinkTimeout, withTimeout } from './outbound-timeout.ts'
 import { interleaveTargetOfSend, type InterleaveTarget } from './card-interleave.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import { hasDeliverables, renderDeliverableElements, type DeliverChat, type DeliverPlan, type DeliverPlanInput, type DeliverRow } from './feishu-deliver.ts'
@@ -59,7 +61,7 @@ export type SlashCommandHandler = (
  *  verbs are required: this plugin targets DSH 0.1.3, whose `AttachmentStore`
  *  always provides streamed verbatim file storage (`saveFileStream`) and a
  *  host path (`fileHostPath`). No alpha.4 `.feishu-inbox` fallback is kept. */
-type AttachmentLike = Pick<AttachmentStore, 'saveImage' | 'imageLimits'> & {
+type AttachmentLike = Pick<AttachmentStore, 'saveImages' | 'imageLimits'> & {
   saveFileStream: (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => Promise<FileAttachmentRef>
   fileHostPath: (ref: FileAttachmentRef) => string | undefined
 }
@@ -129,9 +131,12 @@ async function admitImagesForMessage(
   message: NormalizedMessage,
   attachments: AttachmentLike,
   signal: AbortSignal,
-): Promise<{ blocks: readonly ImageAttachmentRef[]; notes: readonly string[]; files: readonly FileAdmission[] }> {
+  previous: ImageBudget = EMPTY_IMAGE_BUDGET,
+): Promise<{ blocks: readonly ImageAttachmentRef[]; notes: readonly string[]; files: readonly FileAdmission[]; budget: ImageBudget }> {
   const resources = (message.resources ?? []).filter(resource => resource.type === 'image')
-  if (resources.length === 0) return { blocks: [], notes: [], files: [] }
+  const budget: ImageBudget = { count: resources.length, bytes: 0, maxSingleBytes: 0 }
+  assertImageBudget(attachments.imageLimits, { count: previous.count + budget.count, bytes: previous.bytes })
+  if (resources.length === 0) return { blocks: [], notes: [], files: [], budget }
   const accepted = attachments.imageLimits.mediaTypes
   const limits = {
     maxDimension: attachments.imageLimits.maxImageDimension,
@@ -151,6 +156,12 @@ async function admitImagesForMessage(
     const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'image')
     if (signal.aborted) throw new Error('dsh-feishu: image admission aborted')
     const bytes = await readDownloadStream(raw)
+    budget.bytes += bytes.byteLength
+    budget.maxSingleBytes = Math.max(budget.maxSingleBytes ?? 0, bytes.byteLength)
+    assertImageBudget(attachments.imageLimits, {
+      count: previous.count + budget.count,
+      bytes: previous.bytes + budget.bytes,
+    }, bytes.byteLength)
     // Resolve the media type FROM THE BYTES, not a guessed MIME. The
     // attachment store rejects declared-vs-actual mismatches, so a filename
     // hint is only a fallback and JPEG is never assumed.
@@ -186,9 +197,11 @@ async function admitImagesForMessage(
         + `${hostPath === undefined ? '' : `; full-resolution original: ${hostPath}`}]`)
     }
   }
-  const refs: ImageAttachmentRef[] = []
-  for (const input of inputs) refs.push(await attachments.saveImage(input))
-  return { blocks: refs, notes, files }
+  // Batch admission is authoritative; a loop of saveImage calls bypasses the
+  // host's count and aggregate-byte policy. Keep source-byte accounting above
+  // as well: fitting/normalization must never lower the pending draft's budget.
+  const refs = await attachments.saveImages(inputs)
+  return { blocks: refs, notes, files, budget }
 }
 
 /** The chat/thread coordinates the owner lookup needs on the failure path. */
@@ -341,6 +354,8 @@ export async function startChannel(
    * without a card registry.
    */
   noteMessagePosted?: (target: InterleaveTarget) => void,
+  /** Observe successful chat bindings, including card-driven session changes. */
+  subscribeBindingChanges?: (listener: (chat: import('./conversation.ts').ConversationMessage, sessionId: string) => void) => () => void,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -410,6 +425,10 @@ export async function startChannel(
     },
     safety: {
       chatQueue: { enabled: true },
+      // Own attachment staging below. SDK mergeBatch drops per-message/topic
+      // identity and may swallow a following /command into a resource tag.
+      // Keep strict serialization, but preserve each event's original identity.
+      batch: { text: { delayMs: 0 } },
       staleMessageWindowMs: 5 * 60_000,
       dedup: { ttl: 10 * 60_000, maxEntries: 10_000 },
     },
@@ -466,355 +485,481 @@ export async function startChannel(
     return sendOutbound(to, { card: prepared }, opts)
   }
 
+  const pending = createPendingAttachments({
+    sessionId: chat => bridge.resolveSessionIdFor(chat),
+    notice: async (batch, valid) => {
+      const t = getTranslations?.() ?? translationsFor('zh')
+      if (!valid()) return
+      await sendOutbound(batch.message.chatId, {
+        text: t.pendingAttachmentsNotice(batch.budget.count, batch.files),
+      }, {
+        replyTo: batch.replyTo,
+        replyInThread: batch.message.threadId !== undefined,
+      })
+    },
+    warn: message => logger.warn(message),
+  })
+  const bindingEpochs = new Map<string, number>()
+  const stopBindingChanges = subscribeBindingChanges?.((chat, sessionId) => {
+    const key = conversationKey(chat)
+    bindingEpochs.set(key, (bindingEpochs.get(key) ?? 0) + 1)
+    pending.bindingChanged(chat, sessionId)
+  })
+  let stopped = false
   const unsubscribers = [
     channel.on('message', async (message: NormalizedMessage) => {
-      // Message interceptor (e.g., for question custom-input collection).
-      // If the interceptor returns true, the message is consumed.
-      if (messageInterceptor !== undefined) {
-        try {
-          const consumed = await messageInterceptor(message)
-          if (consumed) return
-        } catch (error: unknown) {
-          logger.warn(`dsh-feishu: message interceptor error: ${error instanceof Error ? error.message : String(error)}`)
+      if (stopped) return
+      const resources = (message.resources ?? []).filter(resource => resource.type === 'image' || ADMITTED_RESOURCE_TYPES.has(resource.type))
+      const userText = attachmentMessageText(message)
+      const key = conversationKey(message)
+      const startingSession = bridge.resolveSessionIdFor(message)
+      const startingEpoch = bindingEpochs.get(key) ?? 0
+      let initiallyUnbound = false
+      const bindingStillCurrent = (): boolean => {
+        if (stopped) return false
+        const epoch = bindingEpochs.get(key) ?? 0
+        return (startingSession === bridge.resolveSessionIdFor(message) && startingEpoch === epoch)
+          || (initiallyUnbound && epoch === startingEpoch + 1)
+      }
+      // Cancel BEFORE downloads/commands: a slow new upload must not let an old
+      // notice announce a completed batch while the next file is still arriving.
+      let suspended: { accept(): void; restore(): void } | undefined
+      const noticeWasArmed = pending.defer(message)
+      try {
+        // Message interceptor (e.g., for question custom-input collection).
+        // If the interceptor returns true, the message is consumed.
+        if (messageInterceptor !== undefined) {
+          try {
+            const consumed = await messageInterceptor(message)
+            if (consumed) return
+          } catch (error: unknown) {
+            logger.warn(`dsh-feishu: message interceptor error: ${error instanceof Error ? error.message : String(error)}`)
+          }
         }
-      }
-      const replyInThread = message.threadId !== undefined
-      // Feishu topic replies must target the topic ROOT message: replying to a
-      // non-root topic message with `reply_in_thread` does not reliably land in
-      // the topic. Root messages (no root_id) reply to themselves.
-      const replyToId = message.rootId ?? message.messageId
-      console.log(`dsh-feishu: [msg] chatId=${message.chatId} threadId=${message.threadId ?? '-'} rootId=${message.rootId ?? '-'} replyInThread=${replyInThread} replyTo=${replyToId}`)
-      // Remember the topic's root for EVERY inbound message — slash commands
-      // included, before they can return early. A WebUI-driven turn has no
-      // inbound message of its own, so this persisted map is the only thing
-      // that can keep its cards inside the topic.
-      if (message.threadId !== undefined) {
-        bridge.noteTopic({
-          chatId: message.chatId,
-          chatType: message.chatType,
-          threadId: message.threadId,
-          rootId: replyToId,
-        })
-      }
-      if (config.reactEmoji !== '') {
-        try {
-          await channel.addReaction(message.messageId, config.reactEmoji)
-        } catch (error: unknown) {
-          logger.warn(`dsh-feishu: reaction failed: ${error instanceof Error ? error.message : String(error)}`)
+        const replyInThread = message.threadId !== undefined
+        // Feishu topic replies must target the topic ROOT message: replying to a
+        // non-root topic message with `reply_in_thread` does not reliably land in
+        // the topic. Root messages (no root_id) reply to themselves.
+        const replyToId = message.rootId ?? message.messageId
+        console.log(`dsh-feishu: [msg] chatId=${message.chatId} threadId=${message.threadId ?? '-'} rootId=${message.rootId ?? '-'} replyInThread=${replyInThread} replyTo=${replyToId}`)
+        // Remember the topic's root for EVERY inbound message — slash commands
+        // included, before they can return early. A WebUI-driven turn has no
+        // inbound message of its own, so this persisted map is the only thing
+        // that can keep its cards inside the topic.
+        if (message.threadId !== undefined) {
+          bridge.noteTopic({
+            chatId: message.chatId,
+            chatType: message.chatType,
+            threadId: message.threadId,
+            rootId: replyToId,
+          })
         }
-      }
-      // Slash commands bypass the agent loop entirely; the registered
-      // command handler resolves the chat's session and produces a direct
-      // textual result.
-      if (slashCommand !== undefined) {
-        try {
-          const commandResult = await slashCommand(message)
-          if (commandResult !== undefined) {
-            if (commandResult.kind === 'consumed') {
-              // The handler already sent its response directly (e.g. a V2
-              // card instance via cardkit). Do not send a follow-up and do
-              // not fall through into the agent loop.
+        if (config.reactEmoji !== '') {
+          try {
+            await channel.addReaction(message.messageId, config.reactEmoji)
+          } catch (error: unknown) {
+            logger.warn(`dsh-feishu: reaction failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+        // Slash commands bypass the agent loop entirely; the registered
+        // command handler resolves the chat's session and produces a direct
+        // textual result.
+        if (slashCommand !== undefined) {
+          try {
+            const commandResult = await slashCommand(message)
+            if (commandResult !== undefined) {
+              if (commandResult.kind === 'consumed') {
+                // The handler already sent its response directly (e.g. a V2
+                // card instance via cardkit). Do not send a follow-up and do
+                // not fall through into the agent loop.
+                return
+              }
+              const payload = commandResult.card !== undefined ? { card: commandResult.card } : { text: commandResult.text }
+              await sendOutbound(message.chatId, payload, {
+                replyTo: replyToId,
+                replyInThread,
+              })
               return
             }
-            const payload = commandResult.card !== undefined ? { card: commandResult.card } : { text: commandResult.text }
-            await sendOutbound(message.chatId, payload, {
+          } catch (error: unknown) {
+            logError(`dsh-feishu: slash command failed: ${error instanceof Error ? error.message : String(error)}`)
+            await sendOutbound(message.chatId, { text: `命令执行出错：${errorText(error, config.errorMessage)}` }, {
               replyTo: replyToId,
               replyInThread,
+            }).catch((sendError: unknown) => {
+              logError(`dsh-feishu: fallback reply failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`)
             })
             return
           }
-        } catch (error: unknown) {
-          logError(`dsh-feishu: slash command failed: ${error instanceof Error ? error.message : String(error)}`)
-          await sendOutbound(message.chatId, { text: `命令执行出错：${errorText(error, config.errorMessage)}` }, {
-            replyTo: replyToId,
-            replyInThread,
-          }).catch((sendError: unknown) => {
-            logError(`dsh-feishu: fallback reply failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`)
+        }
+        if (resources.length > 0) {
+          initiallyUnbound = await (onboarding?.needsOnboarding(message) ?? bridge.needsOnboarding(message))
+        }
+        // Admit any image resources on the inbound message through the
+        // attachment store so the bridge can attach durable ImageBlocks to
+        // the user turn. Without an attachment service we reject image-bearing
+        // messages so the bridge never falls back to a text-only user turn
+        // that would silently drop the image.
+        let inboundMessage: InboundMessage = {
+          chatId: message.chatId,
+          chatType: message.chatType,
+          ...message.threadId === undefined ? {} : { threadId: message.threadId },
+          ...message.threadId === undefined ? {} : { rootId: replyToId },
+          content: message.content,
+        }
+        let imageBudget: ImageBudget = { count: 0, bytes: 0 }
+        const checkDraftBudget = (): void => {
+          if (attachments === undefined) return
+          const currentBudget = pending.budget(message)
+          assertImageBudget(attachments.imageLimits, {
+            count: currentBudget.count + imageBudget.count,
+            bytes: currentBudget.bytes + imageBudget.bytes,
+            maxSingleBytes: Math.max(currentBudget.maxSingleBytes ?? 0, imageBudget.maxSingleBytes ?? 0),
           })
-          return
         }
-      }
-      // Admit any image resources on the inbound message through the
-      // attachment store so the bridge can attach durable ImageBlocks to
-      // the user turn. Without an attachment service we reject image-bearing
-      // messages so the bridge never falls back to a text-only user turn
-      // that would silently drop the image.
-      let inboundMessage: InboundMessage = {
-        chatId: message.chatId,
-        chatType: message.chatType,
-        ...message.threadId === undefined ? {} : { threadId: message.threadId },
-        ...message.threadId === undefined ? {} : { rootId: replyToId },
-        content: message.content,
-      }
-      if ((message.resources ?? []).some(resource => resource.type === 'image')) {
-        if (attachments === undefined) {
-          await sendOutbound(message.chatId, {
-            text: 'Image messages are not supported because the deployment has no attachment service composed.',
-          }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
-          return
-        }
-        try {
-          const admission = await admitImagesForMessage(channel, message, attachments, new AbortController().signal)
-          inboundMessage = {
-            ...inboundMessage,
-            imageBlocks: admission.blocks,
-            // A fitted image's untouched original rides along as a file, so the
-            // agent keeps full resolution for any real cropping work.
-            ...(admission.files.length === 0 ? {} : {
-              fileBlocks: [
-                ...(inboundMessage.fileBlocks ?? []),
-                ...admission.files.map(f => f.hostPath === undefined
-                  ? { attachment: f.fileRef }
-                  : { attachment: f.fileRef, hostPath: f.hostPath }),
-              ],
-            }),
-            // Big images are downscaled to fit the store; say so in the turn so
-            // the model knows the pixels it sees are a reduction.
-            ...(admission.notes.length === 0 ? {} : {
-              content: [inboundMessage.content, ...admission.notes].filter(part => part !== '').join('\n\n'),
-            }),
+        if ((message.resources ?? []).some(resource => resource.type === 'image')) {
+          if (attachments === undefined) {
+            await sendOutbound(message.chatId, {
+              text: 'Image messages are not supported because the deployment has no attachment service composed.',
+            }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
+            return
           }
-          for (const note of admission.notes) logger.info(`dsh-feishu: ${note}`)
-        } catch (error: unknown) {
-          logError(`dsh-feishu: image admission failed: ${error instanceof Error ? error.message : String(error)}`)
-          await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
-            replyTo: replyToId,
-            replyInThread,
+          try {
+            const admission = await admitImagesForMessage(channel, message, attachments, new AbortController().signal, pending.budget(message))
+            imageBudget = admission.budget
+            inboundMessage = {
+              ...inboundMessage,
+              imageBlocks: admission.blocks,
+              // A fitted image's untouched original rides along as a file, so the
+              // agent keeps full resolution for any real cropping work.
+              ...(admission.files.length === 0 ? {} : {
+                fileBlocks: [
+                  ...(inboundMessage.fileBlocks ?? []),
+                  ...admission.files.map(f => f.hostPath === undefined
+                    ? { attachment: f.fileRef }
+                    : { attachment: f.fileRef, hostPath: f.hostPath }),
+                ],
+              }),
+              // Big images are downscaled to fit the store; say so in the turn so
+              // the model knows the pixels it sees are a reduction.
+              ...(admission.notes.length === 0 ? {} : {
+                content: [inboundMessage.content, ...admission.notes].filter(part => part !== '').join('\n\n'),
+              }),
+            }
+            for (const note of admission.notes) logger.info(`dsh-feishu: ${note}`)
+          } catch (error: unknown) {
+            logError(`dsh-feishu: image admission failed: ${error instanceof Error ? error.message : String(error)}`)
+            await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
+              replyTo: replyToId,
+              replyInThread,
+            }).catch(() => undefined)
+            return
+          }
+        }
+        // Admit file/video/audio resources: persist the bytes through the native
+        // attachment store (`saveFileStream`) and attach each durable ref to the
+        // user turn so the agent can read the file at `hostPath`.
+        if ((message.resources ?? []).some(resource => ADMITTED_RESOURCE_TYPES.has(resource.type))) {
+          if (attachments === undefined) {
+            await sendOutbound(message.chatId, {
+              text: 'File messages are not supported because the deployment has no attachment service composed.',
+            }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
+            return
+          }
+          try {
+            const files = await admitFilesForMessage(channel, message, new AbortController().signal, attachments)
+            if (files.length > 0) {
+              inboundMessage = {
+                ...inboundMessage,
+                fileBlocks: [
+                  ...(inboundMessage.fileBlocks ?? []),
+                  ...files.map(f => f.hostPath === undefined
+                    ? { attachment: f.fileRef }
+                    : { attachment: f.fileRef, hostPath: f.hostPath }),
+                ],
+              }
+            }
+          } catch (error: unknown) {
+            logError(`dsh-feishu: file admission failed: ${error instanceof Error ? error.message : String(error)}`)
+            await sendOutbound(message.chatId, { text: `文件处理出错：${errorText(error, config.errorMessage)}` }, {
+              replyTo: replyToId, replyInThread,
+            }).catch(() => undefined)
+            return
+          }
+        }
+        if (stopped) return
+        if (!bindingStillCurrent()) {
+          await sendOutbound(message.chatId, { text: (getTranslations?.() ?? translationsFor('zh')).pendingAttachmentsDiscarded }, {
+            replyTo: replyToId, replyInThread,
           }).catch(() => undefined)
           return
         }
-      }
-      // Admit file/video/audio resources: persist the bytes through the native
-      // attachment store (`saveFileStream`) and attach each durable ref to the
-      // user turn so the agent can read the file at `hostPath`.
-      if ((message.resources ?? []).some(resource => ADMITTED_RESOURCE_TYPES.has(resource.type))) {
-        if (attachments === undefined) {
-          await sendOutbound(message.chatId, {
-            text: 'File messages are not supported because the deployment has no attachment service composed.',
-          }, { replyTo: replyToId, replyInThread }).catch(() => undefined)
-          return
-        }
-        try {
-          const files = await admitFilesForMessage(channel, message, new AbortController().signal, attachments)
-          if (files.length > 0) {
-            inboundMessage = {
-              ...inboundMessage,
-              fileBlocks: [
-                ...(inboundMessage.fileBlocks ?? []),
-                ...files.map(f => f.hostPath === undefined
-                  ? { attachment: f.fileRef }
-                  : { attachment: f.fileRef, hostPath: f.hostPath }),
-              ],
-            }
-          }
-        } catch (error: unknown) {
-          logError(`dsh-feishu: file admission failed: ${error instanceof Error ? error.message : String(error)}`)
-          // Non-fatal: continue with the message even if file download fails.
-          // The agent will see the raw <file .../> tag and can report the issue.
-        }
-      }
-      try {
-        // First-message onboarding: a chat with no session history gets a
-        // card (attach an existing session or create a new one) instead of
-        // silently auto-creating a session. Only non-command messages reach
-        // this point — slash commands (including `/new`) are handled above.
-        if (onboarding !== undefined) {
-          const needsOnboarding = await onboarding.needsOnboarding(message)
-          if (needsOnboarding) {
-            await onboarding.sendOnboardingCard(message)
+        if (attachments !== undefined) {
+          try {
+            checkDraftBudget()
+          } catch (error: unknown) {
+            await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
+              replyTo: replyToId, replyInThread,
+            }).catch(() => undefined)
             return
           }
         }
-        // Fire-and-forget: submit the message to the agent and return
-        // immediately so the chatQueue can deliver the next message (e.g.
-        // a slash command) without waiting for the agent turn to finish.
-        // The reply card is sent asynchronously when the agent completes.
-        const chatId = message.chatId
-        const chatType = message.chatType
-        const threadId = message.threadId
-        void bridge.reply(inboundMessage, {
-          // Plain-text acknowledgement when the agent is busy: steer injects
-          // into the running turn, queue waits for it. Deliberately a text
-          // message, not a card — it is transient feedback, not a result.
-          onBusy: (mode) => {
-            const t = getTranslations?.() ?? translationsFor('zh')
-            const notice = mode === 'steer' ? t.busySteeredNotice : t.busyQueuedNotice
-            void sendOutbound(chatId, { text: notice }, {
-              replyTo: replyToId,
-              replyInThread,
-            }).catch((error: unknown) => {
-              logError(`dsh-feishu: busy notice failed: ${error instanceof Error ? error.message : String(error)}`)
-            })
-          },
-        }).then(async (text) => {
-          // A steered message produces no reply of its own: the running turn's
-          // reply card already answers it (otherwise the user gets two cards
-          // for one turn).
-          if (text === undefined) return
-          const sessionId = bridge.resolveSessionIdFor(inboundMessage)
-          const meta = await replyCardMeta?.({ chatId, chatType, ...(threadId !== undefined ? { threadId } : {}) })
-          // Read the "the text is already on screen" flag AFTER flushed().
-          // Streaming clears it there when the turn's cards never actually
-          // reached Feishu, so that the branch below still posts the answer;
-          // reading it earlier would miss that correction (key pitfall 29).
-          const turnStats = await flushed?.(sessionId)
-          const intermediateSent = bridge.consumeIntermediateSent(sessionId)
-          // What this turn produced without declaring it through `present`
-          // (TODO O3). `off` keeps the pre-2026-10-11 silence; `summary` only
-          // announces the count; `delivery` also folds the artifact-shaped files
-          // into the delivery plan below, so they get the SAME treatment a
-          // presented file gets — media inlined, documents auto-sent, the rest a
-          // tap-to-send row. Source files and scratch scripts are never part of
-          // it (`producedArtifacts`), because a chat is not a file browser.
-          const produceMode = produceCardMode?.() ?? 'off'
-          const produced = produceMode === 'off' ? [] : producedArtifacts(turnStats?.produced ?? [])
-          const producedCount = produceMode === 'off' ? undefined : produced.length
-          const deliverChat: DeliverChat = {
-            chatId,
-            ...(threadId === undefined ? {} : { threadId }),
-            rootId: replyToId,
-          }
-          // Plan the turn's `present` deliverables before the cards are built:
-          // the plan decides which rows are clickable and which documents go out
-          // by themselves (see `feishu-deliver.ts`). A planning failure must not
-          // cost the answer, so it is contained here.
-          const deliverPlan = deliver === undefined
-            ? undefined
-            : await deliver.plan({
-                sessionId,
-                chatId,
-                ...(threadId === undefined ? {} : { topic: { threadId, rootId: replyToId } }),
-                ...(meta?.workspace === undefined ? {} : { workspace: meta.workspace }),
-                files: produceMode === 'delivery'
-                  ? mergeProducedArtifacts(turnStats?.deliverables ?? [], produced, meta?.workspace)
-                  : turnStats?.deliverables ?? [],
-              }).catch((error: unknown) => {
-                logError(`dsh-feishu: deliverable planning failed: ${error instanceof Error ? error.message : String(error)}`)
-                return undefined
-              })
-          /** Remember the topic of a card that carries clickable rows. */
-          const noteTopic = (messageId: string | undefined): void => {
-            if (messageId === undefined || threadId === undefined || noteCardTopic === undefined) return
-            noteCardTopic(messageId, { threadId, rootId: replyToId })
-          }
-          const autoDeliver = async (): Promise<void> => {
-            if (deliver === undefined || deliverPlan === undefined) return
-            await deliver.autoSend(deliverPlan, deliverChat)
-          }
-          /**
-           * `compact` has no Turn Complete card: the summary is folded into the
-           * card that carries the answer (streaming's step card does it itself;
-           * the reply cards below do it here), and the few rows a reader can
-           * ACT on move to their own titled card — a card that is written once
-           * and never updated is the only safe home for clickable rows
-           * (关键坑 11 / 55).
-           */
-          const compactView = compactFooter?.() === true
-          /**
-           * Only the facts the fallback reply card's OWN footer does not already
-           * print: it carries workspace, model, effort, context and tok/s, so a
-           * summary repeating them would show the same line twice. The produced
-           * count is not in that footer, hence it stays.
-           */
-          const completionFacts = {
-            stats: turnStats,
-            ...(producedCount === undefined ? {} : { producedCount }),
-          }
-          const sendDeliveryCard = async (): Promise<void> => {
-            if (deliverPlan?.rows === undefined || deliverPlan.rows.length === 0) return
-            const sent = await sendCard(chatId, renderDeliveryCard(getTranslations?.() ?? translationsFor('zh'), deliverPlan.rows), {
-              replyTo: replyToId,
-              replyInThread,
-            }, meta?.workspace)
-            noteTopic(sent.messageId)
-          }
-          if (intermediateSent) {
-            // Streaming already sent a step card with the text content. At
-            // `compact` that card also carries the turn summary, so only the
-            // delivery card is left to post; every other level keeps the Turn
-            // Complete footer.
-            console.log(compactView
-              ? 'dsh-feishu: [reply] a step card carried the text → compact summary in its footer'
-              : 'dsh-feishu: [reply] a step card carried the text → footer only')
-            const footerCard = compactView
-              ? undefined
-              : renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows, undefined, producedCount)
-            // The auto-send runs even if posting the footer failed: the files
-            // are what the operator asked for, and swallowing them behind a
-            // card-send error would be the worse failure.
-            try {
-              if (footerCard !== undefined) {
-                const sent = await sendCard(chatId, footerCard, {
+        if (resources.length > 0 && userText === '') {
+          // Only successful durable refs enter the draft. Resource placeholders
+          // are metadata, not a human instruction to start an Agent turn.
+          const needsOnboarding = await (onboarding?.needsOnboarding(message) ?? bridge.needsOnboarding(message))
+          if (!bindingStillCurrent()) return
+          checkDraftBudget()
+          pending.stash(message, {
+            message: inboundMessage, budget: imageBudget,
+            files: resources.filter(resource => resource.type !== 'image').length,
+            replyTo: replyToId,
+            ...(needsOnboarding && startingEpoch === (bindingEpochs.get(key) ?? 0) ? {} : { sessionId: bridge.resolveSessionIdFor(message) }),
+          })
+          return
+        }
+        try {
+          // First-message onboarding: a chat with no session history gets a
+          // card (attach an existing session or create a new one) instead of
+          // silently auto-creating a session. Only non-command messages reach
+          // this point — slash commands (including `/new`) are handled above.
+          if (onboarding !== undefined) {
+            const needsOnboarding = await onboarding.needsOnboarding(message)
+            if (needsOnboarding) {
+              if (resources.length > 0 && bindingStillCurrent()) {
+                checkDraftBudget()
+                pending.stash(message, {
+                  message: { ...inboundMessage, content: inboundMessage.content.replace(message.content, '').trim() },
+                  budget: imageBudget,
+                  files: resources.filter(resource => resource.type !== 'image').length,
                   replyTo: replyToId,
-                  replyInThread,
-                }, meta?.workspace)
-                noteTopic(sent.messageId)
-              } else if (compactView) {
-                await sendDeliveryCard()
+                  ...(startingEpoch === (bindingEpochs.get(key) ?? 0) ? {} : { sessionId: bridge.resolveSessionIdFor(message) }),
+                })
               }
-            } finally {
-              await autoDeliver()
+              await onboarding.sendOnboardingCard(message)
+              return
             }
-          } else {
-            // No intermediate card made it to the chat — send the full reply,
-            // split across multiple cards if the output exceeds one card's
-            // content budget. This is the safety net that keeps a failed step
-            // card from swallowing the whole answer.
-            // Carry the turn's decode throughput so this fallback card shows a
-            // tok/s line like every other assistant card.
-            const tps = turnTokensPerSecond(turnStats)
-            const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
-            // The compact summary rides the LAST reply card, so a turn whose
-            // step card never reached Feishu still ends with the same footer a
-            // normal compact turn shows.
-            const posted = compactView
-              ? cards.map((card, i) => i === cards.length - 1
-                  ? appendCompletionFooter(card, getTranslations?.() ?? translationsFor('zh'), completionFacts)
-                  : card)
-              : cards
-            console.log(`dsh-feishu: [reply] no step card carried the text → posting ${posted.length} reply card(s)`)
-            for (const card of posted) {
-              await sendCard(chatId, card, {
+          }
+          // Fire-and-forget: submit the message to the agent and return
+          // immediately so the chatQueue can deliver the next message (e.g.
+          // a slash command) without waiting for the agent turn to finish.
+          // The reply card is sent asynchronously when the agent completes.
+          const chatId = message.chatId
+          const chatType = message.chatType
+          const threadId = message.threadId
+          if (!bindingStillCurrent()) return
+          checkDraftBudget()
+          const currentAddition = resources.length === 0 ? undefined : {
+            message: { ...inboundMessage, content: inboundMessage.content.replace(message.content, '').trim() },
+            budget: imageBudget,
+            files: resources.filter(resource => resource.type !== 'image').length,
+            replyTo: replyToId,
+            sessionId: bridge.resolveSessionIdFor(message),
+          }
+          inboundMessage = pending.merge(message, inboundMessage)
+          const restoreDraft = pending.reserve(message, currentAddition)
+          suspended = restoreDraft
+          let accepted = false
+          void bridge.reply(inboundMessage, {
+            onAccepted: () => { accepted = true; restoreDraft?.accept(); suspended = undefined },
+            // Plain-text acknowledgement when the agent is busy: steer injects
+            // into the running turn, queue waits for it. Deliberately a text
+            // message, not a card — it is transient feedback, not a result.
+            onBusy: (mode) => {
+              const t = getTranslations?.() ?? translationsFor('zh')
+              const notice = mode === 'steer' ? t.busySteeredNotice : t.busyQueuedNotice
+              void sendOutbound(chatId, { text: notice }, {
+                replyTo: replyToId,
+                replyInThread,
+              }).catch((error: unknown) => {
+                logError(`dsh-feishu: busy notice failed: ${error instanceof Error ? error.message : String(error)}`)
+              })
+            },
+          }).then(async (text) => {
+            // A steered message produces no reply of its own: the running turn's
+            // reply card already answers it (otherwise the user gets two cards
+            // for one turn).
+            if (text === undefined) return
+            const sessionId = bridge.resolveSessionIdFor(inboundMessage)
+            const meta = await replyCardMeta?.({ chatId, chatType, ...(threadId !== undefined ? { threadId } : {}) })
+            // Read the "the text is already on screen" flag AFTER flushed().
+            // Streaming clears it there when the turn's cards never actually
+            // reached Feishu, so that the branch below still posts the answer;
+            // reading it earlier would miss that correction (key pitfall 29).
+            const turnStats = await flushed?.(sessionId)
+            const intermediateSent = bridge.consumeIntermediateSent(sessionId)
+            // What this turn produced without declaring it through `present`
+            // (TODO O3). `off` keeps the pre-2026-10-11 silence; `summary` only
+            // announces the count; `delivery` also folds the artifact-shaped files
+            // into the delivery plan below, so they get the SAME treatment a
+            // presented file gets — media inlined, documents auto-sent, the rest a
+            // tap-to-send row. Source files and scratch scripts are never part of
+            // it (`producedArtifacts`), because a chat is not a file browser.
+            const produceMode = produceCardMode?.() ?? 'off'
+            const produced = produceMode === 'off' ? [] : producedArtifacts(turnStats?.produced ?? [])
+            const producedCount = produceMode === 'off' ? undefined : produced.length
+            const deliverChat: DeliverChat = {
+              chatId,
+              ...(threadId === undefined ? {} : { threadId }),
+              rootId: replyToId,
+            }
+            // Plan the turn's `present` deliverables before the cards are built:
+            // the plan decides which rows are clickable and which documents go out
+            // by themselves (see `feishu-deliver.ts`). A planning failure must not
+            // cost the answer, so it is contained here.
+            const deliverPlan = deliver === undefined
+              ? undefined
+              : await deliver.plan({
+                  sessionId,
+                  chatId,
+                  ...(threadId === undefined ? {} : { topic: { threadId, rootId: replyToId } }),
+                  ...(meta?.workspace === undefined ? {} : { workspace: meta.workspace }),
+                  files: produceMode === 'delivery'
+                    ? mergeProducedArtifacts(turnStats?.deliverables ?? [], produced, meta?.workspace)
+                    : turnStats?.deliverables ?? [],
+                }).catch((error: unknown) => {
+                  logError(`dsh-feishu: deliverable planning failed: ${error instanceof Error ? error.message : String(error)}`)
+                  return undefined
+                })
+            /** Remember the topic of a card that carries clickable rows. */
+            const noteTopic = (messageId: string | undefined): void => {
+              if (messageId === undefined || threadId === undefined || noteCardTopic === undefined) return
+              noteCardTopic(messageId, { threadId, rootId: replyToId })
+            }
+            const autoDeliver = async (): Promise<void> => {
+              if (deliver === undefined || deliverPlan === undefined) return
+              await deliver.autoSend(deliverPlan, deliverChat)
+            }
+            /**
+             * `compact` has no Turn Complete card: the summary is folded into the
+             * card that carries the answer (streaming's step card does it itself;
+             * the reply cards below do it here), and the few rows a reader can
+             * ACT on move to their own titled card — a card that is written once
+             * and never updated is the only safe home for clickable rows
+             * (关键坑 11 / 55).
+             */
+            const compactView = compactFooter?.() === true
+            /**
+             * Only the facts the fallback reply card's OWN footer does not already
+             * print: it carries workspace, model, effort, context and tok/s, so a
+             * summary repeating them would show the same line twice. The produced
+             * count is not in that footer, hence it stays.
+             */
+            const completionFacts = {
+              stats: turnStats,
+              ...(producedCount === undefined ? {} : { producedCount }),
+            }
+            const sendDeliveryCard = async (): Promise<void> => {
+              if (deliverPlan?.rows === undefined || deliverPlan.rows.length === 0) return
+              const sent = await sendCard(chatId, renderDeliveryCard(getTranslations?.() ?? translationsFor('zh'), deliverPlan.rows), {
                 replyTo: replyToId,
                 replyInThread,
               }, meta?.workspace)
+              noteTopic(sent.messageId)
             }
-            // This path builds no footer of its own, so a turn that declared
-            // deliverables would lose both the list and the auto-delivery. At
-            // `compact` the delivery card is posted whenever there are rows;
-            // otherwise the footer is only posted when there IS something to
-            // deliver.
-            try {
-              if (compactView) {
-                await sendDeliveryCard()
-              } else if (hasDeliverables(deliverPlan)) {
-                const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan.rows, undefined, producedCount)
+            if (intermediateSent) {
+              // Streaming already sent a step card with the text content. At
+              // `compact` that card also carries the turn summary, so only the
+              // delivery card is left to post; every other level keeps the Turn
+              // Complete footer.
+              console.log(compactView
+                ? 'dsh-feishu: [reply] a step card carried the text → compact summary in its footer'
+                : 'dsh-feishu: [reply] a step card carried the text → footer only')
+              const footerCard = compactView
+                ? undefined
+                : renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan?.rows, undefined, producedCount)
+              // The auto-send runs even if posting the footer failed: the files
+              // are what the operator asked for, and swallowing them behind a
+              // card-send error would be the worse failure.
+              try {
                 if (footerCard !== undefined) {
                   const sent = await sendCard(chatId, footerCard, {
                     replyTo: replyToId,
                     replyInThread,
                   }, meta?.workspace)
                   noteTopic(sent.messageId)
+                } else if (compactView) {
+                  await sendDeliveryCard()
                 }
+              } finally {
+                await autoDeliver()
               }
-            } finally {
-              await autoDeliver()
+            } else {
+              // No intermediate card made it to the chat — send the full reply,
+              // split across multiple cards if the output exceeds one card's
+              // content budget. This is the safety net that keeps a failed step
+              // card from swallowing the whole answer.
+              // Carry the turn's decode throughput so this fallback card shows a
+              // tok/s line like every other assistant card.
+              const tps = turnTokensPerSecond(turnStats)
+              const cards = renderReplyCards(text, tps === undefined ? meta : { ...meta, tokensPerSecond: tps })
+              // The compact summary rides the LAST reply card, so a turn whose
+              // step card never reached Feishu still ends with the same footer a
+              // normal compact turn shows.
+              const posted = compactView
+                ? cards.map((card, i) => i === cards.length - 1
+                    ? appendCompletionFooter(card, getTranslations?.() ?? translationsFor('zh'), completionFacts)
+                    : card)
+                : cards
+              console.log(`dsh-feishu: [reply] no step card carried the text → posting ${posted.length} reply card(s)`)
+              for (const card of posted) {
+                await sendCard(chatId, card, {
+                  replyTo: replyToId,
+                  replyInThread,
+                }, meta?.workspace)
+              }
+              // This path builds no footer of its own, so a turn that declared
+              // deliverables would lose both the list and the auto-delivery. At
+              // `compact` the delivery card is posted whenever there are rows;
+              // otherwise the footer is only posted when there IS something to
+              // deliver.
+              try {
+                if (compactView) {
+                  await sendDeliveryCard()
+                } else if (hasDeliverables(deliverPlan)) {
+                  const footerCard = renderFooterCard(getTranslations?.() ?? translationsFor('zh'), meta, turnStats, deliverPlan.rows, undefined, producedCount)
+                  if (footerCard !== undefined) {
+                    const sent = await sendCard(chatId, footerCard, {
+                      replyTo: replyToId,
+                      replyInThread,
+                    }, meta?.workspace)
+                    noteTopic(sent.messageId)
+                  }
+                }
+              } finally {
+                await autoDeliver()
+              }
             }
-          }
-        }).catch((error: unknown) => {
-          if (error instanceof TurnDroppedError) {
-            // Message intentionally dropped because the session was stopped
-            // while it waited for the current turn — no error card needed.
-            logError(`dsh-feishu: message dropped (session stopped): ${error.message}`)
-            return
-          }
-          logError(`dsh-feishu: message handling failed: ${error instanceof Error ? error.message : String(error)}`)
-          void sendFailure(chatId, error, { replyTo: replyToId, replyInThread })
-        })
+          }).catch((error: unknown) => {
+            if (!accepted && !(error instanceof TurnDroppedError) && bindingStillCurrent()) restoreDraft?.restore()
+            else restoreDraft?.accept()
+            if (error instanceof TurnDroppedError) {
+              // Message intentionally dropped because the session was stopped
+              // while it waited for the current turn — no error card needed.
+              logError(`dsh-feishu: message dropped (session stopped): ${error.message}`)
+              return
+            }
+            logError(`dsh-feishu: message handling failed: ${error instanceof Error ? error.message : String(error)}`)
+            void sendFailure(chatId, error, { replyTo: replyToId, replyInThread })
+          })
+        } catch (error: unknown) {
+          // Synchronous errors from bridge.reply() setup (rare)
+          if (bindingStillCurrent()) suspended?.restore()
+          else suspended?.accept()
+          logError(`dsh-feishu: message dispatch failed: ${error instanceof Error ? error.message : String(error)}`)
+          await sendFailure(message.chatId, error, { replyTo: replyToId, replyInThread })
+        }
       } catch (error: unknown) {
-        // Synchronous errors from bridge.reply() setup (rare)
-        logError(`dsh-feishu: message dispatch failed: ${error instanceof Error ? error.message : String(error)}`)
-        await sendFailure(message.chatId, error, { replyTo: replyToId, replyInThread })
+        if (bindingStillCurrent()) suspended?.restore()
+        else suspended?.accept()
+        const replyTo = message.rootId ?? message.messageId
+        await sendOutbound(message.chatId, { text: `附件处理出错：${errorText(error, config.errorMessage)}` }, {
+          replyTo, replyInThread: message.threadId !== undefined,
+        }).catch(() => undefined)
+      } finally {
+        // Re-arm after rejected additions or non-consuming slash commands. A
+        // submitted text has already cleared the draft, so this is a no-op.
+        if (resources.length > 0 || noticeWasArmed) pending.resume(message)
       }
     }),
     channel.on('reconnecting', () => { logger.warn('dsh-feishu: WebSocket reconnecting') }),
@@ -827,6 +972,9 @@ export async function startChannel(
     const detail = error instanceof Error ? error.message : String(error)
     const redacted = config.appSecret === '' ? detail : detail.split(config.appSecret).join('[redacted]')
     logError(`dsh-feishu: WebSocket connection failed: ${redacted}`)
+    stopped = true
+    pending.stop()
+    stopBindingChanges?.()
     for (const unsubscribe of unsubscribers) unsubscribe()
     await bridge.dispose()
     throw error
@@ -836,12 +984,15 @@ export async function startChannel(
   return {
     channel,
     stop: async () => {
+      stopped = true
+      pending.stop()
+      stopBindingChanges?.()
       for (const unsubscribe of unsubscribers) unsubscribe()
       try {
-        await channel.disconnect()
+        await withTimeout(channel.disconnect(), 'disconnect channel')
         logger.info('dsh-feishu: WebSocket disconnected')
       } finally {
-        await bridge.dispose()
+        await withTimeout(bridge.dispose(), 'dispose conversation bridge')
       }
     },
   }

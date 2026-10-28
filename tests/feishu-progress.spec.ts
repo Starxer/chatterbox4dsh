@@ -756,7 +756,7 @@ describe('renderProgressCard', () => {
 })
 
 describe('createProgressCards', () => {
-  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave } = {}) {
+  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number } = {}) {
     const channel = {
       send: vi.fn(async (_to: string, input: { card?: object; text?: string }) =>
         input.card !== undefined && options.failCardSend
@@ -774,6 +774,7 @@ describe('createProgressCards', () => {
       channel: channel as any,
       logger,
       getTranslations: () => t,
+      elapsedRefreshSeconds: options.elapsedRefreshSeconds,
       ...(options.interleave === undefined ? {} : { interleave: options.interleave }),
     })
     return { channel, logger, cards }
@@ -1013,7 +1014,7 @@ describe('createProgressCards', () => {
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
   })
 
-  it('says 执行中 at first, then repaints the elapsed clock every 30s', async () => {
+  it('says 执行中 at first, then repaints the elapsed clock every 5s by default', async () => {
     vi.useFakeTimers()
     const { channel, cards } = harness()
     cards.beginTurn(chat, 's1', Date.now())
@@ -1028,7 +1029,51 @@ describe('createProgressCards', () => {
     expect(channel.updateCardInstance).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
-    expect(mdOf(card)).toContain(t.turnCardToolRunning('`bash`', '30.0s'))
+    expect(mdOf(card)).toContain(t.turnCardToolRunning('`bash`', '5.0s'))
+  })
+
+  it('reads the live interval on each re-arm and stops all ticks on disposal', async () => {
+    vi.useFakeTimers()
+    let seconds = 3
+    const { channel, cards } = harness({ elapsedRefreshSeconds: () => seconds })
+    cards.beginTurn(chat, 's1', Date.now())
+    cards.toolStarted('s1', 'bash', 'c1', Date.now())
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    seconds = 10
+    await vi.advanceTimersByTimeAsync(1)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    seconds = 30
+    await vi.advanceTimersByTimeAsync(1)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(3)
+    cards.stop()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(3)
+  })
+
+  it('coalesces repeated clock ticks while a card write is slow', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ elapsedRefreshSeconds: () => 3 })
+    let release!: () => void
+    channel.updateCardInstance.mockImplementationOnce(() => new Promise<undefined>(resolve => { release = () => resolve(undefined) }))
+    cards.beginTurn(chat, 's1', Date.now())
+    cards.toolStarted('s1', 'bash', 'c1', Date.now())
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(12_000)
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    // One newest render, not four queued ticks after the slow write.
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(2)
+    expect(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])).toContain('15.0s')
+    cards.stop()
   })
 
   it('drops the running tick as soon as the call settles', async () => {
@@ -1244,11 +1289,11 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS)
     // Same card, same rows — only the elapsed clock moved on.
     const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
-    expect(mdOf(card)).toContain(t.turnCardToolRunning('`ask_user_question`', '30.0s'))
+    expect(mdOf(card)).toContain(t.turnCardToolRunning('`ask_user_question`', '5.0s'))
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS)
     expect(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1]))
-      .toContain(t.turnCardToolRunning('`ask_user_question`', '1m00s'))
+      .toContain(t.turnCardToolRunning('`ask_user_question`', '10.0s'))
   })
 
   it('closes the turn on the card above the interruption when no new row arrived', async () => {

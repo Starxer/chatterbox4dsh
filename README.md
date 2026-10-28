@@ -90,6 +90,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 | `/reasoning [档位 / effort]` | 支持的推理强度随模型而变；无参发一键切换卡（点一行即切，**只改本会话**、不动全局默认）；`show on\|off` 控制思考显示 | Supported efforts depend on the model; no args opens a one-tap effort card (**this session only**, never the global default); `show on\|off` controls display |
 | `/display [compact\|standard\|detailed\|verbose]` | 切档；无参发控制卡 | Switch level; no args opens controls |
 | `/display [reasoning\|tools\|args\|results] [on\|off]` | 切四个显示开关 | Toggle the four display switches |
+| `/display tick [3\|5\|10\|30]` | 查询／设置运行中耗时刷新间隔（秒），默认 5；也可在控制卡中选 | Query/set elapsed-time refresh seconds (default 5); also available on the control card |
 | `/stop` | 中止本轮并丢弃排队消息 | Abort the turn and drop queued messages |
 | `/steer <text>` | 插入当前轮；空闲时作为新消息 | Inject into the current turn; new message if idle |
 | `/queue <text>` | 强制排队到下一轮；空闲时作为新消息 | Force next-turn queueing; new message if idle |
@@ -137,6 +138,7 @@ Example configuration entry for a profile patch; credentials use references, nev
 | `agentPreset` | Harness 默认 / default | 新会话预设；恢复优先会话记录 | New-session preset; resume prefers recorded preset |
 | `reactEmoji` | `THUMBSUP` | 入站表情回应，空字符串关闭 | Inbound reaction; empty string disables it |
 | `transcriptView` | `detailed` | 上方四档展示 | Four detail levels above |
+| `elapsedRefreshSeconds` | `5` | 3／5／10／30 秒，运行中耗时与占位计时刷新；下次定时器排程读取新值 | 3/5/10/30 seconds for live elapsed/placeholder clocks; new value is read at the next timer scheduling |
 | `showReasoning` | `true` | 显示推理，受档位约束 | Reasoning, within the selected level |
 | `showToolCalls` | `true` | 显示工具；关闭也不发简洁过程卡 | Tools; disabling also suppresses compact progress |
 | `showToolArgs` | `true` | 参数块，需工具开启且档位允许 | Args, when tools and level allow |
@@ -158,6 +160,16 @@ Example configuration entry for a profile patch; credentials use references, nev
 `appSecret` 是遗留兼容字段，新配置请使用 `appSecretRef`。连接相关字段（凭据、平台、访问策略、`reactEmoji`）变化会重建通道，可能中断活动回合；显示、语言与新会话默认值热生效，不会因保存而重建通道。
 
 `appSecret` is a legacy field; use `appSecretRef` for new configurations. Credentials, platform, access policy and `reactEmoji` changes rebuild the channel and may interrupt activity; display, locale and new-session defaults do not rebuild it.
+
+## 附件等待 / Attachment waiting
+
+仅发送图片、文件、视频或语音时，插件先保存到 DSH 附件库，**不启动 Agent 回合**。每批最后一个附件接收成功后静默 3 秒，发送一次累计数量提示；新增附件重新计时。下一条普通文字消息会携带暂存附件一起提交，文字先到就取消未发的提示。图文混合消息可直接提交；查询命令不消费暂存。
+
+暂存按聊天／话题隔离，无超时自动提交。成功新建／切换会话会清除已有会话的暂存；首次 onboarding 的附件保留到初次绑定。暂存关联只在内存，插件重载／通道重建后不恢复（已保存的附件对象不删除）。图片数量、原始字节预算动态跟随 DSH 的 `attachments.imageLimits`；超限拒绝本次新增、保留此前暂存。普通文件不另设插件数量／大小上限，飞书传输约束仍独立存在。
+
+Image/file/video/voice-only messages are saved to DSH's attachment store **without starting an Agent turn**. A cumulative notice follows three quiet seconds after the last successful intake; further uploads restart the delay. The next ordinary text submits the staged attachments together, cancelling any unsent notice. Captioned attachments can submit immediately; query commands do not consume the draft.
+
+Drafts are isolated by chat/topic and never auto-submit on timeout. An established draft is cleared when its Session binding changes; first-message onboarding uploads survive the initial binding. Draft associations are memory-only and do not survive plugin/channel replacement (stored objects are not deleted). Image count and original-byte budgets follow DSH's live `attachments.imageLimits`; a refused addition leaves earlier uploads intact. Generic files have no extra plugin count/size quota; Feishu transport constraints remain separate.
 
 ## 媒体与隐私 / Media & privacy
 

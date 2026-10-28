@@ -37,7 +37,7 @@ async function fakeFileHost(overrides: { saveFileStream?: (input: { data: AsyncI
   const captured: Buffer[] = []
   return {
     root,
-    saveImage: vi.fn(async input => fakeImageRef(input)),
+    saveImages: vi.fn(async (inputs: any[]) => inputs.map(input => fakeImageRef(input))),
     imageLimits: IMAGE_LIMITS,
     saveFileStream: vi.fn(overrides.saveFileStream ?? (async (input: { data: AsyncIterable<Uint8Array>; signal?: AbortSignal; name?: string }) => {
       const chunks: Buffer[] = []
@@ -59,7 +59,7 @@ async function fakeFileHost(overrides: { saveFileStream?: (input: { data: AsyncI
 
 function fakeAttachments(overrides: { saveImage?: (input: any) => Promise<ImageAttachmentRef> } = {}) {
   return {
-    saveImage: vi.fn(overrides.saveImage ?? (async input => fakeImageRef(input))),
+    saveImages: vi.fn(async (inputs: any[]) => Promise.all(inputs.map(overrides.saveImage ?? (async input => fakeImageRef(input))))),
     imageLimits: IMAGE_LIMITS,
     saveFileStream: vi.fn(),
     fileHostPath: vi.fn(),
@@ -864,7 +864,7 @@ describe('startChannel', () => {
       groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
-      messageId: 'om_2', chatId: 'oc_2', chatType: 'p2p', content: '',
+      messageId: 'om_2', chatId: 'oc_2', chatType: 'p2p', content: 'describe this',
       resources: [{ type: 'image', fileKey: 'img_abc' }],
     })
     await flushAsync()
@@ -872,9 +872,9 @@ describe('startChannel', () => {
       params: { type: 'image' },
       path: { message_id: 'om_2', file_key: 'img_abc' },
     })
-    expect(attachments.saveImage).toHaveBeenCalledOnce()
+    expect(attachments.saveImages).toHaveBeenCalledOnce()
     expect(bridge.reply).toHaveBeenCalledWith(expect.objectContaining({
-      content: '',
+      content: 'describe this',
       imageBlocks: [expect.objectContaining({ mediaType: 'image/jpeg', bytes: 4 })],
     }), expect.objectContaining({ onBusy: expect.any(Function) }))
     // Reply card is no longer sent separately — step cards from feishu-streaming handle it.
@@ -891,11 +891,11 @@ describe('startChannel', () => {
       groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
-      messageId: 'om_png', chatId: 'oc_png', chatType: 'p2p', content: '',
+      messageId: 'om_png', chatId: 'oc_png', chatType: 'p2p', content: 'describe PNG',
       resources: [{ type: 'image', fileKey: 'img_png' }],
     })
     await flushAsync()
-    expect(attachments.saveImage).toHaveBeenCalledWith(expect.objectContaining({ mediaType: 'image/png' }))
+    expect(attachments.saveImages).toHaveBeenCalledWith([expect.objectContaining({ mediaType: 'image/png' })])
     expect(bridge.reply).toHaveBeenCalledWith(expect.objectContaining({
       imageBlocks: [expect.objectContaining({ mediaType: 'image/png' })],
     }), expect.objectContaining({ onBusy: expect.any(Function) }))
@@ -950,7 +950,7 @@ describe('startChannel', () => {
       groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
-      messageId: 'om_file', chatId: 'oc_file', chatType: 'p2p', content: '',
+      messageId: 'om_file', chatId: 'oc_file', chatType: 'p2p', content: 'read this file',
       resources: [{ type: 'file', fileKey: 'file_abc', fileName: 'report.pdf' }],
     })
     await flushAsync()
@@ -984,7 +984,7 @@ describe('startChannel', () => {
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
       messageId: 'om_video', chatId: 'oc_video', chatType: 'p2p',
-      content: '<video key="file_vid" name="clip.mp4"/>',
+      content: 'watch this <video key="file_vid" name="clip.mp4"/>',
       resources: [{ type: 'video', fileKey: 'file_vid', fileName: 'clip.mp4', durationMs: 5167 }],
     })
     await flushAsync()
@@ -1010,7 +1010,7 @@ describe('startChannel', () => {
       groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
-      messageId: 'om_voice', chatId: 'oc_voice', chatType: 'p2p', content: '<audio key="file_voice"/>',
+      messageId: 'om_voice', chatId: 'oc_voice', chatType: 'p2p', content: 'listen <audio key="file_voice"/>',
       resources: [{ type: 'audio', fileKey: 'file_voice' }],
     })
     await flushAsync()
@@ -1034,7 +1034,7 @@ describe('startChannel', () => {
       groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() }, undefined, undefined, attachments)
     await channel.handlers.get('message')!({
-      messageId: 'om_video2', chatId: 'oc_video2', chatType: 'p2p', content: '',
+      messageId: 'om_video2', chatId: 'oc_video2', chatType: 'p2p', content: 'watch this',
       resources: [{ type: 'video', fileKey: 'file_vid2', fileName: 'clip.mp4' }],
     })
     await flushAsync()

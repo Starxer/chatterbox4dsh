@@ -466,6 +466,11 @@ export interface Translations {
   displayCardButton: (label: string, enabled: boolean) => string
   displayCardHiddenByTools: string
   displayCardNote: string
+  displayCardTickTitle: string
+  displayCardTickHint: string
+  displayCardTickButton: (seconds: number, active: boolean) => string
+  pendingAttachmentsNotice: (images: number, files: number) => string
+  pendingAttachmentsDiscarded: string
   /** Section heading for the four detail levels on the card. */
   displayCardLevelTitle: string
   /** One level's own name, spelled as the WebUI settings page spells it. */
@@ -1077,7 +1082,12 @@ export const zh = {
     ({ reasoning: '思考过程', tools: '工具调用', args: '参数', results: '结果' })[key],
   displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
   displayCardHiddenByTools: '_「参数」「结果」随「工具调用」一起隐藏；重新开启工具调用后会回来。_',
-  displayCardNote: '也支持 `/display <开关> on|off`。',
+  displayCardNote: '也支持 `/display <开关> on|off` 和 `/display tick 3|5|10|30`。',
+  displayCardTickTitle: '**耗时刷新**',
+  displayCardTickHint: '简洁过程卡与其他档位的等待卡共用；只影响计时刷新，不延迟新事件。',
+  displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds} 秒`,
+  pendingAttachmentsNotice: (images, files) => `📥 已暂存 ${[images > 0 ? `${images} 张图片` : '', files > 0 ? `${files} 个文件` : ''].filter(Boolean).join('、')}，等待你的文字说明；发送文字后会一起交给 Agent。`,
+  pendingAttachmentsDiscarded: '已清除上一会话暂存的附件。',
   displayCardLevelTitle: '**工作步骤展示**（对齐 WebUI 的四档）',
   displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
@@ -1632,7 +1642,12 @@ export const en: Translations = {
     ({ reasoning: 'Reasoning', tools: 'Tool calls', args: 'Arguments', results: 'Results' })[key],
   displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,
   displayCardHiddenByTools: '_Arguments and results are hidden together with tool calls; they come back when tool calls are re-enabled._',
-  displayCardNote: 'Also available as `/display <switch> on|off`.',
+  displayCardNote: 'Also available as `/display <switch> on|off` and `/display tick 3|5|10|30`.',
+  displayCardTickTitle: '**Elapsed-time refresh**',
+  displayCardTickHint: 'Shared by compact progress and other levels’ waiting cards; new events are not delayed.',
+  displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds}s`,
+  pendingAttachmentsNotice: (images, files) => `📥 Saved ${[images > 0 ? `${images} image${images === 1 ? '' : 's'}` : '', files > 0 ? `${files} file${files === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')}, waiting for your text instructions; your next text message will send them to the Agent together.`,
+  pendingAttachmentsDiscarded: 'Cleared the attachments saved for the previous session.',
   displayCardLevelTitle: '**Work details** (the WebUI\'s four levels)',
   displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,

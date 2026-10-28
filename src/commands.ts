@@ -7,6 +7,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
 import { type TranscriptView } from './display-level.ts'
 import { zh } from './i18n.ts'
+import { isElapsedRefreshSeconds, parseElapsedRefreshSeconds, type ElapsedRefreshSeconds } from './config.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -72,6 +73,9 @@ export interface DisplayControl {
   getLevel: () => TranscriptView
   /** Persist the level. Asynchronous for the same reason as {@link set}. */
   setLevel: (level: TranscriptView) => void | Promise<void>
+  /** Shared clock refresh interval for compact progress and step placeholders. */
+  getElapsedRefreshSeconds: () => number
+  setElapsedRefreshSeconds: (seconds: ElapsedRefreshSeconds) => void | Promise<void>
 }
 
 export interface CommandTranslations {
@@ -173,6 +177,9 @@ export interface CommandTranslations {
   readonly displayLevelSet: (name: string) => string
   /** Shown next to the level in the text listing. */
   readonly displayLevelLabel: string
+  readonly displayTickCurrent: (seconds: number) => string
+  readonly displayTickSet: (seconds: number) => string
+  readonly displayTickUsage: string
 }
 
 /**
@@ -624,7 +631,7 @@ const DISPLAY_LEVEL_ALIASES: Record<string, TranscriptView> = {
 
 /**
  * Handle `/display [reasoning|tools|args|results] [on|off]` and
- * `/display <level>`.
+ * `/display <level>` / `/display tick [3|5|10|30]`.
  *
  * With no argument it reports the level plus all four switches; with a switch
  * and a value it flips that one; with a bare level name it switches the level.
@@ -639,29 +646,41 @@ const DISPLAY_LEVEL_ALIASES: Record<string, TranscriptView> = {
  * level ("完全展开"). {@link parseTranscriptView} still reads a stored value the
  * WebUI way, and that is the only thing that decides what an upgrade does.
  */
-export function handleDisplayCommand(
+export async function handleDisplayCommand(
   invocation: CommandInvocation,
   t: CommandTranslations,
   display: DisplayControl,
-): CommandResult {
+): Promise<CommandResult> {
   const raw = invocation.rawInput.trim().toLowerCase()
   if (raw === '') {
     const state = display.get()
     const level = display.getLevel()
     const lines = [
       `${t.displayLevelLabel}: ${t.displayLevelName(level)}`,
+      t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
       ...DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key])),
     ]
     return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
   }
-  const [rawKey, rawValue] = raw.split(/\s+/u)
+  const [rawKey, rawValue, extra] = raw.split(/\s+/u)
+  if (rawKey === 'tick') {
+    if (rawValue === undefined) {
+      return { kind: 'success', text: `${t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds()))}\n${t.displayTickUsage}` }
+    }
+    const seconds = Number(rawValue)
+    if (extra !== undefined || !/^(3|5|10|30)$/u.test(rawValue) || !isElapsedRefreshSeconds(seconds)) {
+      return { kind: 'error', text: t.displayTickUsage }
+    }
+    await display.setElapsedRefreshSeconds(seconds)
+    return { kind: 'success', text: t.displayTickSet(seconds) }
+  }
 
   // A bare level name (one token) switches the level. Two tokens keep the old
   // switch semantics, so an existing `/display tools off` is untouched.
   if (rawValue === undefined) {
     const level = DISPLAY_LEVEL_ALIASES[rawKey ?? '']
     if (level !== undefined) {
-      display.setLevel(level)
+      await display.setLevel(level)
       return { kind: 'success', text: t.displayLevelSet(t.displayLevelName(level)) }
     }
   }
@@ -674,7 +693,7 @@ export function handleDisplayCommand(
   if (value === undefined) {
     return { kind: 'error', text: t.displayUsage }
   }
-  display.set(key, value)
+  await display.set(key, value)
   return { kind: 'success', text: t.displaySet(t.displayLabel(key), value) }
 }
 
@@ -871,7 +890,7 @@ export function renderFeishuCommandsOnly(t: CommandTranslations): string {
     { name: 'model', description: t.modelDescription, hint: '[list|last|provider/model]' },
     { name: 'status', description: t.statusDescription },
     { name: 'reasoning', description: t.reasoningDescription, hint: '[off|low|high|max]' },
-    { name: 'display', description: t.displayDescription, hint: '[reasoning|tools|args|results] [on|off]' },
+    { name: 'display', description: t.displayDescription, hint: '[level|switch on/off|tick 3/5/10/30]' },
     { name: 'new', description: t.newDescription },
     { name: 'session', description: t.threadDescription, hint: '[N]' },
     { name: 'detach', description: t.detachDescription, hint: '<N>' },

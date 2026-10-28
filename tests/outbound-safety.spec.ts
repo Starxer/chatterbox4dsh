@@ -163,8 +163,13 @@ describe('which waits are link waits', () => {
   it('bounds requests with the reporting wait in every sending module', async () => {
     for (const name of SENDERS) {
       const source = await read(name)
-      // `withTimeout(` cannot match `withLinkTimeout(`: the identifier differs.
-      expect(source, `${name} waits on a request without reporting it`).not.toContain('withTimeout(')
+      // Channel shutdown waits on local SDK queue drainage/bridge disposal,
+      // not an outbound request. Keep that narrow exception explicit so new
+      // network waits cannot silently opt out of link-health reporting.
+      const requests = name === 'channel.ts' ? source
+        .replace("withTimeout(channel.disconnect(), 'disconnect channel')", '')
+        .replace("withTimeout(bridge.dispose(), 'dispose conversation bridge')", '') : source
+      expect(requests, `${name} waits on a request without reporting it`).not.toContain('withTimeout(')
       expect(source, `${name} no longer bounds anything`).toContain('withLinkTimeout(')
     }
   })

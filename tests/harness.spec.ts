@@ -53,6 +53,36 @@ function dependencies(f: ReturnType<typeof fixture>) {
 }
 
 describe('HarnessConversationService', () => {
+  it('announces native acceptance only after submission, never on setup failure', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    const accepted = vi.fn()
+    await service.reply({ chatId: 'accept', chatType: 'p2p', content: 'one' }, { onAccepted: accepted })
+    expect(accepted).toHaveBeenCalledOnce()
+    const failing = fixture()
+    failing.create.mockRejectedValueOnce(new Error('cannot create'))
+    const failedService = new HarnessConversationService(dependencies(failing), { domain: 'feishu' })
+    const rejected = vi.fn()
+    await expect(failedService.reply({ chatId: 'reject', chatType: 'p2p', content: 'one' }, { onAccepted: rejected })).rejects.toThrow('cannot create')
+    expect(rejected).not.toHaveBeenCalled()
+  })
+
+  it('notifies successful binding changes, including takeover of a previous owner', () => {
+    const notify = vi.fn()
+    const service = new HarnessConversationService(dependencies(fixture()), { domain: 'feishu', onBindingChanged: notify })
+    const first = { chatId: 'first', chatType: 'p2p' as const }
+    const second = { chatId: 'second', chatType: 'p2p' as const }
+    const id = service.startNewSession(first, 'one')
+    expect(notify).toHaveBeenLastCalledWith(first, id)
+    service.attachSession(second, id)
+    expect(notify.mock.calls.at(-2)![0]).toMatchObject(first)
+    expect(notify).toHaveBeenLastCalledWith(second, id)
+    notify.mockClear()
+    service.attachSession(second, id)
+    service.switchToSession(second, id)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
   it('lazily creates and reuses one agent for the same conversation', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', workspace: '/work' })

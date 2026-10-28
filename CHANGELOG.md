@@ -5,6 +5,17 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：可配置的 5 秒耗时刷新与附件等待文字（2026-10-29）
+
+- 运行中耗时刷新默认由 30 秒改为 **5 秒**，与步骤占位计时共用 `elapsedRefreshSeconds`（3／5／10／30 秒）。`/display` 卡片增加间隔按钮，文本命令支持 `/display tick [3|5|10|30]`；持久化后重绘同一张卡，不重建通道。已排定的定时器不取消，下次排程读取新值；慢写期间只保留最新一版刷新。
+- 图片／文件／视频／语音没有用户文字时先存入 DSH 附件库，**不启动回合**。最后一个附件成功接收后静默 3 秒发累计数量提示；新成功附件重置倒计时，失败添加不重复提示。文字先到就取消未发提示、将暂存与本条消息一次提交；查询命令不消费暂存。
+- 按聊天／话题隔离。禁用 SDK 的聊天级批次合并、保留串行队列，避免资源被归到最后一条消息的话题或吞掉后续斜杠命令。成功换绑清旧暂存，首次 onboarding 可认领初次绑定；在途上传核对绑定代际，避免跨会话。原生接受前的失败恢复附件、不重复提交文字；清理取消提示，不触发回合。暂存关联为内存态，重载不恢复，已落库对象不删除。
+- 图片上限动态读取 `attachments.imageLimits`，累计**原始编码字节**、图片数与最大单图大小，提交前重新校验；本次新增超限不清掉此前暂存。图片保存改走原生 `saveImages()` 批次入口；通用文件无插件自设数量／大小配额。飞书传输约束与宿主准入政策分开。通道断开与 bridge 清理等待均有界。
+
+**English:** Running elapsed clocks now default to five seconds, configurable through the same-message `/display` card or `/display tick` (3/5/10/30). Image/file/video/voice-only messages stage durable attachment references without starting a turn; after three quiet seconds a cumulative receipt asks for text. Further successful uploads debounce again, text consumes the draft, and commands leave it untouched. Chat/topic isolation, binding generations, native-admission rollback and original-image-byte accounting prevent cross-session delivery and silent loss. Image budgets follow the host's live policy; generic files gain no invented quota. Staging associations are memory-only and are not restored after reload.
+
+**验证 / Validation:** 66 个测试文件、1337 项测试通过；host/client typecheck 与插件 build 通过。新增防抖、限额、话题隔离、绑定变化、接受前回滚和跨代 reservation 回归。代码已构建，尚未重启部署；真实飞书点击／上传验收待部署后进行。
+
 ### 改进：`/display` 卡片改成 `/busy` 那样**同一张卡就地更新**（`src/feishu-display.ts`，2026-10-28）
 
 **反馈**：点选 `display` 卡片的按钮后，旧卡「内容原样保留 + 表头转灰 + 底部一句『此卡片已失效』」，并要求「改成 Busy 卡片那样的」。

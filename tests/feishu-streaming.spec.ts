@@ -470,6 +470,7 @@ function stepHarness(
     showToolResults?: () => boolean
     /** Work-detail level; omitted means the `detailed` default. */
     transcriptView?: () => TranscriptView
+    elapsedRefreshSeconds?: () => number
   } = {},
   extra: {
     noteDetachedJob?: (notice: any) => void
@@ -1572,6 +1573,55 @@ describe('thinking placeholder', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('uses live refresh intervals for placeholders without delaying event-driven updates', async () => {
+    vi.useFakeTimers()
+    try {
+      let seconds = 3
+      const channel = plainChannel()
+      const h = stepHarness(channel, { elapsedRefreshSeconds: () => seconds })
+      h.emit('step/start', { turn: 1, step: 1 })
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(channel.updateCard).not.toHaveBeenCalled()
+      seconds = 10
+      await vi.advanceTimersByTimeAsync(201)
+      expect(channel.updateCard).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(9_799)
+      expect(channel.updateCard).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(201)
+      expect(channel.updateCard).toHaveBeenCalledTimes(2)
+      h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'Ready' } })
+      h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(mdOf(channel.updateCard.mock.calls.at(-1)![1])).toContain('Ready')
+      const writes = channel.updateCard.mock.calls.length
+      h.emit('step/end', { turn: 1, step: 1 })
+      await vi.advanceTimersByTimeAsync(200)
+      const finalWrites = channel.updateCard.mock.calls.length
+      expect(finalWrites).toBeGreaterThanOrEqual(writes)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(channel.updateCard).toHaveBeenCalledTimes(finalWrites)
+      h.streaming.stop()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('passes the same live interval into compact progress cards', async () => {
+    vi.useFakeTimers()
+    try {
+      const channel = plainChannel()
+      const h = stepHarness(channel, { transcriptView: () => 'compact', elapsedRefreshSeconds: () => 10 })
+      h.emit('step/start', { turn: 1, step: 1 })
+      h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{}' })
+      await vi.advanceTimersByTimeAsync(9_999)
+      const writes = channel.updateCard.mock.calls.length
+      await vi.advanceTimersByTimeAsync(1)
+      expect(channel.updateCard).toHaveBeenCalledTimes(writes + 1)
+      expect(mdOf(channel.updateCard.mock.calls.at(-1)![1])).toContain('10.0s')
+      h.streaming.stop()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(channel.updateCard).toHaveBeenCalledTimes(writes + 1)
+    } finally { vi.useRealTimers() }
   })
 
   it('forwards every tool result to the background-job mirror', () => {

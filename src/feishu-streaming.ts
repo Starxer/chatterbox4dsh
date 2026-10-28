@@ -34,7 +34,7 @@ import {
 import { injectionNotice } from './injection-notice.ts'
 import { pendingProducedCall, producedArtifacts, settleProducedCall, type ProducedPath } from './produced-files.ts'
 import { compactCompletionLines, compactCompletionTitle, appendCompletionFooter } from './turn-summary.ts'
-import type { ProduceCardMode } from './config.ts'
+import { parseElapsedRefreshSeconds, type ProduceCardMode } from './config.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
 import { createProgressCards, PROGRESS_MAX_DETAILS, PROGRESS_NOTE_MAX, PROGRESS_SUBTOOL_DETAIL_MAX } from './feishu-progress.ts'
@@ -158,6 +158,8 @@ export interface FeishuStreamingDeps {
    * only take detail away.
    */
   transcriptView?: () => TranscriptView
+  /** Shared live elapsed-clock refresh interval, in seconds (default five). */
+  elapsedRefreshSeconds?: () => number
   /**
    * Live preview caps (characters): reasoning head, tool result, tool arguments.
    * Read per render so a settings write applies to the next card without a
@@ -545,6 +547,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const progressCards = createProgressCards({
     channel,
     logger,
+    elapsedRefreshSeconds: deps.elapsedRefreshSeconds,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
     ...(interleave === undefined ? {} : { interleave }),
   })
@@ -680,8 +683,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /**
-   * Keep a content-free step card's elapsed time honest: refresh it every
-   * {@link PLACEHOLDER_TICK_MS} while the step still has nothing to show.
+   * Keep a content-free step card's elapsed time honest: refresh it at the
+   * configured interval while the step still has nothing to show.
    *
    * The tick exists because DSH stopped publishing token deltas to the
    * persistent event bus (`assistant/chunk` is gone), so this module only sees
@@ -700,9 +703,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       // While the first send is still in flight there is nothing to update:
       // the pending send rebuilds the card from this state anyway.
       if (state.stepCardRef !== undefined) updateStepCard(state)
-      state.placeholderTimer = setTimeout(tick, PLACEHOLDER_TICK_MS)
+      state.placeholderTimer = setTimeout(tick, parseElapsedRefreshSeconds(deps.elapsedRefreshSeconds?.()) * 1_000)
     }
-    state.placeholderTimer = setTimeout(tick, PLACEHOLDER_TICK_MS)
+    state.placeholderTimer = setTimeout(tick, parseElapsedRefreshSeconds(deps.elapsedRefreshSeconds?.()) * 1_000)
   }
 
   /** Build the unified card content for the current step state. */
@@ -2565,14 +2568,6 @@ const MEDIA_WARM_DEBOUNCE_MS = 400
  * message, and a card that recovered is not worth interrupting the user for.
  */
 const STALE_CARD_CONFIRM_MS = 2_000
-
-/**
- * How often a content-free step card refreshes its elapsed time while the model
- * is thinking. Deliberately slow: the card exists to prove the step is alive,
- * not to animate — DSH publishes no token deltas on the persistent event bus,
- * so there is nothing more frequent to show.
- */
-const PLACEHOLDER_TICK_MS = 5_000
 
 /** Cap for one tool result preview rendered into the card (characters). */
 const RESULT_PREVIEW_CAP = 1500

@@ -60,6 +60,8 @@ export interface Config {
    * ever show LESS, never more (see {@link ../display-level.ts}).
    */
   transcriptView?: TranscriptView
+  /** Seconds between elapsed-time refreshes on running cards (3/5/10/30). */
+  elapsedRefreshSeconds?: number
   /** Characters of the detailed level's reasoning head (see {@link PREVIEW_CHARS}). */
   reasoningPreviewChars?: number
   /** Characters of one tool result preview (verbose shows up to 4×, hard max 6000). */
@@ -121,6 +123,20 @@ export const PREVIEW_CHARS = {
   result: { min: 200, max: 6000, default: 1500 },
   args: { min: 200, max: 6000, default: 2000 },
 } as const
+
+/** Supported elapsed-clock refresh intervals, in seconds (all display levels). */
+export const ELAPSED_REFRESH_SECONDS = [3, 5, 10, 30] as const
+export type ElapsedRefreshSeconds = typeof ELAPSED_REFRESH_SECONDS[number]
+export const DEFAULT_ELAPSED_REFRESH_SECONDS: ElapsedRefreshSeconds = 5
+
+export function isElapsedRefreshSeconds(value: unknown): value is ElapsedRefreshSeconds {
+  return typeof value === 'number' && (ELAPSED_REFRESH_SECONDS as readonly number[]).includes(value)
+}
+
+/** Unknown stored values fall back to the default, never to an unbounded timer. */
+export function parseElapsedRefreshSeconds(value: unknown): ElapsedRefreshSeconds {
+  return isElapsedRefreshSeconds(value) ? value : DEFAULT_ELAPSED_REFRESH_SECONDS
+}
 
 /** Every value the `produceCard` setting accepts. */
 export const PRODUCE_CARD_MODES = ['off', 'summary', 'delivery'] as const
@@ -261,6 +277,8 @@ export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
   'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
   'showToolArgs' | 'showToolResults' | 'transcriptView'>> {
+  /** Optional for partial callers; resolveSettingsConfig always fills the interval. */
+  elapsedRefreshSeconds?: number
   /** Preview caps; optional in the type, always filled by resolveSettingsConfig. */
   reasoningPreviewChars?: number
   resultPreviewChars?: number
@@ -335,6 +353,7 @@ export const ConfigSchema = z.object({
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
   transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact counts tool calls only, standard adds one summary line per call, detailed (default) adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
+  elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
   reasoningPreviewChars: z.number().min(PREVIEW_CHARS.reasoningHead.min).max(PREVIEW_CHARS.reasoningHead.max).default(PREVIEW_CHARS.reasoningHead.default).volatile().description('Characters of the reasoning head shown (collapsed) at the detailed level. The verbose level shows the whole chain. Range 80-4000, default 200; keep it modest because every preview byte counts toward the card\'s ~30 KB budget.'),
   resultPreviewChars: z.number().min(PREVIEW_CHARS.result.min).max(PREVIEW_CHARS.result.max).default(PREVIEW_CHARS.result.default).volatile().description('Characters of one tool result preview on a step card. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 1500.'),
   argsPreviewChars: z.number().min(PREVIEW_CHARS.args.min).max(PREVIEW_CHARS.args.max).default(PREVIEW_CHARS.args.default).volatile().description('Characters of one tool call\'s arguments block. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 2000.'),
@@ -376,6 +395,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
     transcriptView: parseTranscriptView(readField(config.transcriptView)),
+    elapsedRefreshSeconds: parseElapsedRefreshSeconds(readField(config.elapsedRefreshSeconds)),
     reasoningPreviewChars: clampPreviewChars('reasoningHead', readField(config.reasoningPreviewChars)),
     resultPreviewChars: clampPreviewChars('result', readField(config.resultPreviewChars)),
     argsPreviewChars: clampPreviewChars('args', readField(config.argsPreviewChars)),

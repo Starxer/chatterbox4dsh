@@ -32,6 +32,16 @@ describe('resolveSettingsConfig', () => {
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'nope' as any }).transcriptView).toBe('detailed')
   })
 
+  it('defaults elapsed refresh to five seconds and validates the four supported intervals', () => {
+    expect(resolveSettingsConfig({}).elapsedRefreshSeconds).toBe(5)
+    for (const seconds of [3, 5, 10, 30]) {
+      expect(resolveSettingsConfig({ elapsedRefreshSeconds: seconds }).elapsedRefreshSeconds).toBe(seconds)
+    }
+    for (const value of [0, -1, 4, Infinity, NaN, '3', null]) {
+      expect(resolveSettingsConfig({ elapsedRefreshSeconds: value as any }).elapsedRefreshSeconds).toBe(5)
+    }
+  })
+
   it('defaults and clamps the three preview caps', () => {
     const defaults = resolveSettingsConfig({ appId: 'id' })
     expect(defaults.reasoningPreviewChars).toBe(200)
@@ -158,6 +168,14 @@ describe('live config references (DSH 0.1.7)', () => {
     expect(resolveSettingsConfig(config).appId).toBe('other')
   })
 
+  it('reads elapsed refresh changes from the same live reference', () => {
+    const elapsedRefreshSeconds = live(5)
+    const config = { elapsedRefreshSeconds } as unknown as ConfigInput
+    expect(resolveSettingsConfig(config).elapsedRefreshSeconds).toBe(5)
+    elapsedRefreshSeconds.commit(3)
+    expect(resolveSettingsConfig(config).elapsedRefreshSeconds).toBe(3)
+  })
+
   it('copies array fields instead of handing out the read-only snapshot', () => {
     const groupAllowlist = live(['oc_a'] as readonly string[])
     expect(resolveSettingsConfig({ groupAllowlist } as unknown as ConfigInput).groupAllowlist).toEqual(['oc_a'])
@@ -183,6 +201,7 @@ describe('connectionFingerprint', () => {
       ...base,
       showReasoning: false, showToolCalls: false, showToolArgs: false, showToolResults: false,
       transcriptView: 'verbose',
+      elapsedRefreshSeconds: 30,
       locale: 'en',
       errorMessage: 'changed',
       workspace: '/other', agentPreset: 'other', provider: 'p', model: 'm',

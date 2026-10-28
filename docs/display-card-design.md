@@ -171,3 +171,7 @@ export function startFeishuDisplay(deps: {
 **已知取舍（关键坑 11）**：就地更新在飞书侧理论上「改 2–3 次后可能停止投递按钮回调」。这里接受而非绕开，理由：`/busy`、`/permission`、`/model` 都已长期依赖就地更新；本卡的每次写入都由人手点击触发（不会连发）；若按钮真的停止响应，重新发一次 `/display` 即可拿到新卡。**没有**再做「N 次后就换新卡」的自适应，那会重新引入多卡与失效卡，正是本次要消除的东西。
 
 **验证**：`tests/feishu-display.spec.ts` 重写为就地更新契约（15 例）：发一张卡、点击后同一 messageId 重绘、档位点击同样就地重绘且选中项 disabled、异步写未落库前不重绘、首次发送落在原话题、重启前旧卡点击可用、非法 payload 不写不绘、`stop()` 后连在途点击也忽略、重绘失败只 warn；`typecheck`（含 client）/ 全量测试 / build 全绿。
+
+## 十一、耗时刷新间隔（2026-10-29）
+
+控制卡在显示开关下增加「⏱ 耗时刷新」：3／5／10／30 秒，默认 5 秒；当前项标记选中并禁用，点击其它项等待 `settings.mutate` 持久化后原地重绘。文本命令 `/display tick` 查询，`/display tick 5` 设置。字段 `elapsedRefreshSeconds` 为 volatile，不进入连接指纹；compact 行时钟与非 compact 占位时钟共用它。已排定的 timeout 保留，下次排程读取最新配置；工具开始／结束等事件不受刷新间隔延迟。慢写期间只合并最新一版，结束／停用清理定时器。
