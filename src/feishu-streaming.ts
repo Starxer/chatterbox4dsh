@@ -37,7 +37,7 @@ import { compactCompletionLines, compactCompletionTitle, appendCompletionFooter 
 import type { ProduceCardMode } from './config.ts'
 import { foldedPanel } from './card-fold.ts'
 import { createCompactionCards, summaryText, type CompactionFacts } from './feishu-compaction.ts'
-import { createProgressCards, PROGRESS_MAX_DETAILS } from './feishu-progress.ts'
+import { createProgressCards, PROGRESS_MAX_DETAILS, PROGRESS_NOTE_MAX, PROGRESS_SUBTOOL_DETAIL_MAX } from './feishu-progress.ts'
 import { shellPrograms } from './shell-programs.ts'
 
 // Re-exported for the callers that already import it from this module.
@@ -1515,7 +1515,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   const TURN_SCOPED_EVENTS = new Set([
     'assistant/chunk', 'assistant/message', 'assistant/attempt',
-    'tool/call', 'tool/result', 'step/start', 'step/end', 'turn/end',
+    'tool/call', 'tool/result', 'tool/ptc-dispatch-start', 'tool/ptc-dispatch',
+    'step/start', 'step/end', 'turn/end',
     'deliverables/presented', 'user/message',
   ])
 
@@ -1832,6 +1833,47 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           state.completedTime = event.time ?? Date.now()
           if (state.turnStats !== undefined) {
             state.turnStats.totalToolMs += elapsed
+          }
+        }
+      } else if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
+        // PTC mode's `run_code` program dispatches the real tools itself, so the
+        // ONLY rows that say what a step actually did are these sub-call events —
+        // a `tool/call` fires for `run_code` alone (2026-10-28, the operator's
+        // report that a PTC turn's compact card carried no summary at all).
+        //
+        // They are forwarded straight to the turn card: it holds the parent row
+        // (by `parentCallId`) and drops a sub-call whose parent is not there. The
+        // parent's own `tool/result` closes whatever it leaves running.
+        if (displayPolicy().turnCard) {
+          const data = (event.data ?? {}) as {
+            parentCallId?: unknown
+            subCallId?: unknown
+            name?: unknown
+            arguments?: unknown
+          }
+          const parentCallId = typeof data.parentCallId === 'string' ? data.parentCallId : ''
+          const subCallId = typeof data.subCallId === 'string' ? data.subCallId : ''
+          const name = typeof data.name === 'string' ? data.name : ''
+          if (parentCallId !== '' && subCallId !== '' && name !== '') {
+            const at = event.time ?? Date.now()
+            if (event.type === 'tool/ptc-dispatch-start') {
+              progressCards.subtoolStarted(
+                sessionId,
+                parentCallId,
+                name,
+                subCallId,
+                at,
+                progressSubtoolDetails(name, JSON.stringify(data.arguments ?? {})),
+              )
+            } else {
+              progressCards.subtoolFinished(
+                sessionId,
+                parentCallId,
+                subCallId,
+                at,
+                (event.data as { isError?: unknown } | undefined)?.isError === true,
+              )
+            }
           }
         }
       } else if (event.type === 'step/start') {
@@ -2842,6 +2884,37 @@ function bareFileName(path: string): string {
 }
 
 /**
+ * Model-written text reduced to one short, markdown-safe row fragment.
+ *
+ * A `run_code` description, a search pattern or a URL host is FREE TEXT — unlike
+ * the file names and program names every other row carries. Three consequences:
+ *
+ * - it may span lines, and a compact row is one line (first line only, whitespace
+ *   squeezed);
+ * - backticks are dropped: an unpaired `` ` `` would open an inline code span that
+ *   pairs with a LATER row of the same shared element and renders the wrong text
+ *   as code (关键坑 60), and a quoted `` `x` `` reads fine without its markers;
+ * - the remaining markup-active characters are ESCAPED, not dropped, because
+ *   in a search pattern they are the content (`**\/*.ts` must still read
+ *   `**\/*.ts`). Feishu decodes the entities (its own escape table).
+ */
+function rowText(text: string, maxLen: number): string {
+  const plain = firstLine(text).replace(/\s+/gu, ' ').trim().replace(/`/gu, '')
+  const cut = plain.length > maxLen ? truncateInline(plain, maxLen) : plain
+  return cut.replace(/[*_~[\]<>]/gu, char => `&#${char.codePointAt(0)!};`)
+}
+
+/** The host of a URL, or undefined when it does not parse as one. */
+function urlHost(url: string): string | undefined {
+  try {
+    const { hostname } = new URL(url)
+    return hostname === '' ? undefined : hostname
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * The short "what" a COMPACT tool row carries (`feishu-progress.ts`) — as a LIST,
  * so a merged run can name the first few across all of its calls rather than
  * repeating one call's whole list (`npm / tail / git`, not `npm / tail / git /
@@ -2857,6 +2930,10 @@ function bareFileName(path: string): string {
  *   identity for the file.
  * - **a shell command** (`bash`, `pwsh`): the programs it ran, at most
  *   {@link shellPrograms}' own limit.
+ * - **a PTC program** (`run_code`): the `description` its schema REQUIRES for the
+ *   UI ("Clear, concise description of what this program does … shown in the UI").
+ *   Without it a PTC turn's compact card carried nothing but the tool name, which
+ *   is what the operator reported on 2026-10-28.
  *
  * Everything else returns undefined: a row that repeats its own tool name is
  * noise, and the compact card is short on room.
@@ -2879,6 +2956,58 @@ export function progressToolDetails(toolName: string, argsRaw: string): string[]
   if (variant === 'bash' || toolName === 'pwsh') {
     const programs = shellPrograms(typeof args.command === 'string' ? args.command : '')
     return programs.length === 0 ? undefined : programs
+  }
+  if (variant === 'code') {
+    const description = pickToolArg(args, TOOL_SUMMARY_KEYS.code)
+    if (description === undefined) return undefined
+    const short = rowText(description, PROGRESS_NOTE_MAX)
+    return short === '' ? undefined : [short]
+  }
+  return undefined
+}
+
+/**
+ * The short "what" a PTC SUB-CALL row carries (`ProgressTool.children`).
+ *
+ * Everything {@link progressToolDetails} already names (a file, a shell command, a
+ * nested program) plus the two shapes that only reach the card as a sub-call:
+ *
+ * - **a web page** (`web_fetch`): its HOST. The generic file rule would reduce
+ *   `https://github.com/a/b/releases.atom` to `releases.atom`, which reads like a
+ *   local file; the host is what identifies the request.
+ * - **a search** (`grep` / `glob` / `web_search`): the query or pattern it looked
+ *   for. A sub-call under a program is often the ONLY row the step shows, and a
+ *   bare `grep` says nothing about what was searched.
+ *
+ * @param toolName - the dispatched sub-tool.
+ * @param argsRaw - the sub-call's raw arguments JSON.
+ * @returns the names, or undefined when there is nothing short and useful.
+ */
+export function progressSubtoolDetails(toolName: string, argsRaw: string): string[] | undefined {
+  const parsed = parseToolArgs(argsRaw)
+  const args = typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : undefined
+  const variant = classifyToolSummary(toolName)
+  if (args !== undefined && variant === 'read' && typeof args.url === 'string') {
+    const host = urlHost(args.url)
+    if (host !== undefined) return [host]
+  }
+  const base = progressToolDetails(toolName, argsRaw)
+  if (base !== undefined || args === undefined) return base
+  if (variant === 'search') {
+    const queries = Array.isArray(args.queries)
+      ? args.queries.filter((query): query is string => typeof query === 'string' && query !== '')
+      : []
+    if (queries.length > 0) {
+      const first = queries.map(query => rowText(query, PROGRESS_SUBTOOL_DETAIL_MAX)).filter(query => query !== '')
+      const named = first[0] ?? ''
+      if (named === '') return undefined
+      return [queries.length > 1 ? `${named} +${queries.length - 1}` : named]
+    }
+    const picked = pickToolArg(args, TOOL_SUMMARY_KEYS.search)
+    if (picked !== undefined) {
+      const short = rowText(picked, PROGRESS_SUBTOOL_DETAIL_MAX)
+      return short === '' ? undefined : [short]
+    }
   }
   return undefined
 }

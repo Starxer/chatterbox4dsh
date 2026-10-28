@@ -628,6 +628,74 @@ describe('renderProgressCard', () => {
     })
   })
 
+  describe('PTC sub-call rows (a run_code program\'s own calls)', () => {
+    /** Facts for one `run_code` row carrying a program's dispatched calls. */
+    const program = (children: any[], detail?: string[]): Partial<ProgressFacts> => ({
+      steps: [{
+        step: 1,
+        startedAt: 0,
+        endedAt: 2_000,
+        tools: [{ name: 'run_code', startedAt: 0, elapsed: 2_000, ...detail === undefined ? {} : { detail }, children }],
+      }],
+      calls: 1,
+      now: 2_000,
+    })
+
+    it('puts the arrow BEFORE the status icon, never inside the tool-name span', () => {
+      const card: any = renderProgressCard(t, facts(program(
+        [{ name: 'read', startedAt: 10, elapsed: 60, detail: ['AGENTS.md'] }],
+        ['检查本地环境'],
+      )))
+      const lines = visibleLines(card)
+      expect(lines).toContain(row(t.turnCardToolDone('`run_code` · 检查本地环境', '2.0s')))
+      expect(lines).toContain(row(`↳ ${t.turnCardToolDone('`read` · AGENTS.md', '60ms')}`))
+      // The first attempt put the arrow inside the code span and the operator
+      // read it as part of the tool's name (2026-10-28).
+      expect(mdOf(card)).not.toContain('`↳')
+    })
+
+    it('merges a program\'s consecutive same-named sub-calls into one row', () => {
+      const card: any = renderProgressCard(t, facts(program([
+        { name: 'read', startedAt: 10, elapsed: 20, detail: ['a.ts'] },
+        { name: 'read', startedAt: 40, elapsed: 20, detail: ['b.ts'] },
+        { name: 'bash', startedAt: 70, elapsed: 300, detail: ['npm'] },
+      ])))
+      const lines = visibleLines(card)
+      expect(lines).toContain(row(`↳ ${t.turnCardToolDone('`read` ×2 · a.ts / b.ts', '40ms')}`))
+      expect(lines).toContain(row(`↳ ${t.turnCardToolDone('`bash` · npm', '300ms')}`))
+    })
+
+    it('renders a running sub-call with the running label, then with its clock', () => {
+      const factsRunning = facts(program([{ name: 'web_fetch', startedAt: 1_000, detail: ['github.com'] }]))
+      const running: any = renderProgressCard(t, { ...factsRunning, endedAt: undefined, now: 2_600 } as ProgressFacts)
+      expect(mdOf(running)).toContain(`↳ ${t.turnCardToolRunning('`web_fetch` · github.com', '1.6s')}`)
+      const settled: any = renderProgressCard(t, facts(program([
+        { name: 'web_fetch', startedAt: 1_000, elapsed: 1_600, detail: ['github.com'] },
+      ])))
+      expect(mdOf(settled)).toContain(`↳ ${t.turnCardToolDone('`web_fetch` · github.com', '1.6s')}`)
+    })
+
+    it('marks a failed sub-call without touching the turn\'s tool count', () => {
+      const card: any = renderProgressCard(t, facts(program([
+        { name: 'bash', startedAt: 10, elapsed: 30, isError: true, detail: ['npm'] },
+      ])))
+      expect(mdOf(card)).toContain(`↳ ${t.turnCardToolFailed('`bash` · npm', '30ms')}`)
+      // `calls`/`failed` count the MODEL's calls (the title), so a failed
+      // sub-call must not make a one-call turn read as "1 个工具 · 1 个失败".
+      expect(card.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
+    })
+
+    it('keeps sub-call rows inside their step\'s one markdown element', () => {
+      // Elements pay `vertical_spacing` each (关键坑 58): sub-call rows are lines
+      // of the step's blockquote, not elements of their own.
+      const card: any = renderProgressCard(t, facts(program([
+        { name: 'read', startedAt: 10, elapsed: 20, detail: ['a.ts'] },
+      ])))
+      expect(visibleElements(card)).toHaveLength(1)
+      expect(visibleElements(card)[0]).toContain('↳')
+    })
+  })
+
   describe('step separators', () => {
     it('draws one rule BETWEEN steps, and none before the first', () => {
       const card: any = renderProgressCard(t, {
@@ -974,6 +1042,99 @@ describe('createProgressCards', () => {
     const writes = channel.updateCardInstance.mock.calls.length
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 3)
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(writes)
+  })
+
+  describe('PTC sub-calls on the live card', () => {
+    it('hangs a dispatched sub-call under its parent row and settles it', async () => {
+      vi.useFakeTimers()
+      const { channel, cards } = harness()
+      cards.beginTurn(chat, 's1', 0)
+      cards.stepStarted('s1', 1, 0)
+      cards.toolStarted('s1', 'run_code', 'c1', 10, ['检查本地环境'])
+      await vi.advanceTimersByTimeAsync(0)
+      cards.subtoolStarted('s1', 'c1', 'read', 'c1:ptc:1', 100, ['AGENTS.md'])
+      cards.subtoolFinished('s1', 'c1', 'c1:ptc:1', 160, false)
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+      const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+      expect(mdOf(card)).toContain(`↳ ${t.turnCardToolDone('`read` · AGENTS.md', '60ms')}`)
+    })
+
+    it('drops a sub-call whose parent row is not on the card', async () => {
+      vi.useFakeTimers()
+      const { channel, cards } = harness()
+      cards.beginTurn(chat, 's1', 0)
+      cards.stepStarted('s1', 1, 0)
+      cards.toolStarted('s1', 'run_code', 'c1', 10)
+      await vi.advanceTimersByTimeAsync(0)
+      const writes = channel.updateCardInstance.mock.calls.length
+      // The parent id is unknown (a lost frame, a resumed session): a row with no
+      // program above it would read as a call the model never made.
+      cards.subtoolStarted('s1', 'nope', 'read', 'c9:ptc:1', 100, ['AGENTS.md'])
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+      expect(channel.updateCardInstance).toHaveBeenCalledTimes(writes)
+    })
+
+    it('ignores a replayed start for the same sub-call id', async () => {
+      vi.useFakeTimers()
+      const { channel, cards } = harness()
+      cards.beginTurn(chat, 's1', 0)
+      cards.stepStarted('s1', 1, 0)
+      cards.toolStarted('s1', 'run_code', 'c1', 10)
+      await vi.advanceTimersByTimeAsync(0)
+      cards.subtoolStarted('s1', 'c1', 'read', 'c1:ptc:1', 100, ['AGENTS.md'])
+      cards.subtoolStarted('s1', 'c1', 'read', 'c1:ptc:1', 110, ['AGENTS.md'])
+      cards.subtoolFinished('s1', 'c1', 'c1:ptc:1', 160, false)
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+      const card = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
+      expect(card.match(/`read`/gu)).toHaveLength(1)
+    })
+
+    it('closes a still-running sub-call when the parent settles (an aborted program)', async () => {
+      vi.useFakeTimers()
+      const { channel, cards } = harness()
+      cards.beginTurn(chat, 's1', 0)
+      cards.stepStarted('s1', 1, 0)
+      cards.toolStarted('s1', 'run_code', 'c1', 100)
+      await vi.advanceTimersByTimeAsync(0)
+      cards.subtoolStarted('s1', 'c1', 'bash', 'c1:ptc:1', 200, ['npm'])
+      // No `tool/ptc-dispatch` ever arrives: the program died first.
+      cards.toolFinished('s1', 'c1', 900, true, 1_000)
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+      const card = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
+      expect(card).toContain(`↳ ${t.turnCardToolFailed('`bash` · npm', '800ms')}`)
+    })
+
+    it('settles leftovers at turn/end, the card\'s last write', async () => {
+      vi.useFakeTimers()
+      const { channel, cards } = harness()
+      cards.beginTurn(chat, 's1', 0)
+      cards.stepStarted('s1', 1, 0)
+      cards.toolStarted('s1', 'run_code', 'c1', 100)
+      await vi.advanceTimersByTimeAsync(0)
+      cards.subtoolStarted('s1', 'c1', 'web_fetch', 'c1:ptc:1', 200, ['github.com'])
+      await cards.finish('s1', 1_000, false)
+      const card = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
+      expect(card).toContain(`↳ ${t.turnCardToolDone('`web_fetch` · github.com', '800ms')}`)
+      // No sub-call row may still be ticking on the card's last write (the
+      // parent row's own late settle is a separate, pre-existing story).
+      expect(card.match(/↳.*执行中/u)).toBeNull()
+    })
+
+    it('keeps the running tick alive while only a sub-call is running', async () => {
+      vi.useFakeTimers()
+      const { channel, cards } = harness()
+      cards.beginTurn(chat, 's1', Date.now())
+      cards.toolStarted('s1', 'run_code', 'c1', Date.now())
+      await vi.advanceTimersByTimeAsync(0)
+      cards.toolFinished('s1', 'c1', 400, false, Date.now())
+      cards.subtoolStarted('s1', 'c1', 'bash', 'c1:ptc:1', Date.now())
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+      const writes = channel.updateCardInstance.mock.calls.length
+      await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS)
+      expect(channel.updateCardInstance.mock.calls.length).toBeGreaterThan(writes - 1)
+      const card = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
+      expect(card).toContain('↳')
+    })
   })
 
   it('opens a NEW card after another module posts one, showing only new rows', async () => {

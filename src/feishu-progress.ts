@@ -95,6 +95,16 @@ export const PROGRESS_WRITE_GAP_MS = 900
 export const PROGRESS_NOTE_MAX = 80
 
 /**
+ * Characters a SUB-CALL row keeps for its "what" (see
+ * {@link ProgressTool.children}).
+ *
+ * Shorter than {@link PROGRESS_NOTE_MAX}: that row is one level in and a single
+ * program often dispatches several of them, while the parent row already carries
+ * the step's intent.
+ */
+export const PROGRESS_SUBTOOL_DETAIL_MAX = 40
+
+/**
  * Spacing between two card elements. The measured default is visibly loose for a
  * list of one-line rows, and this card is nothing else: a tool-heavy turn renders
  * 40+ rows. `vertical_spacing` takes a size token or px (see 关键坑 58).
@@ -119,6 +129,21 @@ export interface ProgressTool {
    * ran. Absent when the call has nothing short and useful to name.
    */
   detail?: readonly string[] | undefined
+  /**
+   * The calls THIS call made on its own, i.e. the tools a PTC `run_code`
+   * program dispatched (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`).
+   *
+   * They render as ordinary rows one level in, each prefixed with
+   * {@link PROGRESS_CHILD_PREFIX} — the arrow goes BEFORE the status icon
+   * (`↳ ✅ \`read\` ×2 · a.ts · 40ms`), never inside the tool-name code span,
+   * which is what makes it read as "under the row above" instead of as part of
+   * the name (the user's call, 2026-10-28). Markdown nesting cannot do this job:
+   * the card renderer drops nested blockquotes (see 关键坑 70).
+   *
+   * Only the parent's own `elapsed` settles the parent row; a child row carries
+   * its own clock.
+   */
+  children?: readonly ProgressTool[] | undefined
 }
 
 /**
@@ -355,6 +380,16 @@ function toolLine(
 export const PROGRESS_QUOTE_MARKER = '> '
 
 /**
+ * The prefix of a sub-call row (see {@link ProgressTool.children}).
+ *
+ * It sits at the START of the row's content, i.e. BEFORE the status icon:
+ * `> ↳ ✅ \`read\` ×2 · a.ts / b.ts · 40ms`. Placing it inside the tool-name code
+ * span (the first attempt) read as part of the name and was rejected; placing
+ * it out here reads as "this one belongs to the row above".
+ */
+export const PROGRESS_CHILD_PREFIX = '↳ '
+
+/**
  * The live light of one step: what the model is doing RIGHT NOW.
  *
  * A tool waiting for its result outranks the stream phase. The frames that carry
@@ -383,6 +418,68 @@ export function stepLight(t: Translations, step: ProgressStep): string {
     case 'replying': return t.turnCardPhaseReplying
     default: return ''
   }
+}
+
+/** One merged run of consecutive same-named calls in the same state. */
+interface ToolRun {
+  name: string
+  status: RunStatus
+  /** First call of the run: a RUNNING row's clock is anchored here. */
+  first: ProgressTool
+  /** Summed elapsed of finished calls (0 while running). */
+  elapsed: number
+  count: number
+  /** The run's "what": at most {@link PROGRESS_MAX_DETAILS} distinct names. */
+  details: string[]
+  /** The sub-calls of every call in the run, in call order. */
+  subCalls: ProgressTool[]
+}
+
+/**
+ * Merge consecutive calls with the same name AND the same state: a `read` run is
+ * one row, not ten. A run's elapsed is its own total (sum for finished calls,
+ * `now - first start` for a running one), and so is its "what": a `bash` run that
+ * ran three programs names the first three (the distinct ones — the same file
+ * twice is one name).
+ */
+function mergeRuns(tools: readonly ProgressTool[]): ToolRun[] {
+  const runs: ToolRun[] = []
+  let index = 0
+  while (index < tools.length) {
+    const first = tools[index]!
+    const status = statusOf(first)
+    const run: ToolRun = {
+      name: first.name, status, first, elapsed: first.elapsed ?? 0, count: 1, details: [], subCalls: [],
+    }
+    // At most PROGRESS_MAX_DETAILS NAMES on the row, first come first served:
+    // a run of three commands that each ran two programs reads `npm / tail /
+    // git`, not the five it happened to touch.
+    const addDetails = (names: readonly string[] | undefined): void => {
+      for (const name of names ?? []) {
+        if (run.details.length >= PROGRESS_MAX_DETAILS) return
+        if (name !== '' && !run.details.includes(name)) run.details.push(name)
+      }
+    }
+    addDetails(first.detail)
+    run.subCalls.push(...first.children ?? [])
+    while (index + run.count < tools.length) {
+      const next = tools[index + run.count]!
+      if (next.name !== run.name || statusOf(next) !== status) break
+      run.elapsed += next.elapsed ?? 0
+      run.count += 1
+      addDetails(next.detail)
+      run.subCalls.push(...next.children ?? [])
+    }
+    runs.push(run)
+    index += run.count
+  }
+  return runs
+}
+
+/** One rendered row for a merged run (`✅ \`read\` ×2 · a.ts / b.ts · 40ms`). */
+function toolRow(t: Translations, run: ToolRun, now: number): string {
+  const clock = run.status === 'running' ? run.first.startedAt : run.elapsed
+  return toolLine(t, run.name, run.status, clock, run.count, now, run.details)
 }
 
 /** Flatten the facts into ordered lines. */
@@ -416,40 +513,24 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
       lines.push({ text: `${PROGRESS_QUOTE_MARKER}${t.turnCardStepNote(step.note)}`, header: false, step: step.step, note: true })
     }
     // Merge consecutive calls with the same name AND the same state: a `read`
-    // run is one row, not ten. A run's elapsed is its own total (sum for
-    // finished calls, `now - first start` for a running one), and so is its
-    // "what": a `bash` run that ran three programs names the first three (the
-    // distinct ones — the same file twice is one name).
-    let index = 0
-    while (index < step.tools.length) {
-      const first = step.tools[index]!
-      const status = statusOf(first)
-      let count = 1
-      let elapsed = first.elapsed ?? 0
-      const details: string[] = []
-      // At most PROGRESS_MAX_DETAILS NAMES on the row, first come first served:
-      // a run of three commands that each ran two programs reads `npm / tail /
-      // git`, not the five it happened to touch.
-      const addDetails = (names: readonly string[] | undefined): void => {
-        for (const name of names ?? []) {
-          if (details.length >= PROGRESS_MAX_DETAILS) return
-          if (name !== '' && !details.includes(name)) details.push(name)
-        }
-      }
-      addDetails(first.detail)
-      while (index + count < step.tools.length) {
-        const next = step.tools[index + count]!
-        if (next.name !== first.name || statusOf(next) !== status) break
-        elapsed += next.elapsed ?? 0
-        count += 1
-        addDetails(next.detail)
-      }
+    // run is one row, not ten (see `mergeRuns` for the clock and the "what").
+    for (const run of mergeRuns(step.tools)) {
       lines.push({
-        text: `${PROGRESS_QUOTE_MARKER}${toolLine(t, first.name, status, status === 'running' ? first.startedAt : elapsed, count, facts.now, details)}`,
+        text: `${PROGRESS_QUOTE_MARKER}${toolRow(t, run, facts.now)}`,
         header: false,
         step: step.step,
       })
-      index += count
+      // The program this row ran, if any: a PTC `run_code` call reports the
+      // tools its program dispatched, and each reads one level in — same quote
+      // block, with an arrow before the status icon. Same run merging, so a
+      // program that read twelve files stays one row.
+      for (const sub of mergeRuns(run.subCalls)) {
+        lines.push({
+          text: `${PROGRESS_QUOTE_MARKER}${PROGRESS_CHILD_PREFIX}${toolRow(t, sub, facts.now)}`,
+          header: false,
+          step: step.step,
+        })
+      }
     }
     // Calls the step's last attempt streamed but never committed, LAST: they are
     // the newest thing the step did (it died on them). One row per name, no clock
@@ -695,6 +776,22 @@ export interface ProgressCardsHandle {
   toolStarted(sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void
   /** `tool/result`: settle the row with that call id (fallback: oldest running). */
   toolFinished(sessionId: string, callId: string, elapsed: number, isError: boolean, at: number): void
+  /**
+   * `tool/ptc-dispatch-start`: a tool a PTC `run_code` program dispatched, i.e. a
+   * sub-call of the row named by `parentCallId`. Dropped when that parent is not
+   * on the card — a sub-call with nothing to hang under is not worth a row.
+   * @param detail - the sub-call's short "what" (`progressSubtoolDetails`).
+   */
+  subtoolStarted(
+    sessionId: string,
+    parentCallId: string,
+    toolName: string,
+    subCallId: string,
+    at: number,
+    detail?: readonly string[],
+  ): void
+  /** `tool/ptc-dispatch`: settle the sub-call row named by `subCallId`. */
+  subtoolFinished(sessionId: string, parentCallId: string, subCallId: string, at: number, isError: boolean): void
   /** `step/end`: close the current section's clock. */
   stepEnded(sessionId: string, at: number): void
   /** `turn/end`: final render (green, or red when the turn failed). */
@@ -980,6 +1077,37 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     schedule(entry)
   }
 
+  /**
+   * Close a row's still-running sub-calls the moment the row settles.
+   *
+   * A program that was aborted never reports its in-flight sub-calls, and a card
+   * that will never be repainted again must not keep a row claiming to run: the
+   * clock it really had is the honest value. A sub-call abandoned by a FAILED
+   * parent inherits that failure; one abandoned by a successful parent is a lost
+   * frame, not a failure, and settles as done.
+   */
+  const closeChildren = (tool: ProgressTool, at: number, failed: boolean): void => {
+    for (const child of tool.children ?? []) {
+      if (child.elapsed !== undefined) continue
+      child.elapsed = Math.max(0, at - child.startedAt)
+      if (failed) child.isError = true
+    }
+  }
+
+  /** Whether anything on this card is still running — a row or a sub-call. */
+  const hasRunningRow = (facts: ProgressFacts): boolean =>
+    facts.steps.some(step => step.tools.some(tool =>
+      tool.elapsed === undefined || (tool.children ?? []).some(child => child.elapsed === undefined)))
+
+  /** The row with that call id, anywhere on the card. */
+  const findTool = (facts: ProgressFacts, callId: string): ProgressTool | undefined => {
+    for (const step of facts.steps) {
+      const found = step.tools.find(tool => tool.callId === callId)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+
   const toolStarted = (sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
@@ -1049,6 +1177,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
         row.isError = true
         facts.failed += 1
       }
+      // The program's own calls end with it: anything it left running (an abort)
+      // would otherwise tick forever on a card that stops being written.
+      closeChildren(row, at, isError)
     }
     const entry = cards.get(sessionId)
     if (entry !== undefined) {
@@ -1056,8 +1187,57 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       schedule(entry)
       // The last running row just settled: no repaint is worth scheduling any
       // more (this is what makes a fast tool cost nothing).
-      disarmRunningTick(entry)
+      if (!hasRunningRow(facts)) disarmRunningTick(entry)
     }
+  }
+
+  const subtoolStarted = (
+    sessionId: string,
+    parentCallId: string,
+    toolName: string,
+    subCallId: string,
+    at: number,
+    detail?: readonly string[],
+  ): void => {
+    if (stopped) return
+    const turn = turns.get(sessionId)
+    if (turn === undefined) return
+    const facts = turn.facts
+    const parent = findTool(facts, parentCallId)
+    // A sub-call has nothing to hang under when its parent is not on this card
+    // (the parent call was never seen, or the card already moved on). Dropping it
+    // is right: a row with no program would read as a top-level call that the
+    // model never made.
+    if (parent === undefined) return
+    if ((parent.children ?? []).some(child => child.callId === subCallId)) return
+    parent.children = [
+      ...parent.children ?? [],
+      { name: toolName, callId: subCallId, startedAt: at, ...detail === undefined || detail.length === 0 ? {} : { detail } },
+    ]
+    facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry === undefined) return
+    entry.facts = facts
+    schedule(entry)
+    armRunningTick(entry)
+  }
+
+  const subtoolFinished = (sessionId: string, parentCallId: string, subCallId: string, at: number, isError: boolean): void => {
+    if (stopped) return
+    const turn = turns.get(sessionId)
+    if (turn === undefined) return
+    const facts = turn.facts
+    const parent = findTool(facts, parentCallId)
+    const child = parent?.children?.find(candidate => candidate.callId === subCallId)
+    if (child === undefined || child.elapsed !== undefined) return
+    child.elapsed = Math.max(0, at - child.startedAt)
+    if (isError) child.isError = true
+    facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry === undefined) return
+    entry.facts = facts
+    schedule(entry)
+    if (!hasRunningRow(facts)) disarmRunningTick(entry)
   }
 
   const stepEnded = (sessionId: string, at: number): void => {
@@ -1068,6 +1248,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     facts.now = at
     const current = facts.steps[facts.steps.length - 1]
     if (current !== undefined && current.endedAt === undefined) current.endedAt = at
+    // A step that ends with a program still open (a lost frame) closes its
+    // sub-call rows here, not at the next repaint: the card is about to stop
+    // ticking and a "running" row would freeze mid-sentence.
+    for (const tool of current?.tools ?? []) closeChildren(tool, at, false)
     const entry = cards.get(sessionId)
     if (entry !== undefined) {
       entry.facts = facts
@@ -1098,6 +1282,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     // turn failed, and the dying step has already closed itself with `step/end`,
     // so the NEWEST step is the one to mark (2026-10-14).
     if (failedTurn && current !== undefined) current.failed = true
+    // Sub-call rows settle with the turn as well: this is the LAST write the card
+    // will ever get, so nothing on it may still claim to be running.
+    for (const step of facts.steps) for (const tool of step.tools) closeChildren(tool, at, failedTurn)
     // A closed segment still has to say how the turn ended: its body is frozen
     // (it is not the newest card any more, so new rows must not appear in it),
     // but a card claiming "进行中" after the turn ended is a lie. Counters come
@@ -1230,7 +1417,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     turns.clear()
   }
 
-  return { beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard, toolStarted, toolFinished, stepEnded, finish, stop }
+  return {
+    beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard,
+    toolStarted, toolFinished, subtoolStarted, subtoolFinished, stepEnded, finish, stop,
+  }
 }
 
 /** The card's title, for the plain-text fallback. */

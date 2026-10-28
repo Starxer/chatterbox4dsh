@@ -5,6 +5,20 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：PTC 模式下 compact 回合卡显示「这段程序真正调用了什么」（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-10-28）
+
+**反馈**：「PTC 模式的 run code 工具在紧凑显示模式没有任何摘要」。
+
+**取证**：真机读回 PTC 话题里的回合卡，行就是 `✅ \`run_code\` · 506ms`。紧凑卡工具行的「是什么」由 `progressToolDetails()` 推导，它只认 read/write/edit/bash/pwsh，`run_code` 落到 undefined；而 `run_code` 的 schema 里 `description` 是**必填**、说明里写明「shown in the UI」，非紧凑的步骤卡本来就会显示它。更大的缺口是：PTC 模式下模型只调 `run_code`，程序内部真正执行的工具只出现在会话事件 `tool/ptc-dispatch-start` / `tool/ptc-dispatch`（Web UI 据此渲染嵌套子调用），插件此前完全没订阅——实测一轮真实 PTC 回合 = 12 次 `run_code` + 47 次子调用（`web_fetch` 17、`read` 10、`bash` 7、`glob` 3、`todo_write` 3、`grep` 2、`web_search` 2 …），卡片上全都看不见。
+
+**实现**：① `progressToolDetails` 增加 `run_code` 分支，取其 `description`（压成一行、丢反引号、转义 markdown 活动字符、截断 80 字）；② 新增 `progressSubtoolDetails`：文件/程序沿用原规则，网页取 **host**、搜索取 **query/pattern**（子行截断 40 字）；③ 进度卡模型新增 `ProgressTool.children` 与 `subtoolStarted` / `subtoolFinished`，子行渲染为 `> ↳ ✅ \`read\` ×3 · AGENTS.md · 160ms`——箭头在状态图标**前**、工具名反引号**外**，同类按名合并、随父行一起结算；④ streaming 订阅两个 `tool/ptc-dispatch-*` 事件并转进回合卡（父行不在卡上就丢弃，避免凭空多出一行「模型没调过的工具」）；⑤ 父调用结算 / `step/end` / `turn/end` 时把仍在跑的子行按实际耗时收尾，被中止的程序不会留一个永远转不完的行；失败子行标 ❌ 但**不计入标题的工具数**（标题数的是模型发起的调用）。
+
+**否决的方案（有据）**：① 用多一级 markdown 引用（`> > `）表示缩进——飞书卡片渲染器**静默丢弃**嵌套引用（探针 ①⑤⑥⑦⑧ 六种写法全丢，两次样板卡真机可见，官方文档也只文档化单级 `>`），已记为关键坑 70；② 子行用全角空格缩进（能显示但不是真实布局缩进，读起来仍靠假空格）。
+
+**验证**：新增 11 例（渲染 5：箭头位置/同名合并/运行中/失败不影响标题计数/仍只占一个元素；活动卡 6：挂载到父行、未知父丢弃、重放去重、父结算收尾、`turn/end` 收尾、只余子行时仍保持 tick；详情派生 6 例并入既有 describe），`typecheck`（含 client）/ **1298 测试 / 64 文件** / build 全绿；定稿样板卡由真实渲染器渲出、经使用者确认「效果不错」。**未重启**，等授权。
+
+**English**: Reported as “PTC mode's run_code tool has no summary at all in compact display”. The compact row's “what” came from `progressToolDetails()`, which only knows read/write/edit/bash/pwsh, so `run_code` fell through to undefined — even though that tool's schema REQUIRES a `description` described as “shown in the UI”, and the non-compact step card already rendered it. The bigger gap: in PTC mode the model only calls `run_code`, and the tools its program actually runs reach the session stream as `tool/ptc-dispatch-start` / `tool/ptc-dispatch` (what the Web UI renders as nested sub-calls), which the plugin never subscribed to — one real turn was 12 `run_code` calls plus 47 sub-calls (web_fetch 17, read 10, bash 7 …), none visible. Now the parent row carries the description and each dispatched call renders as `> ↳ ✅ \`read\` ×3 · AGENTS.md · 160ms`: the arrow sits BEFORE the status icon and OUTSIDE the tool-name code span, same-named runs merge, and rows settle with their parent (a parent that settles, or a step/turn that ends, closes any sub-call still running; a failed sub-call shows ❌ without inflating the title's call count, which counts the model's own calls). Two alternatives were rejected with evidence: nested markdown quotes (`> > `) — the card renderer silently drops nested blockquotes (six probe shapes, two live sample cards, and the official docs only document single-level `>`; recorded as pitfall 70) — and full-width-space indentation (visible, but a fake indent). 11 new tests; typecheck (with client), 1298 tests / 64 files and build pass; the final sample card was rendered by the real renderer and approved by the operator. Not restarted yet.
+
 ### 恢复：compact 回合卡的标题回到原措辞 `🐳 深度求索中 · 12.3s`（`src/feishu-progress.ts`，2026-10-27）
 
 **背景**：同日为解决「工具调用期间步骤显示思考中」，先把卡片**标题**改成了相位文案（`🔧 工具调用中 · …` / `✍️ 回复中 · …`）。使用者指出方向错了：**要修的是步骤行反映的事实，不是卡片标题**（「步骤卡片的标题，你没有给我恢复」）。

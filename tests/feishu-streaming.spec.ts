@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
-import { deriveToolSummary, progressToolDetails, renderStepCard, startFeishuStreaming, uncommittedToolNames } from '../src/feishu-streaming.ts'
+import { deriveToolSummary, progressSubtoolDetails, progressToolDetails, renderStepCard, startFeishuStreaming, uncommittedToolNames } from '../src/feishu-streaming.ts'
 import { PROGRESS_MAX_DETAILS } from '../src/feishu-progress.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { TranscriptView } from '../src/display-level.ts'
@@ -173,6 +173,63 @@ describe('progressToolDetails', () => {
     expect(progressToolDetails('todo_write', JSON.stringify({ todos: [] }))).toBeUndefined()
     expect(progressToolDetails('bash', JSON.stringify({ command: '' }))).toBeUndefined()
     expect(progressToolDetails('read', 'not json')).toBeUndefined()
+  })
+
+  it('names a PTC program by the description its schema requires', () => {
+    // The operator's report, 2026-10-28: a PTC turn's compact card showed a bare
+    // `✅ run_code · 506ms` — the tool's own schema REQUIRES a UI description.
+    expect(progressToolDetails('run_code', JSON.stringify({
+      code: 'console.log(1)',
+      description: '读取开发约定并检查本地环境',
+    }))).toEqual(['读取开发约定并检查本地环境'])
+  })
+
+  it('reduces that description to ONE markdown-safe row fragment', () => {
+    // Free model text: it may span lines and carry inline markup that would pair
+    // with another row inside the shared element (关键坑 60).
+    expect(progressToolDetails('run_code', JSON.stringify({
+      code: '',
+      description: '第一行 `code` 与 **粗体**\n第二行不该出现',
+    }))).toEqual(['第一行 code 与 &#42;&#42;粗体&#42;&#42;'])
+    expect(progressToolDetails('run_code', JSON.stringify({ code: '', description: '   ' }))).toBeUndefined()
+    // Capped like a narration row.
+    const [row] = progressToolDetails('run_code', JSON.stringify({ code: '', description: 'x'.repeat(200) }))!
+    expect(row!.length).toBeLessThanOrEqual(81)
+    expect(row!.endsWith('…')).toBe(true)
+  })
+})
+
+describe('progressSubtoolDetails', () => {
+  // A PTC program dispatches the REAL tools itself; these rows are the only place
+  // a step says what it actually touched (`tool/ptc-dispatch-start`).
+  it('reuses the file / shell rows', () => {
+    expect(progressSubtoolDetails('read', JSON.stringify({ path: '/w/repo/src/a.ts' }))).toEqual(['a.ts'])
+    expect(progressSubtoolDetails('bash', JSON.stringify({ command: 'npm test' }))).toEqual(['npm'])
+  })
+
+  it('names a web page by its HOST, not by a URL path', () => {
+    // The file rule would cut `…/releases.atom` off the end and read like a local
+    // file; the host is what identifies the request.
+    expect(progressSubtoolDetails('web_fetch', JSON.stringify({ url: 'https://github.com/a/b/releases.atom' })))
+      .toEqual(['github.com'])
+  })
+
+  it('names what a search looked for', () => {
+    expect(progressSubtoolDetails('grep', JSON.stringify({ pattern: 'TODO', path: 'src' }))).toEqual(['TODO'])
+    // `*` survives as CONTENT (escaped so it cannot become emphasis).
+    expect(progressSubtoolDetails('glob', JSON.stringify({ pattern: '**/*.ts' }))).toEqual(['&#42;&#42;/&#42;.ts'])
+    expect(progressSubtoolDetails('web_search', JSON.stringify({ queries: ['a', 'b', 'c'] }))).toEqual(['a +2'])
+  })
+
+  it('names a nested program by its description and says nothing for a bare call', () => {
+    expect(progressSubtoolDetails('run_code', JSON.stringify({ code: '', description: '再跑一段程序' }))).toEqual(['再跑一段程序'])
+    expect(progressSubtoolDetails('working_directory', JSON.stringify({}))).toBeUndefined()
+    expect(progressSubtoolDetails('subagent', JSON.stringify({ description: '审阅文档' }))).toBeUndefined()
+  })
+
+  it('keeps a sub-call row shorter than a narration row', () => {
+    const [row] = progressSubtoolDetails('grep', JSON.stringify({ pattern: 'p'.repeat(120) }))!
+    expect(row!.length).toBeLessThanOrEqual(41)
   })
 })
 
@@ -2423,6 +2480,37 @@ describe('level + injection wiring through session events', () => {
     const cards = (ch.createCardInstance as any).mock.calls.map((call: any[]) => JSON.stringify(call[0]))
     expect(cards.some((json: string) => json.includes(t.turnCardPhaseAwaiting))).toBe(false)
     expect(cards.some((json: string) => json.includes(t.turnCardPhaseThinking))).toBe(false)
+    h.streaming.stop()
+  })
+
+  it('shows a PTC program\'s own calls under its row (compact)', async () => {
+    // In PTC mode the model only ever calls `run_code`; everything the step really
+    // did reaches the session stream as `tool/ptc-dispatch-*`. Until 2026-10-28
+    // the card ignored them and a whole PTC turn read as bare `run_code` rows.
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', {
+      callId: 'c1',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'await tools.read({path:"AGENTS.md"})', description: '检查本地环境' }),
+    })
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
+    h.emit('tool/ptc-dispatch-start', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'read', arguments: { path: 'AGENTS.md' },
+    })
+    h.emit('tool/ptc-dispatch', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'read', arguments: { path: 'AGENTS.md' },
+      isError: false, content: [{ type: 'text', text: 'ok' }],
+    })
+    await tick(1_100)
+    const md = mdOf(lastCard(ch))
+    // The program row carries its schema-required description …
+    expect(md).toContain('`run_code` · 检查本地环境')
+    // … and the tool its program dispatched reads as a row under it, arrow first.
+    expect(md).toMatch(/^> ↳ /mu)
+    expect(md).toContain('`read` · AGENTS.md')
     h.streaming.stop()
   })
 
