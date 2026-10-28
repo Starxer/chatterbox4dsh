@@ -5,6 +5,20 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：`/display` 卡片改成 `/busy` 那样**同一张卡就地更新**（`src/feishu-display.ts`，2026-10-28）
+
+**反馈**：点选 `display` 卡片的按钮后，旧卡「内容原样保留 + 表头转灰 + 底部一句『此卡片已失效』」，并要求「改成 Busy 卡片那样的」。
+
+**取证（先比对了仓库里所有交互卡的旧卡处理）**：`/new` 是「整卡改写为绿色结算卡（`mode: 'replace'`）」；`/new` 的目录翻页是「收成灰色失效提示」；问题卡是「就地改写成结算卡」；交付确认卡是「发新卡 + 旧卡去按钮」；而 `/busy`、`/permission`、`/model`、`/session` 都是**同一张卡就地重绘**。`/display` 当时是唯一还在「保留内容 + 失效脚注」的决策卡。
+
+**实现**：翻回设计文档的方案 C，与 `/busy` 统一——`open()` 用内嵌卡发送（`channel.send`），点击后用 `channel.updateCard(messageId, card)`（`im.v1.message.patch`）重绘**同一条消息**；`DisplayCardChannel` 收敛为 `send` / `updateCard` / `onCardAction`；去掉 `card-supersede` 接线与 messageId→chat 记忆表（点击按 payload 处理、重绘按来源 messageId 定点，**插件重启前发出的卡重启后仍可用**）；已选中档位按钮加 `disabled: true`（状态而非动作，同 `/busy`）；重绘失败只 `warn`（设置已落库，卡面保留上一版）。
+
+**已知取舍**：就地更新在飞书侧「改 2–3 次后可能停止投递按钮回调」（关键坑 11）。接受而不绕开的理由：`/busy`、`/permission`、`/model` 已长期依赖就地更新；本卡每次写入都由人手点击触发；若真失效，重新 `/display` 即得新卡。没有做「N 次后换新卡」的自适应——那正是本次要消除的多卡/失效卡。
+
+**验证**：`tests/feishu-display.spec.ts` 重写为就地更新契约（15 例：发一张卡、点击同一 messageId 重绘、档位点击同样就地重绘且选中项 disabled、异步写未落库前不重绘、首次发送落在原话题、重启前旧卡点击可用、非法 payload 不写不绘、`stop()` 后连在途点击也忽略、重绘失败只 warn）。`docs/display-card-design.md` 追加第十节记录改版理由与差异。`typecheck`（含 client）/ 全量测试 / build 全绿。**未重启**。
+
+**English**: The operator asked for the `/display` card to behave like the `/busy` card. A survey of every interactive card showed three retirement shapes in the repo — `/new` rewrites the clicked card into a green settlement card, the folder-browser pages collapse to a grey stale notice, and `/busy` / `/permission` / `/model` / `/session` simply repaint the SAME message — while `/display` was the last decision card still doing "keep the content, append a stale footnote". It now follows `/busy`: `open()` sends one embedded card, and every tap writes the setting and repaints that same message via `im.v1.message.patch`. `DisplayCardChannel` shrinks to `send` / `updateCard` / `onCardAction`; the supersede wiring and the messageId→chat map are gone (a click is handled by its payload and repaints its own message, so a card posted before a plugin restart keeps working); the selected level button is `disabled` (state, not action); a failed repaint only warns. The known in-place risk (关键坑 11: callbacks may stop after ~2-3 edits) is accepted rather than designed around — `/busy`, `/permission` and `/model` already live on in-place updates, every write here is a human tap, and a fresh `/display` restores a working card. `tests/feishu-display.spec.ts` was rewritten to that contract (15 tests) and `docs/display-card-design.md` gained section 10. Typecheck (incl. client), full suite and build pass. Not restarted yet.
+
 ### 改进：PTC 模式下 compact 回合卡显示「这段程序真正调用了什么」（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-10-28）
 
 **反馈**：「PTC 模式的 run code 工具在紧凑显示模式没有任何摘要」。

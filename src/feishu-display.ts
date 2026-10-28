@@ -2,19 +2,26 @@
  * Interactive card-display switcher for the `/display` Feishu command.
  *
  * `/display` already has a text path (`/display <key> on|off`). This module
- * gives the no-argument form a card instead, so the four switches
- * (`showReasoning` / `showToolCalls` / `showToolArgs` / `showToolResults`) can
- * be flipped by tapping — no syntax to remember. It writes exactly the same
- * config fields the WebUI settings panel and the slash command write, so all
- * three surfaces always agree.
+ * gives the no-argument form a card instead, so the four levels and four
+ * switches (`showReasoning` / `showToolCalls` / `showToolArgs` /
+ * `showToolResults`) can be flipped by tapping — no syntax to remember. It
+ * writes exactly the same config fields the WebUI settings panel and the slash
+ * command write, so all three surfaces always agree.
  *
- * Every tap posts a NEW card and repaints the previous one as a stale-card
- * notice. That is deliberate: Feishu stops delivering button callbacks on a
- * message's card after only ~2-3 in-place edits — true for
- * `im.v1.message.patch` and `cardkit.v1.card.update` alike (see AGENTS.md
- * 关键坑 11) — and this card invites four taps in a row. Buttons carry the
- * TARGET value rather than a "toggle" marker, so a duplicated delivery of one
- * click is idempotent.
+ * **One card, updated in place** — the `/busy` and permission-card contract: the
+ * card the operator is looking at IS the state, and every tap repaints THAT
+ * message with the new state (`im.v1.message.patch` via `cardActions`'
+ * `updateCard`). This replaced the older "post a new card, turn the old one into
+ * a stale notice" flow on 2026-10-28, at the operator's request, so `/display`
+ * behaves like the other setting cards instead of leaving a trail of `已失效`
+ * cards behind it. Buttons carry the TARGET value rather than a "toggle" marker,
+ * so a duplicated delivery of one click is idempotent.
+ *
+ * The known risk of in-place editing (关键坑 11: Feishu may stop delivering a
+ * card's button callbacks after ~2-3 edits) is accepted rather than designed
+ * around: `/busy`, the permission card and `/model` already live on in-place
+ * updates, and this card's own edits only happen on a human tap. If its buttons
+ * ever stop answering, `/display` posts a fresh card.
  *
  * @module @starxer/chatterbox4dsh/feishu-display
  */
@@ -24,7 +31,6 @@ import { TRANSCRIPT_VIEWS, type TranscriptView } from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { decodeCardValue } from './card-action.ts'
-import { createCardSuperseder } from './card-supersede.ts'
 
 /** The switches in card order (same order as the WebUI settings panel). */
 export const DISPLAY_KEYS: readonly DisplayToggleKey[] = ['reasoning', 'tools', 'args', 'results']
@@ -39,10 +45,8 @@ export interface DisplayCardEvent {
 /** The shared cardChannel's minimal surface (send / card instances / subscribe). */
 export interface DisplayCardChannel {
   send(to: string, input: { card: object }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
-  createCardInstance(card: object): Promise<string>
-  sendCardByReference(to: string, cardId: string, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
-  updateCardInstance?(cardId: string, card: object, sequence: number): Promise<void>
-  updateCard?(messageId: string, card: object): Promise<void>
+  /** Repaint the SAME message in place (`im.v1.message.patch`), the `/busy` way. */
+  updateCard(messageId: string, card: object): Promise<void>
   onCardAction(handler: (evt: DisplayCardEvent) => void | Promise<void>): () => void
 }
 
@@ -57,9 +61,8 @@ export interface FeishuDisplayDeps {
 
 export interface FeishuDisplayHandle {
   /**
-   * Send the interactive switch card for one chat and remember it so button
-   * clicks can flip a switch and post the refreshed card. Returns the sent
-   * message id.
+   * Post the interactive switch card for one chat. Button clicks afterwards flip
+   * a setting and repaint THAT message in place. Returns the sent message id.
    */
   open(chat: ConversationMessage): Promise<string | undefined>
   stop(): void
@@ -102,9 +105,10 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
     elements.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayLevelName(level), active) },
-      // The ACTIVE level is primary so the current choice reads at a glance;
-      // the rest stay grey.
+      // The ACTIVE level is primary AND disabled: it is the state, not an
+      // action (the `/busy` card marks its selected option the same way).
       type: active ? 'primary' : 'default',
+      ...(active ? { disabled: true } : {}),
       behaviors: [{ type: 'callback', value: { p: 'display', level, value: !active } }],
     })
   }
@@ -123,10 +127,11 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel(key), enabled) },
       // Primary = on, default (grey) = off, so the state reads at a glance.
       type: enabled ? 'primary' : 'default',
-      // A CardKit card instance — this card is sent by reference — only honours
-      // `behaviors`; a top-level `value` is silently dropped and the click does
-      // nothing. Embedded cards accept either form, so `behaviors` is the safe
-      // one for both (same as `feishu-session.ts` / `feishu-onboarding.ts`).
+      // `behaviors` is the callback declaration both card kinds honour — a
+      // CardKit instance silently drops a top-level `value` (which once made
+      // every click a no-op), and an embedded card accepts either form, so this
+      // is the safe one for both (same as `feishu-session.ts` /
+      // `feishu-onboarding.ts`).
       //
       // The payload carries the TARGET value, not a "toggle" marker, so a
       // re-delivered click cannot flip the switch twice.
@@ -146,15 +151,19 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
   }
 }
 
-/** Start the display switcher: post cards on demand and handle button clicks. */
+/**
+ * Start the display switcher: post the card on demand, then repaint it in place.
+ *
+ * The card is NOT remembered per message: a click is handled by the payload it
+ * carries, and the repaint targets the very message the click came from. That
+ * also means a card posted before a plugin restart keeps working after it — its
+ * payload is enough to write the setting, and the message id is enough to
+ * repaint it.
+ */
 export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle {
   const { channel, display, logger, getTranslations } = deps
-  /** Topic coordinates per card message, so a refreshed card stays in-topic
-   *  (cardAction events carry no thread information). */
-  const byCard = new Map<string, ConversationMessage>()
-  /** Shared with the superseder so a stale repaint never reuses a sequence. */
-  const sequenceByCard = new Map<string, number>()
-  const superseder = createCardSuperseder({ channel, logger, getTranslations, sequenceByCard })
+  /** Set by {@link stop}: a click already queued must not write settings. */
+  let stopped = false
 
   /** Send opts that land in the chat's topic when it has one. */
   const topicOpts = (chat: ConversationMessage): { replyInThread?: boolean; replyTo?: string } =>
@@ -162,31 +171,20 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       ? { replyInThread: true, replyTo: chat.rootId }
       : {}
 
-  /**
-   * Post the card as a NEW message, retire the previous one, and remember the
-   * new coordinates. Returns the new message id.
-   *
-   * @param supersededMessageId - the card the user just clicked; dropped from
-   *   the lookup so a stale entry cannot be clicked again later.
-   */
-  const post = async (chat: ConversationMessage, supersededMessageId?: string): Promise<string | undefined> => {
-    const card = renderDisplayCard({ level: display.getLevel(), switches: display.get() }, getTranslations())
-    const opts = topicOpts(chat)
-    const cardId = await channel.createCardInstance(card)
-    const result = await channel.sendCardByReference(chat.chatId, cardId, opts)
-    // Repaint the previous card only AFTER the new one is on screen (no gap),
-    // and before noting the new card — supersedePrevious consumes the note.
-    await superseder.supersedePrevious(chat.chatId)
-    superseder.note(chat.chatId, { cardId, messageId: result.messageId, card })
-    if (supersededMessageId !== undefined) byCard.delete(supersededMessageId)
-    if (result.messageId !== undefined) byCard.set(result.messageId, chat)
-    return result.messageId
-  }
+  /** The card as the CURRENT settings read right now. */
+  const currentCard = (): object =>
+    renderDisplayCard({ level: display.getLevel(), switches: display.get() }, getTranslations())
 
-  /** Repaint after an action; a failed write honestly shows the old state. */
-  const repaint = async (chat: ConversationMessage, messageId: string): Promise<void> => {
+  /**
+   * Repaint the clicked card from the persisted settings — in place, the way
+   * `/busy` and the permission card do it. The write has already landed (the
+   * caller awaits it), so this render carries the new state; a failed repaint
+   * leaves the previous render on screen, which is honest about the write that
+   * DID succeed.
+   */
+  const repaint = async (messageId: string): Promise<void> => {
     try {
-      await post(chat, messageId)
+      await channel.updateCard(messageId, currentCard())
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       logger.warn(`dsh-feishu: display card refresh failed: ${msg}`)
@@ -194,20 +192,16 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
   }
 
   const onCardAction = async (evt: DisplayCardEvent): Promise<void> => {
+    if (stopped) return
     const messageId = evt.messageId
     if (messageId === undefined) return
     // Embedded cards double-encode `action.value`; CardKit `behaviors` deliver
     // a plain object. `decodeCardValue` accepts either.
     const parsed = decodeCardValue(evt.action?.value)
     if (parsed === undefined || parsed.p !== 'display') return
-    const chat = byCard.get(messageId)
-    if (chat === undefined) {
-      console.log(`dsh-feishu: [display] action for unknown card message=${messageId}`)
-      return
-    }
     // The settings write commits asynchronously (the scope's snapshot is only
     // replaced after it persists), so it MUST be awaited before re-reading —
-    // otherwise the refreshed card repaints the OLD state.
+    // otherwise the repaint renders the OLD state.
     //
     // Past this point the payload is ours, so a rejection is worth a log line:
     // a silently ignored click is exactly how this card first failed.
@@ -219,7 +213,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
         const msg = error instanceof Error ? error.message : String(error)
         logger.warn(`dsh-feishu: display level write failed: ${msg}`)
       }
-      await repaint(chat, messageId)
+      await repaint(messageId)
       console.log(`dsh-feishu: [display] level=${level} card=${messageId}`)
       return
     }
@@ -233,17 +227,19 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       const msg = error instanceof Error ? error.message : String(error)
       logger.warn(`dsh-feishu: display switch write failed: ${msg}`)
     }
-    await repaint(chat, messageId)
+    await repaint(messageId)
     console.log(`dsh-feishu: [display] ${parsed.key}=${String(parsed.value)} card=${messageId}`)
   }
   const unsubscribe = channel.onCardAction(onCardAction)
 
-  const open = async (chat: ConversationMessage): Promise<string | undefined> => post(chat)
+  const open = async (chat: ConversationMessage): Promise<string | undefined> => {
+    const result = await channel.send(chat.chatId, { card: currentCard() }, topicOpts(chat))
+    return result.messageId
+  }
 
   const stop = (): void => {
+    stopped = true
     unsubscribe()
-    byCard.clear()
-    superseder.clear()
   }
 
   return { open, stop }

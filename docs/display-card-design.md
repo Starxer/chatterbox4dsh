@@ -1,6 +1,6 @@
 # `/display` 交互卡片设计（卡片内设置显示开关）
 
-> 状态：**已实现（2026-09-10）**——按方案 A 落地，实现见 [`src/feishu-display.ts`](../src/feishu-display.ts)。本文保留调研与设计依据；实际实现与设计的差异见文末「实现记录」。
+> 状态：**已实现（2026-09-10，2026-10-28 改为就地更新）**——首版按方案 A（每次点击发新卡）落地，2026-10-28 按使用者「改成 Busy 卡片那样」改为**方案 C：同一张卡就地重绘**，实现见 [`src/feishu-display.ts`](../src/feishu-display.ts)。本文保留调研与设计依据；改版与原实现差异见文末第九、十节。
 > **历史设计记录，不是现状手册**：2026-09-29 已加入 `compact / standard / detailed / verbose` 四档，仍采用每次点击发新卡，四开关与档位 AND 合成。本文“目前只有文本路径”等字样描述提出时的状态。当前说明见 [项目首页](<../README.md>) 与 [架构](<./architecture.md>)。
 > 关联：[`src/commands.ts`](<../src/commands.ts>) 的 `/display` 命令、[飞书能力参考](<./feishu-capabilities.md>)；关键坑 4 / 11 / 12 的公开约束见 [卡片生命周期](<./architecture.md#卡片生命周期>)。
 
@@ -153,3 +153,21 @@ export function startFeishuDisplay(deps: {
    → 教训：**新写交互卡片前，先确认它走哪条发送路径**；`behaviors` 对两条路径都成立，应当作为默认写法。
 2. **`settings.mutate()` 必须先 `await` 再重读**（第六节「点击后先 `display.set(...)`，再用 `display.get()` 重新渲染」这条设计本身有 bug）。`dsh-settings` 的写是排队的异步操作，`settingsScope.get()` 只在 `settings.mutate` 的 promise resolve 之后才反映新值，所以「写完立刻重读」拿到的是旧值。`DisplayControl.set` 的签名因此从 `=> void` 放宽为 `=> void | Promise<void>`，`index.ts` 返回 mutate 的 promise，卡片路径 `await` 后再 `post()`；忽略返回值的 `/display` 文本路径挂一个 detached `.catch` 防 unhandled rejection。测试里用「`set` 返回未决 promise，期间不得发卡」锁定这个顺序。
 3. 补了诊断日志（`[display] action for unknown card …` / `[display] ignored malformed action …`）：这次排查没有任何日志可依，只能靠读代码、对比同仓库其它卡片的写法，绕了一圈才定位。**新增交互卡片时一并加一行「收到点击」的日志**，成本极低、收益很高。
+
+## 十、改版（2026-10-28）：改成 `/busy` 那样就地更新（方案 C）
+
+**触发**：使用者看到 `display` 卡片点选后「旧卡保留内容 + 灰头 + 一句『此卡片已失效』」，要求「改成 Busy 卡片那样的」——即 `/busy`（`src/feishu-busy.ts`）那套：**同一张卡就地重绘，卡片就是状态**。
+
+**定案**：翻回方案 C，与 `/busy`、`/permission`、`/model`（`updateCardInstance`）统一为「一卡一消息就地更新」；旧卡不再变成失效卡，聊天里也不再多出结算卡。
+
+**与首版实现的差异**：
+
+1. **发送路径**：`channel.send(chatId, { card }, topicOpts)`（内嵌卡）替代 `createCardInstance` + `sendCardByReference`；重绘走 `channel.updateCard(messageId, card)`（=`im.v1.message.patch`），与 `/busy` 完全一致。`DisplayCardChannel` 因此只剩 `send` / `updateCard` / `onCardAction` 三个方法。
+2. **不再需要 messageId→chat 记忆表**：点击按 payload 处理、重绘按来源 messageId 定点，所以**插件重启前发出的卡重启后依然可用**（旧实现重启后点击被当作 unknown card 丢弃）。
+3. **去掉 `card-supersede` 接线**：不再有「已失效」卡，`sequenceByCard` / `CardSuperseder` 不再参与。
+4. **当前档位按钮加 `disabled: true`**：已选中档位是「状态」而不是「动作」，与 `/busy` 标记选中项的方式一致。
+5. **失败处理**：重绘失败只 `logger.warn`（设置已落库），卡面保留上一版渲染——诚实反映「写入成功、刷新失败」。
+
+**已知取舍（关键坑 11）**：就地更新在飞书侧理论上「改 2–3 次后可能停止投递按钮回调」。这里接受而非绕开，理由：`/busy`、`/permission`、`/model` 都已长期依赖就地更新；本卡的每次写入都由人手点击触发（不会连发）；若按钮真的停止响应，重新发一次 `/display` 即可拿到新卡。**没有**再做「N 次后就换新卡」的自适应，那会重新引入多卡与失效卡，正是本次要消除的东西。
+
+**验证**：`tests/feishu-display.spec.ts` 重写为就地更新契约（15 例）：发一张卡、点击后同一 messageId 重绘、档位点击同样就地重绘且选中项 disabled、异步写未落库前不重绘、首次发送落在原话题、重启前旧卡点击可用、非法 payload 不写不绘、`stop()` 后连在途点击也忽略、重绘失败只 warn；`typecheck`（含 client）/ 全量测试 / build 全绿。

@@ -138,13 +138,9 @@ function makeDisplay(state: Record<DisplayToggleKey, boolean>, level: Transcript
 
 function makeChannel() {
   let actionHandler: ((evt: any) => unknown) | undefined
-  let nextCard = 0
   let nextMessage = 0
   const channel = {
-    send: vi.fn(async () => ({ messageId: `om_fallback_${++nextMessage}` })),
-    createCardInstance: vi.fn(async (_card: object) => `card_${++nextCard}`),
-    sendCardByReference: vi.fn(async () => ({ messageId: `om_${++nextMessage}` })),
-    updateCardInstance: vi.fn(async (_cardId: string, _card: object, _sequence: number) => undefined),
+    send: vi.fn(async (_to: string, _input: { card: object }, _opts?: unknown) => ({ messageId: `om_${++nextMessage}` })),
     updateCard: vi.fn(async (_messageId: string, _card: object) => undefined),
     onCardAction: vi.fn((handler: any) => { actionHandler = handler; return () => { actionHandler = undefined } }),
   }
@@ -152,13 +148,14 @@ function makeChannel() {
     channel,
     click: (evt: any) => actionHandler!(evt),
     getHandler: () => actionHandler,
-    lastCard: (index: number): any => channel.createCardInstance.mock.calls[index]![0],
+    sentCard: (index: number): any => channel.send.mock.calls[index]![1].card,
+    repainted: (index: number): any => channel.updateCard.mock.calls[index]![1],
   }
 }
 
 describe('startFeishuDisplay', () => {
-  it('opens the card and records it for later clicks', async () => {
-    const { channel } = makeChannel()
+  it('posts the card as one message and returns its id', async () => {
+    const { channel, sentCard } = makeChannel()
     const handle = startFeishuDisplay({
       channel: channel as any,
       display: makeDisplay({ ...ALL_ON }).control,
@@ -168,13 +165,14 @@ describe('startFeishuDisplay', () => {
 
     const messageId = await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
     expect(messageId).toBe('om_1')
-    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
-    expect(channel.sendCardByReference).toHaveBeenCalledWith('oc_1', 'card_1', {})
+    expect(channel.send).toHaveBeenCalledTimes(1)
+    expect(channel.send.mock.calls[0]![0]).toBe('oc_1')
+    expect(sentCard(0).header.title.content).toBe('📇 卡片显示')
     handle.stop()
   })
 
-  it('flips a switch, posts a NEW card and retires the old one', async () => {
-    const { channel, click, lastCard } = makeChannel()
+  it('repaints the SAME message in place after a tap (the /busy contract)', async () => {
+    const { channel, click, sentCard, repainted } = makeChannel()
     const { control, spy } = makeDisplay({ ...ALL_ON })
     const handle = startFeishuDisplay({
       channel: channel as any,
@@ -184,26 +182,44 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    await click({ messageId: 'om_1', action: { value: payloadOf(lastCard(0), 'tools') } })
+    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'tools') } })
 
     expect(spy).toHaveBeenCalledWith('tools', false)
-    // A brand-new card, never an in-place edit of the clicked one (Feishu stops
-    // delivering button callbacks after ~2-3 edits).
-    expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
-    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_1', 'card_2', {})
-    // The clicked card is repainted as the stale notice.
-    expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
-    expect(channel.updateCardInstance.mock.calls[0]![0]).toBe('card_1')
-    expect(channel.updateCardInstance.mock.calls[0]![2]).toBe(1)
-    // The refreshed card reflects the persisted value.
-    expect(buttonFor(lastCard(1), 'tools').text.content).toBe('⬜ 工具调用：关')
+    // ONE message for the whole interaction: no second card, no stale notice.
+    expect(channel.send).toHaveBeenCalledTimes(1)
+    expect(channel.updateCard).toHaveBeenCalledTimes(1)
+    expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
+    // The repainted card reflects the persisted value...
+    expect(buttonFor(repainted(0), 'tools').text.content).toBe('⬜ 工具调用：关')
     // ...and drops the switches that no longer do anything.
-    expect(switchesOf(lastCard(1)).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
+    expect(switchesOf(repainted(0)).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
+    handle.stop()
+  })
+
+  it('repaints a level tap in place too, and marks the chosen level disabled', async () => {
+    const { channel, click, sentCard, repainted } = makeChannel()
+    const { control, levelSpy } = makeDisplay({ ...ALL_ON })
+    const handle = startFeishuDisplay({
+      channel: channel as any,
+      display: control,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    } as any)
+
+    await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
+    const compact = levelsOf(sentCard(0)).find((b: any) => b.behaviors[0].value.level === 'compact')
+    await click({ messageId: 'om_1', action: { value: compact.behaviors[0].value } })
+
+    expect(levelSpy).toHaveBeenCalledWith('compact')
+    expect(channel.updateCard).toHaveBeenCalledTimes(1)
+    const chosen = levelsOf(repainted(0)).find((b: any) => b.behaviors[0].value.level === 'compact')
+    expect(chosen.disabled).toBe(true)
+    expect(chosen.type).toBe('primary')
     handle.stop()
   })
 
   it('repaints only after the persisted write lands (no stale repaint)', async () => {
-    const { channel, click, lastCard } = makeChannel()
+    const { channel, click, sentCard, repainted } = makeChannel()
     const state = { ...ALL_ON }
     let release!: () => void
     const persisted = new Promise<void>((resolve) => { release = resolve })
@@ -222,21 +238,20 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    const clicked = click({ messageId: 'om_1', action: { value: payloadOf(lastCard(0), 'tools') } })
+    const clicked = click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'tools') } })
     await new Promise(resolve => setTimeout(resolve, 0))
     // While the write is in flight nothing may be repainted — a repaint here
     // would render the PRE-write state, which is the bug this guards.
-    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    expect(channel.updateCard).not.toHaveBeenCalled()
 
     release()
     await clicked
-    expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
-    expect(buttonFor(lastCard(1), 'tools').text.content).toBe('⬜ 工具调用：关')
+    expect(buttonFor(repainted(0), 'tools').text.content).toBe('⬜ 工具调用：关')
     handle.stop()
   })
 
-  it('keeps the refreshed card inside the originating topic', async () => {
-    const { channel, click, lastCard } = makeChannel()
+  it('posts the card inside the originating topic', async () => {
+    const { channel } = makeChannel()
     const handle = startFeishuDisplay({
       channel: channel as any,
       display: makeDisplay({ ...ALL_ON }).control,
@@ -244,19 +259,16 @@ describe('startFeishuDisplay', () => {
       getTranslations: () => t,
     } as any)
 
-    const chat = { chatId: 'oc_1', chatType: 'group' as const, threadId: 'omt_1', rootId: 'om_root' }
-    await handle.open(chat)
-    expect(channel.sendCardByReference).toHaveBeenCalledWith('oc_1', 'card_1', { replyInThread: true, replyTo: 'om_root' })
-
-    // cardAction events carry no thread info — the remembered coordinates must
-    // put the refreshed card back in the same topic.
-    await click({ messageId: 'om_1', action: { value: payloadOf(lastCard(0), 'args') } })
-    expect(channel.sendCardByReference).toHaveBeenLastCalledWith('oc_1', 'card_2', { replyInThread: true, replyTo: 'om_root' })
+    await handle.open({ chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', rootId: 'om_root' })
+    expect(channel.send.mock.calls[0]![2]).toEqual({ replyInThread: true, replyTo: 'om_root' })
     handle.stop()
   })
 
-  it('ignores clicks from unknown cards and malformed values', async () => {
-    const { channel, click, lastCard } = makeChannel()
+  it('honours a click on a card this instance never posted (e.g. from before a restart)', async () => {
+    // The payload is enough to write the setting and the message id is enough to
+    // repaint that very message, so a card outliving a plugin restart still works
+    // — the old flow needed a remembered message→chat map and ignored such clicks.
+    const { channel, click } = makeChannel()
     const { control, spy } = makeDisplay({ ...ALL_ON })
     const handle = startFeishuDisplay({
       channel: channel as any,
@@ -264,11 +276,26 @@ describe('startFeishuDisplay', () => {
       logger: { warn: vi.fn(), error: vi.fn() },
       getTranslations: () => t,
     } as any)
-    await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
 
-    // Unknown message id.
-    await click({ messageId: 'om_nope', action: { value: JSON.stringify({ p: 'display', key: 'tools', value: false }) } })
-    // Unrelated payload.
+    await click({ messageId: 'om_from_before', action: { value: JSON.stringify({ p: 'display', key: 'tools', value: false }) } })
+    expect(spy).toHaveBeenCalledWith('tools', false)
+    expect(channel.updateCard).toHaveBeenCalledWith('om_from_before', expect.anything())
+    handle.stop()
+  })
+
+  it('ignores unrelated and malformed payloads', async () => {
+    const { channel, click } = makeChannel()
+    const { control, spy } = makeDisplay({ ...ALL_ON })
+    const handle = startFeishuDisplay({
+      channel: channel as any,
+      display: control,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      getTranslations: () => t,
+    } as any)
+
+    // No message id at all.
+    await click({ action: { value: JSON.stringify({ p: 'display', key: 'tools', value: false }) } })
+    // Unrelated card (the /busy picker).
     await click({ messageId: 'om_1', action: { value: JSON.stringify({ p: 'busy', mode: 'steer' }) } })
     // Unknown switch key.
     await click({ messageId: 'om_1', action: { value: JSON.stringify({ p: 'display', key: 'nope', value: false }) } })
@@ -278,13 +305,12 @@ describe('startFeishuDisplay', () => {
     await click({ messageId: 'om_1', action: { value: 'not json' } })
 
     expect(spy).not.toHaveBeenCalled()
-    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
-    expect(lastCard(0)).toBeDefined()
+    expect(channel.updateCard).not.toHaveBeenCalled()
     handle.stop()
   })
 
-  it('stops responding after stop()', async () => {
-    const { channel, getHandler, lastCard } = makeChannel()
+  it('stops responding after stop(), including a click already queued', async () => {
+    const { channel, getHandler, sentCard } = makeChannel()
     const { control, spy } = makeDisplay({ ...ALL_ON })
     const handle = startFeishuDisplay({
       channel: channel as any,
@@ -294,17 +320,16 @@ describe('startFeishuDisplay', () => {
     } as any)
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
     const handler = getHandler()
+    const payload = payloadOf(sentCard(0), 'tools')
     handle.stop()
 
-    // The channel subscription is dropped and the remembered card is forgotten,
-    // so even a click already in flight is ignored.
     expect(getHandler()).toBeUndefined()
-    await handler!({ messageId: 'om_1', action: { value: payloadOf(lastCard(0), 'tools') } })
+    await handler!({ messageId: 'om_1', action: { value: payload } })
     expect(spy).not.toHaveBeenCalled()
   })
 
-  it('swallows a send failure instead of breaking the click', async () => {
-    const { channel, click, lastCard } = makeChannel()
+  it('swallows a repaint failure instead of breaking the click', async () => {
+    const { channel, click, sentCard } = makeChannel()
     const state = { ...ALL_ON }
     const warn = vi.fn()
     const handle = startFeishuDisplay({
@@ -314,9 +339,9 @@ describe('startFeishuDisplay', () => {
       getTranslations: () => t,
     } as any)
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    channel.createCardInstance.mockRejectedValueOnce(new Error('boom'))
+    channel.updateCard.mockRejectedValueOnce(new Error('boom'))
 
-    await click({ messageId: 'om_1', action: { value: payloadOf(lastCard(0), 'tools') } })
+    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'tools') } })
     // The setting still changed; only the card refresh failed.
     expect(state.tools).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('boom'))
