@@ -743,7 +743,9 @@ describe('startChannel', () => {
       appId: 'id', appSecret: 'secret', domain: 'lark', requireMention: true, dmMode: 'open',
       groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP',  showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed',
     }, bridge, () => channel as any, { info: vi.fn(), warn: vi.fn(), error: vi.fn() })
-    await expect(stop()).rejects.toThrow('disconnect failed')
+    // A failing drain must not take the process down with it: the socket close
+    // was already requested, so stop() reports it and still disposes the bridge.
+    await expect(stop()).resolves.toBeUndefined()
     expect(bridge.dispose).toHaveBeenCalledOnce()
   })
 

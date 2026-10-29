@@ -979,7 +979,11 @@ export async function startChannel(
     await bridge.dispose()
     throw error
   }
+  // Also on stdout: the Host logger filters `info` in this deployment, and the
+  // absence of these two lines is what made the 2026-10-29 lost-inbound
+  // investigation guesswork. Lifecycle facts must survive that filter.
   logger.info('dsh-feishu: WebSocket connected')
+  console.log('dsh-feishu: channel up (inbound live)')
 
   return {
     channel,
@@ -988,11 +992,27 @@ export async function startChannel(
       pending.stop()
       stopBindingChanges?.()
       for (const unsubscribe of unsubscribers) unsubscribe()
+      // `channel.disconnect()` closes the socket first and only THEN drains the
+      // SDK pipeline (`safety.dispose()` sits behind every in-flight card
+      // send). A drain that never settles must not hold the whole stop — but
+      // abandoning it silently is worse: on 2026-10-29 a hot reload left a
+      // channel that looked replaced while events stopped arriving, and there
+      // was no log line either way. Report the abandoned drain on stdout so the
+      // next occurrence is visible, then keep going.
       try {
         await withTimeout(channel.disconnect(), 'disconnect channel')
         logger.info('dsh-feishu: WebSocket disconnected')
+        console.log('dsh-feishu: channel down (socket closed, pipeline drained)')
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error)
+        console.log(`dsh-feishu: channel down with an un-drained pipeline (${detail}); the socket close was already requested`)
       } finally {
-        await withTimeout(bridge.dispose(), 'dispose conversation bridge')
+        try {
+          await withTimeout(bridge.dispose(), 'dispose conversation bridge')
+        } catch (error: unknown) {
+          const detail = error instanceof Error ? error.message : String(error)
+          console.log(`dsh-feishu: conversation bridge disposal did not settle (${detail})`)
+        }
       }
     },
   }
