@@ -654,26 +654,51 @@ export class HarnessConversationService {
   }
 
   /**
-   * Switch THIS Session's next model request to `route` without touching the
-   * global default or any other Session.
+   * Switch THIS Session to `route`.
    *
-   * This is the whole point of `/model last`: the old failure mode ("a quick
-   * pick changed every Session's model") came from persisting a selection as
-   * the global default and then rebuilding other chats from it. Here the
-   * override lives on the live agent (two request-assembly hooks) and is never
-   * saved; the next request records its own `request/header`, which is what a
-   * later resume reads.
+   * The primary path is the Host's own `sessionController.selectModel` — the
+   * exact entry the WebUI and this plugin's `/model` card confirm use. That
+   * matters: the Host installs its own request-routing hooks when it commits a
+   * selection, and a second set of hooks registered here (the pre-2026-10-29
+   * implementation) was silently overridden by them, so a "switched" card could
+   * leave the session on its previous model forever.
+   *
+   * Consequences, matching a normal switch: the Session records
+   * `model/selection`, and the global default follows the pick — which is only
+   * a seed for Sessions created later (a Session with history resolves its own
+   * logged route first), so other conversations keep their models.
+   *
+   * The local-hook path remains only as a fallback for a Host without
+   * `selectModel`.
    *
    * @param message - chat coordinates (resolves the bound Session).
    * @param route - the model route to install for the next request.
-   * @returns `ok`, or the reason the switch could not be applied.
+   * @returns `ok`, or why the switch could not be applied.
    */
   async switchRoute(
     message: ConversationMessage,
     route: RouteEntry,
-  ): Promise<{ ok: true } | { ok: false; reason: 'no-agent' | 'unsupported' }> {
+  ): Promise<{ ok: true } | { ok: false; reason: 'no-agent' | 'unsupported' | 'rejected'; detail?: string }> {
     const sessionId = this.resolveSessionIdFor(message)
     if (sessionId === '') return { ok: false, reason: 'no-agent' }
+    const controller = this.deps.sessionController
+    const selectModel = controller?.selectModel
+    if (selectModel !== undefined) {
+      try {
+        await selectModel.call(controller, {
+          sessionId,
+          provider: route.provider,
+          model: route.model,
+          ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+        })
+        this.rememberModelRoute(route)
+        return { ok: true }
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error)
+        console.log(`dsh-feishu: model switch rejected by the session controller: ${detail}`)
+        return { ok: false, reason: 'rejected', detail }
+      }
+    }
     const agent = this.deps.agents.get(sessionId as never) as unknown as AgentLike | undefined
     if (agent === undefined) return { ok: false, reason: 'no-agent' }
     if (agent.ctx === undefined || typeof agent.ctx.on !== 'function') return { ok: false, reason: 'unsupported' }

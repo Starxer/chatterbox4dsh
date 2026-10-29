@@ -400,7 +400,12 @@ export async function handleModelCommand(
       ...(target.reasoningEffort === undefined ? {} : { reasoningEffort: target.reasoningEffort }),
     })
     if (!outcome.ok) {
-      return { kind: 'error', text: outcome.reason === 'no-agent' ? t.modelLastNoAgent : t.modelLastUnsupported }
+      return {
+        kind: 'error',
+        text: outcome.reason === 'no-agent'
+          ? t.modelLastNoAgent
+          : outcome.reason === 'rejected' && outcome.detail !== undefined ? outcome.detail : t.modelLastUnsupported,
+      }
     }
     return { kind: 'success', text: t.modelLastSwitched(target.provider, target.model) }
   }
@@ -580,7 +585,12 @@ export async function handleReasoningCommand(
     ...(effectiveLevel === undefined ? {} : { reasoningEffort: effectiveLevel }),
   })
   if (!outcome.ok) {
-    return { kind: 'error', text: outcome.reason === 'no-agent' ? t.reasoningNoSession : t.reasoningUnsupported }
+    return {
+      kind: 'error',
+      text: outcome.reason === 'no-agent'
+        ? t.reasoningNoSession
+        : outcome.reason === 'rejected' && outcome.detail !== undefined ? outcome.detail : t.reasoningUnsupported,
+    }
   }
   return { kind: 'success', text: t.reasoningSwitched(level) }
 }

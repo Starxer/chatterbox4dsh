@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：快捷切换模型「卡说成功、实际没换」（`src/harness.ts` / `src/feishu-model-select.ts` / `src/commands.ts`，2026-10-29）
+
+**现象**：在飞书里 `/model` 卡选过模型后，再用「🕘 最近使用 / ↺ 切回上次使用 / `/model last` / 推理档位」切换，卡片显示「✅ 已切换」，但下一轮请求仍用旧模型。真机取证（会话日志）：17:55 用确认卡切到 `cpa-codex/gpt-6.1-terra`（生效，17:57 起所有 `request/header` 都是 terra）；20:04 点「切回 `gpt-6.1-sol`」，卡读回是绿色「✅ 已切换 \`cpa-codex/gpt-6.1-sol\`」，而 20:16–21:16 的每一次请求**都还是 terra**，且没有任何新的 `model/selection` 事件。
+
+**根因**：两条路线抢同一个 waterfall。宿主的 `sessionController.selectModel` → `agents.selectForNextRequest` 会给该 agent 装 `installModelSelection`（`system-prompt/assemble` + `agent/request` 两个监听器）；插件的 `harness.switchRoute` 自己另装一对同样的监听器。Cordis waterfall 是「**先注册的在外层、返回值最终生效**」（`dispatch` 按注册顺序 `shift`，外层拿到内层结果再覆盖），所以 17:55 那次（宿主先装）永远把 20:04（插件后装）的覆盖改回去 —— 而 `switchRoute` 只看「agent 存不存在」，照样返回 `ok:true`，卡片就诚实地（但不正确地）报了成功。
+
+**修法**：`switchRoute` 主路径改为调用宿主的 `sessionController.selectModel` —— 与 WebUI 选择器、飞书 `/model` 确认卡**完全同一个入口**（`agents.selectForNextRequest` + `model/selection` 事件），只有在宿主没有 `selectModel` 时才退回原来的本地钩子。新增失败原因 `rejected`（带宿主原始理由），卡片与命令都显示真实原因，不再伪装成功。
+
+**语义变化（如实记录）**：所有切换现在都会同步**全局默认**（`selectModel` 的固有行为）。它只作为**以后新建会话**的种子；已有会话的路线按「本会话 pending → 自己日志里的 `request/header` → 默认」解析（`packages/api/session-controller/src/agent.ts:290`），所以**别的会话不会被改**。相关文案（模型卡两条成功脚注、`/model last`、`/reasoning`）已同步改为「只影响本会话；全局默认同步为它，只作用于以后新建的会话」，不再声称「没有改全局默认」。`README.md` 同步。
+
+**验证**：`tests/harness.spec.ts` 新增 3 例（走 controller 且断言入参 sessionId/effort；controller 拒绝时返回 `rejected` + 原始理由；无 controller 时退回本地钩子并区分 no-agent / ok）；`npm run typecheck` 全绿；全量测试与 build 见本节末。**未重启**，热应用后由使用者真机点一次验证。
+
 ### 改进：可配置的 5 秒耗时刷新与附件等待文字（2026-10-29）
 
 - 运行中耗时刷新默认由 30 秒改为 **5 秒**，与步骤占位计时共用 `elapsedRefreshSeconds`（3／5／10／30 秒）。`/display` 卡片增加间隔按钮，文本命令支持 `/display tick [3|5|10|30]`；持久化后重绘同一张卡，不重建通道。已排定的定时器不取消，下次排程读取新值；慢写期间只保留最新一版刷新。

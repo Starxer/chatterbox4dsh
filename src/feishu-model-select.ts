@@ -937,11 +937,16 @@ export function startFeishuModelSelect(deps: {
     }
     const outcome = await bridge.switchRoute(chatMessage, target)
     if (!outcome.ok) {
+      const reason = outcome.reason === 'no-agent'
+        ? t.modelSelectLastUsedFailedNoSession
+        : outcome.reason === 'rejected' && outcome.detail !== undefined
+          ? outcome.detail
+          : t.modelSelectLastUsedFailedUnsupported
       const card = {
         schema: '2.0',
         config: { wide_screen_mode: true },
         header: { title: { tag: 'plain_text', content: t.modelSelectTitle(false) }, template: 'red' },
-        body: { elements: [{ tag: 'markdown', content: t.modelSelectLastUsedFailed(outcome.reason === 'no-agent' ? t.modelSelectLastUsedFailedNoSession : t.modelSelectLastUsedFailedUnsupported) }] },
+        body: { elements: [{ tag: 'markdown', content: t.modelSelectLastUsedFailed(reason) }] },
       }
       await updateCardInstanceOnMessage(messageId, chatMessage, card as object)
       return
@@ -1002,11 +1007,16 @@ export function startFeishuModelSelect(deps: {
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     })
     if (!outcome.ok) {
+      const reason = outcome.reason === 'no-agent'
+        ? t.modelSelectLastUsedFailedNoSession
+        : outcome.reason === 'rejected' && outcome.detail !== undefined
+          ? outcome.detail
+          : t.modelSelectLastUsedFailedUnsupported
       const card = {
         schema: '2.0',
         config: { wide_screen_mode: true },
         header: { title: { tag: 'plain_text', content: t.modelSelectTitle(false) }, template: 'red' },
-        body: { elements: [{ tag: 'markdown', content: t.modelSelectLastUsedFailed(outcome.reason === 'no-agent' ? t.modelSelectLastUsedFailedNoSession : t.modelSelectLastUsedFailedUnsupported) }] },
+        body: { elements: [{ tag: 'markdown', content: t.modelSelectLastUsedFailed(reason) }] },
       }
       await updateCardInstanceOnMessage(messageId, chatMessage, card as object)
       return
@@ -1052,7 +1062,11 @@ export function startFeishuModelSelect(deps: {
         schema: '2.0',
         config: { wide_screen_mode: true },
         header: { title: { tag: 'plain_text', content: t.reasoningCardTitle }, template: 'red' },
-        body: { elements: [{ tag: 'markdown', content: outcome.reason === 'no-agent' ? t.reasoningCardNoAgent : t.reasoningCardUnsupported }] },
+        body: { elements: [{ tag: 'markdown', content: outcome.reason === 'no-agent'
+          ? t.reasoningCardNoAgent
+          : outcome.reason === 'rejected' && outcome.detail !== undefined
+            ? outcome.detail
+            : t.reasoningCardUnsupported }] },
       }
     await updateCardInstanceOnMessage(messageId, chatMessage, card as object)
   }

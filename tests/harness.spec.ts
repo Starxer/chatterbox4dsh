@@ -67,6 +67,43 @@ describe('HarnessConversationService', () => {
     expect(rejected).not.toHaveBeenCalled()
   })
 
+  it('switches a route through the Host controller, not through local hooks', async () => {
+    const f = fixture()
+    const selectModel = vi.fn(async () => ({ selected: { provider: 'cpa-codex', model: 'gpt-6.1-sol' } }))
+    const deps = dependencies(f)
+    deps.sessionController = { selectModel }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const chat = { chatId: 'switch', chatType: 'p2p' as const }
+    const sessionId = service.resolveSessionIdFor(chat)
+    await expect(service.switchRoute(chat, { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'high' }))
+      .resolves.toEqual({ ok: true })
+    expect(selectModel).toHaveBeenCalledWith({
+      sessionId,
+      provider: 'cpa-codex',
+      model: 'gpt-6.1-sol',
+      reasoningEffort: 'high',
+    })
+  })
+
+  it('reports a controller rejection with the Host reason instead of pretending success', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionController = { selectModel: vi.fn(async () => { throw new Error('session/model-unavailable: nope') }) }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    await expect(service.switchRoute({ chatId: 'reject', chatType: 'p2p' }, { provider: 'p', model: 'm' }))
+      .resolves.toEqual({ ok: false, reason: 'rejected', detail: 'session/model-unavailable: nope' })
+  })
+
+  it('falls back to request hooks only when the Host has no controller', async () => {
+    const f = fixture()
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
+    const chat = { chatId: 'fallback', chatType: 'p2p' as const }
+    // No live agent yet: the pre-controller path can only report it.
+    await expect(service.switchRoute(chat, { provider: 'p', model: 'm' })).resolves.toEqual({ ok: false, reason: 'no-agent' })
+    await service.reply({ ...chat, content: 'create the agent' })
+    await expect(service.switchRoute(chat, { provider: 'p', model: 'm' })).resolves.toEqual({ ok: true })
+  })
+
   it('notifies successful binding changes, including takeover of a previous owner', () => {
     const notify = vi.fn()
     const service = new HarnessConversationService(dependencies(fixture()), { domain: 'feishu', onBindingChanged: notify })
