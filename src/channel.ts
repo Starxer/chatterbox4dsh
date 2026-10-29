@@ -356,6 +356,11 @@ export async function startChannel(
   noteMessagePosted?: (target: InterleaveTarget) => void,
   /** Observe successful chat bindings, including card-driven session changes. */
   subscribeBindingChanges?: (listener: (chat: import('./conversation.ts').ConversationMessage, sessionId: string) => void) => () => void,
+  /**
+   * True when streaming's newest card already renders this exact answer text.
+   * Used only to avoid posting a second copy of an answer that is on screen.
+   */
+  answerOnCard?: (sessionId: string, text: string) => boolean,
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -901,6 +906,15 @@ export async function startChannel(
                     ? appendCompletionFooter(card, getTranslations?.() ?? translationsFor('zh'), completionFacts)
                     : card)
                 : cards
+              if (answerOnCard?.(sessionId, text) === true) {
+                // The step card already renders this exact answer; posting the
+                // fallback too would duplicate it (2026-10-30: two identical
+                // "✅ 完成" cards with the same body).
+                console.log('dsh-feishu: [reply] step card already renders this answer → skipping the fallback reply card')
+                await sendDeliveryCard()
+                await autoDeliver()
+                return
+              }
               console.log(`dsh-feishu: [reply] no step card carried the text → posting ${posted.length} reply card(s)`)
               for (const card of posted) {
                 await sendCard(chatId, card, {

@@ -505,6 +505,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   stop: () => void
   consumeReasoning: (sessionId: string) => string | undefined
   consumeLastStepHadContent: (sessionId: string) => boolean
+  /** True when the newest rendered card already shows this answer text. */
+  cardRendersAnswer: (sessionId: string, text: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
   const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
@@ -857,6 +859,24 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * session state would be wiped mid-turn.
    */
   const turnTextOrder = new Map<string, { next: number; delivered: number; failed: number }>()
+  /**
+   * The text of the newest card render Feishu CONFIRMED this turn.
+   *
+   * Used to judge a later refused write: if it carried the same text, the chat
+   * already shows the answer and the only thing missing is chrome (the
+   * completion header / footer). Treating that as "the answer never landed"
+   * withdraws the note and makes channel.ts post a duplicate reply card — the
+   * 2026-10-30 duplicate "✅ 完成" pair.
+   */
+  const deliveredText = new Map<string, string>()
+  /**
+   * Text the newest RENDERED card carries, regardless of whether Feishu
+   * confirmed the write. `channel.ts` prefers this over the delivery record
+   * when it is about to post a fallback reply: if the step card already renders
+   * this answer, posting it again produces two identical completion cards
+   * (2026-10-30).
+   */
+  const renderedCardText = new Map<string, string>()
 
   /** Stamp a card that carries assistant text, in content order. */
   const stampTextCard = (sessionId: string): number => {
@@ -872,19 +892,25 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * Set on a CONFIRMED send (the message id came back) or a confirmed update —
    * never on the optimistic path (see {@link noteStepCardText}).
    */
-  const noteTextDelivered = (sessionId: string, stamp: number): void => {
+  const noteTextDelivered = (sessionId: string, stamp: number, text: string): void => {
     const order = turnTextOrder.get(sessionId)
     if (order === undefined || stamp === 0) return
     order.delivered = Math.max(order.delivered, stamp)
+    deliveredText.set(sessionId, text.trim())
   }
 
   /**
    * Record that a card carrying text was REFUSED, so what the chat renders is
    * older than that card. Only a later confirmed write can outrank it.
    */
-  const noteTextWriteFailed = (sessionId: string, stamp: number): void => {
+  const noteTextWriteFailed = (sessionId: string, stamp: number, text: string): void => {
     const order = turnTextOrder.get(sessionId)
     if (order === undefined || stamp === 0) return
+    if (deliveredText.get(sessionId) === text.trim()) {
+      // Same answer already on screen; this render only changed chrome.
+      console.log(`dsh-feishu: [write] card update refused but its text is already delivered; keeping the delivery note`)
+      return
+    }
     order.failed = Math.max(order.failed, stamp)
   }
 
@@ -1035,7 +1061,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // `flushed()` awaits the same promise, so the flag is always set before
     // channel.ts reads it.
     void messageId.then((id) => {
-      if (id !== undefined && cardHasText) noteTextDelivered(sessionId, textStamp)
+      if (id !== undefined && cardHasText) noteTextDelivered(sessionId, textStamp, state.text)
     }).catch(() => undefined)
     lastCardSendByChat.set(chat.chatId, messageId.catch(() => undefined))
     state.stepCardRef = {
@@ -1340,6 +1366,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   interface PendingWrite {
     card: object
     hasText: boolean
+    /** The step's text as this render saw it; compared against what landed. */
+    text: string
     /** {@link stampTextCard} of this card; 0 when it carries no text. */
     stamp: number
   }
@@ -1372,11 +1400,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     executeCardUpdate(ref, write.card).then((landed) => {
       if (landed) {
         noteWriteLanded(ref)
-        if (write.hasText) noteTextDelivered(ref.sessionId, write.stamp)
+        if (write.hasText) noteTextDelivered(ref.sessionId, write.stamp, write.text)
       } else if (write.hasText) {
         // The card keeps rendering older content, so the turn's answer is NOT
         // fully on screen even if an earlier write landed (key pitfall 45).
-        noteTextWriteFailed(ref.sessionId, write.stamp)
+        noteTextWriteFailed(ref.sessionId, write.stamp, write.text)
       }
       return landed
     }).catch((error: unknown) => {
@@ -1474,7 +1502,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     const hasText = state.text.trim() !== ''
     // Stamped with the card, i.e. in content order: this render may be replaced
     // by a newer one before it is written, and only the newest content counts.
-    const write = { card, hasText, stamp: hasText ? stampTextCard(state.sessionId) : 0 }
+    if (hasText) renderedCardText.set(state.sessionId, state.text.trim())
+    const write = { card, hasText, text: state.text, stamp: hasText ? stampTextCard(state.sessionId) : 0 }
     // Clear previous pending update for THIS card (a different card's pending
     // update must survive — see the map's comment).
     const existing = pendingUpdates.get(ref)
@@ -2236,6 +2265,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             await trackUpdate(sessionId, () => scheduleCardWrite(summaryRef, {
               card: summaryCard,
               hasText: false,
+              text: '',
               stamp: 0,
             }).then(() => undefined))
           }
@@ -2377,6 +2407,19 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   }
 
   /** Check and consume whether the last step sent a card with content. */
+  /**
+   * Does the newest rendered card already show this exact answer text?
+   *
+   * A weaker statement than "delivered" on purpose: the card was built with
+   * this text, so reposting it would duplicate the answer on screen no matter
+   * what the write-confirmation record says.
+   */
+  const cardRendersAnswer = (sessionId: string, text: string): boolean => {
+    const rendered = renderedCardText.get(sessionId)
+    if (rendered === undefined) return false
+    return rendered !== '' && rendered.trim() === text.trim()
+  }
+
   const consumeLastStepHadContent = (sessionId: string): boolean => {
     const state = sessionStates.get(sessionId)
     if (state === undefined) return false
@@ -2428,6 +2471,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     const order = turnTextOrder.get(sessionId)
     turnTextOrder.delete(sessionId)
     const delivered = order !== undefined && order.delivered > 0 && order.failed <= order.delivered
+    // The decision used to be invisible: a withdrawn note silently turned into
+    // a duplicate reply card next to the step card that carried the answer
+    // (2026-10-30). One line makes the next occurrence diagnosable.
+    console.log(`dsh-feishu: flushed(${sessionId}) delivered=${order?.delivered ?? 0} failed=${order?.failed ?? 0} keepNote=${delivered}`)
+    deliveredText.delete(sessionId)
     if (!delivered) {
       // The turn's newest text never reached the chat: channel.ts must send the
       // real reply.
@@ -2487,6 +2535,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     },
     consumeReasoning,
     consumeLastStepHadContent,
+    cardRendersAnswer,
     flushed,
   }
 }

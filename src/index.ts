@@ -237,6 +237,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   const flushRef: { current: (sessionId: string) => Promise<TurnStats | undefined> } = {
     current: () => Promise.resolve(undefined),
   }
+  /** Streaming's "the newest card already renders this text" lookup, read late
+   *  for the same reason as {@link flushRef}. */
+  const answerOnCardRef: { current: (sessionId: string, text: string) => boolean } = {
+    current: () => false,
+  }
   let stopTodos: () => void = () => undefined
   let stopJobs: () => void = () => undefined
   let stopSubagents: () => void = () => undefined
@@ -786,6 +791,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
           bindingListeners.add(listener)
           return () => { bindingListeners.delete(listener) }
         },
+        // A card that already renders this answer must not be duplicated by the
+        // fallback reply card (2026-10-30: two identical "✅ 完成" cards).
+        (sessionId, text) => answerOnCardRef.current(sessionId, text),
       )
     },
   })
@@ -1072,6 +1080,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     consumeReasoning = streamingResult.consumeReasoning
     consumeLastStepHadContent = streamingResult.consumeLastStepHadContent
     flushRef.current = streamingResult.flushed
+    answerOnCardRef.current = streamingResult.cardRendersAnswer
     /**
      * Turn the model card into its settlement card ("✅ 模型已选定") once the
      * final confirmation card carries every setting.

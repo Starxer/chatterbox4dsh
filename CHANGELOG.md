@@ -5,6 +5,19 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：同一轮出现两张一模一样的「✅ 完成」卡（`src/feishu-streaming.ts` / `src/channel.ts`，2026-10-30）
+
+**现象**：`compact` 档的一轮结束后，话题里出现两张标题与正文都相同的卡（`✅ 完成 · 2m39s`，正文逐字一致）：一张是承载答案的紧凑过程卡收尾，另一张是 `channel.ts` 的兜底回答卡。
+
+**取证**：日志顺序 `[send] … via card=…` → `[update] … seq=1` → `[reply] no step card carried the text → posting 1 reply card(s)`，且期间**没有**任何 `[update] failed`。也就是说收尾写入是成功的，但 `flushed()` 判定「本轮没有任何带正文的卡确认落地」（`delivered === 0` 或 `failed > delivered`），于是撤回「正文已上屏」标记、由 `channel.ts` 补发一张同样的卡。
+
+**修法**（两层，都不放宽坑 45 的保护）：
+1. **收尾写不再误判**：`feishu-streaming` 记住最后一次**确认落地**的正文；之后若一次写入被拒、而它的正文与已落地的一致（说明只改了表头/指标），不再记失败——答案已经在屏幕上，缺的只是 chrome。
+2. **兜底前比对内容**：`channel.ts` 准备补发回答卡前，先问流式侧「最新渲染的那张卡是否已经显示这段正文」；是则跳过补发（仍照常发交付卡与自动投递），从根本上避免同内容双卡。
+3. 诊断：`flushed()` 现在打一行 `delivered=… failed=… keepNote=…`，判定依据不再隐身。
+
+**验证**：新增 2 例（流式侧「只改表头的写入被拒不动标记」；`startChannel` 侧「卡已渲染同一答案时不补发」），全量 **1342 测试 / 66 文件**、`typecheck`、`build` 全绿。
+
 ### 修复：通道停机不再「静默半关」，生命周期有可见日志（`src/channel.ts`，2026-10-29）
 
 **背景**：同日一次插件热重载后飞书**出站正常、入站全丢**，排查时发现两件事都不可见：① 连接建立/断开只走 Host logger 的 `info`，而本部署该级别被过滤 ⇒ 日志里从没有过这两行；② `stop()` 里 `withTimeout(channel.disconnect())` 超时后只是「不再等」，既不说明也不再尝试关闭。

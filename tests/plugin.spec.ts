@@ -273,6 +273,40 @@ describe('startChannel', () => {
     await stop()
   })
 
+  it('does not post a second copy when the step card already renders the answer', async () => {
+    // 2026-10-30: the delivery record said "not delivered" while the compact
+    // step card rendered the answer, so the fallback posted an identical
+    // "✅ 完成" card right below it. The text comparison is the last line of
+    // defence and must win over the record.
+    const channel = fakeChannel()
+    const bridge = {
+      reply: vi.fn(async () => 'the answer'),
+      dispose: vi.fn(async () => undefined),
+      consumeIntermediateSent: vi.fn(() => false),
+      resolveSessionIdFor: vi.fn(() => 'test-session'),
+      needsOnboarding: vi.fn(async () => false),
+      noteTopic: vi.fn(),
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const { stop } = await startChannel({
+      appId: 'id', appSecret: 'secret', domain: 'feishu', requireMention: true, dmMode: 'open',
+      groupAllowlist: [], dmAllowlist: [], errorMessage: 'safe error', reactEmoji: '',
+      showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'compact',
+    } as any, bridge, () => channel as any, logger,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    () => translationsFor('en'),
+    undefined, undefined, undefined, undefined,
+    () => true,          // compact view: the summary rides the answer card
+    undefined,
+    undefined,
+    // streaming: this exact answer is already rendered on a card.
+    (_sessionId: string, text: string) => text === 'the answer')
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p', content: 'hi' })
+    await flushAsync()
+    expect(channel.send).not.toHaveBeenCalled()
+    await stop()
+  })
+
   it('sends only the footer when a step card really carried the text', async () => {
     const channel = fakeChannel()
     const bridge = {
