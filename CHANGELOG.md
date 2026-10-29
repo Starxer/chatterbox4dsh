@@ -5,6 +5,16 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：通道停机不再「静默半关」，生命周期有可见日志（`src/channel.ts`，2026-10-29）
+
+**背景**：同日一次插件热重载后飞书**出站正常、入站全丢**，排查时发现两件事都不可见：① 连接建立/断开只走 Host logger 的 `info`，而本部署该级别被过滤 ⇒ 日志里从没有过这两行；② `stop()` 里 `withTimeout(channel.disconnect())` 超时后只是「不再等」，既不说明也不再尝试关闭。
+
+**实现**：连接建立/断开同时写 stdout（`channel up (inbound live)` / `channel down (socket closed, pipeline drained)`）；`channel.disconnect()` 内部分两步——先关 socket，再排空 SDK 发送管线——所以排空失败/超时时明确打印 `channel down with an un-drained pipeline (...)`，说明 socket 关闭已发出，并**照常 dispose bridge**，不再让卡住的排空把整个停机拖成 rejection，也不让它伪装成「什么都没发生」。
+
+**验证**：`tests/plugin.spec.ts` 的「disconnect 失败」用例改为断言新契约（不 reject、如实上报、仍 dispose bridge）；全量 1340 测试 / 66 文件、`typecheck`、`build` 全绿；重启后日志确认 `channel up (inbound live)`，入站恢复。
+
+**English**: After a hot reload the bridge could keep sending while receiving nothing, and neither the connect/disconnect lines nor the abandoned pipeline drain were visible (the Host logger's `info` level is filtered in this deployment, and a timed-out `disconnect()` was swallowed). Connect/disconnect now also go to stdout, and a drain that does not settle is reported as `channel down with an un-drained pipeline (...)` — the socket close was already requested — while the bridge is still disposed. The disconnect-failure test now asserts that contract. 1340 tests / 66 files, typecheck and build pass; the restart log shows `channel up (inbound live)` and inbound works again.
+
 ### 修复：快捷切换模型「卡说成功、实际没换」（`src/harness.ts` / `src/feishu-model-select.ts` / `src/commands.ts`，2026-10-29）
 
 **现象**：在飞书里 `/model` 卡选过模型后，再用「🕘 最近使用 / ↺ 切回上次使用 / `/model last` / 推理档位」切换，卡片显示「✅ 已切换」，但下一轮请求仍用旧模型。真机取证（会话日志）：17:55 用确认卡切到 `cpa-codex/gpt-6.1-terra`（生效，17:57 起所有 `request/header` 都是 terra）；20:04 点「切回 `gpt-6.1-sol`」，卡读回是绿色「✅ 已切换 \`cpa-codex/gpt-6.1-sol\`」，而 20:16–21:16 的每一次请求**都还是 terra**，且没有任何新的 `model/selection` 事件。
@@ -15,7 +25,7 @@
 
 **语义变化（如实记录）**：所有切换现在都会同步**全局默认**（`selectModel` 的固有行为）。它只作为**以后新建会话**的种子；已有会话的路线按「本会话 pending → 自己日志里的 `request/header` → 默认」解析（`packages/api/session-controller/src/agent.ts:290`），所以**别的会话不会被改**。相关文案（模型卡两条成功脚注、`/model last`、`/reasoning`）已同步改为「只影响本会话；全局默认同步为它，只作用于以后新建的会话」，不再声称「没有改全局默认」。`README.md` 同步。
 
-**验证**：`tests/harness.spec.ts` 新增 3 例（走 controller 且断言入参 sessionId/effort；controller 拒绝时返回 `rejected` + 原始理由；无 controller 时退回本地钩子并区分 no-agent / ok）；`npm run typecheck` 全绿；全量测试与 build 见本节末。**未重启**，热应用后由使用者真机点一次验证。
+**验证**：`tests/harness.spec.ts` 新增 3 例（走 controller 且断言入参 sessionId/effort；controller 拒绝时返回 `rejected` + 原始理由；无 controller 时退回本地钩子并区分 no-agent / ok）；`typecheck` / 全量测试 / build 全绿。**真机确认（2026-10-29 22:57）**：点「🕘 最近使用 → `cpa-codex/gpt-6.1-sol`」后会话日志新增 `model/selection = cpa-codex/gpt-6.1-sol`，下一轮 `request/header` 同步变为它 —— 卡面与真实路线终于一致。
 
 ### 改进：可配置的 5 秒耗时刷新与附件等待文字（2026-10-29）
 

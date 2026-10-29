@@ -212,7 +212,11 @@ npm run build
 
 产物：`lib/index.js` 不受 Git 跟踪，`client/client.js` 受跟踪。修改源码后重建插件；Host 改动在空闲维护窗口按部署方式重新加载/重启，**不要从正在执行的 agent 回合里直接同步重启它所在的进程**。只改文档无需重启。构建客户端本身不保证当前页面自动更新。
 
+**部署本插件优先用「延迟重启」**：插件模块热重载会重载两次，若此时有回合在飞，可能留下一条「连接健康但事件投给已销毁 handler」的长连接——出站照常、入站全丢，SDK 心跳看门狗识别不了，只能重启清掉。热重载仅作调试手段；停机时若发送管线排不空，日志会明确写出 `channel down with an un-drained pipeline`。
+
 Artifacts: `lib/index.js` is untracked; `client/client.js` is tracked. Rebuild after source changes and reload/restart Host changes in an idle maintenance window. **Do not synchronously restart the process hosting the active agent turn.** Documentation-only changes need no restart; building a client bundle alone does not establish live-page updates.
+
+**Deploy this plugin with a delayed restart.** Hot-reloading the plugin reloads it twice; with a turn in flight that can leave a connection that is healthy yet delivers events to a disposed handler — outbound keeps working, inbound is silently lost, and the SDK heartbeat watchdog cannot detect it; only a restart clears it. Treat hot reload as a debugging tool. If the send pipeline cannot drain during shutdown, the log says so explicitly (`channel down with an un-drained pipeline`).
 
 ## 已知限制 / Known limitations
 
