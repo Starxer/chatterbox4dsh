@@ -34,7 +34,7 @@ These records preserve the original problem and alternatives; they are **not cur
 
 | 记录 / Record | 状态 / Status |
 |---|---|
-| [显示控制卡 / Display controls](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-card-design.md>) | 已实现；后来加入 4 档，保持每次点击发新卡 / Implemented; four levels added later |
+| [显示控制卡 / Display controls](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-card-design.md>) | 已实现；支持 4 档并在同一张卡上更新 / Implemented; four levels, updated in place |
 | [步骤相位 / Step phases](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/step-card-phases-design.md>) | 实时流仅切相位，不逐 token 上屏 / Live frames drive phase changes, not token-by-token text |
 | [注入、压缩与展示对齐 / Transcript parity](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/transcript-parity-design.md>) | 已实现；顶部现状优先于历史提案 / Implemented; current summary takes precedence |
 | [最初实现计划 / Original implementation plan](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/superpowers/plans/2026-08-15-dsh-lark-channel-plugin.md>) | 历史存档；未勾选项不代表当前待办 / Historical; unchecked boxes are not an active backlog |

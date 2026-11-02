@@ -13,15 +13,15 @@
 
 **English:** This plugin bridges **DSH's native capabilities into Feishu chat**; DSH itself is the agent. Feishu and the Web UI share models, tools, workspaces, sessions and approvals. It is not another agent platform or a 24/7 assistant. Feature parity comes first, with card interactions adapted to the chat surface.
 
-> **文档基线 / Documentation baseline**：以下描述仓库主线，已在 DSH `0.2.0-rc.2` 验证，依赖范围保留 `^0.2.0-rc.1`。npm 上已发布的插件 `0.2.0` 早于这些改动，**不等于当前仓库主线**；新版本发布与安装彩排仍待完成，见 [待办](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) H4。不要用版本豁免强行加载不兼容的旧包。
+> **文档基线 / Documentation baseline**：本页描述尚未发布的仓库主线，不等于 npm 上较早发布的 `0.2.0`。本地已在 DSH `0.2.1-rc.5` 完成构建、插件加载与飞书收发的基本验证；这不是所有功能或平台的完整兼容性认证。DSH peer 范围保留 `^0.2.0-rc.1`；宿主兼容闸对预发布版本使用 `includePrerelease`，其他安装工具的判定可能不同。新版本发布与干净 profile 的安装彩排仍待完成，见 [待办](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) H4。不要用版本豁免强行加载不兼容的旧包。
 >
-> This page describes repository main, verified on DSH `0.2.0-rc.2` with ranges starting at `^0.2.0-rc.1`. The published plugin `0.2.0` predates these changes and **is not equivalent to main**. A new release and clean-profile installation rehearsal remain open (H4); do not bypass compatibility checks to force an old package to load.
+> This page describes unreleased repository main, not the earlier `0.2.0` npm release. A local DSH `0.2.1-rc.5` deployment passed build, plugin-load and basic Feishu send/receive checks; this is not full feature or platform certification. DSH peer ranges remain `^0.2.0-rc.1`; the host compatibility gate uses `includePrerelease`, while other installers may interpret prerelease ranges differently. A new release and clean-profile installation rehearsal remain open (H4); do not bypass compatibility checks to force an incompatible package to load.
 
 ## 安装与快速开始 / Installation & quick start
 
-npm 安装入口如下；**先确认要安装的发布版本兼容你的 DSH**。仓库主线的要求不能用来推断旧 npm 包的要求。
+以下是不固定版本的 npm 安装入口，**不能复现本页描述的未发布主线**；先核对实际安装的宿主和插件版本及其兼容性。仓库主线的要求不能用来推断旧 npm 包的要求。
 
-The npm installation entry is below; **check the selected release's DSH compatibility first**. Main's requirements do not establish an older package's requirements.
+The unpinned npm installation entry below **does not reproduce the unreleased main described here**. Check the actual host and plugin versions and their compatibility first; main's requirements do not establish an older package's requirements.
 
 ```sh
 npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
@@ -49,6 +49,7 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 | 上下文与压缩 / Context & compaction | 注入只显示来源提示、不贴注入正文；压缩卡就地更新，摘要折叠，正文预算 22,000 UTF-8 字节，超出会注明 | Injection notices show the source, not the payload; compaction updates one card, with a folded summary capped at 22,000 UTF-8 bytes and an explicit truncation notice |
 | 会话管理 / Session management | 切换、断开绑定、归档、分叉（`/fork` 可选任一已完成轮次并预览该轮开头，分叉出包含到该轮为止历史的新会话）、改名、置顶；新会话可选工作区、预设与模型 | Switch, detach, archive, fork (`/fork` picks any completed turn with a preview of its opening and copies history through that turn into a new session), rename and pin; new sessions select workspace, preset and model |
 | 新建工作区 / Workspace creation | 不存在的手输路径先确认、最终创建会话时才建目录并注册；浏览器“新建文件夹”是独立的立即操作 | A missing typed path is confirmed, then created/registered at final session creation; the browser's **New folder** is a separate immediate action |
+| PTC 工具调用 / PTC tool calls | `compact` 过程卡汇总 `run_code` 内的工具调用，并展示可见子调用；具体内容取决于宿主事件 | Compact progress summarizes tool calls dispatched by `run_code` and shows available child calls; details depend on host events |
 | 后台任务与子代理 / Jobs & subagents | 每类一张名册快照，名册变更发新卡、不就地更新；只列真正后台任务；长/多行命令的「完整命令」块（代码块、换行原样）**只在任务首次出现的那张卡上给一次**，之后的进度/完成快照只留表格；子代理显示模型和树形关系，支持 `/subagents tree` | Send-only roster snapshots, not one card per job; foreground tool jobs are excluded. A long/multi-line command's **full command block** (fenced, line breaks preserved) appears **only on the card that introduces the job**; later progress/settle snapshots keep the table alone. Subagents show model and nesting, with `/subagents tree` |
 | 审批 / Approvals | 与 Web UI 共享 pending 状态，两端都显示，谁先处理谁生效；中止后卡片作废 | Shared pending state on both surfaces; the first answer wins and aborted requests retire their cards |
 | 问答 / Questions | 单选整行点选即记录，回执可返回重答；全部答完后最终确认才提交。多选每选项一个复选框，一次提交 | Single-select records on tap, with undo receipts; only final batch confirmation submits to the model. Multi-select uses one checkbox per option and one submit |
@@ -70,11 +71,11 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 
 The four `show*` switches are **ANDed with the level and only subtract**. Feishu sessions share this plugin's display config; the levels have Web UI names but **do not change the Web chat's separate setting**.
 
-`compact` 过程卡运行标题为“🐳 深度求索中 · 耗时”（`🐳 DeepSeeking · elapsed`）。最多显示最新 **5 步 / 40 行**，更早内容最多 **60 行**折叠；每步标题在引用框外，可见与折叠区共用按步分组。运行步骤带等待/思考/回复/工具状态灯；运行时钟每 30 秒刷新。别的卡片插入后，下一件实际活动另开分段，避免新内容更新到更早位置。**回合失败时，死在其中的那一步会标成 `❌ 失败`**，并列出它当时正在流式生成、但没来得及真正执行的工具调用（`⚠️ \`edit\` · 未执行`）——DSH 的 `assistant/attempt` 只在尝试未提交时追加，那是这些调用唯一的去处；它们不算工具调用，也不进标题里的计数。
+`compact` 过程卡运行标题为“🐳 深度求索中 · 耗时”（`🐳 DeepSeeking · elapsed`）。最多显示最新 **5 步 / 40 行**，更早内容最多 **60 行**折叠；每步标题在引用框外，可见与折叠区共用按步分组。运行步骤带等待/思考/回复/工具状态灯；运行时钟默认每 5 秒刷新，可选 3／5／10／30 秒。别的卡片插入后，下一件实际活动另开分段，避免新内容更新到更早位置。**回合失败时，死在其中的那一步会标成 `❌ 失败`**，并列出它当时正在流式生成、但没来得及真正执行的工具调用（`⚠️ \`edit\` · 未执行`）——DSH 的 `assistant/attempt` 只在尝试未提交时追加，那是这些调用唯一的去处；它们不算工具调用，也不进标题里的计数。
 
 紧凑档**没有** Turn Complete 卡：**承载答案的那张卡就是收尾卡**——回合结束时它的标题变成 `✅ 完成 · 总时长`（绿头，**不再带「第几轮/第几步」**），正文与 footer 之间加一道分隔线，footer 只留筛选后的数字：`📦 回合 tokens · ♻️ 缓存命中率`，必要时再补 `🧠 模型 · 💡 推理强度 · 📦 本轮新生成 N 个文件`（这一行**自成一行**）；答案卡原有的 `🚀 tok/s · 📊 上下文` 行保留。**总时长只出现在标题里**、不在 footer 重复；**入/出 token 拆分已去掉**（那个总数就是两者之和，而它旁边那行的 `📥` 又是另一个含义）。`🧠 LLM / 🔧 Tools` 拆分、`🔄 N 步`、`⚡ TTFT`、workspace 与 busy 回显同样被去掉（过程卡、`/status` 已经有了）。答案被切成多张续卡时，续卡标题是 `📄 续 n/m`，**最后一张**改成 `✅ 完成 · 续 n/n · 总时长`。有交付物时另发一张标题为「📦 交付物」的卡片：它只发一次、不就地更新，所以里面的「点击发送」行始终可点。
 
-The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five steps / 40 visible rows**, plus **60 folded rows**; headings stay outside per-step quote frames in both areas. A live phase light and 30-second clock track activity. Interleaved cards close a segment; the next real activity opens another. **When the turn fails, the step it died in is marked `❌ failed`** and names the call it was still streaming but never got to run (`⚠️ \`edit\` · not run`) — DSH appends `assistant/attempt` only for an attempt that did not commit, which is the only place such a call exists; it is not a tool call and is not counted as one.
+The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five steps / 40 visible rows**, plus **60 folded rows**; headings stay outside per-step quote frames in both areas. A live phase light and configurable clock (3/5/10/30 seconds; default 5) track activity. Interleaved cards close a segment; the next real activity opens another. **When the turn fails, the step it died in is marked `❌ failed`** and names the call it was still streaming but never got to run (`⚠️ \`edit\` · not run`) — DSH appends `assistant/attempt` only for an attempt that did not commit, which is the only place such a call exists; it is not a tool call and is not counted as one.
 
 `compact` has **no** Turn Complete card: **the card carrying the answer is the closing card** — at turn end its title becomes `✅ Done · wall clock` (green, **no turn/step position**), a rule separates the body from the footer, and the footer keeps only the filtered numbers — `📦 turn tokens · ♻️ cache hit`, plus a line of its own with `🧠 model · 💡 effort · 📦 N files produced` when there is more to say — while its existing `🚀 tok/s · 📊 context` line stays. **The clock lives in the title only** and the in/out split is gone (the total it sat beside is exactly their sum, while the `📥` on the next line means something else). The LLM/tool split, step count, TTFT, workspace and busy-mode echo are dropped the same way (the process card and `/status` carry them). A split answer gets `📄 continued n/m` on its continuation cards, and the **last** one becomes `✅ Done · continued n/n · wall clock`. Delivered files get their own `📦 Deliverables` card, sent once and never updated, so its tap-to-send rows keep working. See [architecture](<./docs/architecture.md>).
 
@@ -82,7 +83,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 
 | 命令 / Command | 中文 | English |
 |---|---|---|
-| `/model [list\|last\|<provider>/<model>]` | 查看、列出、切换模型；`last` 一键切回**本会话**上次使用的模型，无参打开的模型卡顶部有「↺ 切回上次使用」按钮，以及「🕘 最近使用（全局）」最多 3 行可点行（跨会话、去重）。所有切换与 WebUI 同源（`sessionController.selectModel`）：只改这个会话，但全局默认会同步（只作为**以后新建会话**的种子，已有会话按自己日志里的路线）；无参打开向导 | View/list/switch models; `last` jumps back to this session's previous route. The picker card opened without args shows the same one-tap “↺ Back to last used” action plus up to 3 tappable “🕘 Recently used (global)” rows (cross-session, de-duplicated). Every switch goes through the same `sessionController.selectModel` entry as the Web UI: only this session changes, while the global default follows the pick and seeds sessions created later (existing sessions keep their own logged route); no args opens the picker |
+| `/model [list\|last\|<provider>/<model>]` | 查看、列出、切换模型；`last` 一键切回**本会话**上次使用的模型，无参打开的模型卡顶部有「↺ 切回上次使用」按钮，以及「🕘 最近使用（全局）」最多 3 行可点行（跨会话、去重）。卡片切换与 WebUI 同源（`sessionController.selectModel`），也会同步全局默认；已有会话优先使用自己的记录，记录不可读时回退默认。文本 `/model provider/model` 先保存默认值，当前会话应用失败时会提示仅持久化，不能视为已切换；无参打开向导 | View/list/switch models; `last` jumps back to this session's previous route. The picker card opened without args shows the same one-tap “↺ Back to last used” action plus up to 3 tappable “🕘 Recently used (global)” rows (cross-session, de-duplicated). Card selections use the Web UI's `sessionController.selectModel` and also update the global default. Existing sessions prefer their own recorded routes, falling back to defaults when records cannot be read. The text `/model provider/model` saves the default first and may report it as persisted even if applying it to the current session failed; no args opens the picker |
 | `/new [--workspace <path>] [--preset <id>]` | 新会话；无参走卡片流程（工作区 → 模式 → 模型 → 确认创建），**每步选择后该卡就地改写成「✅ 已选定」结算卡**，模型步骤与 `/model` 同一张卡（可用「↺ 用上次的模型」与 🕘 最近使用，点一下只是选定新会话的路线，仍需最终确认才创建）；带参数路径需已注册工作区 | New session; card flow without args (workspace → preset → model → confirm). **Each step's card is rewritten in place into a settled “✅ chosen” card** when the choice is made, and the model step is the same card `/model` uses (“↺ Use previous model” and 🕘 recently used; a tap only chooses the new session's route, creation still needs the final confirm). Registered workspace required for the text path |
 | `/session [N\|list]` | 会话管理面板、列表或按编号切换 | Session panel, list or switch by index |
 | `/fork [<轮次>]` | 分叉会话：无参发轮次选择卡（每行带该轮开头预览），点选后以该轮**结束**为界复制到新会话；带轮次则直接分叉 | Fork a session: no args opens the turn picker (each row previews that turn's opening), tapping forks at the turn's **end**; a turn number forks directly |
@@ -212,20 +213,21 @@ npm run build
 
 产物：`lib/index.js` 不受 Git 跟踪，`client/client.js` 受跟踪。修改源码后重建插件；Host 改动在空闲维护窗口按部署方式重新加载/重启，**不要从正在执行的 agent 回合里直接同步重启它所在的进程**。只改文档无需重启。构建客户端本身不保证当前页面自动更新。
 
-**部署本插件优先用「延迟重启」**：插件模块热重载会重载两次，若此时有回合在飞，可能留下一条「连接健康但事件投给已销毁 handler」的长连接——出站照常、入站全丢，SDK 心跳看门狗识别不了，只能重启清掉。热重载仅作调试手段；停机时若发送管线排不空，日志会明确写出 `channel down with an un-drained pipeline`。
+**部署本插件建议在空闲维护窗口重启宿主**，避免热重载中断活动回合；从宿主自身运行的 agent 发起重启时，应延迟执行并由独立进程管理。一次热重载后曾出现出站正常、入站停止的问题，重启后恢复，但故障根因尚未证实，不能据此认定存在孤儿连接。WebSocket 建连或心跳正常也不等于实际消息投递正常；应分别验证入站和出站。
 
 Artifacts: `lib/index.js` is untracked; `client/client.js` is tracked. Rebuild after source changes and reload/restart Host changes in an idle maintenance window. **Do not synchronously restart the process hosting the active agent turn.** Documentation-only changes need no restart; building a client bundle alone does not establish live-page updates.
 
-**Deploy this plugin with a delayed restart.** Hot-reloading the plugin reloads it twice; with a turn in flight that can leave a connection that is healthy yet delivers events to a disposed handler — outbound keeps working, inbound is silently lost, and the SDK heartbeat watchdog cannot detect it; only a restart clears it. Treat hot reload as a debugging tool. If the send pipeline cannot drain during shutdown, the log says so explicitly (`channel down with an un-drained pipeline`).
+**For deployment, restart the host during an idle maintenance window.** Hot reload can interrupt active turns; when an agent running inside the host initiates a restart, schedule it through an independently managed process. One observed inbound outage after hot reload recovered after restart, but its root cause was not established. A WebSocket connection or healthy heartbeat alone does not prove message delivery; verify inbound and outbound separately.
 
 ## 已知限制 / Known limitations
 
+- 文本 `/model provider/model` 可能只保存全局默认值而未成功应用到当前会话；应查看提示并核对下一轮使用的模型。
 - 部分飞书客户端不重绘更新后的标题背景色，服务端 `header.template` 仍正确；不是通过改卡片数据能修的插件 bug。
 - 部分带按钮的控制卡仍有反复就地更新后回调失效风险（O4）。重新打开命令可获得新卡，完整待办见 [项目待办](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>)。
 - `verbose` 仍受工具预览与平台字节上限约束；压缩与折叠不等于删除本地历史。
 - 收得到消息不等于发得出去。无表情或回复时先区分权限错误与出站网络失败，见 [故障排查](<./docs/feishu-setup.md#常见问题>)。
 
-**English:** Some Feishu clients do not repaint updated header colors. Certain button-bearing controls still risk callback exhaustion (O4); reopen the command for a fresh card. `verbose` remains bounded, and folding/compaction does not delete local history. Inbound delivery does not prove outbound health; see [troubleshooting](<./docs/feishu-setup.md#常见问题>).
+**English:** Text `/model provider/model` can save the global default without successfully applying it to the current session; read the confirmation and verify the next request's route. Some Feishu clients do not repaint updated header colors. Certain button-bearing controls still risk callback exhaustion (O4); reopen the command for a fresh card. `verbose` remains bounded, and folding/compaction does not delete local history. Inbound delivery does not prove outbound health; see [troubleshooting](<./docs/feishu-setup.md#常见问题>).
 
 ## 上游来源与许可 / Upstream & license
 
