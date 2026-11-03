@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { htmlTablesToMarkdown, imageRefsIn, parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
@@ -48,7 +48,7 @@ interface FakeClient {
   drive: {
     v1: {
       meta: { batchQuery: ReturnType<typeof vi.fn> }
-      media: { uploadAll: ReturnType<typeof vi.fn>, batchGetTmpDownloadUrl: ReturnType<typeof vi.fn> }
+      media: { uploadAll: ReturnType<typeof vi.fn>, batchGetTmpDownloadUrl: ReturnType<typeof vi.fn>, download: ReturnType<typeof vi.fn> }
       permissionMember: { create: ReturnType<typeof vi.fn> }
     }
   }
@@ -91,6 +91,9 @@ function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChanne
           uploadAll: vi.fn(async () => ({ file_token: 'img_v3_test' })),
           batchGetTmpDownloadUrl: vi.fn(async () => ({
             data: { tmp_download_urls: [{ file_token: 'img_v3_x', tmp_download_url: 'https://x/img' }] },
+          })),
+          download: vi.fn(async () => ({
+            getReadableStream: () => (async function* () { yield PNG_1X1 })(),
           })),
         },
         permissionMember: { create: vi.fn(async () => ({ code: 0 })) },
@@ -232,6 +235,24 @@ describe('feishu_doc_read', () => {
       images: [{ block_id: 'b1', token: 'tok', url: 'https://x/img' }],
     })
     expect(rendered[0].text).toContain('https://x/img')
+  })
+
+  it('saves document images to local files when asked', async () => {
+    const { channel, client } = fakeChannel({
+      docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'body' } })) } } },
+    })
+    client.docx.v1.documentBlock.list = vi.fn(async () => ({
+      data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: 'tok' } }], has_more: false },
+    }))
+    client.drive.v1.media.batchGetTmpDownloadUrl = vi.fn(async () => ({
+      data: { tmp_download_urls: [{ file_token: 'tok', tmp_download_url: 'https://x/img.png' }] },
+    }))
+    const tool = toolsOver(channel).read!
+    const value = await tool.execute({ target: 'doxcn12345678', download_images: true }, execCtx())
+    const path = value.images?.[0]?.path
+    expect(path).toBeTruthy()
+    expect((await readFile(path as string)).length).toBe(PNG_1X1.length)
+    expect(client.drive.v1.media.download).toHaveBeenCalledWith({ path: { file_token: 'tok' } })
   })
 
   it('truncates long bodies and reports the next offset', async () => {
@@ -409,6 +430,31 @@ describe('feishu_doc_write', () => {
     // The H1 became the title, so it must not also stay in the body.
     const sent = (client.docx.v1.document.convert.mock.calls[0]?.[0] as any)?.data?.content as string
     expect(sent).not.toContain('# 文件标题')
+  })
+
+  it('retries a block insert rejected by the rate limiter', async () => {
+    vi.useFakeTimers()
+    try {
+      const { channel, client } = fakeChannel()
+      let calls = 0
+      client.docx.v1.documentBlockDescendant.create = vi.fn(async () => {
+        calls += 1
+        if (calls <= 2) {
+          const error = new Error('rate limited') as Error & { response?: unknown }
+          error.response = { status: 429, data: { code: 99991400 } }
+          throw error
+        }
+        return { data: {} }
+      })
+      const tool = toolsOver(channel).write!
+      const pending = tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 1 }, execCtx())
+      await vi.advanceTimersByTimeAsync(2_500)
+      const value = await pending
+      expect(client.docx.v1.documentBlockDescendant.create).toHaveBeenCalledTimes(3)
+      expect(value.mode).toBe('append')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('refuses append without a revision', async () => {

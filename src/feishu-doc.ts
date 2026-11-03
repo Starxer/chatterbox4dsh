@@ -22,8 +22,9 @@
  * @module @starxer/chatterbox4dsh/feishu-doc
  */
 
-import { readFile, stat } from 'node:fs/promises'
-import { basename, dirname, resolve } from 'node:path'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
@@ -46,6 +47,10 @@ const IMAGE_BLOCK_TYPE = 27
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 /** Budget for one media upload (much more than a metadata call). */
 const MEDIA_UPLOAD_TIMEOUT_MS = 60_000
+/** Budget for fetching one image that already has a signed URL. */
+const IMAGE_SAVE_TIMEOUT_MS = 20_000
+/** Most images one read will save; beyond this the URLs are still returned. */
+const MAX_IMAGES_SAVED = 20
 /** `![alt](target "title")` — the target is what decides local vs remote. */
 const IMAGE_REF_PATTERN = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/gu
 
@@ -438,7 +443,7 @@ async function fillDocumentImages(
     }
     try {
       const uploaded_ = await withLinkTimeout(
-        channel.rawClient.drive.v1.media.uploadAll({
+        withRateLimitRetry(() => channel.rawClient.drive.v1.media.uploadAll({
           data: {
             file_name: image.fileName,
             parent_type: 'docx_image',
@@ -446,7 +451,7 @@ async function fillDocumentImages(
             size: image.bytes.byteLength,
             file: image.bytes,
           },
-        }),
+        })),
         'upload document image',
         MEDIA_UPLOAD_TIMEOUT_MS,
       )
@@ -457,10 +462,10 @@ async function fillDocumentImages(
         continue
       }
       await withLinkTimeout(
-        channel.rawClient.docx.v1.documentBlock.patch({
+        withRateLimitRetry(() => channel.rawClient.docx.v1.documentBlock.patch({
           path: { document_id: documentId, block_id: blockId },
           data: { replace_image: { token } },
-        }),
+        })),
         'attach document image',
         DOC_REQUEST_TIMEOUT_MS,
       )
@@ -606,6 +611,117 @@ async function imageDownloadUrls(
   return urls
 }
 
+/** File extension for the image types Feishu documents carry. */
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+}
+
+/** One image block as the read tool reports it. */
+interface ReadImage {
+  block_id: string
+  token: string
+  url?: string
+  path?: string
+}
+
+/**
+ * Download the images a document contains to local files.
+ *
+ * A temporary URL is useless to an agent that cannot fetch it: with a local
+ * path the model can open the picture like any other workspace file. Files go
+ * under the OS temp directory, one directory per document, and a failure only
+ * leaves that image without a path.
+ */
+async function saveImageFiles(
+  channel: LarkChannel,
+  images: ReadImage[],
+  documentId: string,
+): Promise<ReadImage[]> {
+  const candidates = images.filter(image => image.token !== '').slice(0, MAX_IMAGES_SAVED)
+  if (candidates.length === 0) return images
+  const dir = join(tmpdir(), 'dsh-feishu-doc-images', documentId)
+  const saved = new Map<string, string>()
+  try {
+    await mkdir(dir, { recursive: true })
+  } catch {
+    return images
+  }
+  for (const [index, image] of candidates.entries()) {
+    try {
+      // Download through the SDK (authenticated, same token the read already
+      // used) rather than the signed URL: the URL is only a display artifact.
+      const raw: unknown = await withLinkTimeout(
+        channel.rawClient.drive.v1.media.download({ path: { file_token: image.token } }),
+        'download document image',
+        IMAGE_SAVE_TIMEOUT_MS,
+      )
+      const bytes = await collectMediaBytes(raw)
+      if (bytes === undefined || bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) continue
+      const mime = sniffImageMime(bytes)
+      if (mime === undefined) continue
+      const path = join(dir, `${index + 1}-${image.token}.${IMAGE_EXTENSIONS[mime] ?? 'bin'}`)
+      await writeFile(path, bytes)
+      saved.set(image.block_id, path)
+    } catch {
+      // One unreachable image must not fail the read.
+    }
+  }
+  return images.map(image => {
+    const path = saved.get(image.block_id)
+    return path === undefined ? image : { ...image, path }
+  })
+}
+
+/** Normalize the SDK's media download response to a Buffer. */
+async function collectMediaBytes(raw: unknown): Promise<Buffer | undefined> {
+  if (Buffer.isBuffer(raw)) return raw
+  if (raw instanceof Uint8Array) return Buffer.from(raw)
+  const wrapper = raw as { getReadableStream?: () => unknown } | null
+  if (wrapper !== null && typeof wrapper === 'object' && typeof wrapper.getReadableStream === 'function') {
+    const stream = wrapper.getReadableStream()
+    if (stream === null || typeof stream !== 'object' || !(Symbol.asyncIterator in (stream as object))) return undefined
+    const chunks: Buffer[] = []
+    let total = 0
+    for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      total += buffer.byteLength
+      if (total > MAX_IMAGE_BYTES) return undefined
+      chunks.push(buffer)
+    }
+    return Buffer.concat(chunks)
+  }
+  return undefined
+}
+
+/** True when a Feishu call was rejected by its rate limiter. */
+function isRateLimited(error: unknown): boolean {
+  const record = error as { response?: { status?: unknown, data?: { code?: unknown } } }
+  return record.response?.data?.code === 99991400 || record.response?.status === 429
+}
+
+/**
+ * Retry a WRITE call that Feishu rejected because of its rate limit.
+ *
+ * The rejection happens before the edit is applied (the per-app limit answers
+ * 99991400, the per-document one 429), so retrying is safe. Two retries at
+ * 600ms/1500ms cover a burst of image uploads without waiting forever.
+ */
+async function withRateLimitRetry<T>(run: () => Promise<T>): Promise<T> {
+  let attempt = 0
+  for (;;) {
+    try {
+      return await run()
+    } catch (error: unknown) {
+      if (!isRateLimited(error) || attempt >= 2) throw error
+      attempt += 1
+      await new Promise(resolveDelay => setTimeout(resolveDelay, attempt === 1 ? 600 : 1_500))
+    }
+  }
+}
+
 /** Current document revision id (used as an optimistic-concurrency token). */
 async function documentRevision(channel: LarkChannel, documentId: string): Promise<number | undefined> {
   try {
@@ -683,10 +799,10 @@ async function clearBody(channel: LarkChannel, documentId: string, count: number
   if (count === 0) return
   try {
     await withLinkTimeout(
-      channel.rawClient.docx.v1.documentBlockChildren.batchDelete({
+      withRateLimitRetry(() => channel.rawClient.docx.v1.documentBlockChildren.batchDelete({
         path: { document_id: documentId, block_id: documentId },
         data: { start_index: 0, end_index: count },
-      }),
+      })),
       'clear document body',
       DOC_REQUEST_TIMEOUT_MS,
     )
@@ -705,10 +821,10 @@ async function insertBlocks(
 ): Promise<void> {
   try {
     await withLinkTimeout(
-      channel.rawClient.docx.v1.documentBlockDescendant.create({
+      withRateLimitRetry(() => channel.rawClient.docx.v1.documentBlockDescendant.create({
         path: { document_id: documentId, block_id: documentId },
         data: { children_id: firstLevel, index, descendants: blocks },
-      }),
+      })),
       'write document blocks',
       DOC_REQUEST_TIMEOUT_MS,
     )
@@ -807,6 +923,11 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         type: 'number',
         description: `Maximum characters to return (default ${DEFAULT_READ_CHARS}, cap ${MAX_READ_CHARS}).`,
       },
+      download_images: {
+        type: 'boolean',
+        description: 'Save the document\'s images to local files and return their paths '
+          + `(at most ${MAX_IMAGES_SAVED}; each ≤10 MB). Off by default.`,
+      },
     },
     output: {
       schema: {
@@ -832,6 +953,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
                 block_id: { type: 'string', required: true },
                 token: { type: 'string' },
                 url: { type: 'string', description: 'Temporary download URL (expires; best-effort).' },
+                path: { type: 'string', description: 'Local file path when `download_images` was set.' },
               },
             },
           },
@@ -857,9 +979,10 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         // The image URLs are only in the value; without printing them the model
         // cannot actually see the pictures the document contains.
         for (const image of value.images ?? []) {
-          lines.push(image.url === undefined
+          const target = image.path ?? image.url
+          lines.push(target === undefined
             ? `[image ${image.block_id}${image.token === undefined || image.token === '' ? '' : ` · ${image.token}`}]`
-            : `[image ${image.block_id}: ${image.url}]`)
+            : `[image ${image.block_id}: ${target}]`)
         }
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -877,10 +1000,13 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       const revisionId = await documentRevision(channel, resolved.documentId)
       const imageBlocks = await documentImages(channel, resolved.documentId)
       const urls = await imageDownloadUrls(channel, imageBlocks.map(image => image.token).filter(token => token !== ''))
-      const images = imageBlocks.map(image => ({
+      const withUrls: ReadImage[] = imageBlocks.map(image => ({
         ...image,
         ...(urls.get(image.token) === undefined ? {} : { url: urls.get(image.token) as string }),
       }))
+      const images = args.download_images === true
+        ? await saveImageFiles(channel, withUrls, resolved.documentId)
+        : withUrls
       const slice = content.slice(offset, offset + maxChars)
       const truncated = offset + slice.length < content.length
       const url = resolved.url ?? await documentUrl(channel, resolved.documentId)

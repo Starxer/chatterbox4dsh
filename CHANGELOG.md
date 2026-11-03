@@ -5,6 +5,14 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：文档图片可下载到本地、写入对限流重试（2026-11-04）
+
+- **图片可真正查看**：`feishu_doc_read` 新增 `download_images`，通过 `drive.v1.media.download`（scope `docs:document.media:download`）把文档里的图片下载到临时目录，`images[].path` 可直接用文件工具打开/读图。此前只给临时 URL，agent 实际看不到图。
+- **限流重试**：块插入、清空正文、图片上传、图片挂载四个写调用遇到飞书限流（业务码 `99991400` 或 HTTP 429）会自动退避重试两次（600ms / 1500ms）；限流拒绝发生在写入生效前，重试安全。图片较多的写入不再一撞 3 次/秒就整体失败。
+- **测试**：新增「图片保存到本地」「限流后重试成功」两例；全量 **1375 测试 / 68 文件**、`typecheck`、`build` 全绿。
+
+**English**: `feishu_doc_read` can now save a document's images to local files (SDK media download, returned as `images[].path`) so the agent can actually open them, and the four write calls retry twice with backoff when Feishu answers with its rate-limit codes (`99991400` / HTTP 429). 1375 tests / 68 files, typecheck and build pass.
+
 ### 改进：文档工具可用性（`.md` 文件输入、格式守卫、评论作者、图片链接、版本强制，2026-11-04）
 
 1. **`feishu_doc_write` 支持 `path`**：直接从工作区 `.md` 文件读正文（长文档不必再塞进工具参数），相对图片按该文件目录解析；`create` 的标题默认取首个 `# 标题` 或文件名。
