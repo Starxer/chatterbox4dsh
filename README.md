@@ -163,6 +163,21 @@ Example configuration entry for a profile patch; credentials use references, nev
 
 `appSecret` is a legacy field; use `appSecretRef` for new configurations. Credentials, platform, access policy and `reactEmoji` changes rebuild the channel and may interrupt activity; display, locale and new-session defaults do not rebuild it.
 
+## 在线文档权限 / Online-document permissions
+
+在线文档工具需要的权限**由扫码配置自动申请**（`docx:document:create`、`docs:document.content:read`、`docs:document.media:upload`、`docs:permission.member:create`；平台模板还自带读取、修改、块转换与 wiki 链接解析）。普通读写、评论和块级协作**不需要额外操作**。
+
+例外是**清理机器人自己创建的文档**——它需要两项维护权限，扫码流程**故意不申请**（删除权不该默认授予，文档工具本身也从不删除任何文档）：
+
+| 权限标识 | 用途 |
+|---|---|
+| `space:document:retrieve` | 列出应用自己空间里的文件（先找到要清理的文档） |
+| `space:document:delete` | 删除应用自己创建的文档 |
+
+**需要的人请在飞书开发者平台自行开启**：开发者后台 → 选中本应用 → **权限管理** → 搜索并开通上面两项 → **创建版本并发布**，审核通过后生效。也可以让应用用自身凭证调用 `application.v7.applicationConfig.patch` 的 `scope.add_scopes`（这两项是免审权限，立即生效），步骤见 [配置指南](<./docs/feishu-setup.md>)。
+
+**English**: The document tools' scopes are requested automatically by the scan flow, and normal reading, writing, comments and block-level collaboration need nothing extra. Cleaning up documents the bot created is the exception: it needs two maintenance scopes (`space:document:retrieve`, `space:document:delete`), which are deliberately **not** requested by default — the tools never delete anything by themselves. To enable them, open the Feishu developer console → your app → **Permissions**, add both, then create and publish a version. Alternatively let the app grant them to itself through `applicationConfig.patch` → `scope.add_scopes` (both are review-free and take effect immediately).
+
 ## 附件等待 / Attachment waiting
 
 仅发送图片、文件、视频或语音时，插件先保存到 DSH 附件库，**不启动 Agent 回合**。每批最后一个附件接收成功后静默 3 秒，发送一次累计数量提示；新增附件重新计时。下一条普通文字消息会携带暂存附件一起提交，文字先到就取消未发的提示。图文混合消息可直接提交；查询命令不消费暂存。
