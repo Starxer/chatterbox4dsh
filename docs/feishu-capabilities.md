@@ -399,7 +399,10 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 3. 再 `documentBlock.patch` 的 `replace_image: { token }` 把素材挂到该块 —— 实测 `code=0`。
 - **只支持绝对路径的本地图片**（png/jpeg/webp/gif、≤10 MB）：远端 URL 不抓（避免让模型触发任意出站请求、也避免把外网内容静默带进租户文档），相对路径没有可靠基准（Markdown 是文本不是文件）。
 - **文档共享**：`drive.v1.permissionMember.create`（`member_type: openid`、`perm: edit`）实测 `code=0`；`create` 模式会把新文档共享给对话里最后一个发言的用户（open_id 由入站消息的 `senderId` 记在 bridge 内存里，重启丢失则跳过共享并如实上报）。
-- **读回不含图片**：`docs.v1.content.get` 的 Markdown 输出里没有图片引用（实测），图片是否嵌入要看块本身，不能靠读回判断。
+- **读回不含图片**：`docs.v1.content.get` 的 Markdown 输出里没有图片引用（实测）。读取工具会额外扫块，并用 `drive.v1.media.batchGetTmpDownloadUrl`（`docs:document.media:download`）取临时下载链接，返回 `images: [{ block_id, token, url }]`；链接会过期。
+- **表格读回是 HTML**：`content_type: markdown` 仍会把 table 块输出成 `<table>`，读取工具在返回前把它重写成 Markdown 表格；写回时表格需要标准分隔行。
+- **`replace` 的格式风险有守卫**：先用块扫描找 Markdown 表达不了的块（callout、grid、file 等），存在时拒绝执行，除非显式 `allow_format_loss: true`。
+- **`append` / `replace` 必须带 `revision`**：两者都会改已有文档，统一要求写前版本比对；`create` 不需要。
 
 **协作能力（2026-11-04 实测，`feishu_doc_comments` / `feishu_doc_blocks`）**：
 

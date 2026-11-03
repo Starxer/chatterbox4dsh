@@ -23,7 +23,7 @@
  */
 
 import { readFile, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
@@ -336,7 +336,7 @@ interface ImageRef {
  * @param markdown - the body about to be converted.
  * @returns one entry per reference, including the ones that will be skipped.
  */
-export function imageRefsIn(markdown: string): ImageRef[] {
+export function imageRefsIn(markdown: string, baseDir?: string): ImageRef[] {
   const refs: ImageRef[] = []
   for (const match of markdown.matchAll(IMAGE_REF_PATTERN)) {
     const target = match[1]
@@ -345,11 +345,17 @@ export function imageRefsIn(markdown: string): ImageRef[] {
       refs.push({ target, skipReason: 'remote image, not fetched' })
       continue
     }
-    if (!target.startsWith('/')) {
-      refs.push({ target, skipReason: 'relative path — pass an absolute path' })
+    if (target.startsWith('/')) {
+      refs.push({ target, local: target })
       continue
     }
-    refs.push({ target, local: target })
+    // A relative path is only meaningful when we know the Markdown file it is
+    // relative to (the `path` input); with inline Markdown there is no base.
+    if (baseDir === undefined) {
+      refs.push({ target, skipReason: 'relative path — pass `path` so it can be resolved' })
+      continue
+    }
+    refs.push({ target, local: resolve(baseDir, target) })
   }
   return refs
 }
@@ -488,6 +494,116 @@ async function shareDocument(channel: LarkChannel, documentId: string, openId: s
   } catch {
     return false
   }
+}
+
+/**
+ * Rewrite the `<table>` HTML that `docs.v1.content.get` emits inside its
+ * Markdown into GitHub-style Markdown tables.
+ *
+ * Feishu returns table BLOCKS as raw HTML even in `content_type: markdown`.
+ * Left as-is, a read→edit→replace round trip turns a table into a literal HTML
+ * dump; converting it back keeps tables editable.
+ *
+ * @param markdown - document body as returned by Feishu.
+ * @returns the body with every simple table rewritten as a Markdown table.
+ */
+export function htmlTablesToMarkdown(markdown: string): string {
+  return markdown.replace(/<table[^>]*>([\s\S]*?)<\/table>/giu, (whole, body: string) => {
+    const rows = [...body.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)]
+      .map(row => [...(row[1] ?? '').matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/giu)]
+        .map(cell => (cell[1] ?? '')
+          .replace(/<[^>]+>/gu, ' ')
+          .replace(/&nbsp;/giu, ' ')
+          .replace(/&amp;/giu, '&')
+          .replace(/&lt;/giu, '<')
+          .replace(/&gt;/giu, '>')
+          .replace(/&quot;/giu, '"')
+          .replace(/&#39;/gu, "'")
+          .replace(/\s+/gu, ' ')
+          .replace(/\|/gu, '\\|')
+          .trim()))
+    if (rows.length === 0 || rows[0] === undefined || rows[0].length === 0) return whole
+    const width = rows[0].length
+    const lines = rows.map(cells => `| ${Array.from({ length: width }, (_v, index) => cells[index] ?? '').join(' | ')} |`)
+    lines.splice(1, 0, `| ${Array.from({ length: width }, () => '---').join(' | ')} |`)
+    return lines.join('\n')
+  })
+}
+
+/** docx block types the Markdown converter can produce; everything else is lost by `replace`. */
+const CONVERTIBLE_BLOCK_TYPES = new Set([1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 17, 22, 27, 31, 32])
+
+/** Human names for the block types the converter cannot reproduce. */
+const LOSSY_BLOCK_NAMES: Record<number, string> = {
+  18: 'bitable', 19: 'callout', 20: 'chat card', 21: 'diagram', 23: 'file attachment',
+  24: 'grid (columns)', 25: 'grid column', 26: 'iframe', 28: 'isv block', 29: 'mindnote',
+  30: 'sheet embed', 33: 'view', 34: 'quote container', 35: 'task', 36: 'okr', 37: 'add-on',
+  38: 'jira issue', 39: 'wiki catalog', 40: 'board', 45: 'link preview', 47: 'sub-page list',
+}
+
+/**
+ * Block types present in the document that a Markdown rewrite would destroy.
+ *
+ * `replace` deletes the body and re-inserts converted Markdown, which cannot
+ * express callouts, grids, embeds and similar blocks. This scan lets the tool
+ * refuse that trade (unless the caller explicitly accepts the loss).
+ */
+async function lossyBlockTypes(channel: LarkChannel, documentId: string): Promise<string[]> {
+  const found = new Map<number, string>()
+  try {
+    let pageToken: string | undefined
+    for (let page = 0; page < 5; page++) {
+      const response = await withLinkTimeout(
+        channel.rawClient.docx.v1.documentBlock.list({
+          path: { document_id: documentId },
+          params: { page_size: 200, ...(pageToken === undefined ? {} : { page_token: pageToken }) },
+        }),
+        'scan document blocks',
+        DOC_REQUEST_TIMEOUT_MS,
+      )
+      for (const block of response?.data?.items ?? []) {
+        if (CONVERTIBLE_BLOCK_TYPES.has(block.block_type)) continue
+        found.set(block.block_type, BLOCK_NAMES_FOR_LOSSY.get(block.block_type) ?? `block type ${block.block_type}`)
+      }
+      if (response?.data?.has_more !== true) break
+      pageToken = response?.data?.page_token
+      if (pageToken === undefined || pageToken === '') break
+    }
+  } catch {
+    return []
+  }
+  return [...found.values()]
+}
+
+const BLOCK_NAMES_FOR_LOSSY = new Map(Object.entries(LOSSY_BLOCK_NAMES).map(([key, value]) => [Number(key), value]))
+
+/**
+ * Temporary download URLs for image materials, keyed by media token.
+ *
+ * Markdown never contains images, so a reader otherwise knows only that a
+ * picture exists. Best-effort: a failure leaves the URLs out.
+ */
+async function imageDownloadUrls(
+  channel: LarkChannel,
+  tokens: string[],
+): Promise<Map<string, string>> {
+  const urls = new Map<string, string>()
+  if (tokens.length === 0) return urls
+  try {
+    const response = await withLinkTimeout(
+      channel.rawClient.drive.v1.media.batchGetTmpDownloadUrl({ params: { file_tokens: tokens } }),
+      'get document image urls',
+      DOC_META_TIMEOUT_MS,
+    )
+    for (const entry of response?.data?.tmp_download_urls ?? []) {
+      if (typeof entry.file_token === 'string' && typeof entry.tmp_download_url === 'string') {
+        urls.set(entry.file_token, entry.tmp_download_url)
+      }
+    }
+  } catch {
+    return urls
+  }
+  return urls
 }
 
 /** Current document revision id (used as an optimistic-concurrency token). */
@@ -715,6 +831,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
               properties: {
                 block_id: { type: 'string', required: true },
                 token: { type: 'string' },
+                url: { type: 'string', description: 'Temporary download URL (expires; best-effort).' },
               },
             },
           },
@@ -748,14 +865,20 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       const offset = Math.max(0, clamp(args.offset ?? 0, 0, Number.MAX_SAFE_INTEGER))
       const maxChars = clamp(args.max_chars ?? DEFAULT_READ_CHARS, 1, MAX_READ_CHARS)
       const body = await readBody(channel, resolved.documentId)
+      const content = body.format === 'markdown' ? htmlTablesToMarkdown(body.content) : body.content
       const title = resolved.title ?? await documentTitle(channel, resolved.documentId)
       const revisionId = await documentRevision(channel, resolved.documentId)
-      const images = await documentImages(channel, resolved.documentId)
-      const slice = body.content.slice(offset, offset + maxChars)
-      const truncated = offset + slice.length < body.content.length
+      const imageBlocks = await documentImages(channel, resolved.documentId)
+      const urls = await imageDownloadUrls(channel, imageBlocks.map(image => image.token).filter(token => token !== ''))
+      const images = imageBlocks.map(image => ({
+        ...image,
+        ...(urls.get(image.token) === undefined ? {} : { url: urls.get(image.token) as string }),
+      }))
+      const slice = content.slice(offset, offset + maxChars)
+      const truncated = offset + slice.length < content.length
       const url = resolved.url ?? await documentUrl(channel, resolved.documentId)
       logger.warn(
-        `dsh-feishu: feishu_doc_read read ${slice.length}/${body.content.length} chars of `
+        `dsh-feishu: feishu_doc_read read ${slice.length}/${content.length} chars of `
         + `${resolved.documentId} as ${body.format}`,
       )
       return {
@@ -764,7 +887,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         ...(url === undefined ? {} : { url }),
         content: slice,
         format: body.format,
-        total_chars: body.content.length,
+        total_chars: content.length,
         truncated,
         ...(truncated ? { next_offset: offset + slice.length } : {}),
         ...(revisionId === undefined ? {} : { revision_id: revisionId }),
@@ -780,11 +903,14 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'document from `title` + `markdown`; `append` adds `markdown` at the end of the document given by '
       + '`target`; `replace` deletes the whole existing body and writes `markdown` instead. Markdown is '
       + 'converted to native document blocks (headings, lists, tables, code, checkboxes). Images are '
-      + 'uploaded and embedded when the reference is an absolute local path to a png/jpeg/webp/gif '
-      + 'under 10 MB; remote URLs and relative paths are skipped. With `create`, the new document is '
-      + 'shared with the user who asked for it. `replace` REQUIRES the `revision_id` from '
-      + '`feishu_doc_read` (it destroys the whole body, so a stale copy must never overwrite newer '
-      + 'edits); `append` accepts it optionally. The Feishu app must be able to edit the target '
+      + 'uploaded and embedded when the reference points at a local png/jpeg/webp/gif under 10 MB '
+      + '(relative paths are resolved against `path` when the body comes from a file); remote URLs '
+      + 'are never fetched. The body comes from `path` (a Markdown file — preferred for long '
+      + 'documents) or inline `markdown`. With `create`, the new document is shared with the user '
+      + 'who asked for it. `append` and `replace` REQUIRE the `revision_id` from `feishu_doc_read`, '
+      + 'so a stale copy cannot silently overwrite newer edits; `replace` additionally refuses to '
+      + 'run when the document contains blocks Markdown cannot reproduce (pass '
+      + '`allow_format_loss: true` to accept that). The Feishu app must be able to edit the target '
       + 'document. Prefer `append`.',
     parameters: {
       mode: {
@@ -795,8 +921,12 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       },
       markdown: {
         type: 'string',
-        required: true,
-        description: 'Document body as Markdown. Images may use absolute local paths (png/jpeg/webp/gif, ≤10 MB).',
+        description: 'Document body as Markdown (inline). Use `path` instead for long documents; pass exactly one of the two.',
+      },
+      path: {
+        type: 'string',
+        description: 'Absolute path of a Markdown file in the workspace to read the body from. Images '
+          + 'referenced relatively are resolved against this file\'s directory.',
       },
       target: {
         type: 'string',
@@ -812,9 +942,14 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       },
       revision: {
         type: 'number',
-        description: 'The `revision_id` a previous `feishu_doc_read` returned. Required for `replace`: '
-          + 'the write is refused if the document has changed since then, instead of overwriting newer '
-          + 'edits. Optional for `append` and ignored for `create`.',
+        description: 'The `revision_id` a previous `feishu_doc_read` returned. Required for `append` '
+          + 'and `replace`: the write is refused if the document has changed since then. Ignored for '
+          + '`create`.',
+      },
+      allow_format_loss: {
+        type: 'boolean',
+        description: '`replace` only. Set true to overwrite a document that contains blocks Markdown '
+          + 'cannot reproduce (callouts, grids, embeds, …); those blocks are destroyed.',
       },
     },
     output: {
@@ -850,23 +985,41 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
     async execute(args, exec) {
       exec.signal.throwIfAborted()
       const channel = requireChannel(deps)
-      const markdown = args.markdown
-      if (markdown.trim() === '') throw new Error('markdown is empty — nothing to write.')
-
       const mode = args.mode
-      if (mode === 'replace' && args.revision === undefined) {
+      if (mode !== 'create' && args.revision === undefined) {
         throw new Error(
-          'mode "replace" needs the `revision_id` from feishu_doc_read: it deletes the whole body, '
-          + 'so it must prove the copy it is overwriting is still current. Read the document first, '
-          + 'then pass revision_ids. Use "append" if you only want to add content.',
+          `mode "${mode}" needs the \`revision_id\` from feishu_doc_read: without it the write could `
+          + 'overwrite edits made after the copy was read. Read the document first, then pass its '
+          + 'revision_id. (`create` is the only mode that does not edit an existing document.)',
         )
       }
+
+      if ((args.markdown === undefined) === (args.path === undefined)) {
+        throw new Error('pass exactly one of `path` (a Markdown file) or `markdown` (inline text).')
+      }
+      let markdown: string
+      let baseDir: string | undefined
+      if (args.path !== undefined) {
+        try {
+          markdown = await readFile(args.path, 'utf8')
+        } catch (error: unknown) {
+          throw new Error(`Cannot read the Markdown file ${JSON.stringify(args.path)}: ${errorText(error, 'unknown file error')}`)
+        }
+        baseDir = dirname(args.path)
+      } else {
+        markdown = args.markdown as string
+      }
+      if (markdown.trim() === '') throw new Error('the Markdown body is empty — nothing to write.')
       let documentId: string
       let url: string | undefined
       let title: string | undefined
 
       if (mode === 'create') {
-        title = args.title?.trim() === '' || args.title === undefined ? '未命名文档' : args.title.trim()
+        const heading = /^#\s+(.+)$/mu.exec(markdown)?.[1]?.trim()
+        const fileTitle = args.path === undefined ? undefined : basename(args.path).replace(/\.md$/iu, '')
+        title = args.title === undefined || args.title.trim() === ''
+          ? (heading ?? fileTitle ?? '未命名文档')
+          : args.title.trim()
         documentId = await createDocument(channel, title, args.folder_token)
         url = await documentUrl(channel, documentId)
       } else {
@@ -879,10 +1032,21 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         title = resolved.title
       }
 
+      if (mode === 'replace' && args.allow_format_loss !== true) {
+        const lossy = await lossyBlockTypes(channel, documentId)
+        if (lossy.length > 0) {
+          throw new Error(
+            `This document contains blocks Markdown cannot reproduce (${lossy.join(', ')}), so `
+            + '`replace` would destroy them. Use `feishu_doc_blocks` to edit the affected blocks, '
+            + '`append` to add content, or pass `allow_format_loss: true` to accept the loss.',
+          )
+        }
+      }
+
       // Decide per image reference whether it can be uploaded. The converter
       // emits one image block per reference in the same order, so the flags
       // line up with the blocks `prepareBlocks` is about to see.
-      const refs = imageRefsIn(markdown)
+      const refs = imageRefsIn(markdown, baseDir)
       const loaded: LoadedImage[] = []
       const keep: boolean[] = []
       for (const ref of refs) {

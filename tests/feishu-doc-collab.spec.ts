@@ -21,6 +21,7 @@ interface FakeClient {
   docx: { v1: { documentBlock: { list: ReturnType<typeof vi.fn>, patch: ReturnType<typeof vi.fn> } } }
   wiki: { v2: { space: { getNode: ReturnType<typeof vi.fn> } } }
   drive: { v1: { fileComment: { list: ReturnType<typeof vi.fn>, create: ReturnType<typeof vi.fn> } } }
+  contact: { v3: { user: { get: ReturnType<typeof vi.fn> } } }
 }
 
 function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChannel, client: FakeClient } {
@@ -42,6 +43,7 @@ function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChanne
         },
       },
     },
+    contact: { v3: { user: { get: vi.fn(async () => ({ data: { user: { name: '张三' } } })) } } },
     wiki: { v2: { space: { getNode: vi.fn() } } },
     drive: {
       v1: {
@@ -51,9 +53,16 @@ function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChanne
               items: [
                 {
                   comment_id: 'c1',
+                  user_id: 'ou_author',
                   is_whole: true,
                   is_solved: false,
-                  reply_list: { replies: [{ reply_id: 'r1', content: { elements: [{ type: 'text_run', text_run: { text: '请补充数据' } }] } }] },
+                  reply_list: {
+                    replies: [{
+                      reply_id: 'r1',
+                      user_id: 'ou_author',
+                      content: { elements: [{ type: 'text_run', text_run: { text: '请补充数据' } }] },
+                    }],
+                  },
                 },
               ],
               has_more: true,
@@ -92,7 +101,15 @@ describe('feishu_doc_comments', () => {
 
     expect(value.document_id).toBe('doxcnDoc')
     expect(value.comments).toEqual([
-      { comment_id: 'c1', is_whole: true, solved: false, text: '请补充数据', replies: [{ reply_id: 'r1', text: '请补充数据' }] },
+      {
+        comment_id: 'c1',
+        is_whole: true,
+        solved: false,
+        user_id: 'ou_author',
+        user_name: '张三',
+        text: '请补充数据',
+        replies: [{ reply_id: 'r1', user_id: 'ou_author', user_name: '张三', text: '请补充数据' }],
+      },
     ])
     expect(value.has_more).toBe(true)
     expect(value.next_page_token).toBe('next')

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { imageRefsIn, parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
+import { htmlTablesToMarkdown, imageRefsIn, parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { HarnessConversationService } from '../src/harness.ts'
@@ -48,7 +48,7 @@ interface FakeClient {
   drive: {
     v1: {
       meta: { batchQuery: ReturnType<typeof vi.fn> }
-      media: { uploadAll: ReturnType<typeof vi.fn> }
+      media: { uploadAll: ReturnType<typeof vi.fn>, batchGetTmpDownloadUrl: ReturnType<typeof vi.fn> }
       permissionMember: { create: ReturnType<typeof vi.fn> }
     }
   }
@@ -87,7 +87,12 @@ function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChanne
     drive: {
       v1: {
         meta: { batchQuery: vi.fn(async () => ({ data: { metas: [{ url: 'https://x.feishu.cn/docx/doxcnNEW' }] } })) },
-        media: { uploadAll: vi.fn(async () => ({ file_token: 'img_v3_test' })) },
+        media: {
+          uploadAll: vi.fn(async () => ({ file_token: 'img_v3_test' })),
+          batchGetTmpDownloadUrl: vi.fn(async () => ({
+            data: { tmp_download_urls: [{ file_token: 'img_v3_x', tmp_download_url: 'https://x/img' }] },
+          })),
+        },
         permissionMember: { create: vi.fn(async () => ({ code: 0 })) },
       },
     },
@@ -147,6 +152,15 @@ describe('prepareBlocks', () => {
   })
 })
 
+describe('htmlTablesToMarkdown', () => {
+  it('rewrites the HTML tables Feishu returns into Markdown tables', () => {
+    const html = '<table><tbody><tr><td>列 A</td><td>列 B</td></tr><tr><td>1</td><td>2</td></tr></tbody></table>'
+    expect(htmlTablesToMarkdown(html)).toBe('| 列 A | 列 B |\n| --- | --- |\n| 1 | 2 |')
+    // Non-table content is left alone.
+    expect(htmlTablesToMarkdown('plain **text**')).toBe('plain **text**')
+  })
+})
+
 describe('imageRefsIn', () => {
   it('classifies local, remote and relative targets', () => {
     const refs = imageRefsIn('![a](/tmp/a.png) ![b](https://x/y.png) ![c](./c.png)')
@@ -203,7 +217,7 @@ describe('feishu_doc_read', () => {
     const value = await tool.execute({ target: 'doxcn12345678' }, execCtx())
 
     expect(value.revision_id).toBe(7)
-    expect(value.images).toEqual([{ block_id: 'imgblk', token: 'img_v3_x' }])
+    expect(value.images).toEqual([{ block_id: 'imgblk', token: 'img_v3_x', url: 'https://x/img' }])
   })
 
   it('truncates long bodies and reports the next offset', async () => {
@@ -230,6 +244,7 @@ describe('feishu_doc_write', () => {
       mode: 'append',
       target: 'https://acme.feishu.cn/docx/doxcnAbCdEf',
       markdown: '# Title\n\nbody',
+      revision: 1,
     }, execCtx())
 
     expect(client.docx.v1.document.convert).toHaveBeenCalledWith({
@@ -284,7 +299,7 @@ describe('feishu_doc_write', () => {
       data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: '' } }], has_more: false },
     }))
     const tool = toolsOver(channel).write!
-    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: `![pic](${path})` }, execCtx())
+    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: `![pic](${path})`, revision: 1 }, execCtx())
 
     expect(client.drive.v1.media.uploadAll).toHaveBeenCalledWith({
       data: expect.objectContaining({ parent_node: 'imgblk', parent_type: 'docx_image', file: expect.any(Buffer) }),
@@ -304,6 +319,7 @@ describe('feishu_doc_write', () => {
       mode: 'append',
       target: 'doxcnAbCdEf',
       markdown: '![x](https://example.com/a.png)',
+      revision: 1,
     }, execCtx())
 
     expect(client.drive.v1.media.uploadAll).not.toHaveBeenCalled()
@@ -335,7 +351,7 @@ describe('feishu_doc_write', () => {
       lastSenderFor: () => 'ou_requester',
     } as unknown as HarnessConversationService
     const tool = toolsOver(channel, bridge).write!
-    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx())
+    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 1 }, execCtx())
 
     expect(client.drive.v1.permissionMember.create).not.toHaveBeenCalled()
     expect(value.shared).toBe(false)
@@ -357,9 +373,55 @@ describe('feishu_doc_write', () => {
       .rejects.toThrow(/needs the `revision_id`/)
   })
 
+  it('reads the body from a Markdown file and resolves relative images', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-doc-md-'))
+    const imagePath = join(dir, 'pic.png')
+    await writeFile(imagePath, PNG_1X1)
+    const mdPath = join(dir, 'doc.md')
+    await writeFile(mdPath, '# 文件标题\n\n![图](pic.png)\n')
+
+    const { channel, client } = fakeChannel()
+    client.docx.v1.documentBlock.list = vi.fn(async () => ({
+      data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: '' } }], has_more: false },
+    }))
+    const tool = toolsOver(channel).write!
+    const value = await tool.execute({ mode: 'create', path: mdPath }, execCtx())
+
+    expect(client.drive.v1.media.uploadAll).toHaveBeenCalledWith({
+      data: expect.objectContaining({ parent_node: 'imgblk', parent_type: 'docx_image' }),
+    })
+    expect(value.title).toBe('文件标题')
+    expect(value.images_uploaded).toBe(1)
+  })
+
+  it('refuses append without a revision', async () => {
+    const { channel } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    await expect(tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx()))
+      .rejects.toThrow(/needs the `revision_id`/)
+  })
+
+  it('refuses replace when the document has blocks Markdown cannot reproduce', async () => {
+    const { channel, client } = fakeChannel()
+    client.docx.v1.documentBlock.list = vi.fn(async () => ({
+      data: { items: [{ block_id: 'cb', block_type: 19, callout: {} }], has_more: false },
+    }))
+    const tool = toolsOver(channel).write!
+    await expect(tool.execute({
+      mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x', revision: 1,
+    }, execCtx())).rejects.toThrow(/Markdown cannot reproduce \(callout\)/)
+    expect(client.docx.v1.documentBlockChildren.batchDelete).not.toHaveBeenCalled()
+
+    const value = await tool.execute({
+      mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x', revision: 1, allow_format_loss: true,
+    }, execCtx())
+    expect(value.mode).toBe('replace')
+    expect(client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalled()
+  })
+
   it('requires a target outside create mode', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({ mode: 'append', markdown: 'x' }, execCtx())).rejects.toThrow(/target is required/)
+    await expect(tool.execute({ mode: 'append', markdown: 'x', revision: 1 }, execCtx())).rejects.toThrow(/target is required/)
   })
 })

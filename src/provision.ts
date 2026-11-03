@@ -55,6 +55,9 @@ export const FEISHU_BOT_SCOPES = [
  *   that returns Markdown; without it reads fall back to plain text.
  * - `docs:document.media:upload` — upload a local image and attach it to an
  *   image block (`drive.v1.media.uploadAll` with `parent_type: docx_image`).
+ * - `docs:document.media:download` — temporary download URLs for the images a
+ *   document already contains (`media.batchGetTmpDownloadUrl`), so a reader can
+ *   actually see them.
  * - `docs:permission.member:create` — share the created document with the user
  *   who asked for it (`drive.v1.permissionMember.create`). Without it a
  *   tenant-token document stays owned by the bot and the user cannot open it.
@@ -67,6 +70,7 @@ export const FEISHU_DOC_SCOPES = [
   'docx:document:create',
   'docs:document.content:read',
   'docs:document.media:upload',
+  'docs:document.media:download',
   'docs:permission.member:create',
 ]
 

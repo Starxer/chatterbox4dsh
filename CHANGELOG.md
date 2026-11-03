@@ -5,6 +5,23 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：文档工具可用性（`.md` 文件输入、格式守卫、评论作者、图片链接、版本强制，2026-11-04）
+
+1. **`feishu_doc_write` 支持 `path`**：直接从工作区 `.md` 文件读正文（长文档不必再塞进工具参数），相对图片按该文件目录解析；`create` 的标题默认取首个 `# 标题` 或文件名。
+2. **读取保真**：`docs.v1.content.get` 返回的 HTML 表格在读取层重写成 Markdown 表格；文档里的图片通过 `drive.v1.media.batchGetTmpDownloadUrl`（新增 scope `docs:document.media:download`）返回**临时下载链接**，读取结果里 `images[].url` 可直接取用（会过期）。
+3. **`replace` 增加格式守卫**：写前扫块，发现 Markdown 表达不了的块（callout、grid、file、sheet 嵌入等）直接拒绝，并列出类型；确认要放弃这些结构时传 `allow_format_loss: true`。
+4. **`append` 也强制 `revision`**：所有改已有文档的写入都必须带 `feishu_doc_read` 返回的 `revision_id`（`create` 除外），彻底去掉「不传就无保护」的路径。
+5. **评论带作者**：`feishu_doc_comments` 的评论与回复现在返回 `user_id` + 解析后的 `user_name`（contact 查询，按调用上限 10 个、带缓存）。
+
+**平台限制（未做，已确认原因）**：
+
+- **自动把应用加成文档协作者不可能**：`permissionMember.create` 要求调用方已有该文档权限（鸡生蛋）；用户必须先自己把应用加为协作者。
+- **按标题搜索不可用**：`search.v2.docWiki.search` 语义是「当前用户可见的文档」，应用身份（tenant token）实测 0 结果（`search_cold`），即使开通 `search:docs:read` 也一样；要用需 user_access_token 或本地索引。
+
+**验证**：`tests/feishu-doc.spec.ts` 23 例（新增：`.md` 文件输入+相对图片、append 缺 revision、replace 格式守卫、HTML 表格转 Markdown、图片链接）、collab 6 例（作者名）；全量 **1372 测试 / 68 文件**、`typecheck`、`build` 全绿。
+
+**English**: `feishu_doc_write` can take a Markdown file through `path` (relative images resolve against its directory, title defaults to the first H1 or the file name); reads rewrite Feishu's HTML tables back to Markdown and return temporary download URLs for embedded images (new `docs:document.media:download` scope); `replace` refuses documents containing blocks Markdown cannot reproduce unless `allow_format_loss: true`; `append` now also requires the revision id; comments include author ids and resolved names. Two gaps are platform-limited: an app cannot grant itself collaborator access, and tenant-token document search returns no results (it is user-visible search). 1372 tests / 68 files, typecheck and build pass.
+
 ### 修复：replace 强制版本守卫、发起人共享跨重启、维护权限独立成项（2026-11-04）
 
 **`replace` 现在必须带 `revision`**：它会删掉整篇正文，所以不接受「没有证据证明副本是最新的」调用；缺失时直接报错并提示先 `feishu_doc_read`（`append` 仍可选）。彻底消除「模型忘了传 revision 就静默覆盖」的路径。

@@ -151,6 +151,35 @@ function requireChannel(deps: FeishuDocCollabDeps): LarkChannel {
   return channel
 }
 
+/** Open id → display name, for comment authors. Undefined name is cached too. */
+const authorNames = new Map<string, string | undefined>()
+
+/**
+ * Best-effort display name for a comment author.
+ *
+ * Comment payloads carry only open ids; without a name a reader cannot tell who
+ * made a point. The contact lookup needs the app to see the user (it does for
+ * same-tenant users) and is capped per call by the caller.
+ */
+async function authorName(channel: LarkChannel, openId: string | undefined): Promise<string | undefined> {
+  if (openId === undefined || openId === '') return undefined
+  if (authorNames.has(openId)) return authorNames.get(openId)
+  try {
+    const response = await withLinkTimeout(
+      channel.rawClient.contact.v3.user.get({ path: { user_id: openId }, params: { user_id_type: 'open_id' } }),
+      'read comment author',
+      10_000,
+    )
+    const name = response?.data?.user?.name
+    const resolved = typeof name === 'string' && name !== '' ? name : undefined
+    authorNames.set(openId, resolved)
+    return resolved
+  } catch {
+    authorNames.set(openId, undefined)
+    return undefined
+  }
+}
+
 /** Resolve a docx/wiki link or token to a document id (plus url/title hints). */
 async function resolveTarget(
   deps: FeishuDocCollabDeps,
@@ -224,6 +253,8 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
                 comment_id: { type: 'string', required: true },
                 is_whole: { type: 'boolean', required: true },
                 solved: { type: 'boolean', required: true },
+                user_id: { type: 'string' },
+                user_name: { type: 'string' },
                 quote: { type: 'string' },
                 text: { type: 'string' },
                 replies: {
@@ -233,6 +264,8 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
                     additionalProperties: false,
                     properties: {
                       reply_id: { type: 'string' },
+                      user_id: { type: 'string' },
+                      user_name: { type: 'string' },
                       text: { type: 'string' },
                     },
                   },
@@ -254,11 +287,12 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
         }
         const lines = comments.map((comment, index) => {
           const state = `${comment.is_whole ? 'whole-document' : 'anchored'}${comment.solved ? ', solved' : ''}`
+          const by = comment.user_name === undefined ? '' : ` by ${comment.user_name}`
           const quote = comment.quote === undefined || comment.quote === '' ? '' : ` (quote: ${comment.quote})`
           const replies = comment.replies === undefined || comment.replies.length === 0
             ? ''
             : `\n${comment.replies.map(reply => `    - ${reply.text ?? ''}`).join('\n')}`
-          return `${index + 1}. [${comment.comment_id}] ${state}${quote}\n   ${comment.text ?? ''}${replies}`
+          return `${index + 1}. [${comment.comment_id}] ${state}${by}${quote}\n   ${comment.text ?? ''}${replies}`
         })
         const paging = value.has_more === true && value.next_page_token !== undefined
           ? `\n\n[more comments: page_token=${value.next_page_token}]`
@@ -319,15 +353,39 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
         throw docError('read comments of', error)
       }
 
+      // Resolve at most a handful of names per page so a comment-heavy document
+      // cannot turn one listing into dozens of contact calls.
+      const authorIds = new Set<string>()
+      for (const item of response?.data?.items ?? []) {
+        if (typeof item.user_id === 'string') authorIds.add(item.user_id)
+        for (const reply of item.reply_list?.replies ?? []) {
+          if (typeof reply.user_id === 'string') authorIds.add(reply.user_id)
+        }
+      }
+      const names = new Map<string, string | undefined>()
+      for (const openId of [...authorIds].slice(0, 10)) {
+        names.set(openId, await authorName(channel, openId))
+      }
+
       const comments = (response?.data?.items ?? []).map(item => {
-        const replies = (item.reply_list?.replies ?? []).map(reply => ({
-          ...(typeof reply.reply_id === 'string' ? { reply_id: reply.reply_id } : {}),
-          text: elementsText(reply.content?.elements),
-        }))
+        const replies = (item.reply_list?.replies ?? []).map(reply => {
+          const replyAuthor = typeof reply.user_id === 'string' ? reply.user_id : undefined
+          const replyName = replyAuthor === undefined ? undefined : names.get(replyAuthor)
+          return {
+            ...(typeof reply.reply_id === 'string' ? { reply_id: reply.reply_id } : {}),
+            ...(replyAuthor === undefined ? {} : { user_id: replyAuthor }),
+            ...(replyName === undefined ? {} : { user_name: replyName }),
+            text: elementsText(reply.content?.elements),
+          }
+        })
+        const author = typeof item.user_id === 'string' ? item.user_id : undefined
+        const name = author === undefined ? undefined : names.get(author)
         return {
           comment_id: typeof item.comment_id === 'string' ? item.comment_id : '',
           is_whole: item.is_whole === true,
           solved: item.is_solved === true,
+          ...(author === undefined ? {} : { user_id: author }),
+          ...(name === undefined ? {} : { user_name: name }),
           ...(typeof item.quote === 'string' && item.quote !== '' ? { quote: item.quote } : {}),
           ...(replies[0]?.text === undefined ? {} : { text: replies[0].text }),
           ...(replies.length === 0 ? {} : { replies }),
