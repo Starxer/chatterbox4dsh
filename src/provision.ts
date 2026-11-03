@@ -62,7 +62,7 @@ export const FEISHU_BOT_SCOPES = [
  *   who asked for it (`drive.v1.permissionMember.create`). Without it a
  *   tenant-token document stays owned by the bot and the user cannot open it.
  *
- * All four are requested here so a freshly scanned app can use the document
+ * All five are requested here so a freshly scanned app can use the document
  * tools immediately. The app is still limited to documents it is a
  * collaborator on.
  */
