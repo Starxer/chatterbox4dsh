@@ -1022,11 +1022,16 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       let title: string | undefined
 
       if (mode === 'create') {
-        const heading = /^#\s+(.+)$/mu.exec(markdown)?.[1]?.trim()
+        const headingMatch = /^#\s+(.+)$/mu.exec(markdown)
+        const heading = headingMatch?.[1]?.trim()
         const fileTitle = args.path === undefined ? undefined : basename(args.path).replace(/\.md$/iu, '')
-        title = args.title === undefined || args.title.trim() === ''
-          ? (heading ?? fileTitle ?? '未命名文档')
-          : args.title.trim()
+        const titleFromBody = args.title === undefined || args.title.trim() === ''
+        title = titleFromBody ? (heading ?? fileTitle ?? '未命名文档') : (args.title ?? '').trim()
+        // The document title is its own block; keeping the source H1 in the body
+        // would render the same heading twice.
+        if (titleFromBody && headingMatch !== null) {
+          markdown = markdown.replace(/^#\s+.+\r?\n?/mu, '')
+        }
         documentId = await createDocument(channel, title, args.folder_token)
         url = await documentUrl(channel, documentId)
       } else {

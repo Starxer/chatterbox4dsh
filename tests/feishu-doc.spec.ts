@@ -406,6 +406,9 @@ describe('feishu_doc_write', () => {
     })
     expect(value.title).toBe('文件标题')
     expect(value.images_uploaded).toBe(1)
+    // The H1 became the title, so it must not also stay in the body.
+    const sent = (client.docx.v1.document.convert.mock.calls[0]?.[0] as any)?.data?.content as string
+    expect(sent).not.toContain('# 文件标题')
   })
 
   it('refuses append without a revision', async () => {
