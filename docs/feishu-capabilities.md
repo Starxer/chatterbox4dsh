@@ -354,7 +354,7 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 | 解析 wiki 链接 | `wiki.v2.space.getNode` | `…/wiki/<node_token>` → `obj_token` + `obj_type`；不是 docx 直接报错 |
 | 读 Markdown | `docs.v1.content.get`（`doc_type: docx`、`content_type: markdown`） | 目前唯一返回 Markdown 的接口；需要 `docs:document.content:read` |
 | 读纯文本（回退） | `docx.v1.document.rawContent` | Markdown 读取权限缺失时降级，标题/列表结构丢失，结果里 `format: text` |
-| Markdown → 块 | `docx.v1.document.convert` | 支持文本、1–9 级标题、有序/无序列表、代码块、引用、待办、图片、表格、单元格 |
+| Markdown → 块 | `docx.v1.document.convert` | 支持文本、1–6 级标题、有序/无序列表、代码块、引用、待办、图片、表格、单元格（逐项实测见下） |
 | 插入块 | `docx.v1.documentBlockDescendant.create` | 单次上限 1000 块；`children_id` 用转换结果的 `first_level_block_ids` |
 | 清空正文 | `docx.v1.documentBlockChildren.batchDelete` | `replace` 模式先删 `0..N`，N 取根块 `children` 长度 |
 | 新建文档 | `docx.v1.document.create` | 归应用所有；`folder_token` 可指定落点 |
@@ -365,6 +365,23 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 - `docx:document` / `docx:document:create` **未开通**：`document.create` 返回 `99991672`，提示申请 `[docx:document, docx:document:create]`。
 - `docs:document.content:read` **未开通**：`docs.v1.content.get` 返回 `99991672`，提示申请 `docs:document.content:read`。
 - 其余链路（`document.get`、`documentBlock.get`、`documentBlockChildren.create/batchDelete`、`documentBlockDescendant.create`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）**没有**触发权限码：假 token 得到的是资源级 `1770002 not found` / `131005 not found`，说明请求已过权限闸门。
+
+**`feishu_doc_write` 实际能写的 Markdown（2026-11-04 `document.convert` 实测，不需要文档权限）**：
+
+| Markdown | 转换结果 |
+|---|---|
+| 普通段落 | `text` 块 |
+| `#` … `######` | `heading1` … `heading6`；**`#######` 起降级成普通文本**（文档写 1–9 级，实测只有 1–6） |
+| `-` / `1.` 列表 | `bullet` / `ordered` 块；**嵌套靠 `children` 保留**，缩进层级是真实父子结构 |
+| `- [ ]` / `- [x]` | `todo` 块，`done` 状态正确 |
+| `>` 引用 | `quote` 块，多行合并为一个块；**嵌套引用会被拍平** |
+| 围栏 ```` ```js ```` / 四空格缩进 | `code` 块（代码块语言随块携带） |
+| `\| A \| B \|` + 分隔行 | `table` + `table_cell` + 子 `text`；**没有分隔行就退化成普通文本** |
+| `---` | `divider` 块 |
+| `**粗**`、`*斜*`、`~~删~~`、`` `code` ``、`[链接](url)`、`<u>下划线</u>` | 都是 `text_run` 的行内样式（`bold`/`italic`/`strikethrough`/`inline_code`/`link`/`underline`） |
+| `![图](url)` | 生成 `image` 块，但**本插件丢弃**（见下） |
+| `<video>` / 裸 HTML 块 | 不支持，被忽略 |
+| `content_type: html` | 接口支持（`<h2>/<p>/<ul>` 可转块），但**工具只暴露 Markdown** |
 
 **已知取舍**：
 
