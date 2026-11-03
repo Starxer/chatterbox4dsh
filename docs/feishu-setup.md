@@ -40,6 +40,16 @@
 
 > 扫码一键配置会自动申请以上全部权限（`src/provision.ts` 的 `FEISHU_PROVISION_SCOPES`）。
 
+可选权限（在线文档工具 `feishu_doc_read` / `feishu_doc_write`，不装工具可以不申请）：
+
+| 权限标识 | 用途 |
+|---|---|
+| `docs:document.content:read` | `feishu_doc_read` 以 **Markdown** 读取文档；未开通时退回纯文本（`docx:document:readonly`） |
+| `docx:document` | 读写 docx 文档内容（`feishu_doc_write` 的 `append` / `replace`）。只新建文档可改为 `docx:document:create` |
+| `wiki:wiki:readonly` | 把 `…/wiki/…` 链接解析成它指向的文档 |
+
+> 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
+
 ### 4. 配置事件
 
 1. 进入"事件与回调" → "事件订阅"。

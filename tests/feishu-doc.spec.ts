@@ -1,0 +1,225 @@
+import { describe, expect, it, vi } from 'vitest'
+import { parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import type { LarkChannel } from '@larksuiteoapi/node-sdk'
+
+/** Minimal Cordis context exposing only tools.register. */
+function fakeCtx() {
+  const registered: Array<any> = []
+  return {
+    registered,
+    tools: {
+      register: (tool: any) => {
+        registered.push(tool)
+        return () => undefined
+      },
+    },
+  }
+}
+
+interface FakeClient {
+  docs: { v1: { content: { get: ReturnType<typeof vi.fn> } } }
+  docx: {
+    v1: {
+      document: { get: ReturnType<typeof vi.fn>, create: ReturnType<typeof vi.fn>, convert: ReturnType<typeof vi.fn>, rawContent: ReturnType<typeof vi.fn> }
+      documentBlock: { get: ReturnType<typeof vi.fn> }
+      documentBlockChildren: { batchDelete: ReturnType<typeof vi.fn> }
+      documentBlockDescendant: { create: ReturnType<typeof vi.fn> }
+    }
+  }
+  wiki: { v2: { space: { getNode: ReturnType<typeof vi.fn> } } }
+  drive: { v1: { meta: { batchQuery: ReturnType<typeof vi.fn> } } }
+}
+
+function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChannel, client: FakeClient } {
+  const client: FakeClient = {
+    docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: '# Hello\n\nworld' } })) } } },
+    docx: {
+      v1: {
+        document: {
+          get: vi.fn(async () => ({ data: { document: { title: 'Test Doc' } } })),
+          create: vi.fn(async () => ({ data: { document: { document_id: 'doxcnNEW' } } })),
+          rawContent: vi.fn(async () => ({ data: { content: 'plain text body' } })),
+          convert: vi.fn(async () => ({
+            data: {
+              first_level_block_ids: ['b1', 'b2'],
+              blocks: [
+                { block_id: 'b1', block_type: 3, heading1: { elements: [] } },
+                { block_id: 'b2', block_type: 27, image: {} },
+                { block_id: 'b3', block_type: 2, text: { elements: [], merge_info: { a: 1 } } },
+              ],
+            },
+          })),
+        },
+        documentBlock: { get: vi.fn(async () => ({ data: { block: { children: ['x', 'y'] } } })) },
+        documentBlockChildren: { batchDelete: vi.fn(async () => ({ data: {} })) },
+        documentBlockDescendant: { create: vi.fn(async () => ({ data: {} })) },
+      },
+    },
+    wiki: { v2: { space: { getNode: vi.fn(async () => ({ data: { node: { obj_token: 'doxcnWIKI', obj_type: 'docx', url: 'https://x.feishu.cn/wiki/NODE', title: 'Wiki Doc' } } })) } } },
+    drive: { v1: { meta: { batchQuery: vi.fn(async () => ({ data: { metas: [{ url: 'https://x.feishu.cn/docx/doxcnNEW' }] } })) } } },
+    ...overrides,
+  }
+  return { channel: { rawClient: client } as unknown as LarkChannel, client }
+}
+
+function toolsOver(channel: LarkChannel) {
+  const fake = fakeCtx()
+  startFeishuDocTools({
+    ctx: fake as unknown as Context,
+    channelHolder: { current: channel },
+    logger: { warn: vi.fn(), error: vi.fn() },
+  })
+  const byName = (name: string) => fake.registered.find(tool => tool.name === name)
+  return { read: byName('feishu_doc_read'), write: byName('feishu_doc_write') }
+}
+
+function execCtx(): any {
+  return { signal: { throwIfAborted: () => undefined } }
+}
+
+describe('parseDocTarget', () => {
+  it('parses docx and wiki links and bare tokens', () => {
+    expect(parseDocTarget('https://acme.feishu.cn/docx/doxcnAbCdEf')).toMatchObject({ kind: 'docx', token: 'doxcnAbCdEf' })
+    expect(parseDocTarget('https://acme.feishu.cn/wiki/wikcn12345?from=share')).toMatchObject({ kind: 'wiki', token: 'wikcn12345' })
+    expect(parseDocTarget('doxcn12345678')).toMatchObject({ kind: 'docx', token: 'doxcn12345678' })
+  })
+
+  it('rejects legacy docs, sheets and junk', () => {
+    expect(() => parseDocTarget('https://acme.feishu.cn/docs/doccn123456')).toThrow(/legacy/i)
+    expect(() => parseDocTarget('https://acme.feishu.cn/sheets/shtcn123456')).toThrow(/not a document/i)
+    expect(() => parseDocTarget('not a link')).toThrow(/document URL/)
+    expect(() => parseDocTarget('   ')).toThrow(/empty/)
+  })
+})
+
+describe('prepareBlocks', () => {
+  it('drops image blocks and read-only fields', () => {
+    const prepared = prepareBlocks(
+      [
+        { block_id: 'a', block_type: 2, parent_id: 'root', text: { elements: [{ text_run: { content: 'hi', text_element_style: { comment_ids: ['c'] } } }] } },
+        { block_id: 'img', block_type: 27, image: {} },
+        { block_id: 'b', block_type: 31, children: ['c1'], table: { merge_info: [1] } },
+        { block_id: 'c1', block_type: 32, parent_id: 'b', children: [] },
+      ],
+      ['a', 'img', 'b'],
+    )
+    expect(prepared.skippedImages).toBe(1)
+    expect(prepared.firstLevel).toEqual(['a', 'b'])
+    expect(prepared.blocks.map(block => block.block_id)).toEqual(['a', 'b', 'c1'])
+    expect(prepared.blocks.every(block => block.parent_id === undefined)).toBe(true)
+    expect(JSON.stringify(prepared.blocks)).not.toContain('merge_info')
+    expect(JSON.stringify(prepared.blocks)).not.toContain('comment_ids')
+  })
+})
+
+describe('feishu_doc_read', () => {
+  it('reads a docx link as markdown with its title', async () => {
+    const { channel } = fakeChannel()
+    const tool = toolsOver(channel).read!
+    const value = await tool.execute({ target: 'https://acme.feishu.cn/docx/doxcnAbCdEf' }, execCtx())
+    expect(value.document_id).toBe('doxcnAbCdEf')
+    expect(value.title).toBe('Test Doc')
+    expect(value.content).toBe('# Hello\n\nworld')
+    expect(value.format).toBe('markdown')
+    expect(value.truncated).toBe(false)
+  })
+
+  it('resolves a wiki link to the underlying document', async () => {
+    const { channel, client } = fakeChannel()
+    const tool = toolsOver(channel).read!
+    const value = await tool.execute({ target: 'https://acme.feishu.cn/wiki/wikcn12345' }, execCtx())
+    expect(client.wiki.v2.space.getNode).toHaveBeenCalledWith({ params: { token: 'wikcn12345' } })
+    expect(client.docs.v1.content.get).toHaveBeenCalledWith({
+      params: { doc_token: 'doxcnWIKI', doc_type: 'docx', content_type: 'markdown' },
+    })
+    expect(value.title).toBe('Wiki Doc')
+    expect(value.url).toBe('https://x.feishu.cn/wiki/NODE')
+  })
+
+  it('falls back to plain text when the Markdown read is not permitted', async () => {
+    const { channel, client } = fakeChannel({
+      docs: { v1: { content: { get: vi.fn(async () => { throw new Error('Access denied') }) } } },
+    })
+    const tool = toolsOver(channel).read!
+    const value = await tool.execute({ target: 'doxcn12345678' }, execCtx())
+    expect(client.docx.v1.document.rawContent).toHaveBeenCalledWith({ path: { document_id: 'doxcn12345678' } })
+    expect(value.content).toBe('plain text body')
+    expect(value.format).toBe('text')
+  })
+
+  it('truncates long bodies and reports the next offset', async () => {
+    const { channel } = fakeChannel({
+      docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'abcdefghij' } })) } } },
+    })
+    const tool = toolsOver(channel).read!
+    const first = await tool.execute({ target: 'doxcn12345678', max_chars: 4 }, execCtx())
+    expect(first.content).toBe('abcd')
+    expect(first.total_chars).toBe(10)
+    expect(first.truncated).toBe(true)
+    expect(first.next_offset).toBe(4)
+    const second = await tool.execute({ target: 'doxcn12345678', offset: first.next_offset, max_chars: 100 }, execCtx())
+    expect(second.content).toBe('efghij')
+    expect(second.truncated).toBe(false)
+  })
+})
+
+describe('feishu_doc_write', () => {
+  it('appends converted blocks at the end of an existing document', async () => {
+    const { channel, client } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    const value = await tool.execute({
+      mode: 'append',
+      target: 'https://acme.feishu.cn/docx/doxcnAbCdEf',
+      markdown: '# Title\n\nbody',
+    }, execCtx())
+
+    expect(client.docx.v1.document.convert).toHaveBeenCalledWith({
+      data: { content_type: 'markdown', content: '# Title\n\nbody' },
+    })
+    expect(client.docx.v1.documentBlockDescendant.create).toHaveBeenCalledWith({
+      path: { document_id: 'doxcnAbCdEf', block_id: 'doxcnAbCdEf' },
+      data: {
+        children_id: ['b1'],
+        index: 2,
+        descendants: expect.any(Array),
+      },
+    })
+    expect(value.mode).toBe('append')
+    expect(value.document_id).toBe('doxcnAbCdEf')
+    expect(value.blocks).toBe(2)
+    expect(value.skipped_images).toBe(1)
+  })
+
+  it('clears the body before writing in replace mode', async () => {
+    const { channel, client } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    await tool.execute({ mode: 'replace', target: 'doxcnAbCdEf', markdown: 'new body' }, execCtx())
+
+    expect(client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalledWith({
+      path: { document_id: 'doxcnAbCdEf', block_id: 'doxcnAbCdEf' },
+      data: { start_index: 0, end_index: 2 },
+    })
+    expect(client.docx.v1.documentBlockDescendant.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ index: 0 }),
+    }))
+  })
+
+  it('creates a document and returns its url', async () => {
+    const { channel, client } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    const value = await tool.execute({ mode: 'create', title: 'New Doc', markdown: 'hello' }, execCtx())
+
+    expect(client.docx.v1.document.create).toHaveBeenCalledWith({ data: { title: 'New Doc' } })
+    expect(client.docs.v1.content.get).not.toHaveBeenCalled()
+    expect(value.document_id).toBe('doxcnNEW')
+    expect(value.url).toBe('https://x.feishu.cn/docx/doxcnNEW')
+    expect(value.title).toBe('New Doc')
+  })
+
+  it('requires a target outside create mode', async () => {
+    const { channel } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    await expect(tool.execute({ mode: 'append', markdown: 'x' }, execCtx())).rejects.toThrow(/target is required/)
+  })
+})

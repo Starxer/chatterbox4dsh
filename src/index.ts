@@ -75,6 +75,7 @@ const CARD_SEND_TIMEOUT_MS = CARD_BARRIER_TIMEOUT_MS + OUTBOUND_TIMEOUT_MS
 import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool, sendWorkspaceFile } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
+import { startFeishuDocTools } from './feishu-doc.ts'
 import { startFeishuModelSelect, renderProviderSelectCard, renderReasoningCard, sendModelCardV2, type FeishuModelSelectHandle, type ModelSelectChannel } from './feishu-model-select.ts'
 import { decodeCardValue } from './card-action.ts'
 import {
@@ -247,6 +248,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopSubagents: () => void = () => undefined
   let stopSendFileTool: () => void = () => undefined
   let stopReceiveFileTool: () => void = () => undefined
+  let stopDocTools: () => void = () => undefined
   let modelSelectHandle: FeishuModelSelectHandle | undefined = undefined
   let onboardingHandle: FeishuOnboardingHandle | undefined = undefined
   let permissionHandle: FeishuPermissionHandle | undefined = undefined
@@ -860,6 +862,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // is guaranteed present — index.ts rejects the plugin without it).
     attachments,
   })
+  // `feishu_doc_read` / `feishu_doc_write`: read and edit Feishu online
+  // documents (docx) as Markdown. App-scoped, not chat-scoped, so they work
+  // from any session; only a live channel is needed at execution time.
+  stopDocTools = startFeishuDocTools({
+    ctx,
+    channelHolder,
+    logger: ctx.logger('dsh-feishu'),
+  })
   // Interactive `/permission` picker card. Independent of the questions/
   // approvals seams; only needs the live card channel + the sandbox policy.
   permissionHandle = startFeishuPermission({
@@ -1333,6 +1343,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     cardImages.dispose()
     stopSendFileTool()
     stopReceiveFileTool()
+    stopDocTools()
     modelSelectHandle?.dispose()
     permissionHandle?.stop()
     busyHandle?.stop()

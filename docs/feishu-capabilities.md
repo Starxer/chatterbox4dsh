@@ -345,7 +345,38 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 
 ---
 
-## 八、相关文档
+## 八、在线文档读写（docx）
+
+`src/feishu-doc.ts` 提供两个模型工具，让 agent 把飞书文档当工作对象，而不是只在聊天里贴链接。
+
+| 步骤 | 接口 | 说明 |
+|---|---|---|
+| 解析 wiki 链接 | `wiki.v2.space.getNode` | `…/wiki/<node_token>` → `obj_token` + `obj_type`；不是 docx 直接报错 |
+| 读 Markdown | `docs.v1.content.get`（`doc_type: docx`、`content_type: markdown`） | 目前唯一返回 Markdown 的接口；需要 `docs:document.content:read` |
+| 读纯文本（回退） | `docx.v1.document.rawContent` | Markdown 读取权限缺失时降级，标题/列表结构丢失，结果里 `format: text` |
+| Markdown → 块 | `docx.v1.document.convert` | 支持文本、1–9 级标题、有序/无序列表、代码块、引用、待办、图片、表格、单元格 |
+| 插入块 | `docx.v1.documentBlockDescendant.create` | 单次上限 1000 块；`children_id` 用转换结果的 `first_level_block_ids` |
+| 清空正文 | `docx.v1.documentBlockChildren.batchDelete` | `replace` 模式先删 `0..N`，N 取根块 `children` 长度 |
+| 新建文档 | `docx.v1.document.create` | 归应用所有；`folder_token` 可指定落点 |
+| 取链接 | `drive.v1.meta.batchQuery`（`with_url`） | 只用于回显 URL，失败不影响读写 |
+
+**2026-11-03 本租户实测（应用身份，假 token 探针）**：
+
+- `docx:document` / `docx:document:create` **未开通**：`document.create` 返回 `99991672`，提示申请 `[docx:document, docx:document:create]`。
+- `docs:document.content:read` **未开通**：`docs.v1.content.get` 返回 `99991672`，提示申请 `docs:document.content:read`。
+- 其余链路（`document.get`、`documentBlock.get`、`documentBlockChildren.create/batchDelete`、`documentBlockDescendant.create`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）**没有**触发权限码：假 token 得到的是资源级 `1770002 not found` / `131005 not found`，说明请求已过权限闸门。
+
+**已知取舍**：
+
+- **图片不写入**：转换出的 image 块没有素材 token，直接插入会让整次请求失败，因此连同引用一起丢弃，并在结果里报 `skipped_images`。
+- 表格的 `merge_info` 是只读字段，写回前递归剥掉（官方文档明确要求）。
+- 只支持新版文档（`docx`）；旧版 `doc`、`sheets`、`bitable` 明确报错，不猜。
+- 单篇文档并发编辑上限 3 次/秒（官方），一次写入通常是 2–3 个串行请求。
+- 应用身份新建的文档属于应用；用户要直接打开需要另行加协作者。
+
+---
+
+## 九、相关文档
 
 - [飞书卡片 JSON 2.0 结构](https://open.feishu.cn/document/feishu-cards/card-json-v2-structure.md)
 - [卡片组件概述](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview)

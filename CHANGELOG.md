@@ -5,6 +5,20 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：飞书在线文档读写工具 `feishu_doc_read` / `feishu_doc_write`（`src/feishu-doc.ts`，2026-11-03）
+
+**动机**：在此之前，飞书通道只把「聊天」翻译成卡片；用户的真实工作却常常在飞书在线文档里，agent 拿不到也写不进。这两把工具让模型直接以 **Markdown** 读写 docx 文档，而不是把文档内容复制进聊天。
+
+**读**（`feishu_doc_read`）：接受 `…/docx/<token>`、`…/wiki/<token>` 链接或裸 token。wiki 链接先经 `wiki.v2.space.getNode` 解析成底层 docx；正文优先用 `docs.v1.content.get`（`content_type: markdown`，唯一返回 Markdown 的接口），该权限缺失时降级到 `docx.v1.document.rawContent` 纯文本并在结果里标 `format: text`。长文按 `max_chars`（默认 20,000，上限 60,000）截断并给出 `next_offset`，可以续读。
+
+**写**（`feishu_doc_write`）：三种模式——`create`（`docx.v1.document.create` + 插入块）、`append`（插到正文末尾）、`replace`（`documentBlockChildren.batchDelete` 清空后重写）。Markdown 先经 `docx.v1.document.convert` 转成原生块，再用 `documentBlockDescendant.create` 一次插入（`children_id` 取 `first_level_block_ids`）。写回前递归剥掉只读字段（表格 `merge_info`、`comment_ids`、`parent_id`）；**图片块跳过**（转换产物没有素材 token，插入会让整次请求失败），结果里报 `skipped_images`。只支持新版文档（docx），旧版 `doc`/`sheets`/`bitable` 明确报错。
+
+**权限（2026-11-03 真机探针，应用身份）**：本租户当前**缺两个 scope**，工具上线前需在开发者后台开通——`docx:document`（或仅新建时 `docx:document:create`）与 `docs:document.content:read`；两者未开通时分别返回 `99991672` 并给出申请链接。其余链路（文档/块读写、convert、wiki 解析、drive 元数据）已过权限闸门。另外应用身份只能操作**已把应用加为协作者**的文档。
+
+**验证**：新增 `tests/feishu-doc.spec.ts`（11 例：目标解析、wiki 解析、截断续读、纯文本回退、图片剔除、append/replace/create 的调用形状、缺 target 报错）；全量测试、`typecheck`、`build` 全绿。真机端到端待 scope 开通后补测。
+
+**English**: Adds `feishu_doc_read` / `feishu_doc_write` model tools so the agent can read docx documents (and resolve wiki links) as Markdown and write them back as native blocks through `convert` + `documentBlockDescendant.create`, in `create` / `append` / `replace` modes. Reads fall back from the Markdown endpoint to `document.rawContent` when the Markdown scope is missing; long bodies truncate with a `next_offset`. Image blocks are skipped (converter output carries no media token), read-only fields are stripped before insert, and only docx is supported. Live probing on 2026-11-03 shows this tenant still needs `docx:document` (or `docx:document:create`) and `docs:document.content:read`; every other call in the chain passes the permission gate. 11 new tests; full suite, typecheck and build pass.
+
 ### 修复：同一轮出现两张一模一样的「✅ 完成」卡（`src/feishu-streaming.ts` / `src/channel.ts`，2026-10-30）
 
 **现象**：`compact` 档的一轮结束后，话题里出现两张标题与正文都相同的卡（`✅ 完成 · 2m39s`，正文逐字一致）：一张是承载答案的紧凑过程卡收尾，另一张是 `channel.ts` 的兜底回答卡。
