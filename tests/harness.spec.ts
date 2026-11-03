@@ -429,6 +429,9 @@ describe('HarnessConversationService', () => {
     const statePath = join(tmpdir(), `dsh-feishu-turns-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
     expect(service.lastActiveSession()).toBeUndefined()
+    // An inbound message alone is activity, not an interruption.
+    service.noteSessionActivity('session-b')
+    expect(service.lastActiveSession()).toEqual({ sessionId: 'session-b', interrupted: false })
     service.noteSessionTurnStart('session-a')
     expect(service.lastActiveSession()).toEqual({ sessionId: 'session-a', interrupted: true })
 

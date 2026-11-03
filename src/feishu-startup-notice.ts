@@ -129,6 +129,8 @@ export function sendStartupNoticeOnce(deps: StartupNoticeDeps): Promise<void> {
           `dsh-feishu: startup notice sent to ${result.chatId}`
           + `${result.interrupted === true ? ' (previous turn interrupted)' : ''}`,
         )
+      } else {
+        deps.logger.warn(`dsh-feishu: startup notice skipped: ${result.reason ?? 'unknown'}`)
       }
     })
     .catch((error: unknown) => {

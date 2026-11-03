@@ -296,7 +296,10 @@ export async function startChannel(
   // `noteInboundSender` is optional so test doubles (and older embedders) do
   // not have to grow a method just to keep the channel booting.
   bridge: Pick<HarnessConversationService, 'reply' | 'dispose' | 'consumeIntermediateSent' | 'resolveSessionIdFor' | 'needsOnboarding' | 'noteTopic'>
-    & { noteInboundSender?: HarnessConversationService['noteInboundSender'] },
+    & {
+      noteInboundSender?: HarnessConversationService['noteInboundSender']
+      noteSessionActivity?: HarnessConversationService['noteSessionActivity']
+    },
   factory: ChannelFactory = createLarkChannel,
   logger: PluginLogger = console,
   terminalLogger?: Pick<PluginLogger, 'error'>,
@@ -523,6 +526,9 @@ export async function startChannel(
       // Remember who is speaking: a tenant-token document the bot creates is
       // owned by the bot, so the doc tools must grant this user access to it.
       bridge.noteInboundSender?.(message.chatId, message.senderId)
+      // A message is activity too: the startup notice should be able to name a
+      // chat even if the process restarts before the first turn completes.
+      bridge.noteSessionActivity?.(bridge.resolveSessionIdFor(message))
       const startingSession = bridge.resolveSessionIdFor(message)
       const startingEpoch = bindingEpochs.get(key) ?? 0
       let initiallyUnbound = false

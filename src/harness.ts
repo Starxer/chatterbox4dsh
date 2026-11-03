@@ -1293,6 +1293,19 @@ export class HarnessConversationService {
   }
 
   /**
+   * Record that a session was active without a turn boundary (an inbound
+   * message). Keeps the startup notice useful even when the process restarts
+   * before any turn finished.
+   *
+   * @param sessionId - the session the activity belongs to.
+   */
+  noteSessionActivity(sessionId: string): void {
+    if (sessionId === '') return
+    this.sessionActivity.set(sessionId, Date.now())
+    this.saveSessionMap()
+  }
+
+  /**
    * Record that a turn ended normally (clears the interrupted marker).
    *
    * Called from the session-event listener on `turn/end`.
@@ -1315,8 +1328,10 @@ export class HarnessConversationService {
   lastActiveSession(): { sessionId: string, interrupted: boolean } | undefined {
     let bestId: string | undefined
     let bestAt = -Infinity
+    // `<` keeps Map insertion order as the tie-break: two boundaries in the
+    // same millisecond must still pick the later session.
     for (const [sessionId, at] of this.sessionActivity) {
-      if (at > bestAt) {
+      if (at >= bestAt) {
         bestAt = at
         bestId = sessionId
       }
@@ -1337,9 +1352,12 @@ export class HarnessConversationService {
    */
   recentActiveSessions(limit = 20): Array<{ sessionId: string, interrupted: boolean }> {
     return [...this.sessionActivity.entries()]
-      .sort((left, right) => right[1] - left[1])
+      .map(([sessionId, at], index) => ({ sessionId, at, index }))
+      // Equal timestamps fall back to insertion order, newest last: two events
+      // in the same millisecond must still sort the later one first.
+      .sort((left, right) => right.at - left.at || right.index - left.index)
       .slice(0, Math.max(1, limit))
-      .map(([sessionId]) => ({ sessionId, interrupted: this.interruptedSessions.has(sessionId) }))
+      .map(({ sessionId }) => ({ sessionId, interrupted: this.interruptedSessions.has(sessionId) }))
   }
 
   /**

@@ -9,8 +9,8 @@
 
 - 插件在**进程启动后第一次连上飞书**时，向**最后活跃的会话**发一条文本（不调用模型）：`✅ DSH 已启动，飞书已连接。`
 - 若那个会话的上一回合没有正常结束（DSH 停止/重启把它打断），追加：`⚠️ 上一个回合可能被中断过（DSH 停止或重启）。要继续的话，直接发消息即可。`
-- 实现：bridge 在 `turn/start` / `turn/end` 持久化「session 最后活动时间」与「回合未结束」标记（写进 `lark-session-map.json`，原子写）；通知选最近活跃且能解析到飞书 chat 的 session，话题内回复带 `replyInThread`/`replyTo`，送达后才清标记；`dispose()` 不清这两张表，保证重启后提示不丢；`globalThis` 按 pid 去重，热重载不重复发。
-- 测试：bridge 持久化 3 例 + 通知模块 7 例；全量测试、`typecheck`、`build` 全绿。
+- 实现：bridge 在 `turn/start` / `turn/end` 持久化「session 最后活动时间」与「回合未结束」标记（写进 `lark-session-map.json`，原子写）；**入站消息也算活跃**（`noteSessionActivity`），即使进程在第一个回合完成前就重启，下一条通知仍找得到聊天。通知选最近活跃且能解析到飞书 chat 的 session，话题内回复带 `replyInThread`/`replyTo`，送达后才清标记；`dispose()` 不清这两张表，保证重启后提示不丢；`globalThis` 按 pid 去重，热重载不重复发；未发送时也打一行 `startup notice skipped: <reason>`，不静默。
+- 测试：bridge 持久化（含「入站消息只算活跃、不算中断」）+ 通知模块 7 例；全量 **1383 测试 / 69 文件**、`typecheck`、`build` 全绿。
 
 **English**: On the first channel connection after a process start the plugin posts one model-free text into the last active chat ("DSH started; Feishu is connected"), adding an "this turn may have been interrupted — send a message to continue" line when the bridge's persisted `turn/start` marker was never cleared by `turn/end`. The session activity and interrupted markers are persisted in the bridge state file (atomic write), `dispose()` deliberately keeps them, and a pid-keyed flag prevents repeats on hot reload.
 
