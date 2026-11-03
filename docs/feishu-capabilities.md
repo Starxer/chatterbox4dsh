@@ -401,6 +401,18 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 - **文档共享**：`drive.v1.permissionMember.create`（`member_type: openid`、`perm: edit`）实测 `code=0`；`create` 模式会把新文档共享给对话里最后一个发言的用户（open_id 由入站消息的 `senderId` 记在 bridge 内存里，重启丢失则跳过共享并如实上报）。
 - **读回不含图片**：`docs.v1.content.get` 的 Markdown 输出里没有图片引用（实测），图片是否嵌入要看块本身，不能靠读回判断。
 
+**协作能力（2026-11-04 实测，`feishu_doc_comments` / `feishu_doc_blocks`）**：
+
+| 能力 | 接口 | 实测结论 |
+|---|---|---|
+| 版本号 | `docx.v1.document.get` | `revision_id` 可用（新建后 1，每次编辑 +1） |
+| 乐观锁 | 编辑接口的 `document_revision_id` | **过期 revision 不会被拒绝**：用旧版本调 `documentBlockDescendant.create` 仍 `code=0` 并写入 ⇒ 只能在应用层「写前比对」，`feishu_doc_write` 的 `revision` 参数即此实现（剩余竞争窗口毫秒级） |
+| 列块 | `docx.v1.documentBlock.list` | 返回块 id / 类型 / 文本 / image token |
+| 改块 | `docx.v1.documentBlock.patch`（`update_text_elements`） | `code=0`，读回文本已更新；块类型保留，行内样式重置为纯文本 |
+| 读评论 | `drive.v1.fileComment.list` | `code=0`，含 `is_whole` / `is_solved` / `quote` / `reply_list` |
+| 发评论 | `drive.v1.fileComment.create` | 只能建**全文评论**（接口明确不支持局部评论），`code=0` |
+| 回评论 | `drive.v1.fileCommentReply.create` | 对全文评论返回 `1069302 The comment section does not allow replies` ⇒ 工具不提供回复动作 |
+
 **已知取舍**：
 
 - **图片写入是尽力而为**：每张图单独失败（读不到/超限/上传失败）只记跳过、不中断整篇；被跳过的 image 块仍留在文档里，表现为空图片占位。

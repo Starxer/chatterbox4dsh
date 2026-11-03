@@ -58,7 +58,7 @@ export interface FeishuDocTarget {
 }
 
 /** A resolved docx document: whatever a URL or token ultimately points at. */
-interface ResolvedDoc {
+export interface ResolvedDoc {
   documentId: string
   url?: string
   title?: string
@@ -132,7 +132,7 @@ export function parseDocTarget(input: string): FeishuDocTarget {
  * @param target - parsed target.
  * @returns document id plus the canonical URL/title when Feishu supplies them.
  */
-async function resolveDoc(channel: LarkChannel, target: FeishuDocTarget): Promise<ResolvedDoc> {
+export async function resolveDoc(channel: LarkChannel, target: FeishuDocTarget): Promise<ResolvedDoc> {
   if (target.kind === 'docx') {
     return { documentId: target.token, ...(target.url === undefined ? {} : { url: target.url }) }
   }
@@ -490,6 +490,60 @@ async function shareDocument(channel: LarkChannel, documentId: string, openId: s
   }
 }
 
+/** Current document revision id (used as an optimistic-concurrency token). */
+async function documentRevision(channel: LarkChannel, documentId: string): Promise<number | undefined> {
+  try {
+    const response = await withLinkTimeout(
+      channel.rawClient.docx.v1.document.get({ path: { document_id: documentId } }),
+      'read document revision',
+      DOC_META_TIMEOUT_MS,
+    )
+    const revision = response?.data?.document?.revision_id
+    return typeof revision === 'number' ? revision : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Image blocks in the document, in order, with their media tokens.
+ *
+ * The Markdown reader (`docs.v1.content.get`) omits images entirely, so this
+ * block scan is the only way to tell a reader that the document contains
+ * pictures. Bounded and best-effort: a listing failure must not fail a read.
+ */
+async function documentImages(
+  channel: LarkChannel,
+  documentId: string,
+): Promise<Array<{ block_id: string, token: string }>> {
+  const images: Array<{ block_id: string, token: string }> = []
+  try {
+    let pageToken: string | undefined
+    for (let page = 0; page < 5; page++) {
+      const response = await withLinkTimeout(
+        channel.rawClient.docx.v1.documentBlock.list({
+          path: { document_id: documentId },
+          params: { page_size: 200, ...(pageToken === undefined ? {} : { page_token: pageToken }) },
+        }),
+        'list document blocks',
+        DOC_REQUEST_TIMEOUT_MS,
+      )
+      for (const block of response?.data?.items ?? []) {
+        if (block.block_type !== IMAGE_BLOCK_TYPE) continue
+        if (typeof block.block_id !== 'string') continue
+        const token = (block as { image?: { token?: string } }).image?.token
+        images.push({ block_id: block.block_id, token: typeof token === 'string' ? token : '' })
+      }
+      if (response?.data?.has_more !== true) break
+      pageToken = response?.data?.page_token
+      if (pageToken === undefined || pageToken === '') break
+    }
+  } catch {
+    return images
+  }
+  return images
+}
+
 /** The document root block's children — used to append at the end / clear the body. */
 async function bodyChildIds(channel: LarkChannel, documentId: string): Promise<string[]> {
   let response: Awaited<ReturnType<LarkChannel['rawClient']['docx']['v1']['documentBlock']['get']>>
@@ -620,6 +674,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'or `…/wiki/<token>` link — or its token. Returns the title, the Markdown body and the document id '
       + 'needed by `feishu_doc_write`. Long bodies are truncated and give a `next_offset` to continue. '
       + 'When the app only has the plain-text scope the body comes back unformatted and `format` says `text`. '
+      + 'Also returns the current `revision_id` (pass it to `feishu_doc_write` to avoid overwriting newer '
+      + 'edits) and the image blocks, which the Markdown body never includes. '
       + 'The Feishu app must be able to read the document, otherwise the call fails and says what to fix.',
     parameters: {
       target: {
@@ -649,6 +705,19 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
           total_chars: { type: 'number', required: true },
           truncated: { type: 'boolean', required: true },
           next_offset: { type: 'number' },
+          revision_id: { type: 'number', description: 'Current revision; pass it to feishu_doc_write to refuse overwriting newer edits.' },
+          images: {
+            type: 'array',
+            description: 'Image blocks found outside the Markdown body (the body never includes them).',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                block_id: { type: 'string', required: true },
+                token: { type: 'string' },
+              },
+            },
+          },
         },
       },
       render: (_args, value) => {
@@ -663,7 +732,11 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
           lines.push('', `[truncated: showing ${value.content.length} of ${value.total_chars} characters — continue with offset=${value.next_offset ?? 0}]`)
         }
         const title = value.title === undefined || value.title === '' ? '' : ` · title: ${value.title}`
-        lines.push('', `[document_id: ${value.document_id}${title}${value.url === undefined ? '' : ` · ${value.url}`}]`)
+        const revision = value.revision_id === undefined ? '' : ` · revision: ${value.revision_id}`
+        const images = value.images === undefined || value.images.length === 0
+          ? ''
+          : ` · ${value.images.length} image block(s) not shown in the body`
+        lines.push('', `[document_id: ${value.document_id}${title}${revision}${images}${value.url === undefined ? '' : ` · ${value.url}`}]`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
@@ -676,6 +749,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       const maxChars = clamp(args.max_chars ?? DEFAULT_READ_CHARS, 1, MAX_READ_CHARS)
       const body = await readBody(channel, resolved.documentId)
       const title = resolved.title ?? await documentTitle(channel, resolved.documentId)
+      const revisionId = await documentRevision(channel, resolved.documentId)
+      const images = await documentImages(channel, resolved.documentId)
       const slice = body.content.slice(offset, offset + maxChars)
       const truncated = offset + slice.length < body.content.length
       const url = resolved.url ?? await documentUrl(channel, resolved.documentId)
@@ -692,6 +767,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         total_chars: body.content.length,
         truncated,
         ...(truncated ? { next_offset: offset + slice.length } : {}),
+        ...(revisionId === undefined ? {} : { revision_id: revisionId }),
+        ...(images.length === 0 ? {} : { images }),
       }
     },
   }))
@@ -702,9 +779,12 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       'Create or edit a Feishu/Lark online document (docx) from Markdown. Modes: `create` makes a new '
       + 'document from `title` + `markdown`; `append` adds `markdown` at the end of the document given by '
       + '`target`; `replace` deletes the whole existing body and writes `markdown` instead. Markdown is '
-      + 'converted to native document blocks (headings, lists, tables, code, checkboxes); images are '
-      + 'skipped. The Feishu app must be able to edit the target document. Prefer `append` — `replace` '
-      + 'destroys content and cannot be undone.',
+      + 'converted to native document blocks (headings, lists, tables, code, checkboxes). Images are '
+      + 'uploaded and embedded when the reference is an absolute local path to a png/jpeg/webp/gif '
+      + 'under 10 MB; remote URLs and relative paths are skipped. With `create`, the new document is '
+      + 'shared with the user who asked for it. Pass the `revision_id` from `feishu_doc_read` to refuse '
+      + 'writing over newer edits. The Feishu app must be able to edit the target document. Prefer '
+      + '`append` — `replace` destroys content and cannot be undone.',
     parameters: {
       mode: {
         type: 'string',
@@ -729,6 +809,11 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         type: 'string',
         description: 'Folder token to create the document in (`create` only). Defaults to the app\'s own space.',
       },
+      revision: {
+        type: 'number',
+        description: 'The `revision_id` a previous `feishu_doc_read` returned. When set, the write is '
+          + 'refused if the document has changed since then, instead of overwriting newer edits.',
+      },
     },
     output: {
       schema: {
@@ -740,6 +825,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
           title: { type: 'string' },
           url: { type: 'string' },
           blocks: { type: 'number', required: true },
+          revision: { type: 'number' },
           images_uploaded: { type: 'number', required: true },
           images_skipped: { type: 'number', required: true },
           shared: { type: 'boolean', required: true },
@@ -806,6 +892,20 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         loaded.push(image)
       }
 
+      // Optimistic concurrency: the edit APIs accept a revision but do NOT
+      // reject a stale one (verified 2026-11-04), so the guard has to be a
+      // check-before-write here. The remaining race window is milliseconds.
+      if (args.revision !== undefined) {
+        const current = await documentRevision(channel, documentId)
+        if (current !== undefined && current !== args.revision) {
+          throw new Error(
+            `The document changed since it was read (expected revision ${args.revision}, it is now ${current}). `
+            + 'Read it again with feishu_doc_read and merge the newer edits before writing — '
+            + 'writing now would overwrite them.',
+          )
+        }
+      }
+
       const converted = await convertMarkdown(channel, markdown)
       const prepared = prepareBlocks(converted.blocks, converted.firstLevel, index => keep[index] === true)
       if (prepared.firstLevel.length === 0) {
@@ -843,6 +943,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
 
       if (title === undefined) title = await documentTitle(channel, documentId)
       if (url === undefined) url = await documentUrl(channel, documentId)
+      const revision = await documentRevision(channel, documentId)
       logger.warn(
         `dsh-feishu: feishu_doc_write ${mode} ${prepared.blocks.length} block(s) into ${documentId}`
         + ` (${filled.uploaded}/${loaded.length} image(s) embedded, shared=${shared})`,
@@ -853,6 +954,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         ...(title === undefined ? {} : { title }),
         ...(url === undefined ? {} : { url }),
         blocks: prepared.blocks.length,
+        ...(revision === undefined ? {} : { revision }),
         images_uploaded: filled.uploaded,
         images_skipped: refs.length - filled.uploaded,
         shared,

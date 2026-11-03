@@ -55,8 +55,12 @@
 1. 开发者后台 → 权限管理，勾选上面的权限，然后创建版本并发布；或
 2. 用应用自身凭证调 `application.v7.applicationConfig.patch` 的 `data.scope.add_scopes`（需要 `application:application:patch`，扫码建的应用已有）。**免审权限立即生效**，其余仍需发布审核；本部署 2026-11-04 就是用它补齐的。
 
+> 评论与块级接口用的是平台模板自带的 `docs:document.comment:*`（读评论）与 docx 块权限，不额外申请。
+>
 > 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
 
+> 评论与块级接口用的是平台模板自带的 `docs:document.comment:*`（读评论）与 docx 块权限，不额外申请。
+>
 > 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
 
 ### 4. 配置事件

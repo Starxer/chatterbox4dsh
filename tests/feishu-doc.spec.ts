@@ -191,6 +191,21 @@ describe('feishu_doc_read', () => {
     expect(value.format).toBe('text')
   })
 
+  it('reports the revision and the image blocks the body omits', async () => {
+    const { channel, client } = fakeChannel({
+      docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'body' } })) } } },
+    })
+    client.docx.v1.document.get = vi.fn(async () => ({ data: { document: { title: 'T', revision_id: 7 } } }))
+    client.docx.v1.documentBlock.list = vi.fn(async () => ({
+      data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: 'img_v3_x' } }], has_more: false },
+    }))
+    const tool = toolsOver(channel).read!
+    const value = await tool.execute({ target: 'doxcn12345678' }, execCtx())
+
+    expect(value.revision_id).toBe(7)
+    expect(value.images).toEqual([{ block_id: 'imgblk', token: 'img_v3_x' }])
+  })
+
   it('truncates long bodies and reports the next offset', async () => {
     const { channel } = fakeChannel({
       docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'abcdefghij' } })) } } },
@@ -323,6 +338,15 @@ describe('feishu_doc_write', () => {
 
     expect(client.drive.v1.permissionMember.create).not.toHaveBeenCalled()
     expect(value.shared).toBe(false)
+  })
+
+  it('refuses to write when the document moved past the expected revision', async () => {
+    const { channel, client } = fakeChannel()
+    client.docx.v1.document.get = vi.fn(async () => ({ data: { document: { title: 'T', revision_id: 9 } } }))
+    const tool = toolsOver(channel).write!
+    await expect(tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 8 }, execCtx()))
+      .rejects.toThrow(/changed since it was read/)
+    expect(client.docx.v1.documentBlockDescendant.create).not.toHaveBeenCalled()
   })
 
   it('requires a target outside create mode', async () => {

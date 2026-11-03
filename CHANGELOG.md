@@ -5,6 +5,22 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：文档协作工具——版本守卫、评论、块级编辑、图片读回（`src/feishu-doc.ts` / `src/feishu-doc-collab.ts`，2026-11-04）
+
+**版本守卫**：`feishu_doc_read` 现在返回 `revision_id`；`feishu_doc_write` 新增 `revision` 参数，写前比对当前版本，不一致直接失败并提示重新读取。**依据**：飞书的 `document_revision_id` 参数**不会拒绝过期版本**——用旧 revision 调 `documentBlockDescendant.create` 实测仍然 `code=0` 并写入，所以乐观锁只能放在应用层（剩余竞争窗口毫秒级）。
+
+**评论**：新增 `feishu_doc_comments`。`list` 返回评论线程（id、是否全文评论、是否已解决、锚定引用、回复）；`create` 发一条**全文评论**。飞书的创建接口只支持全文评论，且**回复全文评论会被拒**（`1069302 The comment section does not allow replies`，实测），因此不提供回复动作，工具描述里写明。
+
+**块级编辑**：新增 `feishu_doc_blocks`。`list` 返回块 id / 类型 / 文本预览 / 图片素材 token；`update` 用 `documentBlock.patch` 的 `update_text_elements` 就地改一个块的文本——不动其他块，也不动 Markdown 转换覆盖不到的人工结构（callout、折叠、分栏等）。代价是该块的**行内样式重置为纯文本**。
+
+**图片读回**：Markdown 读取永远不含图片（`docs.v1.content.get` 的口径），所以读取工具额外做一次块扫描，返回 `images: [{ block_id, token }]`，并在元数据行标注图片数量。
+
+**权限**：不需要新 scope——评论用平台模板自带的 `docs:document.comment:*`，块级接口用已有的 docx 块权限。
+
+**验证**：新增 `tests/feishu-doc-collab.spec.ts`（6 例：评论列取/创建/必填、块列取/更新/必填），`tests/feishu-doc.spec.ts` 增至 18 例（版本 + 图片读回 + 版本冲突拒绝）；全量 **1366 测试 / 68 文件**、`typecheck`、`build` 全绿。真机侧已实测评论创建/列表、块 patch、revision 递增与「过期 revision 不被拒」。
+
+**English**: Adds a collaboration layer on top of the document tools: `feishu_doc_read` now returns the revision id and the image blocks the Markdown body omits, `feishu_doc_write` accepts a `revision` and refuses to write when the document moved (the platform's `document_revision_id` does not reject stale revisions — verified), `feishu_doc_comments` lists/creates whole-document comments (replying to them is rejected with `1069302`, so no reply action), and `feishu_doc_blocks` lists blocks with ids/types/text/image tokens and rewrites one block in place via `update_text_elements` (inline formatting becomes plain text). No new scopes were needed. 1366 tests / 68 files, typecheck and build pass.
+
 ### 新增：文档图片自动上传 + 新建文档自动共享给对话用户（`src/feishu-doc.ts` / `src/harness.ts` / `src/channel.ts` / `src/provision.ts`，2026-11-04）
 
 **背景**：应用身份（tenant token）建出的 docx 归**机器人自己**所有（owner = bot 的 open_id，实测），用户拿到链接打不开；同时 Markdown 里的图片此前会被整块丢弃。

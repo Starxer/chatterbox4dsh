@@ -76,6 +76,7 @@ import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool, sendWorkspaceFile } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
 import { startFeishuDocTools } from './feishu-doc.ts'
+import { startFeishuDocCollabTools } from './feishu-doc-collab.ts'
 import { startFeishuModelSelect, renderProviderSelectCard, renderReasoningCard, sendModelCardV2, type FeishuModelSelectHandle, type ModelSelectChannel } from './feishu-model-select.ts'
 import { decodeCardValue } from './card-action.ts'
 import {
@@ -249,6 +250,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopSendFileTool: () => void = () => undefined
   let stopReceiveFileTool: () => void = () => undefined
   let stopDocTools: () => void = () => undefined
+  let stopDocCollabTools: () => void = () => undefined
   let modelSelectHandle: FeishuModelSelectHandle | undefined = undefined
   let onboardingHandle: FeishuOnboardingHandle | undefined = undefined
   let permissionHandle: FeishuPermissionHandle | undefined = undefined
@@ -873,6 +875,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     bridgeHolder,
     logger: ctx.logger('dsh-feishu'),
   })
+  // `feishu_doc_comments` / `feishu_doc_blocks`: collaboration surfaces —
+  // comment threads, and block-level listing plus in-place text updates.
+  stopDocCollabTools = startFeishuDocCollabTools({
+    ctx,
+    channelHolder,
+    logger: ctx.logger('dsh-feishu'),
+  })
   // Interactive `/permission` picker card. Independent of the questions/
   // approvals seams; only needs the live card channel + the sandbox policy.
   permissionHandle = startFeishuPermission({
@@ -1347,6 +1356,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopSendFileTool()
     stopReceiveFileTool()
     stopDocTools()
+    stopDocCollabTools()
     modelSelectHandle?.dispose()
     permissionHandle?.stop()
     busyHandle?.stop()
