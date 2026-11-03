@@ -5,6 +5,15 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：启动/重启后自动通知最后活跃会话（`src/feishu-startup-notice.ts` / `src/harness.ts` / `src/index.ts`，2026-11-04）
+
+- 插件在**进程启动后第一次连上飞书**时，向**最后活跃的会话**发一条文本（不调用模型）：`✅ DSH 已启动，飞书已连接。`
+- 若那个会话的上一回合没有正常结束（DSH 停止/重启把它打断），追加：`⚠️ 上一个回合可能被中断过（DSH 停止或重启）。要继续的话，直接发消息即可。`
+- 实现：bridge 在 `turn/start` / `turn/end` 持久化「session 最后活动时间」与「回合未结束」标记（写进 `lark-session-map.json`，原子写）；通知选最近活跃且能解析到飞书 chat 的 session，话题内回复带 `replyInThread`/`replyTo`，送达后才清标记；`dispose()` 不清这两张表，保证重启后提示不丢；`globalThis` 按 pid 去重，热重载不重复发。
+- 测试：bridge 持久化 3 例 + 通知模块 7 例；全量测试、`typecheck`、`build` 全绿。
+
+**English**: On the first channel connection after a process start the plugin posts one model-free text into the last active chat ("DSH started; Feishu is connected"), adding an "this turn may have been interrupted — send a message to continue" line when the bridge's persisted `turn/start` marker was never cleared by `turn/end`. The session activity and interrupted markers are persisted in the bridge state file (atomic write), `dispose()` deliberately keeps them, and a pid-keyed flag prevents repeats on hot reload.
+
 ### 改进：文档图片可下载到本地、写入对限流重试（2026-11-04）
 
 - **图片可真正查看**：`feishu_doc_read` 新增 `download_images`，通过 `drive.v1.media.download`（scope `docs:document.media:download`）把文档里的图片下载到临时目录，`images[].path` 可直接用文件工具打开/读图。此前只给临时 URL，agent 实际看不到图。

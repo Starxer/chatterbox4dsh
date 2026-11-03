@@ -34,6 +34,10 @@ export interface Translations {
   cardSupersededBody: string
   /** Appended to a retired card that keeps its original content. */
   cardStaleNote: string
+  /** Startup/restart notice auto-sent to the last active chat (no model call). */
+  startupNoticeConnected: string
+  /** Appended when that session's turn was interrupted by the stop/restart. */
+  startupNoticeInterrupted: string
   /** Appended to a DECISION card that is frozen on the choice it recorded. */
   cardSettledNote: (value: string) => string
   /** Shown on a card whose request was already answered in the DSH Web UI. */
@@ -808,6 +812,8 @@ export const zh = {
   approvalDecidedLine: approved => approved ? '✅ 已允许一次' : '❌ 已拒绝',
   approvalExpiredTitle: '⏹️ 审批已失效',
   approvalExpiredBody: '这次审批请求已随本轮结束，此卡片作废。',
+  startupNoticeConnected: '✅ DSH 已启动，飞书已连接。',
+  startupNoticeInterrupted: '⚠️ 上一个回合可能被中断过（DSH 停止或重启）。要继续的话，直接发消息即可。',
   sessionPanelTitle: '📋 会话管理',
   sessionPanelIntro: '选择会话并执行操作。',
   sessionListHeader: '可用会话：',
@@ -1364,6 +1370,8 @@ export const en: Translations = {
   approvalDecidedLine: approved => approved ? '✅ Allowed once' : '❌ Rejected',
   approvalExpiredTitle: '⏹️ Approval expired',
   approvalExpiredBody: 'This approval request ended with the turn, so the card is void.',
+  startupNoticeConnected: '✅ DSH started; Feishu is connected.',
+  startupNoticeInterrupted: '⚠️ The previous turn may have been interrupted (DSH stopped or restarted). Send a message to continue.',
   sessionPanelTitle: '📋 Session',
   sessionPanelIntro: 'Pick a session and run an action.',
   sessionListHeader: 'Available sessions:',

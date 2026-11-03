@@ -38,6 +38,7 @@ import { startFeishuSubagents, type SubagentPanelHandle } from './feishu-subagen
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
+import { sendStartupNoticeOnce } from './feishu-startup-notice.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
@@ -221,6 +222,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopApprovals: () => void = () => undefined
   let stopStreaming: () => void = () => undefined
   let stopExternalTurns: () => void = () => undefined
+  /** Tracks turn boundaries per session for the startup notice (harness state). */
+  let stopTurnTracker: () => void = () => undefined
   let stopSurface: () => void = () => undefined
   let consumeReasoning: (sessionId: string) => string | undefined = () => undefined
   let consumeLastStepHadContent: (sessionId: string) => boolean = () => false
@@ -835,6 +838,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // callback to also attach their cardAction handlers on reconnect.
   runtime.onChannelChange = channel => {
     channelHolder.current = channel
+    // Tell the chat that was active last that DSH is up (and, when its turn
+    // never ended, that it may have been interrupted). Once per process; no
+    // model call involved.
+    void sendStartupNoticeOnce({
+      bridgeHolder,
+      channelHolder,
+      getTranslations: () => translationsFor(currentLocale().id),
+      logger: ctx.logger('dsh-feishu'),
+    })
     // Topics the bridge knows but has no root message id for (bindings carried
     // over from before roots were persisted). Resolve them once, in the
     // background, so a WebUI-driven turn in those topics does not leak its
@@ -1077,6 +1089,21 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     // schedule) rendered from the same native events every other DSH surface
     // uses: the user message is echoed and the turn is completed with the same
     // card and the same `present` delivery as a Feishu-started turn.
+    // Persist per-session turn boundaries: they tell the next process which
+    // chat was active last and whether its turn had been interrupted.
+    stopTurnTracker = ctx.on('session/event', (session, event) => {
+      try {
+        const sessionId = (session as { id?: unknown } | undefined)?.id
+        if (typeof sessionId !== 'string' || sessionId === '') return
+        const bridge = bridgeHolder.current
+        if (bridge === undefined) return
+        const type = (event as { type?: unknown }).type
+        if (type === 'turn/start') bridge.noteSessionTurnStart(sessionId)
+        else if (type === 'turn/end') bridge.noteSessionTurnEnd(sessionId)
+      } catch {
+        // A tracker failure must never break the session-event fan-out.
+      }
+    })
     const externalTurns = startFeishuExternalTurns({
       ctx,
       channel: cardChannel,
@@ -1351,6 +1378,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopSubagents()
     stopStreaming()
     stopExternalTurns()
+    stopTurnTracker()
     stopSurface()
     cardImages.dispose()
     stopSendFileTool()

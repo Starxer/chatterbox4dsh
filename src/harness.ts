@@ -307,6 +307,19 @@ export class HarnessConversationService {
    */
   private readonly chatToSender = new Map<string, string>()
   /**
+   * `sessionId → last turn boundary (epoch ms)`. Written at `turn/start` and
+   * `turn/end`; used at boot to find the chat that was active last, so the
+   * plugin can say "DSH started" there. Persisted.
+   */
+  private readonly sessionActivity = new Map<string, number>()
+  /**
+   * Sessions whose turn had started and not ended when the process last
+   * stopped. Persisted at `turn/start` (and removed at `turn/end`), so a crash
+   * or stop mid-turn leaves the marker on disk even though `dispose()` clears
+   * its in-memory maps; the startup notice uses it to warn the user.
+   */
+  private readonly interruptedSessions = new Set<string>()
+  /**
    * Sessions for which intermediate assistant message cards were sent during
    * the current turn. The channel skips the final reply card for these
    * sessions to avoid duplication.
@@ -333,6 +346,8 @@ export class HarnessConversationService {
           busyMode?: Record<string, string>
           chatToRootId?: Record<string, string>
           chatToSender?: Record<string, string>
+          sessionActivity?: Record<string, number>
+          interruptedSessions?: string[]
         }
       // Legacy format (pre-ownership): a flat record keyed by chat key.
       const legacy = Array.isArray(data) ? undefined
@@ -351,6 +366,8 @@ export class HarnessConversationService {
         busyMode?: Record<string, string>
         chatToRootId?: Record<string, string>
         chatToSender?: Record<string, string>
+        sessionActivity?: Record<string, number>
+        interruptedSessions?: string[]
         recentModels?: unknown[]
       }
       for (const [k, v] of Object.entries(parsed.chatToSession ?? {})) this.chatToSession.set(k, v)
@@ -365,6 +382,12 @@ export class HarnessConversationService {
       // turn a Feishu-driven document create into an unshared (unopenable) one.
       for (const [k, v] of Object.entries(parsed.chatToSender ?? {})) {
         if (typeof v === 'string' && v.startsWith('ou_')) this.chatToSender.set(k, v)
+      }
+      for (const [k, v] of Object.entries(parsed.sessionActivity ?? {})) {
+        if (typeof v === 'number' && Number.isFinite(v)) this.sessionActivity.set(k, v)
+      }
+      for (const sessionId of parsed.interruptedSessions ?? []) {
+        if (typeof sessionId === 'string' && sessionId !== '') this.interruptedSessions.add(sessionId)
       }
       if (Array.isArray(parsed.recentModels)) {
         this.recentModels = parsed.recentModels.filter(isRecentModelEntry)
@@ -431,6 +454,8 @@ export class HarnessConversationService {
         busyMode: Object.fromEntries(this.chatToBusyMode),
         chatToRootId: Object.fromEntries(this.chatToRootId),
         chatToSender: Object.fromEntries(this.chatToSender),
+        sessionActivity: Object.fromEntries(this.sessionActivity),
+        interruptedSessions: [...this.interruptedSessions],
         recentModels: this.recentModels,
       })
       // Atomic: a restart (or SIGKILL) landing mid-write must never leave a
@@ -1250,6 +1275,81 @@ export class HarnessConversationService {
    */
   lastSenderFor(chatId: string): string | undefined {
     return this.chatToSender.get(chatId)
+  }
+
+  /**
+   * Record that a turn started on a session, and mark it as potentially
+   * interrupted until the matching turn ends.
+   *
+   * Called from the session-event listener on `turn/start`.
+   *
+   * @param sessionId - the session running the turn.
+   */
+  noteSessionTurnStart(sessionId: string): void {
+    if (sessionId === '') return
+    this.sessionActivity.set(sessionId, Date.now())
+    this.interruptedSessions.add(sessionId)
+    this.saveSessionMap()
+  }
+
+  /**
+   * Record that a turn ended normally (clears the interrupted marker).
+   *
+   * Called from the session-event listener on `turn/end`.
+   *
+   * @param sessionId - the session whose turn ended.
+   */
+  noteSessionTurnEnd(sessionId: string): void {
+    if (sessionId === '') return
+    this.sessionActivity.set(sessionId, Date.now())
+    this.interruptedSessions.delete(sessionId)
+    this.saveSessionMap()
+  }
+
+  /**
+   * The most recently active session, if any was recorded.
+   *
+   * @returns its id plus whether its last turn never ended, or undefined when
+   *          no turn boundary has been seen yet.
+   */
+  lastActiveSession(): { sessionId: string, interrupted: boolean } | undefined {
+    let bestId: string | undefined
+    let bestAt = -Infinity
+    for (const [sessionId, at] of this.sessionActivity) {
+      if (at > bestAt) {
+        bestAt = at
+        bestId = sessionId
+      }
+    }
+    if (bestId === undefined) return undefined
+    return { sessionId: bestId, interrupted: this.interruptedSessions.has(bestId) }
+  }
+
+  /**
+   * Recently active sessions, newest first (bounded).
+   *
+   * The startup notice walks this list and picks the first session that still
+   * resolves to a Feishu chat: a Web-only session can be "most recent" and must
+   * not swallow the notice.
+   *
+   * @param limit - maximum entries to return.
+   * @returns `{ sessionId, interrupted }` pairs, newest first.
+   */
+  recentActiveSessions(limit = 20): Array<{ sessionId: string, interrupted: boolean }> {
+    return [...this.sessionActivity.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, Math.max(1, limit))
+      .map(([sessionId]) => ({ sessionId, interrupted: this.interruptedSessions.has(sessionId) }))
+  }
+
+  /**
+   * Forget the interrupted marker for a session (after the startup notice was
+   * delivered for it).
+   *
+   * @param sessionId - the session the notice covered.
+   */
+  clearInterrupted(sessionId: string): void {
+    if (this.interruptedSessions.delete(sessionId)) this.saveSessionMap()
   }
 
   /** Attach the stored topic root id (if any) to a reconstructed chat message. */

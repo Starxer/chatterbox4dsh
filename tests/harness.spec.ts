@@ -424,6 +424,24 @@ describe('HarnessConversationService', () => {
     expect(service2.lastSenderFor('oc_1')).toBe('ou_sender')
   })
 
+  it('persists turn boundaries and the interrupted marker across restarts', () => {
+    const f = fixture()
+    const statePath = join(tmpdir(), `dsh-feishu-turns-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    expect(service.lastActiveSession()).toBeUndefined()
+    service.noteSessionTurnStart('session-a')
+    expect(service.lastActiveSession()).toEqual({ sessionId: 'session-a', interrupted: true })
+
+    // A restart sees the marker: the turn never ended.
+    const service2 = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    expect(service2.recentActiveSessions()[0]).toEqual({ sessionId: 'session-a', interrupted: true })
+
+    // Finishing the turn clears it on disk.
+    service2.noteSessionTurnEnd('session-a')
+    const service3 = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    expect(service3.lastActiveSession()).toEqual({ sessionId: 'session-a', interrupted: false })
+  })
+
   it('steer-mode reply injects into a running turn without producing a second reply', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })

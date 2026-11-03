@@ -161,6 +161,12 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 
 **这些围栏不能泛化到所有发送入口**：显式 `feishu_send_file` 当前校验文件存在/普通文件/非空/≤30MB，**不校验它仍在会话工作区内**。完整风险与资源可见性边界见 [媒体与隐私](<./privacy.md>)。
 
+## 启动通知 / Startup notice
+
+`src/feishu-startup-notice.ts`。桥接服务在 `turn/start` / `turn/end` 时持久化每个 session 的「最后活动时间」与「回合未结束」标记；进程启动后第一次 `runtime.onChannelChange` 调一次 `sendStartupNotice`（`globalThis` 里按 pid 去重，热重载不会重复）。
+
+通知选**最近活跃且能解析到飞书 chat** 的 session（Web-only 的 session 会被跳过），用 `channel.send` 发文本，话题内回复带 `replyInThread`/`replyTo`；若标记显示回合未结束，追加「可能被停止/重启过」提示并在送达后清除标记。`dispose()` 故意不清这两张表——内存清空后磁盘仍要保留「上次是否在回合中被停」，否则重启后的提示会丢失。
+
 ## 在线文档工具
 
 `src/feishu-doc.ts`（读/写）与 `src/feishu-doc-collab.ts`（评论/块级）；四个工具都注册在全局 host 上下文，任何会话可用，只要求通道在线。
