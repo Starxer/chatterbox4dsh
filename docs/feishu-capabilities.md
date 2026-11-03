@@ -363,7 +363,7 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 **权限现状（2026-11-04 实测，应用身份）**：
 
 - 平台模板已给到 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`、`docs:document.comment:*` —— 所以**读、改已存在文档、解析 wiki 链接、取 URL 本来就通**。
-- 缺的四项：`docx:document:create`（新建）、`docs:document.content:read`（Markdown 读取）、`docs:document.media:upload`（图片素材上传）、`docs:permission.member:create`（加协作者）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**：两次 `code=0`、权限数 38→42、`application.scope.list` 均 `grant_status=1`，随即 `document.create`、`media.uploadAll`、`permissionMember.create` 全部成功（免审权限，立即生效）。
+- 缺的四项：`docx:document:create`（新建）、`docs:document.content:read`（Markdown 读取）、`docs:document.media:upload`（图片素材上传）、`docs:permission.member:create`（加协作者）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**：两次 `code=0`、权限数 38→42、`application.scope.list` 均 `grant_status=1`（清理探测文档时又补了 `space:document:retrieve` / `space:document:delete`，现为 44 项，**不进扫码默认**），随即 `document.create`、`media.uploadAll`、`permissionMember.create` 全部成功（免审权限，立即生效）。
 - 其余链路（`document.get`、`documentBlock.*`、`documentChild create/batchDelete`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）从一开始就没有权限码，假 token 时报的是资源级 `1770002` / `131005`。
 - 删除文档需要 `drive:drive` 或 `space:document:delete`（未申请），所以探测产生的**应用自建文档无法用 API 删除**；应用自建文档对普通用户默认不可见。
 

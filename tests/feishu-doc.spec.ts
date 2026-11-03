@@ -252,8 +252,9 @@ describe('feishu_doc_write', () => {
 
   it('clears the body before writing in replace mode', async () => {
     const { channel, client } = fakeChannel()
+    client.docx.v1.document.get = vi.fn(async () => ({ data: { document: { title: 'T', revision_id: 2 } } }))
     const tool = toolsOver(channel).write!
-    await tool.execute({ mode: 'replace', target: 'doxcnAbCdEf', markdown: 'new body' }, execCtx())
+    await tool.execute({ mode: 'replace', target: 'doxcnAbCdEf', markdown: 'new body', revision: 2 }, execCtx())
 
     expect(client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalledWith({
       path: { document_id: 'doxcnAbCdEf', block_id: 'doxcnAbCdEf' },
@@ -347,6 +348,13 @@ describe('feishu_doc_write', () => {
     await expect(tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 8 }, execCtx()))
       .rejects.toThrow(/changed since it was read/)
     expect(client.docx.v1.documentBlockDescendant.create).not.toHaveBeenCalled()
+  })
+
+  it('requires a revision for replace mode', async () => {
+    const { channel } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    await expect(tool.execute({ mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx()))
+      .rejects.toThrow(/needs the `revision_id`/)
   })
 
   it('requires a target outside create mode', async () => {

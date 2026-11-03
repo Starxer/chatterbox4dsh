@@ -5,6 +5,18 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 修复：replace 强制版本守卫、发起人共享跨重启、维护权限独立成项（2026-11-04）
+
+**`replace` 现在必须带 `revision`**：它会删掉整篇正文，所以不接受「没有证据证明副本是最新的」调用；缺失时直接报错并提示先 `feishu_doc_read`（`append` 仍可选）。彻底消除「模型忘了传 revision 就静默覆盖」的路径。
+
+**发起人身份落盘**：`chatToSender`（chat → 最后发言者 open_id）并入 bridge 的会话状态文件，加载时只接受 `ou_` 前缀、写入仅在值变化时触发；重启后由飞书发起的 `create` 仍能把文档共享给发起人，不再因为内存清空而 `shared=false`。
+
+**维护权限独立成项**：`space:document:retrieve` / `space:document:delete` 单列为 `FEISHU_DOC_MAINTENANCE_SCOPES`，**不进扫码默认权限**（删除权不该默认授予，文档工具本身不删除任何文档）；需要清理时用 `applicationConfig.patch` 的 `scope.add_scopes` 显式开通。本部署已开通（应用权限 42→44），并用它清掉了 5 篇探测文档，只保留 1 篇演示文档。
+
+**验证**：新增 2 例（`replace` 缺 revision 被拒、发起人跨重启恢复）；全量 **1368 测试 / 68 文件**、`typecheck`、`build` 全绿。
+
+**English**: `replace` now requires the `revision_id` from `feishu_doc_read` (append keeps it optional), the chat→last-sender open id is persisted with the session map (loaded only for `ou_` values, saved on change) so a created document stays shareable after a restart, and the two maintenance scopes (`space:document:retrieve`, `space:document:delete`) live in their own exported constant and are deliberately absent from the scan defaults. The deployment granted them explicitly and used them to delete five probe documents. 1368 tests / 68 files, typecheck and build pass.
+
 ### 新增：文档协作工具——版本守卫、评论、块级编辑、图片读回（`src/feishu-doc.ts` / `src/feishu-doc-collab.ts`，2026-11-04）
 
 **版本守卫**：`feishu_doc_read` 现在返回 `revision_id`；`feishu_doc_write` 新增 `revision` 参数，写前比对当前版本，不一致直接失败并提示重新读取。**依据**：飞书的 `document_revision_id` 参数**不会拒绝过期版本**——用旧 revision 调 `documentBlockDescendant.create` 实测仍然 `code=0` 并写入，所以乐观锁只能放在应用层（剩余竞争窗口毫秒级）。

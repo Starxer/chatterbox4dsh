@@ -782,15 +782,16 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'converted to native document blocks (headings, lists, tables, code, checkboxes). Images are '
       + 'uploaded and embedded when the reference is an absolute local path to a png/jpeg/webp/gif '
       + 'under 10 MB; remote URLs and relative paths are skipped. With `create`, the new document is '
-      + 'shared with the user who asked for it. Pass the `revision_id` from `feishu_doc_read` to refuse '
-      + 'writing over newer edits. The Feishu app must be able to edit the target document. Prefer '
-      + '`append` — `replace` destroys content and cannot be undone.',
+      + 'shared with the user who asked for it. `replace` REQUIRES the `revision_id` from '
+      + '`feishu_doc_read` (it destroys the whole body, so a stale copy must never overwrite newer '
+      + 'edits); `append` accepts it optionally. The Feishu app must be able to edit the target '
+      + 'document. Prefer `append`.',
     parameters: {
       mode: {
         type: 'string',
         enum: ['create', 'append', 'replace'],
         required: true,
-        description: 'create a new document, append to the end, or replace the whole body.',
+        description: 'create a new document, append to the end, or replace the whole body (replace requires `revision`).',
       },
       markdown: {
         type: 'string',
@@ -811,8 +812,9 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       },
       revision: {
         type: 'number',
-        description: 'The `revision_id` a previous `feishu_doc_read` returned. When set, the write is '
-          + 'refused if the document has changed since then, instead of overwriting newer edits.',
+        description: 'The `revision_id` a previous `feishu_doc_read` returned. Required for `replace`: '
+          + 'the write is refused if the document has changed since then, instead of overwriting newer '
+          + 'edits. Optional for `append` and ignored for `create`.',
       },
     },
     output: {
@@ -852,6 +854,13 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       if (markdown.trim() === '') throw new Error('markdown is empty — nothing to write.')
 
       const mode = args.mode
+      if (mode === 'replace' && args.revision === undefined) {
+        throw new Error(
+          'mode "replace" needs the `revision_id` from feishu_doc_read: it deletes the whole body, '
+          + 'so it must prove the copy it is overwriting is still current. Read the document first, '
+          + 'then pass revision_ids. Use "append" if you only want to add content.',
+        )
+      }
       let documentId: string
       let url: string | undefined
       let title: string | undefined

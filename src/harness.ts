@@ -302,9 +302,8 @@ export class HarnessConversationService {
    * `chatId → open_id` of the most recent inbound sender. Used to share a
    * document the bot created (tenant-token documents are owned by the bot, so
    * without an explicit collaborator grant the asking user cannot open them).
-   * Deliberately in memory only: it is a hint for the *current* conversation,
-   * never an authority, and losing it on restart only means the share step is
-   * skipped (the tool reports that).
+   * Persisted (unlike the first version): a restart must not silently turn the
+   * next document create into an unshared one.
    */
   private readonly chatToSender = new Map<string, string>()
   /**
@@ -333,6 +332,7 @@ export class HarnessConversationService {
           seenChatKeys?: string[]
           busyMode?: Record<string, string>
           chatToRootId?: Record<string, string>
+          chatToSender?: Record<string, string>
         }
       // Legacy format (pre-ownership): a flat record keyed by chat key.
       const legacy = Array.isArray(data) ? undefined
@@ -350,6 +350,7 @@ export class HarnessConversationService {
         seenChatKeys?: string[]
         busyMode?: Record<string, string>
         chatToRootId?: Record<string, string>
+        chatToSender?: Record<string, string>
         recentModels?: unknown[]
       }
       for (const [k, v] of Object.entries(parsed.chatToSession ?? {})) this.chatToSession.set(k, v)
@@ -360,6 +361,11 @@ export class HarnessConversationService {
       // Insertion order is preserved by JSON, so the topic recency order
       // written by `noteTopic` survives the restart.
       for (const [k, v] of Object.entries(parsed.chatToRootId ?? {})) this.chatToRootId.set(k, v)
+      // The last inbound sender per chat is persisted too: a restart must not
+      // turn a Feishu-driven document create into an unshared (unopenable) one.
+      for (const [k, v] of Object.entries(parsed.chatToSender ?? {})) {
+        if (typeof v === 'string' && v.startsWith('ou_')) this.chatToSender.set(k, v)
+      }
       if (Array.isArray(parsed.recentModels)) {
         this.recentModels = parsed.recentModels.filter(isRecentModelEntry)
       }
@@ -424,6 +430,7 @@ export class HarnessConversationService {
         seenChatKeys: [...this.seenChatKeys],
         busyMode: Object.fromEntries(this.chatToBusyMode),
         chatToRootId: Object.fromEntries(this.chatToRootId),
+        chatToSender: Object.fromEntries(this.chatToSender),
         recentModels: this.recentModels,
       })
       // Atomic: a restart (or SIGKILL) landing mid-write must never leave a
@@ -1228,7 +1235,11 @@ export class HarnessConversationService {
    */
   noteInboundSender(chatId: string, senderId?: string): void {
     if (typeof senderId !== 'string' || !senderId.startsWith('ou_')) return
+    if (this.chatToSender.get(chatId) === senderId) return
     this.chatToSender.set(chatId, senderId)
+    // Persist on change only: a chat usually has one speaker, so this is one
+    // write per new participant rather than one per message.
+    this.saveSessionMap()
   }
 
   /**

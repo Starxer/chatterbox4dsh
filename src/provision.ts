@@ -71,6 +71,31 @@ export const FEISHU_DOC_SCOPES = [
 ]
 
 /**
+ * Maintenance scopes: ONLY needed to inspect and clean up documents the app
+ * itself created (the document tools never delete anything).
+ *
+ * Deliberately NOT part of {@link FEISHU_PROVISION_SCOPES}: `space:document:delete`
+ * lets the app delete documents, and neither scope is needed for normal
+ * document work. Grant them explicitly when a cleanup is actually wanted — the
+ * current deployment did it with `applicationConfig.patch` →
+ * `scope.add_scopes` (free-review, effective immediately):
+ *
+ * ```json
+ * { "scope": { "add_scopes": [
+ *   { "scope_name": "space:document:retrieve", "token_type": "tenant" },
+ *   { "scope_name": "space:document:delete",   "token_type": "tenant" }
+ * ] } }
+ * ```
+ *
+ * They are exported so the docs and any future maintenance command use one
+ * source of truth.
+ */
+export const FEISHU_DOC_MAINTENANCE_SCOPES = [
+  'space:document:retrieve',
+  'space:document:delete',
+]
+
+/**
  * Scope required to call the "update application config" OpenAPI, which the
  * scan flow uses to force the WebSocket long connection (the subscription
  * transport is a sensitive manifest field that `addons` cannot preset).

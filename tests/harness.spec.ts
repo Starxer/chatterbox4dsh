@@ -412,6 +412,18 @@ describe('HarnessConversationService', () => {
     expect(service2.busyMode({ chatId: 'oc_2', chatType: 'p2p' })).toBe('queue')
   })
 
+  it('persists the last inbound sender per chat across restarts', () => {
+    const f = fixture()
+    const statePath = join(tmpdir(), `dsh-feishu-sender-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    const service = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    expect(service.lastSenderFor('oc_1')).toBeUndefined()
+    service.noteInboundSender('oc_1', 'ou_sender')
+    expect(service.lastSenderFor('oc_1')).toBe('ou_sender')
+    // Reload from disk: a restart must not forget who to share a document with.
+    const service2 = new HarnessConversationService(dependencies(f), { domain: 'feishu', statePath })
+    expect(service2.lastSenderFor('oc_1')).toBe('ou_sender')
+  })
+
   it('steer-mode reply injects into a running turn without producing a second reply', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
