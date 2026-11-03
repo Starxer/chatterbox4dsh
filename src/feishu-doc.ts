@@ -455,16 +455,18 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         },
       },
       render: (_args, value) => {
-        const lines: string[] = []
-        if (value.title !== undefined && value.title !== '') lines.push(`# ${value.title}`, '')
-        lines.push(value.content)
+        // The body already opens with the document's title as a heading (the
+        // title block is part of the document), so the title belongs in the
+        // metadata line rather than in a second heading above it.
+        const lines: string[] = [value.content]
         if (value.format === 'text') {
           lines.push('', '[read as plain text: headings, lists and table structure are not preserved]')
         }
         if (value.truncated) {
           lines.push('', `[truncated: showing ${value.content.length} of ${value.total_chars} characters — continue with offset=${value.next_offset ?? 0}]`)
         }
-        lines.push('', `[document_id: ${value.document_id}${value.url === undefined ? '' : ` · ${value.url}`}]`)
+        const title = value.title === undefined || value.title === '' ? '' : ` · title: ${value.title}`
+        lines.push('', `[document_id: ${value.document_id}${title}${value.url === undefined ? '' : ` · ${value.url}`}]`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },

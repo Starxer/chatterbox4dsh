@@ -42,6 +42,27 @@ export const FEISHU_BOT_SCOPES = [
 ]
 
 /**
+ * Scopes the online-document tools need (see `src/feishu-doc.ts`).
+ *
+ * The platform template already grants `docx:document:readonly`,
+ * `docx:document:write_only`, `docx:document.block:convert` and
+ * `wiki:node:read`, so reading a document, editing an existing one and
+ * resolving wiki links work out of the box. What the template does NOT grant:
+ *
+ * - `docx:document:create` — `docx.v1.document.create` refuses to run without
+ *   `docx:document` or this scope (verified 2026-11-03: `99991672`).
+ * - `docs:document.content:read` — `docs.v1.content.get` is the only endpoint
+ *   that returns Markdown; without it reads fall back to plain text.
+ *
+ * Both are requested here so a freshly scanned app can use the document tools
+ * immediately. The app is still limited to documents it is a collaborator on.
+ */
+export const FEISHU_DOC_SCOPES = [
+  'docx:document:create',
+  'docs:document.content:read',
+]
+
+/**
  * Scope required to call the "update application config" OpenAPI, which the
  * scan flow uses to force the WebSocket long connection (the subscription
  * transport is a sensitive manifest field that `addons` cannot preset).
@@ -49,7 +70,11 @@ export const FEISHU_BOT_SCOPES = [
 export const FEISHU_APP_CONFIG_SCOPE = 'application:application:patch'
 
 /** Every tenant scope the scan flow pre-fills so the created app works end-to-end. */
-export const FEISHU_PROVISION_SCOPES = [...FEISHU_BOT_SCOPES, FEISHU_APP_CONFIG_SCOPE]
+export const FEISHU_PROVISION_SCOPES = [
+  ...FEISHU_BOT_SCOPES,
+  ...FEISHU_DOC_SCOPES,
+  FEISHU_APP_CONFIG_SCOPE,
+]
 
 export const FEISHU_MESSAGE_EVENT = 'im.message.receive_v1'
 

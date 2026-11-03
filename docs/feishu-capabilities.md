@@ -360,11 +360,20 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 | 新建文档 | `docx.v1.document.create` | 归应用所有；`folder_token` 可指定落点 |
 | 取链接 | `drive.v1.meta.batchQuery`（`with_url`） | 只用于回显 URL，失败不影响读写 |
 
-**2026-11-03 本租户实测（应用身份，假 token 探针）**：
+**权限现状（2026-11-04 实测，应用身份）**：
 
-- `docx:document` / `docx:document:create` **未开通**：`document.create` 返回 `99991672`，提示申请 `[docx:document, docx:document:create]`。
-- `docs:document.content:read` **未开通**：`docs.v1.content.get` 返回 `99991672`，提示申请 `docs:document.content:read`。
-- 其余链路（`document.get`、`documentBlock.get`、`documentBlockChildren.create/batchDelete`、`documentBlockDescendant.create`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）**没有**触发权限码：假 token 得到的是资源级 `1770002 not found` / `131005 not found`，说明请求已过权限闸门。
+- 平台模板已给到 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`、`docs:document.comment:*` —— 所以**读、改已存在文档、解析 wiki 链接、取 URL 本来就通**。
+- 缺的两项是 `docx:document:create`（新建文档，`99991672` 提示 `[docx:document, docx:document:create]`）与 `docs:document.content:read`（Markdown 读取）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**：`code=0`、权限数 38→40、`application.scope.list` 均为 `grant_status=1`，随即 `document.create` 成功（免审权限，立即生效）。
+- 其余链路（`document.get`、`documentBlock.*`、`documentChild create/batchDelete`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）从一开始就没有权限码，假 token 时报的是资源级 `1770002` / `131005`。
+- 删除文档需要 `drive:drive` 或 `space:document:delete`（未申请），所以探测产生的**应用自建文档无法用 API 删除**；应用自建文档对普通用户默认不可见。
+
+**端到端回环（2026-11-04，`feishu_doc_write` → `feishu_doc_read`）**：新建 → `convert`（27 块 / 18 个一级块）→ 插入 → Markdown 读回，全部成功。回读侧观察到的差异（写进去的块是对的，读回文本是飞书的口径）：
+
+- 文档标题本身是正文第一块（H1），`docs.v1.content.get` 会把它一并返回；
+- 表格回读成 HTML `<table>`，单元格文本各占一行；
+- 代码块语言被规范化（`js` → `JavaScript`）；
+- 已完成的待办回读时带删除线（`* [x] ~~已完成~~`）；
+- 行内样式（加粗/斜体/删除线/行内代码/链接/`<u>`）完整保留；`#`…`######` 保留；`#######` 起是正文。
 
 **`feishu_doc_write` 实际能写的 Markdown（2026-11-04 `document.convert` 实测，不需要文档权限）**：
 

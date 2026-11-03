@@ -40,13 +40,21 @@
 
 > 扫码一键配置会自动申请以上全部权限（`src/provision.ts` 的 `FEISHU_PROVISION_SCOPES`）。
 
-可选权限（在线文档工具 `feishu_doc_read` / `feishu_doc_write`，不装工具可以不申请）：
+在线文档工具（`feishu_doc_read` / `feishu_doc_write`）需要的权限：
 
-| 权限标识 | 用途 |
-|---|---|
-| `docs:document.content:read` | `feishu_doc_read` 以 **Markdown** 读取文档；未开通时退回纯文本（`docx:document:readonly`） |
-| `docx:document` | 读写 docx 文档内容（`feishu_doc_write` 的 `append` / `replace`）。只新建文档可改为 `docx:document:create` |
-| `wiki:wiki:readonly` | 把 `…/wiki/…` 链接解析成它指向的文档 |
+| 权限标识 | 用途 | 来源 |
+|---|---|---|
+| `docx:document:readonly` / `docx:document:write_only` / `docx:document.block:convert` / `wiki:node:read` / `drive:drive.metadata:readonly` | 读文档、改已存在文档、转换 Markdown、解析 wiki 链接、取文档 URL | **平台模板默认自带**，无需申请 |
+| `docx:document:create` | 新建文档（`feishu_doc_write` 的 `create`） | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
+| `docs:document.content:read` | 以 **Markdown** 读取；未开通时退回纯文本 | 同上 |
+| `docs:document.media:upload` | 若要把图片写进文档（当前工具会跳过图片，尚未申请） | 需要时再加 |
+
+**已有应用怎么补**（不用重新扫码建应用）：
+
+1. 开发者后台 → 权限管理，勾选上面的权限，然后创建版本并发布；或
+2. 用应用自身凭证调 `application.v7.applicationConfig.patch` 的 `data.scope.add_scopes`（需要 `application:application:patch`，扫码建的应用已有）。**免审权限立即生效**，其余仍需发布审核；本部署 2026-11-04 就是用它补齐的。
+
+> 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
 
 > 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
 

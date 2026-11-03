@@ -45,6 +45,9 @@ describe('provisionApp', () => {
     expect(options.addons.scopes.tenant).toContain('im:message:send_as_bot')
     expect(options.addons.scopes.tenant).toContain('im:message.reaction')
     expect(options.addons.scopes.tenant).toContain('application:application:patch')
+    // Document tools: create (docx) + Markdown read.
+    expect(options.addons.scopes.tenant).toContain('docx:document:create')
+    expect(options.addons.scopes.tenant).toContain('docs:document.content:read')
     expect(options.addons.events.items.tenant).toContain('im.message.receive_v1')
     expect(states).toEqual([
       { phase: 'waiting', qrUrl: 'https://scan.example/verify', expireIn: 600 },

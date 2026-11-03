@@ -5,6 +5,22 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 变更：扫码建应用补齐在线文档权限；当前应用已在线补齐并完成端到端验证（`src/provision.ts` / `src/feishu-doc.ts`，2026-11-04）
+
+**权限**：平台模板本就带 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`，缺的只有两项——`docx:document:create`（新建文档）与 `docs:document.content:read`（Markdown 读取）。扫码流程新增 `FEISHU_DOC_SCOPES` 把这两项预填给以后创建的应用。
+
+**当前这个应用**：用自身凭证调 `application.v7.applicationConfig.patch` 的 `data.scope.add_scopes` 补齐（`code=0`，`application.scope.list` 从 38 项变 40 项、两项均 `grant_status=1`，免审权限立即生效），`document.create` 从 `99991672` 变为成功。
+
+**端到端**：`feishu_doc_write`（create）→ `document.convert` 27 块 / 18 个一级块 → `documentBlockDescendant.create` → `feishu_doc_read` 读回，全部成功。回读与写入的差异如实记录在 [能力调研](<./docs/feishu-capabilities.md>) 第八节：标题是正文首个 H1 块（`docs.v1.content.get` 一并返回）、表格回读为 HTML `<table>`、代码块语言被规范化（`js`→`JavaScript`）、已完成待办回读带删除线、行内样式与 H1–H6 完整保留。
+
+**顺带修正**：`feishu_doc_read` 的渲染不再在正文前重复输出一次标题（文档正文首块就是标题），标题改放元数据行。
+
+**仍需注意**：删除文档需要 `drive:drive` 或 `space:document:delete`（未申请），因此 API 建出的探测文档无法自行删除；应用自建文档对普通用户默认不可见，要分享需另加协作者。
+
+**验证**：`tests/provision.spec.ts` 断言新权限已进 `addons.scopes.tenant`；全量测试 / `typecheck` / `build` 全绿；真机建文档、写块、读回均通过。
+
+**English**: The scan flow now pre-fills `docx:document:create` and `docs:document.content:read` (the platform template already covers readonly/write_only/convert/wiki read). For the existing app both scopes were added through `applicationConfig.patch` → `scope.add_scopes` (`code=0`, 38→40 scopes, both `grant_status=1`, effective immediately), turning `document.create` from `99991672` into success. Verified end to end: create a document, convert 27 blocks, insert, then read it back as Markdown; the read-back differences (title as the first H1 block, tables as HTML, normalized code language, strikethrough on completed todos) are documented. The read tool no longer repeats the title above the body.
+
 ### 新增：飞书在线文档读写工具 `feishu_doc_read` / `feishu_doc_write`（`src/feishu-doc.ts`，2026-11-03）
 
 **动机**：在此之前，飞书通道只把「聊天」翻译成卡片；用户的真实工作却常常在飞书在线文档里，agent 拿不到也写不进。这两把工具让模型直接以 **Markdown** 读写 docx 文档，而不是把文档内容复制进聊天。
