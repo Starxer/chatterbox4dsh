@@ -22,11 +22,15 @@
  * @module @starxer/chatterbox4dsh/feishu-doc
  */
 
+import { readFile, stat } from 'node:fs/promises'
+import { basename } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import { withLinkTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
+import { sniffImageMime } from './media-sniff.ts'
+import type { HarnessConversationService } from './harness.ts'
 
 /** Budget for one document API call (reads a whole body, so not the 20s send budget). */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
@@ -36,8 +40,14 @@ const DOC_META_TIMEOUT_MS = 15_000
 const DEFAULT_READ_CHARS = 20_000
 /** Hard cap for one read, so a huge document cannot flood the context in one call. */
 const MAX_READ_CHARS = 60_000
-/** docx block type for an image; those need a media upload we do not do yet. */
+/** docx block type for an image (filled in after insert by a media upload). */
 const IMAGE_BLOCK_TYPE = 27
+/** Largest image the document writer will upload; Feishu's own image upload ceiling. */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+/** Budget for one media upload (much more than a metadata call). */
+const MEDIA_UPLOAD_TIMEOUT_MS = 60_000
+/** `![alt](target "title")` — the target is what decides local vs remote. */
+const IMAGE_REF_PATTERN = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/gu
 
 /** How a target string was interpreted. */
 export interface FeishuDocTarget {
@@ -73,6 +83,9 @@ interface PluginLogger {
 export interface FeishuDocToolsDeps {
   ctx: Context
   channelHolder: { current: LarkChannel | undefined }
+  /** Chat binding service: used to find the open id of the asking user so a
+   *  newly created (bot-owned) document can be shared with them. */
+  bridgeHolder?: { current: HarnessConversationService | undefined }
   logger: PluginLogger
 }
 
@@ -272,10 +285,19 @@ function stripReadOnlyFields(value: unknown): void {
 export function prepareBlocks(
   blocks: DocBlock[],
   firstLevel: string[],
-): { firstLevel: string[], blocks: DocBlock[], skippedImages: number } {
+  keepImage: (index: number) => boolean = () => false,
+): { firstLevel: string[], blocks: DocBlock[], skippedImages: number, keptImages: number } {
+  // Image blocks are numbered in document order so the caller can keep exactly
+  // the ones it has a local file for; every other image block is dropped
+  // together with the references to it.
   const imageIds = new Set<string>()
+  let imageIndex = 0
+  let keptImages = 0
   for (const block of blocks) {
-    if (block.block_type === IMAGE_BLOCK_TYPE && typeof block.block_id === 'string') imageIds.add(block.block_id)
+    if (block.block_type !== IMAGE_BLOCK_TYPE) continue
+    if (keepImage(imageIndex)) keptImages += 1
+    else if (typeof block.block_id === 'string') imageIds.add(block.block_id)
+    imageIndex += 1
   }
   const kept: DocBlock[] = []
   for (const block of blocks) {
@@ -290,6 +312,181 @@ export function prepareBlocks(
     firstLevel: firstLevel.filter(id => !imageIds.has(id)),
     blocks: kept,
     skippedImages: imageIds.size,
+    keptImages,
+  }
+}
+
+/** One `![](…)` reference found in the Markdown, in document order. */
+interface ImageRef {
+  target: string
+  /** Absolute local path when the target names a readable local file. */
+  local?: string
+  /** Why this one will not be uploaded. */
+  skipReason?: string
+}
+
+/**
+ * Find every image reference in the Markdown, in order.
+ *
+ * Only absolute local paths can be uploaded: remote URLs would mean fetching
+ * arbitrary URLs from the host (and silently pulling outside content into the
+ * tenant's documents), and a relative path has no unambiguous base because the
+ * Markdown arrives as text, not as a file on disk.
+ *
+ * @param markdown - the body about to be converted.
+ * @returns one entry per reference, including the ones that will be skipped.
+ */
+export function imageRefsIn(markdown: string): ImageRef[] {
+  const refs: ImageRef[] = []
+  for (const match of markdown.matchAll(IMAGE_REF_PATTERN)) {
+    const target = match[1]
+    if (target === undefined || target === '') continue
+    if (/^https?:\/\//iu.test(target) || /^data:/iu.test(target)) {
+      refs.push({ target, skipReason: 'remote image, not fetched' })
+      continue
+    }
+    if (!target.startsWith('/')) {
+      refs.push({ target, skipReason: 'relative path — pass an absolute path' })
+      continue
+    }
+    refs.push({ target, local: target })
+  }
+  return refs
+}
+
+/** A local file that passed the size/type checks and can be uploaded. */
+interface LoadedImage {
+  bytes: Buffer
+  fileName: string
+}
+
+/** Read one local image, or explain why it cannot be used. */
+async function loadImage(path: string): Promise<LoadedImage | { skipReason: string }> {
+  try {
+    const info = await stat(path)
+    if (!info.isFile()) return { skipReason: 'not a regular file' }
+    if (info.size === 0) return { skipReason: 'empty file' }
+    if (info.size > MAX_IMAGE_BYTES) return { skipReason: `larger than ${MAX_IMAGE_BYTES / 1024 / 1024} MB` }
+    const bytes = await readFile(path)
+    if (sniffImageMime(bytes) === undefined) return { skipReason: 'not a png/jpeg/webp/gif image' }
+    return { bytes, fileName: basename(path) }
+  } catch {
+    return { skipReason: 'cannot read the file' }
+  }
+}
+
+/** Pair `documentBlock.list` pages with the images awaiting a media token. */
+async function emptyImageBlockIds(channel: LarkChannel, documentId: string): Promise<string[]> {
+  const ids: string[] = []
+  let pageToken: string | undefined
+  for (let page = 0; page < 10; page++) {
+    const response = await withLinkTimeout(
+      channel.rawClient.docx.v1.documentBlock.list({
+        path: { document_id: documentId },
+        params: { page_size: 200, ...(pageToken === undefined ? {} : { page_token: pageToken }) },
+      }),
+      'list document blocks',
+      DOC_REQUEST_TIMEOUT_MS,
+    )
+    for (const block of response?.data?.items ?? []) {
+      if (block.block_type !== IMAGE_BLOCK_TYPE) continue
+      const token = (block as { image?: { token?: string } }).image?.token
+      if (typeof token === 'string' && token !== '') continue
+      if (typeof block.block_id === 'string') ids.push(block.block_id)
+    }
+    if (response?.data?.has_more !== true) break
+    pageToken = response?.data?.page_token
+    if (pageToken === undefined || pageToken === '') break
+  }
+  return ids
+}
+
+/**
+ * Upload the local images and attach each one to its (already inserted) image
+ * block: `media.uploadAll` with `parent_type: docx_image` and the image block
+ * id as `parent_node`, then `documentBlock.patch` with `replace_image`.
+ *
+ * Failures are per image and never abort the write: the block simply stays
+ * empty and the count is reported.
+ */
+async function fillDocumentImages(
+  channel: LarkChannel,
+  documentId: string,
+  images: LoadedImage[],
+): Promise<{ uploaded: number, failed: number }> {
+  if (images.length === 0) return { uploaded: 0, failed: 0 }
+  let blocks: string[]
+  try {
+    blocks = await emptyImageBlockIds(channel, documentId)
+  } catch {
+    return { uploaded: 0, failed: images.length }
+  }
+  let uploaded = 0
+  let failed = 0
+  for (let index = 0; index < images.length; index++) {
+    const blockId = blocks[index]
+    const image = images[index]
+    if (blockId === undefined || image === undefined) {
+      failed += 1
+      continue
+    }
+    try {
+      const uploaded_ = await withLinkTimeout(
+        channel.rawClient.drive.v1.media.uploadAll({
+          data: {
+            file_name: image.fileName,
+            parent_type: 'docx_image',
+            parent_node: blockId,
+            size: image.bytes.byteLength,
+            file: image.bytes,
+          },
+        }),
+        'upload document image',
+        MEDIA_UPLOAD_TIMEOUT_MS,
+      )
+      const token = (uploaded_ as { file_token?: string } | null)?.file_token
+        ?? (uploaded_ as { data?: { file_token?: string } } | null)?.data?.file_token
+      if (typeof token !== 'string' || token === '') {
+        failed += 1
+        continue
+      }
+      await withLinkTimeout(
+        channel.rawClient.docx.v1.documentBlock.patch({
+          path: { document_id: documentId, block_id: blockId },
+          data: { replace_image: { token } },
+        }),
+        'attach document image',
+        DOC_REQUEST_TIMEOUT_MS,
+      )
+      uploaded += 1
+    } catch {
+      failed += 1
+    }
+  }
+  return { uploaded, failed }
+}
+
+/**
+ * Grant the asking user edit access to a document the bot owns.
+ *
+ * A tenant-token document is owned by the bot, so without this the user gets a
+ * link they cannot open. A failure here is reported (not thrown): the document
+ * itself was written fine.
+ */
+async function shareDocument(channel: LarkChannel, documentId: string, openId: string): Promise<boolean> {
+  try {
+    const response = await withLinkTimeout(
+      channel.rawClient.drive.v1.permissionMember.create({
+        path: { token: documentId },
+        params: { type: 'docx', need_notification: true },
+        data: { member_type: 'openid', member_id: openId, perm: 'edit', type: 'user' },
+      }),
+      'share document',
+      DOC_META_TIMEOUT_MS,
+    )
+    return response?.code === undefined || response.code === 0
+  } catch {
+    return false
   }
 }
 
@@ -518,7 +715,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       markdown: {
         type: 'string',
         required: true,
-        description: 'Document body as Markdown. Images are skipped; tables and checkboxes are supported.',
+        description: 'Document body as Markdown. Images may use absolute local paths (png/jpeg/webp/gif, ≤10 MB).',
       },
       target: {
         type: 'string',
@@ -543,7 +740,9 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
           title: { type: 'string' },
           url: { type: 'string' },
           blocks: { type: 'number', required: true },
-          skipped_images: { type: 'number', required: true },
+          images_uploaded: { type: 'number', required: true },
+          images_skipped: { type: 'number', required: true },
+          shared: { type: 'boolean', required: true },
           content_chars: { type: 'number', required: true },
         },
       },
@@ -552,8 +751,12 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         text: `${value.mode === 'create' ? 'Created' : value.mode === 'append' ? 'Appended to' : 'Replaced the body of'} `
           + `the Feishu document${value.title === undefined ? '' : ` "${value.title}"`} (document_id: ${value.document_id})`
           + `${value.url === undefined ? '' : ` ${value.url}`}. `
-          + `Wrote ${value.blocks} block(s) from ${value.content_chars} characters`
-          + `${value.skipped_images === 0 ? '' : `; skipped ${value.skipped_images} image(s)`}.`,
+          + `Wrote ${value.blocks} block(s) from ${value.content_chars} characters; `
+          + `${value.images_uploaded} image(s) embedded`
+          + `${value.images_skipped === 0 ? '' : `, ${value.images_skipped} skipped`}.`
+          + (value.shared
+            ? ' The document was shared with the requesting user.'
+            : ' It was not shared — the requesting user may not be able to open it.'),
       }],
     },
     async execute(args, exec) {
@@ -581,10 +784,32 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         title = resolved.title
       }
 
+      // Decide per image reference whether it can be uploaded. The converter
+      // emits one image block per reference in the same order, so the flags
+      // line up with the blocks `prepareBlocks` is about to see.
+      const refs = imageRefsIn(markdown)
+      const loaded: LoadedImage[] = []
+      const keep: boolean[] = []
+      for (const ref of refs) {
+        if (ref.local === undefined) {
+          keep.push(false)
+          logger.warn(`dsh-feishu: feishu_doc_write skips image ${ref.target} (${ref.skipReason ?? 'unsupported'})`)
+          continue
+        }
+        const image = await loadImage(ref.local)
+        if ('skipReason' in image) {
+          keep.push(false)
+          logger.warn(`dsh-feishu: feishu_doc_write skips image ${ref.local} (${image.skipReason})`)
+          continue
+        }
+        keep.push(true)
+        loaded.push(image)
+      }
+
       const converted = await convertMarkdown(channel, markdown)
-      const prepared = prepareBlocks(converted.blocks, converted.firstLevel)
+      const prepared = prepareBlocks(converted.blocks, converted.firstLevel, index => keep[index] === true)
       if (prepared.firstLevel.length === 0) {
-        throw new Error('The Markdown produced no insertable blocks (images are skipped) — add some text content.')
+        throw new Error('The Markdown produced no insertable blocks — add some text content.')
       }
 
       if (mode === 'create') {
@@ -599,11 +824,28 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         }
       }
 
+      // Image blocks are only placeholders until `fillDocumentImages` attaches
+      // the uploaded material, so this runs after the blocks exist.
+      const filled = await fillDocumentImages(channel, documentId, loaded)
+
+      // A tenant-token document is owned by the bot; grant the asking user
+      // access so the link they get is actually openable.
+      let shared = false
+      if (mode === 'create') {
+        const bridge = deps.bridgeHolder?.current
+        const agent = exec.agent
+        if (bridge !== undefined && agent !== undefined) {
+          const chat = bridge.resolveChat(agent.id)
+          const openId = chat === undefined ? undefined : bridge.lastSenderFor(chat.chatId)
+          if (openId !== undefined) shared = await shareDocument(channel, documentId, openId)
+        }
+      }
+
       if (title === undefined) title = await documentTitle(channel, documentId)
       if (url === undefined) url = await documentUrl(channel, documentId)
       logger.warn(
         `dsh-feishu: feishu_doc_write ${mode} ${prepared.blocks.length} block(s) into ${documentId}`
-        + ` (${prepared.skippedImages} image block(s) skipped)`,
+        + ` (${filled.uploaded}/${loaded.length} image(s) embedded, shared=${shared})`,
       )
       return {
         mode,
@@ -611,7 +853,9 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         ...(title === undefined ? {} : { title }),
         ...(url === undefined ? {} : { url }),
         blocks: prepared.blocks.length,
-        skipped_images: prepared.skippedImages,
+        images_uploaded: filled.uploaded,
+        images_skipped: refs.length - filled.uploaded,
+        shared,
         content_chars: markdown.length,
       }
     },

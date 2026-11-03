@@ -5,6 +5,22 @@
 > 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：文档图片自动上传 + 新建文档自动共享给对话用户（`src/feishu-doc.ts` / `src/harness.ts` / `src/channel.ts` / `src/provision.ts`，2026-11-04）
+
+**背景**：应用身份（tenant token）建出的 docx 归**机器人自己**所有（owner = bot 的 open_id，实测），用户拿到链接打不开；同时 Markdown 里的图片此前会被整块丢弃。
+
+**图片**：解析 Markdown 里的 `![alt](target)`，只接受**绝对路径的本地文件**（png/jpeg/webp/gif、≤10 MB；远端 URL 不抓、相对路径无可靠基准），按出现顺序保留对应的 image 块。插入块后用 `drive.v1.media.uploadAll`（`parent_type: docx_image`、`parent_node` = image 块的 `block_id`）上传素材，再 `documentBlock.patch` 的 `replace_image: { token }` 挂上去。每张图独立失败、只记跳过，不中断整篇。
+
+**共享**：bridge 在每条入站消息上记住该 chat 最后一个发言用户的 open_id（**仅内存**，重启丢失即跳过共享）；`create` 成功后调 `drive.v1.permissionMember.create`（`member_type: openid`、`perm: edit`、`need_notification: true`）把文档共享给该用户。`append` / `replace` 不共享（文档已有归属）。
+
+**权限**：扫码流程的 `FEISHU_DOC_SCOPES` 增加 `docs:document.media:upload`、`docs:permission.member:create`；当前应用已通过 `applicationConfig.patch` 补到 42 项（均 `grant_status=1`）。
+
+**验证**：`tests/feishu-doc.spec.ts` 增至 16 例（新增：图片引用分类、上传+`replace_image` 调用形状、远端图片跳过、`create` 共享、`append` 不共享）；全量 **1358 测试 / 67 文件**、`typecheck`、`build` 全绿。真机 API 侧已实测 `uploadAll` / `patch` / `permissionMember.create` 均 `code=0`；工具路径待重启后复验。
+
+**已知边界**：`docs.v1.content.get` 读回的 Markdown **不含图片引用**（实测），所以读回不能用来判断图片是否嵌入；被跳过的图片会在文档里留下空图片占位。
+
+**English**: Local images in the Markdown are now uploaded and embedded (absolute paths only, png/jpeg/webp/gif up to 10 MB; remote URLs are never fetched) via `media.uploadAll(parent_type: docx_image)` plus `documentBlock.patch` → `replace_image`. A newly created document is shared with the user who asked for it through `permissionMember.create` (the chat's last sender open id is kept in memory by the bridge; when it is unknown the share step is skipped and reported). The scan flow now also requests `docs:document.media:upload` and `docs:permission.member:create`; the existing app was topped up to 42 granted scopes. 16 document tests (5 new), 1358 tests / 67 files, typecheck and build pass; the live API calls were verified individually. Reading a document back as Markdown does not include image references.
+
 ### 变更：扫码建应用补齐在线文档权限；当前应用已在线补齐并完成端到端验证（`src/provision.ts` / `src/feishu-doc.ts`，2026-11-04）
 
 **权限**：平台模板本就带 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`，缺的只有两项——`docx:document:create`（新建文档）与 `docs:document.content:read`（Markdown 读取）。扫码流程新增 `FEISHU_DOC_SCOPES` 把这两项预填给以后创建的应用。

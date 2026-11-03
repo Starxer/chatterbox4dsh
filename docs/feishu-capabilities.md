@@ -363,7 +363,7 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 **权限现状（2026-11-04 实测，应用身份）**：
 
 - 平台模板已给到 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`、`docs:document.comment:*` —— 所以**读、改已存在文档、解析 wiki 链接、取 URL 本来就通**。
-- 缺的两项是 `docx:document:create`（新建文档，`99991672` 提示 `[docx:document, docx:document:create]`）与 `docs:document.content:read`（Markdown 读取）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**：`code=0`、权限数 38→40、`application.scope.list` 均为 `grant_status=1`，随即 `document.create` 成功（免审权限，立即生效）。
+- 缺的四项：`docx:document:create`（新建）、`docs:document.content:read`（Markdown 读取）、`docs:document.media:upload`（图片素材上传）、`docs:permission.member:create`（加协作者）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**：两次 `code=0`、权限数 38→42、`application.scope.list` 均 `grant_status=1`，随即 `document.create`、`media.uploadAll`、`permissionMember.create` 全部成功（免审权限，立即生效）。
 - 其余链路（`document.get`、`documentBlock.*`、`documentChild create/batchDelete`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）从一开始就没有权限码，假 token 时报的是资源级 `1770002` / `131005`。
 - 删除文档需要 `drive:drive` 或 `space:document:delete`（未申请），所以探测产生的**应用自建文档无法用 API 删除**；应用自建文档对普通用户默认不可见。
 
@@ -392,9 +392,18 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 | `<video>` / 裸 HTML 块 | 不支持，被忽略 |
 | `content_type: html` | 接口支持（`<h2>/<p>/<ul>` 可转块），但**工具只暴露 Markdown** |
 
+**图片写入管线（2026-11-04 实测）**：
+
+1. `document.convert` 会为每个 `![](…)` 产出一个 image 块（带 `block_id`，`image.token` 为空，宽高默认 240）；
+2. 插入块后 `drive.v1.media.uploadAll`（`parent_type: docx_image`、`parent_node` = image 块的 `block_id`）拿到素材 `file_token`；
+3. 再 `documentBlock.patch` 的 `replace_image: { token }` 把素材挂到该块 —— 实测 `code=0`。
+- **只支持绝对路径的本地图片**（png/jpeg/webp/gif、≤10 MB）：远端 URL 不抓（避免让模型触发任意出站请求、也避免把外网内容静默带进租户文档），相对路径没有可靠基准（Markdown 是文本不是文件）。
+- **文档共享**：`drive.v1.permissionMember.create`（`member_type: openid`、`perm: edit`）实测 `code=0`；`create` 模式会把新文档共享给对话里最后一个发言的用户（open_id 由入站消息的 `senderId` 记在 bridge 内存里，重启丢失则跳过共享并如实上报）。
+- **读回不含图片**：`docs.v1.content.get` 的 Markdown 输出里没有图片引用（实测），图片是否嵌入要看块本身，不能靠读回判断。
+
 **已知取舍**：
 
-- **图片不写入**：转换出的 image 块没有素材 token，直接插入会让整次请求失败，因此连同引用一起丢弃，并在结果里报 `skipped_images`。
+- **图片写入是尽力而为**：每张图单独失败（读不到/超限/上传失败）只记跳过、不中断整篇；被跳过的 image 块仍留在文档里，表现为空图片占位。
 - 表格的 `merge_info` 是只读字段，写回前递归剥掉（官方文档明确要求）。
 - 只支持新版文档（`docx`）；旧版 `doc`、`sheets`、`bitable` 明确报错，不猜。
 - 单篇文档并发编辑上限 3 次/秒（官方），一次写入通常是 2–3 个串行请求。

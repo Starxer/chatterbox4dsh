@@ -1,7 +1,24 @@
 import { describe, expect, it, vi } from 'vitest'
-import { parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { imageRefsIn, parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
+import type { HarnessConversationService } from '../src/harness.ts'
+
+/** Real 1x1 PNG so the image sniffing path is exercised, not mocked. */
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+)
+
+async function tempImage(name = 'pic.png', bytes: Buffer = PNG_1X1): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-doc-'))
+  const path = join(dir, name)
+  await writeFile(path, bytes)
+  return path
+}
 
 /** Minimal Cordis context exposing only tools.register. */
 function fakeCtx() {
@@ -22,13 +39,19 @@ interface FakeClient {
   docx: {
     v1: {
       document: { get: ReturnType<typeof vi.fn>, create: ReturnType<typeof vi.fn>, convert: ReturnType<typeof vi.fn>, rawContent: ReturnType<typeof vi.fn> }
-      documentBlock: { get: ReturnType<typeof vi.fn> }
+      documentBlock: { get: ReturnType<typeof vi.fn>, list: ReturnType<typeof vi.fn>, patch: ReturnType<typeof vi.fn> }
       documentBlockChildren: { batchDelete: ReturnType<typeof vi.fn> }
       documentBlockDescendant: { create: ReturnType<typeof vi.fn> }
     }
   }
   wiki: { v2: { space: { getNode: ReturnType<typeof vi.fn> } } }
-  drive: { v1: { meta: { batchQuery: ReturnType<typeof vi.fn> } } }
+  drive: {
+    v1: {
+      meta: { batchQuery: ReturnType<typeof vi.fn> }
+      media: { uploadAll: ReturnType<typeof vi.fn> }
+      permissionMember: { create: ReturnType<typeof vi.fn> }
+    }
+  }
 }
 
 function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChannel, client: FakeClient } {
@@ -51,23 +74,34 @@ function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChanne
             },
           })),
         },
-        documentBlock: { get: vi.fn(async () => ({ data: { block: { children: ['x', 'y'] } } })) },
+        documentBlock: {
+          get: vi.fn(async () => ({ data: { block: { children: ['x', 'y'] } } })),
+          list: vi.fn(async () => ({ data: { items: [], has_more: false } })),
+          patch: vi.fn(async () => ({ code: 0 })),
+        },
         documentBlockChildren: { batchDelete: vi.fn(async () => ({ data: {} })) },
         documentBlockDescendant: { create: vi.fn(async () => ({ data: {} })) },
       },
     },
     wiki: { v2: { space: { getNode: vi.fn(async () => ({ data: { node: { obj_token: 'doxcnWIKI', obj_type: 'docx', url: 'https://x.feishu.cn/wiki/NODE', title: 'Wiki Doc' } } })) } } },
-    drive: { v1: { meta: { batchQuery: vi.fn(async () => ({ data: { metas: [{ url: 'https://x.feishu.cn/docx/doxcnNEW' }] } })) } } },
+    drive: {
+      v1: {
+        meta: { batchQuery: vi.fn(async () => ({ data: { metas: [{ url: 'https://x.feishu.cn/docx/doxcnNEW' }] } })) },
+        media: { uploadAll: vi.fn(async () => ({ file_token: 'img_v3_test' })) },
+        permissionMember: { create: vi.fn(async () => ({ code: 0 })) },
+      },
+    },
     ...overrides,
   }
   return { channel: { rawClient: client } as unknown as LarkChannel, client }
 }
 
-function toolsOver(channel: LarkChannel) {
+function toolsOver(channel: LarkChannel, bridge?: HarnessConversationService) {
   const fake = fakeCtx()
   startFeishuDocTools({
     ctx: fake as unknown as Context,
     channelHolder: { current: channel },
+    ...(bridge === undefined ? {} : { bridgeHolder: { current: bridge } }),
     logger: { warn: vi.fn(), error: vi.fn() },
   })
   const byName = (name: string) => fake.registered.find(tool => tool.name === name)
@@ -75,7 +109,7 @@ function toolsOver(channel: LarkChannel) {
 }
 
 function execCtx(): any {
-  return { signal: { throwIfAborted: () => undefined } }
+  return { agent: { id: 'session-1' }, signal: { throwIfAborted: () => undefined } }
 }
 
 describe('parseDocTarget', () => {
@@ -110,6 +144,15 @@ describe('prepareBlocks', () => {
     expect(prepared.blocks.every(block => block.parent_id === undefined)).toBe(true)
     expect(JSON.stringify(prepared.blocks)).not.toContain('merge_info')
     expect(JSON.stringify(prepared.blocks)).not.toContain('comment_ids')
+  })
+})
+
+describe('imageRefsIn', () => {
+  it('classifies local, remote and relative targets', () => {
+    const refs = imageRefsIn('![a](/tmp/a.png) ![b](https://x/y.png) ![c](./c.png)')
+    expect(refs.map(ref => ref.local !== undefined)).toEqual([true, false, false])
+    expect(refs[1]?.skipReason).toMatch(/remote/i)
+    expect(refs[2]?.skipReason).toMatch(/relative/i)
   })
 })
 
@@ -188,7 +231,8 @@ describe('feishu_doc_write', () => {
     expect(value.mode).toBe('append')
     expect(value.document_id).toBe('doxcnAbCdEf')
     expect(value.blocks).toBe(2)
-    expect(value.skipped_images).toBe(1)
+    expect(value.images_uploaded).toBe(0)
+    expect(value.images_skipped).toBe(0)
   })
 
   it('clears the body before writing in replace mode', async () => {
@@ -215,6 +259,70 @@ describe('feishu_doc_write', () => {
     expect(value.document_id).toBe('doxcnNEW')
     expect(value.url).toBe('https://x.feishu.cn/docx/doxcnNEW')
     expect(value.title).toBe('New Doc')
+  })
+
+  it('uploads a local image and attaches it to the inserted image block', async () => {
+    const path = await tempImage()
+    const { channel, client } = fakeChannel()
+    client.docx.v1.documentBlock.list = vi.fn(async () => ({
+      data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: '' } }], has_more: false },
+    }))
+    const tool = toolsOver(channel).write!
+    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: `![pic](${path})` }, execCtx())
+
+    expect(client.drive.v1.media.uploadAll).toHaveBeenCalledWith({
+      data: expect.objectContaining({ parent_node: 'imgblk', parent_type: 'docx_image', file: expect.any(Buffer) }),
+    })
+    expect(client.docx.v1.documentBlock.patch).toHaveBeenCalledWith({
+      path: { document_id: 'doxcnAbCdEf', block_id: 'imgblk' },
+      data: { replace_image: { token: 'img_v3_test' } },
+    })
+    expect(value.images_uploaded).toBe(1)
+    expect(value.images_skipped).toBe(0)
+  })
+
+  it('skips remote images without fetching them', async () => {
+    const { channel, client } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    const value = await tool.execute({
+      mode: 'append',
+      target: 'doxcnAbCdEf',
+      markdown: '![x](https://example.com/a.png)',
+    }, execCtx())
+
+    expect(client.drive.v1.media.uploadAll).not.toHaveBeenCalled()
+    expect(value.images_uploaded).toBe(0)
+    expect(value.images_skipped).toBe(1)
+  })
+
+  it('shares a newly created document with the asking user', async () => {
+    const { channel, client } = fakeChannel()
+    const bridge = {
+      resolveChat: () => ({ chatId: 'oc_x', chatType: 'p2p' }),
+      lastSenderFor: () => 'ou_requester',
+    } as unknown as HarnessConversationService
+    const tool = toolsOver(channel, bridge).write!
+    const value = await tool.execute({ mode: 'create', markdown: 'hello' }, execCtx())
+
+    expect(client.drive.v1.permissionMember.create).toHaveBeenCalledWith({
+      path: { token: 'doxcnNEW' },
+      params: { type: 'docx', need_notification: true },
+      data: { member_type: 'openid', member_id: 'ou_requester', perm: 'edit', type: 'user' },
+    })
+    expect(value.shared).toBe(true)
+  })
+
+  it('sticks to create-only sharing', async () => {
+    const { channel, client } = fakeChannel()
+    const bridge = {
+      resolveChat: () => ({ chatId: 'oc_x', chatType: 'p2p' }),
+      lastSenderFor: () => 'ou_requester',
+    } as unknown as HarnessConversationService
+    const tool = toolsOver(channel, bridge).write!
+    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx())
+
+    expect(client.drive.v1.permissionMember.create).not.toHaveBeenCalled()
+    expect(value.shared).toBe(false)
   })
 
   it('requires a target outside create mode', async () => {

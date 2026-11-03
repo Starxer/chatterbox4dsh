@@ -299,6 +299,15 @@ export class HarnessConversationService {
    */
   private readonly workspaceCache = new Map<string, string>()
   /**
+   * `chatId → open_id` of the most recent inbound sender. Used to share a
+   * document the bot created (tenant-token documents are owned by the bot, so
+   * without an explicit collaborator grant the asking user cannot open them).
+   * Deliberately in memory only: it is a hint for the *current* conversation,
+   * never an authority, and losing it on restart only means the share step is
+   * skipped (the tool reports that).
+   */
+  private readonly chatToSender = new Map<string, string>()
+  /**
    * Sessions for which intermediate assistant message cards were sent during
    * the current turn. The channel skips the final reply card for these
    * sessions to avoid duplication.
@@ -1023,6 +1032,7 @@ export class HarnessConversationService {
     // Cleared for consistency with the rest: leaving it out is what made the
     // wiped file look like a partial, almost-plausible state file.
     this.chatToBusyMode.clear()
+    this.chatToSender.clear()
   }
 
   /**
@@ -1204,6 +1214,31 @@ export class HarnessConversationService {
       if (derived === sessionId) return this.attachRootId(key, this.messageFromKey(key))
     }
     return undefined
+  }
+
+  /**
+   * Remember who last spoke in a chat.
+   *
+   * Only a Feishu user open id (`ou_…`) is accepted: the value is used to grant
+   * a document collaborator permission, and an app/bot id there would be
+   * meaningless. The channel calls this on every inbound message.
+   *
+   * @param chatId - the chat the message arrived in.
+   * @param senderId - the normalized message's sender id (may be absent).
+   */
+  noteInboundSender(chatId: string, senderId?: string): void {
+    if (typeof senderId !== 'string' || !senderId.startsWith('ou_')) return
+    this.chatToSender.set(chatId, senderId)
+  }
+
+  /**
+   * The most recent inbound sender's open id for a chat, if one was seen.
+   *
+   * @param chatId - the chat to look up.
+   * @returns the open id, or undefined for a chat no user message has reached.
+   */
+  lastSenderFor(chatId: string): string | undefined {
+    return this.chatToSender.get(chatId)
   }
 
   /** Attach the stored topic root id (if any) to a reconstructed chat message. */

@@ -868,6 +868,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   stopDocTools = startFeishuDocTools({
     ctx,
     channelHolder,
+    // Used to share a newly created (bot-owned) document with the user who
+    // asked for it: the bridge knows the chat and its last speaker.
+    bridgeHolder,
     logger: ctx.logger('dsh-feishu'),
   })
   // Interactive `/permission` picker card. Independent of the questions/

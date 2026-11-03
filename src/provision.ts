@@ -53,13 +53,21 @@ export const FEISHU_BOT_SCOPES = [
  *   `docx:document` or this scope (verified 2026-11-03: `99991672`).
  * - `docs:document.content:read` — `docs.v1.content.get` is the only endpoint
  *   that returns Markdown; without it reads fall back to plain text.
+ * - `docs:document.media:upload` — upload a local image and attach it to an
+ *   image block (`drive.v1.media.uploadAll` with `parent_type: docx_image`).
+ * - `docs:permission.member:create` — share the created document with the user
+ *   who asked for it (`drive.v1.permissionMember.create`). Without it a
+ *   tenant-token document stays owned by the bot and the user cannot open it.
  *
- * Both are requested here so a freshly scanned app can use the document tools
- * immediately. The app is still limited to documents it is a collaborator on.
+ * All four are requested here so a freshly scanned app can use the document
+ * tools immediately. The app is still limited to documents it is a
+ * collaborator on.
  */
 export const FEISHU_DOC_SCOPES = [
   'docx:document:create',
   'docs:document.content:read',
+  'docs:document.media:upload',
+  'docs:permission.member:create',
 ]
 
 /**

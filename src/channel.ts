@@ -293,7 +293,10 @@ export interface ChatCoordinates {
 
 export async function startChannel(
   config: Omit<RuntimeConfig, 'appSecretRef'>,
-  bridge: Pick<HarnessConversationService, 'reply' | 'dispose' | 'consumeIntermediateSent' | 'resolveSessionIdFor' | 'needsOnboarding' | 'noteTopic'>,
+  // `noteInboundSender` is optional so test doubles (and older embedders) do
+  // not have to grow a method just to keep the channel booting.
+  bridge: Pick<HarnessConversationService, 'reply' | 'dispose' | 'consumeIntermediateSent' | 'resolveSessionIdFor' | 'needsOnboarding' | 'noteTopic'>
+    & { noteInboundSender?: HarnessConversationService['noteInboundSender'] },
   factory: ChannelFactory = createLarkChannel,
   logger: PluginLogger = console,
   terminalLogger?: Pick<PluginLogger, 'error'>,
@@ -517,6 +520,9 @@ export async function startChannel(
       const resources = (message.resources ?? []).filter(resource => resource.type === 'image' || ADMITTED_RESOURCE_TYPES.has(resource.type))
       const userText = attachmentMessageText(message)
       const key = conversationKey(message)
+      // Remember who is speaking: a tenant-token document the bot creates is
+      // owned by the bot, so the doc tools must grant this user access to it.
+      bridge.noteInboundSender?.(message.chatId, message.senderId)
       const startingSession = bridge.resolveSessionIdFor(message)
       const startingEpoch = bindingEpochs.get(key) ?? 0
       let initiallyUnbound = false

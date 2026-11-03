@@ -48,6 +48,8 @@ describe('provisionApp', () => {
     // Document tools: create (docx) + Markdown read.
     expect(options.addons.scopes.tenant).toContain('docx:document:create')
     expect(options.addons.scopes.tenant).toContain('docs:document.content:read')
+    expect(options.addons.scopes.tenant).toContain('docs:document.media:upload')
+    expect(options.addons.scopes.tenant).toContain('docs:permission.member:create')
     expect(options.addons.events.items.tenant).toContain('im.message.receive_v1')
     expect(states).toEqual([
       { phase: 'waiting', qrUrl: 'https://scan.example/verify', expireIn: 600 },
