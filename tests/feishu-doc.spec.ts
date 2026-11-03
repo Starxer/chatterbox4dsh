@@ -220,6 +220,20 @@ describe('feishu_doc_read', () => {
     expect(value.images).toEqual([{ block_id: 'imgblk', token: 'img_v3_x', url: 'https://x/img' }])
   })
 
+  it('prints the image download URL in the rendered result', () => {
+    const { channel } = fakeChannel()
+    const tool = toolsOver(channel).read!
+    const rendered = tool.output.render({ target: 'x' }, {
+      document_id: 'd',
+      content: 'body',
+      format: 'markdown',
+      total_chars: 4,
+      truncated: false,
+      images: [{ block_id: 'b1', token: 'tok', url: 'https://x/img' }],
+    })
+    expect(rendered[0].text).toContain('https://x/img')
+  })
+
   it('truncates long bodies and reports the next offset', async () => {
     const { channel } = fakeChannel({
       docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'abcdefghij' } })) } } },

@@ -850,10 +850,17 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         }
         const title = value.title === undefined || value.title === '' ? '' : ` · title: ${value.title}`
         const revision = value.revision_id === undefined ? '' : ` · revision: ${value.revision_id}`
-        const images = value.images === undefined || value.images.length === 0
+        const imageCount = value.images === undefined || value.images.length === 0
           ? ''
           : ` · ${value.images.length} image block(s) not shown in the body`
-        lines.push('', `[document_id: ${value.document_id}${title}${revision}${images}${value.url === undefined ? '' : ` · ${value.url}`}]`)
+        lines.push('', `[document_id: ${value.document_id}${title}${revision}${imageCount}${value.url === undefined ? '' : ` · ${value.url}`}]`)
+        // The image URLs are only in the value; without printing them the model
+        // cannot actually see the pictures the document contains.
+        for (const image of value.images ?? []) {
+          lines.push(image.url === undefined
+            ? `[image ${image.block_id}${image.token === undefined || image.token === '' ? '' : ` · ${image.token}`}]`
+            : `[image ${image.block_id}: ${image.url}]`)
+        }
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
