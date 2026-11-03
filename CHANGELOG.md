@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-> 当前未发布主线：已验证 DSH `0.2.1-rc.2`，peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.2 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
-> Current unreleased main is verified with DSH `0.2.1-rc.2`, retaining ranges from `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+> 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
+> The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
 ### 改进：文档图片可下载到本地、写入对限流重试（2026-11-04）
 

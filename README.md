@@ -54,10 +54,25 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 | 审批 / Approvals | 与 Web UI 共享 pending 状态，两端都显示，谁先处理谁生效；中止后卡片作废 | Shared pending state on both surfaces; the first answer wins and aborted requests retire their cards |
 | 问答 / Questions | 单选整行点选即记录，回执可返回重答；全部答完后最终确认才提交。多选每选项一个复选框，一次提交 | Single-select records on tap, with undo receipts; only final batch confirmation submits to the model. Multi-select uses one checkbox per option and one submit |
 | 媒体与文件 / Media & files | 接收入站图片、文件、视频与语音到 DSH 附件库；支持卡内图片/视频/音频与 `feishu_send_file` 主动发原件 | Intake uses DSH's attachment store; card media is inlined and `feishu_send_file` can send original files |
-| 在线文档 / Online docs | `feishu_doc_read` 把 `…/docx/…` 或 `…/wiki/…` 链接读成 Markdown（未开通 Markdown 读取权限时退回纯文本），`feishu_doc_write` 以 `create` / `append` / `replace` 写回原生文档块；Markdown 里的本地图片自动上传并内嵌，`create` 建出的文档自动共享给发起用户；`feishu_doc_comments` 读/发评论（带作者名），`feishu_doc_blocks` 列块并按块改写；`feishu_doc_write` 支持从 `.md` 文件读正文、写入前做版本守卫、`replace` 遇到 Markdown 表达不了的块会拒绝；读取返回表格转 Markdown、图片临时下载链接 | `feishu_doc_read` reads docx/wiki links as Markdown (plain-text fallback); `feishu_doc_write` creates, appends to or replaces a document, uploads local images from the Markdown and embeds them, and shares a newly created document with the asking user |
+| 在线文档 / Online docs | `feishu_doc_read` 读 docx/wiki 链接为 Markdown（表格转 Markdown、图片可下载到本地、返回 revision）；`feishu_doc_write` 以 `create` / `append` / `replace` 写入原生块，正文可来自 `.md` 文件，本地图片自动上传内嵌，`create` 新建的文档自动共享给发起用户；`feishu_doc_comments` 读/发评论（带作者名）；`feishu_doc_blocks` 列块并按块改写 | `feishu_doc_read` reads docx/wiki as Markdown (tables converted, images downloadable, revision returned); `feishu_doc_write` creates/appends/replaces native blocks from inline text or a `.md` file, embeds local images and shares created documents; `feishu_doc_comments` lists/creates comments with author names; `feishu_doc_blocks` lists and rewrites single blocks |
 | 回合交付 / Deliverables | `present` 媒体内联、白名单文档自动发、其他文件点确认后发；未声明的产出默认只投媒体和白名单文档 | `present` inlines media, auto-sends allowlisted documents and confirms other files; unpresented output is filtered to media and allowlisted documents |
 | 外部回合 / External turns | 绑定会话从 Web GUI 或自动化启动的回合也回显、收尾、交付，来源具名；`mirrorExternalTurns` 默认开 | Web/automation turns in bound sessions are echoed, completed and delivered with a named origin; enabled by default |
 | 连接与访问 / Connection & access | WebSocket 长连接，无需公网 webhook；支持飞书 / Lark、单聊策略、群白名单与 @要求 | WebSocket transport needs no public webhook; Feishu/Lark, DM policies, group allowlists and mention requirements |
+
+### 在线文档工具 / Online-document tools
+
+四个模型工具，让 agent 直接读写飞书在线文档（docx），不用把内容复制进聊天。
+
+| 工具 / Tool | 作用 / What it does |
+|---|---|
+| `feishu_doc_read` | 读 `…/docx/…`、`…/wiki/…` 或裸 token：Markdown 正文、`revision_id`、图片块；`download_images` 把图片下载成本地文件 |
+| `feishu_doc_write` | `create` / `append` / `replace` 写原生块；正文来自 `path`（`.md` 文件）或 `markdown` 参数；上传并内嵌本地图片；`create` 自动共享给发起用户 |
+| `feishu_doc_comments` | `list` 读评论线程（含作者名、已解决状态、锚定引用）或 `create` 发一条全文评论 |
+| `feishu_doc_blocks` | `list` 列块（id / 类型 / 文本 / 图片 token）或 `update` 按 `block_id` 就地改一段文本 |
+
+安全边界：`append` / `replace` 必须带 `feishu_doc_read` 返回的 `revision_id`；`replace` 会先扫块，文档含 Markdown 表达不了的块（callout、分栏、嵌入等）时拒绝执行，除非显式 `allow_format_loss: true`。写调用遇到飞书限流（`99991400` / HTTP 429）自动退避重试两次。
+
+**English**: Four model tools work directly on Feishu docx documents: read (Markdown, revision, image blocks, optional local image download), write (create/append/replace native blocks from inline text or a `.md` file, local images embedded, created documents shared with the requester), comments (list with author names, create a whole-document comment) and blocks (list block ids/types/text, rewrite one block in place). `append`/`replace` require the revision id; `replace` refuses documents whose blocks Markdown cannot reproduce unless `allow_format_loss` is set; rate-limited writes retry twice.
 
 ### 工作展示档位 / Work-detail levels
 
@@ -165,7 +180,7 @@ Example configuration entry for a profile patch; credentials use references, nev
 
 ## 在线文档权限 / Online-document permissions
 
-在线文档工具需要的权限**由扫码配置自动申请**（`docx:document:create`、`docs:document.content:read`、`docs:document.media:upload`、`docs:permission.member:create`；平台模板还自带读取、修改、块转换与 wiki 链接解析）。普通读写、评论和块级协作**不需要额外操作**。
+在线文档工具需要的权限**由扫码配置自动申请**（`docx:document:create`、`docs:document.content:read`、`docs:document.media:upload`、`docs:document.media:download`、`docs:permission.member:create`；平台模板还自带读取、修改、块转换与 wiki 链接解析）。普通读写、评论和块级协作**不需要额外操作**。
 
 例外是**清理机器人自己创建的文档**——它需要两项维护权限，扫码流程**故意不申请**（删除权不该默认授予，文档工具本身也从不删除任何文档）：
 

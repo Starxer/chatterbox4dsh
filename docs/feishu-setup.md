@@ -40,7 +40,7 @@
 
 > 扫码一键配置会自动申请以上全部权限（`src/provision.ts` 的 `FEISHU_PROVISION_SCOPES`）。
 
-在线文档工具（`feishu_doc_read` / `feishu_doc_write`）需要的权限：
+在线文档工具（`feishu_doc_read` / `feishu_doc_write` / `feishu_doc_comments` / `feishu_doc_blocks`）需要的权限：
 
 | 权限标识 | 用途 | 来源 |
 |---|---|---|
@@ -48,7 +48,7 @@
 | `docx:document:create` | 新建文档（`feishu_doc_write` 的 `create`） | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
 | `docs:document.content:read` | 以 **Markdown** 读取；未开通时退回纯文本 | 同上 |
 | `docs:document.media:upload` | 把 Markdown 里的本地图片上传并内嵌到文档 | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
-| `docs:document.media:download` | 给文档里已有图片取临时下载链接，让读取工具能「看到」图片 | 同上 |
+| `docs:document.media:download` | 下载文档里已有的图片到本地文件（`feishu_doc_read` 的 `download_images`） | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
 | `docs:permission.member:create` | 把新建文档共享给发起请求的用户（应用身份建出的文档归机器人所有，不加协作者用户打不开） | 同上 |
 
 **已有应用怎么补**（不用重新扫码建应用）：

@@ -1,7 +1,7 @@
 # 项目文档 / Documentation
 
-> 当前文档基线：仓库主线，DSH `0.2.0-rc.2` 已验证；依赖范围保留 `^0.2.0-rc.1`。这不是 npm 已发布版本的能力承诺。
-> Current baseline: repository main, verified with DSH `0.2.0-rc.2`; dependency ranges retain `^0.2.0-rc.1`. This does not describe every published npm version.
+> 当前文档基线：仓库主线；本机部署运行 DSH `0.2.1-rc.5`，已完成构建、插件加载与飞书收发的基本验证，不是全功能/全平台认证。依赖范围保留 `^0.2.0-rc.1`。这不是 npm 已发布版本的能力承诺。
+> Current baseline: repository main; the local deployment runs DSH `0.2.1-rc.5` with basic build, plugin-load and Feishu send/receive verification, not full feature or platform certification. Dependency ranges retain `^0.2.0-rc.1`. This does not describe every published npm version.
 
 ## 按任务阅读 / Start here
 
@@ -22,7 +22,10 @@
 - **压缩摘要**：使用 `22,000` UTF-8 字节的正文预算，超出时写明截断，不再是旧的 200 字上限。折叠不减少卡片 JSON 字节数。
 - **问答**：单选点选即记录，可通过回执返回重答；全部答完后需最终确认才提交给模型。多选通过每选项一个 `checker` 一次提交。
 - **交付**：`present` 媒体内联、白名单文档自动发文件、其他文件点击确认后发送；未 `present` 的产出默认只投递媒体与白名单文档，不列整张源码清单。
+- **在线文档**：`feishu_doc_read` / `feishu_doc_write` / `feishu_doc_comments` / `feishu_doc_blocks` 读写飞书 docx（wiki 链接会解析）；读取返回 Markdown、revision 与图片块（`download_images` 可下载到本地）；写入支持 `.md` 文件输入、本地图片内嵌、`create` 后自动共享；`append`/`replace` 必须带 revision，`replace` 遇到 Markdown 表达不了的块会拒绝；评论只支持全文评论（回复被平台拒绝）；写调用对限流退避重试。
 - **平台**：完整链路只验证过 Linux x64。macOS / Windows 未进行端到端验证。
+
+**English:** Four online-document tools read and write Feishu docx files (wiki links resolved); reads return Markdown, the revision and image blocks (optionally downloaded locally), writes accept a `.md` file, embed local images and share created documents, `append`/`replace` require the revision and `replace` refuses blocks Markdown cannot reproduce, comments support whole-document creation only (replying is rejected by Feishu), and rate-limited writes retry.
 
 **English:** `compact` separates the answer from a lazily created, segmented turn-progress card; the other levels use step cards. `detailed` is the default, and the plugin's four `show*` switches only subtract detail. Progress keeps at most five recent steps / 40 visible rows and 60 folded rows. Compaction summaries have a 22,000-byte UTF-8 budget. Single-select answers are recorded on tap but the batch is submitted only after final confirmation; multi-select uses one checkbox per option. Deliverables are routed by type. Full integration is verified on Linux x64 only.
 

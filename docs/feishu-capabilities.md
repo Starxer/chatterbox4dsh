@@ -347,7 +347,7 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 
 ## 八、在线文档读写（docx）
 
-`src/feishu-doc.ts` 提供两个模型工具，让 agent 把飞书文档当工作对象，而不是只在聊天里贴链接。
+`src/feishu-doc.ts` 提供 `feishu_doc_read` / `feishu_doc_write` 两个模型工具，`src/feishu-doc-collab.ts` 提供 `feishu_doc_comments` / `feishu_doc_blocks` 两个协作工具——四者让 agent 把飞书文档当工作对象，而不是只在聊天里贴链接。
 
 | 步骤 | 接口 | 说明 |
 |---|---|---|
@@ -363,9 +363,10 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 **权限现状（2026-11-04 实测，应用身份）**：
 
 - 平台模板已给到 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`、`docs:document.comment:*` —— 所以**读、改已存在文档、解析 wiki 链接、取 URL 本来就通**。
-- 缺的四项：`docx:document:create`（新建）、`docs:document.content:read`（Markdown 读取）、`docs:document.media:upload`（图片素材上传）、`docs:permission.member:create`（加协作者）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**：两次 `code=0`、权限数 38→42、`application.scope.list` 均 `grant_status=1`（清理探测文档时又补了 `space:document:retrieve` / `space:document:delete`，现为 44 项，**不进扫码默认**），随即 `document.create`、`media.uploadAll`、`permissionMember.create` 全部成功（免审权限，立即生效）。
+- 缺的五项（已全部进入扫码预填 `FEISHU_DOC_SCOPES`）：`docx:document:create`（新建）、`docs:document.content:read`（Markdown 读取）、`docs:document.media:upload`（图片上传）、`docs:document.media:download`（图片下载）、`docs:permission.member:create`（加协作者）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**（免审权限，立即生效），随后 `document.create`、`media.uploadAll`、`media.download`、`permissionMember.create` 全部实测成功。
+- 清理用的 `space:document:retrieve` / `space:document:delete` 也已补齐（**不进扫码默认**，见 `FEISHU_DOC_MAINTENANCE_SCOPES`），当前应用共 46 项授权（另有实验性开通但工具未使用的 `search:docs:read`）。
 - 其余链路（`document.get`、`documentBlock.*`、`documentChild create/batchDelete`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）从一开始就没有权限码，假 token 时报的是资源级 `1770002` / `131005`。
-- 删除文档需要 `drive:drive` 或 `space:document:delete`（未申请），所以探测产生的**应用自建文档无法用 API 删除**；应用自建文档对普通用户默认不可见。
+- 删除文档需要 `space:document:delete`（已补齐、已实测）；应用自建文档归机器人所有，`create` 后由工具自动共享给发起用户。
 
 **端到端回环（2026-11-04，`feishu_doc_write` → `feishu_doc_read`）**：新建 → `convert`（27 块 / 18 个一级块）→ 插入 → Markdown 读回，全部成功。回读侧观察到的差异（写进去的块是对的，读回文本是飞书的口径）：
 
@@ -415,6 +416,14 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 | 读评论 | `drive.v1.fileComment.list` | `code=0`，含 `is_whole` / `is_solved` / `quote` / `reply_list` |
 | 发评论 | `drive.v1.fileComment.create` | 只能建**全文评论**（接口明确不支持局部评论），`code=0` |
 | 回评论 | `drive.v1.fileCommentReply.create` | 对全文评论返回 `1069302 The comment section does not allow replies` ⇒ 工具不提供回复动作 |
+
+**工具行为（2026-11-04 之后）**：
+
+- **正文输入**：`feishu_doc_write` 可用 `path` 读 `.md` 文件（相对图片按文件目录解析），也可用内联 `markdown`；`create` 的标题默认取首个 H1 或文件名，且该 H1 不会在正文里重复出现。
+- **版本守卫**：`append` / `replace` 必须带 `revision_id`，写前比对当前版本；`replace` 会先扫块，发现 Markdown 表达不了的块（callout、grid、file、sheet 嵌入等）直接拒绝，除非 `allow_format_loss: true`。
+- **图片**：写入时本地图片上传内嵌（`docx_image` + `replace_image`）；读取时返回图片块的临时 URL，`download_images: true` 会通过 `drive.v1.media.download` 下载成本地文件并给出 `path`（签名 URL 本身不保证可被外部直接 fetch，实测以媒体下载接口为准）。
+- **限流**：块插入、清空正文、图片上传、图片挂载四个写调用对 `99991400` / HTTP 429 退避重试两次（600ms / 1500ms）。
+- **评论**：只支持全文评论创建，回复被平台拒绝（`1069302`）；列表返回 `user_id` 与解析后的 `user_name`（contact 查询，单页最多 10 个作者）。
 
 **已知取舍**：
 
