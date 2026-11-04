@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 构建：修好发布链路，`0.3.0` 完成首次 trusted publishing 发布（`.github/workflows/publish.yml`，2026-11-05）
+
+`0.3.0` 是第一个真正走 OIDC trusted publishing 发布的版本（`0.2.0` 当年是 granular token 手动发的）。首发连踩三个坑，现在都已修好并留了守卫：
+
+- **setup-node v6 会把 OIDC 挡掉**：只要传 `registry-url`，v6 就导出 dummy `NODE_AUTH_TOKEN` 并把 `_authToken=${NODE_AUTH_TOKEN}` 写进 `.npmrc`，npm 优先用这个假 token、不再交换 OIDC ⇒ `E404 Not Found - PUT`。改用 `actions/setup-node@v7` 并且不再传 `registry-url`，`.npmrc` 里不留任何 token。
+- **新增发布前置探测**：先断言没有 `NODE_AUTH_TOKEN` / `_authToken`，再断言 `ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN` 存在（即 `id-token: write` 生效），最后真做一次 OIDC → npm token 交换并打印状态（npm 成功回 201）。失败时打印 npm 的返回 body——比 npm 自己的 `ENEEDAUTH` / `E404` 说得多得多（例如 `OIDC token exchange error - package not found` 表示包上没有 Trusted Publisher 条目）。`workflow_dispatch` 干跑也会过这一步，所以「干跑绿」不再被误读成「发布链路可用」。
+- **npm 侧的两个前置**：包的 Trusted Publisher 条目要在 **Allowed actions** 里勾上 `npm publish`（新建条目默认只有 `npm stage publish`，直接发布会 `E403 OIDC permission denied for this action`）；OIDC 交换成功返回的是 201 而不是 200。
+- **发布后校验改成轮询**：npm 先回 `+ pkg@version` 再异步处理版本，紧接着 `npm view` 可能 404；现在最多等 5 分钟再判失败，之后仍校验 `dist.attestations`。
+- **首发结果**：`@starxer/chatterbox4dsh@0.3.0`，`latest` 指向 0.3.0，SLSA v1 provenance 齐全，npm 上的 tarball 与 Release 资产 sha256 一致。
+
+**English**: `0.3.0` is the first release published through OIDC trusted publishing. Three first-run failures were fixed and guarded: setup-node v6 wrote a dummy `NODE_AUTH_TOKEN` into `.npmrc` whenever `registry-url` was set, so npm never exchanged the OIDC token (`E404 PUT`); the publish job now uses setup-node v7 without `registry-url` and asserts that no token can shadow OIDC; a new prerequisite step checks `id-token: write` and performs the same OIDC-to-npm token exchange npm does, printing npm's own body on failure (a 404 body like `OIDC token exchange error - package not found` means no Trusted Publisher entry). The npm side also requires the publisher's Allowed actions to include `npm publish` (new entries default to staged publishing only, which rejects direct publishes with `E403 OIDC permission denied`), and a successful exchange returns 201. Verification now polls `npm view` for up to five minutes because npm acknowledges a publish before the version is readable. Result: `@starxer/chatterbox4dsh@0.3.0` on npm with `latest`, SLSA v1 provenance, and a tarball byte-identical to the release asset.
+
 ## 0.3.0 (2026-11-05)
 
 > 自 `0.2.0`（2026-09-08）以来累积的全部改动，**要求 DSH `0.2.x`**（peer `^0.2.0-rc.1`；在 `0.2.2-rc.1` 上构建、加载并完成飞书收发验证）。`0.2.0` 要求 DSH `0.1.3-alpha.x`，本版不再支持 0.1.x——这是本次唯一的破坏性变更。本机最后一次完整回归基线为 DSH `0.2.1-rc.2`，`0.2.2-rc.1` 的适配见下文「兼容」条。现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
