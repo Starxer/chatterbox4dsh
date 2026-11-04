@@ -5,6 +5,15 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：`/busy` 与状态卡改用 WebUI 的正式说法（`src/i18n.ts` / `src/feishu-busy.ts` / `src/index.ts` / `src/channel.ts`，2026-11-04）
+
+- **术语纠正**：`Enter while busy` / `忙碌时进入` 是对 WebUI 设置名的生硬直译，而飞书里根本没有 Enter 键。现在统一采用 DSH WebUI 自己的中英文命名：**繁忙时的发送行为**（`Send behavior while busy`），两个选项译为 **排队发送** / **插话发送**（English 仍为 `Queue` / `Steer`）。
+- 覆盖三处用户可见位置：`/busy` 交互卡片（标题、当前模式、提示、按钮）、Turn Complete footer、`/status` 的同一行；`/busy` 的文本回退路径与 `/help` 里的命令说明同步改写。
+- 卡片标题不再硬编码英文，改走 i18n（新增 `busyCardTitle`）；顺带删掉五个从未被引用的旧 busy i18n 键（`busyTitle` / `busyIntro` / `busyQueueLabel` / `busySteerLabel` / `busyCurrentOption`），避免以后再被误用。
+- 测试：更新 busy 卡片与 footer 的断言，新增英文 locale 卡片一例；全量 **1384 测试 / 69 文件**、`typecheck`、`build` 全绿。
+
+**English**: `Enter while busy` / `忙碌时进入` was a literal translation of the WebUI setting name, and a Feishu chat has no Enter key at all. The busy picker card, the Turn Complete footer and `/status` now use the WebUI's own wording: **Send behavior while busy** (zh 繁忙时的发送行为) with the options **Queue** / **Steer** (zh 排队发送 / 插话发送). The card title is localised instead of hard-coded, five unused busy i18n keys were removed, and `/help`'s `/busy` description was reworded. 1384 tests / 69 files, typecheck and build pass.
+
 ### 新增：启动/重启后自动通知最后活跃会话（`src/feishu-startup-notice.ts` / `src/harness.ts` / `src/index.ts`，2026-11-04）
 
 - 插件在**进程启动后第一次连上飞书**时，向**最后活跃的会话**发一条文本（不调用模型）：`DeepSeek Harness 已恢复在线，可以继续对话。`

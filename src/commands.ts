@@ -828,7 +828,7 @@ export { FEISHU_OWNED_COMMANDS }
  */
 const FEISHU_INTERCEPTED_COMMANDS: Array<{ name: string; description: string; hint?: string }> = [
   { name: 'stop', description: '停止当前运行中的 agent（同 WebUI 停止按钮），并丢弃排队中的消息' },
-  { name: 'busy', description: '设置 agent 运行中收到消息时的 Enter 行为（Queue / Steer，持久化）', hint: '[queue|steer]' },
+  { name: 'busy', description: '设置智能体繁忙时发送消息的处理方式（排队发送 / 插话发送，持久化）', hint: '[queue|steer]' },
   { name: 'steer', description: '把一条消息注入当前运行中的 turn（运行中插话，/queue 的共轭）', hint: '<内容>' },
   { name: 'queue', description: '把一条消息排队为新一轮运行（/steer 的共轭）', hint: '<内容>' },
   { name: 'permission', description: '切换本会话的权限（沙箱）模式', hint: '[read-only|workspace-write|danger-full-access]' },
@@ -904,7 +904,7 @@ export function renderFeishuCommandsOnly(t: CommandTranslations): string {
     { name: 'new', description: t.newDescription },
     { name: 'session', description: t.threadDescription, hint: '[N]' },
     { name: 'detach', description: t.detachDescription, hint: '<N>' },
-    { name: 'busy', description: '设置 agent 运行中收到消息时的 Enter 行为（Queue / Steer，持久化）', hint: '[queue|steer]' },
+    { name: 'busy', description: '设置智能体繁忙时发送消息的处理方式（排队发送 / 插话发送，持久化）', hint: '[queue|steer]' },
     { name: 'steer', description: '把一条消息注入当前运行中的 turn（运行中插话）', hint: '<内容>' },
     { name: 'queue', description: '把一条消息排队为新一轮运行（/steer 的共轭）', hint: '<内容>' },
     { name: 'stop', description: '停止当前运行中的 agent（同 WebUI 停止按钮），并丢弃排队中的消息' },

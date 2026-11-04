@@ -17,20 +17,29 @@ describe('renderBusyCard', () => {
   it('shows the current mode and marks the active button disabled', () => {
     const card = renderBusyCard('steer', t) as any
     const markdown = card.body.elements.filter((el: any) => el.tag === 'markdown').map((el: any) => el.content).join('\n')
-    expect(markdown).toContain('**运行中（busy）的 Enter 行为** `steer` Steer')
-    expect(card.header.title.content).toBe('Enter while busy')
+    expect(markdown).toContain('**当前模式** `steer` 插话发送')
+    expect(card.header.title.content).toBe('⏳ 繁忙时的发送行为')
     const buttons = buttonsOf(card)
     expect(buttons).toHaveLength(2)
     const active = buttons.find((b: any) => textOf(b).startsWith('✓ '))
-    expect(textOf(active)).toContain('Steer')
+    expect(textOf(active)).toContain('插话发送')
     expect(active.disabled).toBe(true)
   })
 
   it('marks the queue option by default value', () => {
     const card = renderBusyCard('queue', t) as any
     const active = buttonsOf(card).find((b: any) => textOf(b).startsWith('✓ '))
-    expect(textOf(active)).toContain('Queue')
+    expect(textOf(active)).toContain('排队发送')
     expect(active.disabled).toBe(true)
+  })
+
+  it('uses the native English wording in the en locale', () => {
+    const card = renderBusyCard('queue', translationsFor('en')) as any
+    const markdown = card.body.elements.filter((el: any) => el.tag === 'markdown').map((el: any) => el.content).join('\n')
+    expect(card.header.title.content).toBe('⏳ Send behavior while busy')
+    expect(markdown).toContain('**Current mode** `queue` Queue')
+    expect(markdown).toContain('while the agent is running')
+    expect(textOf(buttonsOf(card).find((b: any) => textOf(b).startsWith('✓ ')))).toContain('Queue')
   })
 })
 
@@ -52,9 +61,9 @@ describe('startFeishuBusy', () => {
     const mid = await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
     expect(mid).toBe('om_card')
     expect(send).toHaveBeenCalledTimes(1)
-    // Click the "Queue" button.
+    // Click the "排队发送" button.
     const card = ((send.mock.calls as any)[0][1] as any).card
-    const queueBtn = buttonsOf(card).find((b: any) => textOf(b).includes('Queue ·'))
+    const queueBtn = buttonsOf(card).find((b: any) => textOf(b).includes('排队发送 ·'))
     await actionHandler!({ messageId: 'om_card', action: { value: queueBtn.value } })
     expect(setMode).toHaveBeenCalledWith(expect.objectContaining({ chatId: 'oc_1' }), 'queue')
     expect(updateCard).toHaveBeenCalledTimes(1)

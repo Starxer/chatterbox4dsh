@@ -134,13 +134,6 @@ export interface Translations {
   permissionWorkspaceWrite: string
   permissionFullAccess: string
 
-  // ---- Busy mode (feishu-busy.ts) ----
-  busyTitle: string
-  busyIntro: string
-  busyQueueLabel: string
-  busySteerLabel: string
-  busyCurrentOption: (mode: string) => string
-
   // ---- Questions (feishu-questions.ts) ----
   questionSkip: string
   questionChoicePrefix: string
@@ -372,7 +365,9 @@ export interface Translations {
   externalMessageFromOther: string
   /** Attachment summary appended to a mirrored message (phase one does not upload them). */
   externalMessageAttachments: (images: number, files: number) => string
-  enterWhileBusy: string
+  /** Label of the per-chat send behavior while the agent is busy (Turn Complete
+   *  footer + `/status`); the value is `busyQueueWord` / `busySteerWord`. */
+  busySendLabel: string
   /** Plain-text notice sent when a busy-mode message is injected into the running turn. */
   busySteeredNotice: string
   /** Plain-text notice sent when a busy-mode message is queued behind the running turn. */
@@ -407,6 +402,7 @@ export interface Translations {
   // ---- Extra keys for the bilingual card renderers ----
 
   // Busy card body (feishu-busy.ts)
+  busyCardTitle: string
   busyCurrentLabel: string
   busyHint: string
   busyQueueWord: string
@@ -883,12 +879,6 @@ export const zh = {
   permissionWorkspaceWrite: '工作区内修改',
   permissionFullAccess: '完全权限',
 
-  busyTitle: '⏳ 忙碌行为',
-  busyIntro: 'Agent 运行时收到的新消息如何进入？',
-  busyQueueLabel: '📥 Queue',
-  busySteerLabel: '🎯 Steer',
-  busyCurrentOption: mode => `当前：${mode === 'steer' ? 'Steer' : 'Queue'}`,
-
   questionSkip: '跳过',
   questionChoicePrefix: '选项',
 
@@ -1020,7 +1010,7 @@ export const zh = {
     if (files > 0) parts.push(`${files} 个文件`)
     return `（附件：${parts.join('、')}，未镜像到飞书）`
   },
-  enterWhileBusy: '忙碌时进入',
+  busySendLabel: '繁忙时的发送行为',
   busySteeredNotice: '🎯 已插入当前运行轮，模型会在下一步看到这条消息。',
   busyQueuedNotice: '📥 已排队，当前轮结束后会自动执行这条消息（排队期间可用 /stop 丢弃）。',
   turnFailedTitle: '本轮运行失败',
@@ -1034,7 +1024,7 @@ export const zh = {
   statusModelLabel: '模型',
   statusReasoningLabel: '推理',
   statusPermissionLabel: '权限',
-  statusBusyLabel: '忙碌时进入',
+  statusBusyLabel: '繁忙时的发送行为',
   statusAgentRunning: '🔄 运行中',
   statusAgentIdle: '⏸️ 空闲',
   statusAgentLabel: 'Agent',
@@ -1045,12 +1035,13 @@ export const zh = {
   next: '继续',
 
   // ---- Extra keys for the bilingual card renderers ----
-  busyCurrentLabel: '运行中（busy）的 Enter 行为',
-  busyHint: '_点击下方按钮切换本聊天在 agent 运行中收到消息时的处理方式（对齐 WebUI「Enter behavior while busy」）。已持久化，重启后保留。_',
-  busyQueueWord: 'Queue',
-  busySteerWord: 'Steer',
+  busyCardTitle: '⏳ 繁忙时的发送行为',
+  busyCurrentLabel: '当前模式',
+  busyHint: '_智能体运行中发送的消息，按下面选择的方式处理；点击按钮切换本聊天的模式。选择会持久化，重启后保留。_',
+  busyQueueWord: '排队发送',
+  busySteerWord: '插话发送',
   busyQueueDesc: '当前轮结束后作为新轮运行（默认）',
-  busySteerDesc: '注入当前运行轮立即响应',
+  busySteerDesc: '注入当前运行轮，模型下一步即可看到',
 
   // Turn Complete 交付文件清单（channel.ts / feishu-deliver.ts；来自 DSH `present`
   // 工具的 `deliverables/presented` 事件）。媒体在卡内内联；白名单文档按大小自动
@@ -1441,12 +1432,6 @@ export const en: Translations = {
   permissionWorkspaceWrite: 'Workspace Write',
   permissionFullAccess: 'Full access',
 
-  busyTitle: '⏳ Busy behavior',
-  busyIntro: 'How should a new message enter while the agent is running?',
-  busyQueueLabel: '📥 Queue',
-  busySteerLabel: '🎯 Steer',
-  busyCurrentOption: mode => `Current: ${mode === 'steer' ? 'Steer' : 'Queue'}`,
-
   questionSkip: 'Skip',
   questionChoicePrefix: 'Option',
 
@@ -1581,7 +1566,7 @@ export const en: Translations = {
     if (files > 0) parts.push(`${files} file${files === 1 ? '' : 's'}`)
     return `(attachments: ${parts.join(', ')} — not mirrored into Feishu)`
   },
-  enterWhileBusy: 'Enter while busy',
+  busySendLabel: 'Send behavior while busy',
   busySteeredNotice: '🎯 Injected into the running turn — the model will see it on the next step.',
   busyQueuedNotice: '📥 Queued — it will run after the current turn finishes (send /stop while waiting to discard it).',
   turnFailedTitle: 'This turn failed',
@@ -1595,7 +1580,7 @@ export const en: Translations = {
   statusModelLabel: 'Model',
   statusReasoningLabel: 'Reasoning',
   statusPermissionLabel: 'Permission',
-  statusBusyLabel: 'Enter while busy',
+  statusBusyLabel: 'Send behavior while busy',
   statusAgentRunning: '🔄 Running',
   statusAgentIdle: '⏸️ Idle',
   statusAgentLabel: 'Agent',
@@ -1606,8 +1591,9 @@ export const en: Translations = {
   next: 'Continue',
 
   // ---- Extra keys for the bilingual card renderers ----
-  busyCurrentLabel: 'Enter behavior while running (busy)',
-  busyHint: '_Click below to switch how this chat handles a message received while the agent is running (aligned with the WebUI "Enter behavior while busy"). Persisted and kept across restarts._',
+  busyCardTitle: '⏳ Send behavior while busy',
+  busyCurrentLabel: 'Current mode',
+  busyHint: '_How a message you send while the agent is running is handled. Click a button to switch this chat; the choice is persisted and kept across restarts._',
   busyQueueWord: 'Queue',
   busySteerWord: 'Steer',
   busyQueueDesc: 'Runs as a new round after the current one (default)',

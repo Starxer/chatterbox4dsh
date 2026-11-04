@@ -1,12 +1,13 @@
 /**
- * Interactive "Enter behavior while busy" picker card for the `/busy` Feishu
+ * Interactive "Send behavior while busy" picker card for the `/busy` Feishu
  * command.
  *
- * DSH's WebUI names this setting "Enter behavior while busy" (options Queue /
- * Steer: how a message sent while the agent is running is handled). This module
- * renders the Feishu equivalent: a card showing the current per-chat mode with
- * one button per option. Clicking a button switches the mode (persisted by the
- * bridge) and updates the card in place so the active mode is re-marked.
+ * DSH's WebUI names this setting "Send behavior while busy" (zh: 繁忙时的发送行为;
+ * options Queue / Steer, zh 排队发送 / 插话发送: how a message sent while the
+ * agent is running is handled). This module renders the Feishu equivalent — a
+ * card showing the current per-chat mode with one button per option. Clicking a
+ * button switches the mode (persisted by the bridge) and updates the card in
+ * place so the active mode is re-marked.
  *
  * The cardAction dispatcher is shared via the plugin's `cardChannel` adapter,
  * which rebinds handlers across channel reconnects; button clicks therefore
@@ -80,7 +81,7 @@ export function renderBusyCard(current: BusyMode, t: Translations): object {
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'Enter while busy' }, template: 'turquoise' },
+    header: { title: { tag: 'plain_text', content: t.busyCardTitle }, template: 'turquoise' },
     body: { elements },
   }
 }

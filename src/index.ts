@@ -1535,8 +1535,8 @@ function renderStatusCard(meta: {
     fields.push(`**${t.statusPermissionLabel}:** \`${sandboxMode}\` ${label}${icon}`)
   }
   if (busyMode !== undefined) {
-    // WebUI names this "Enter behavior while busy"; options Queue / Steer.
-    const label = busyMode === 'steer' ? 'Steer' : 'Queue'
+    // The WebUI calls this "Send behavior while busy" (zh 繁忙时的发送行为).
+    const label = busyMode === 'steer' ? t.busySteerWord : t.busyQueueWord
     const icon = busyMode === 'steer' ? '🎯' : '📥'
     fields.push(`**${t.statusBusyLabel}:** ${icon} ${label}`)
   }
@@ -1954,13 +1954,13 @@ async function executeSlashCommand(
       }
       const current = bridge.busyMode(chatMessage)
       const icon = current === 'steer' ? ' 🎯' : ' 📥'
-      const label = current === 'steer' ? 'Steer' : 'Queue'
+      const label = current === 'steer' ? '插话发送' : '排队发送'
       return { kind: 'success', text: [
-        `**运行中（busy）的 Enter 行为：** \`${current}\` ${label}${icon}`,
+        `**繁忙时的发送行为：** \`${current}\` ${label}${icon}`,
         '',
-        '仅运行中生效：',
-        '- `queue`：排队发送，当前轮结束后作为新轮运行（默认）',
-        '- `steer`：插话发送，把消息注入当前运行轮立即响应',
+        '只在智能体运行中收到消息时生效：',
+        '- `queue`｜排队发送：当前轮结束后作为新轮运行（默认）',
+        '- `steer`｜插话发送：把消息注入当前运行轮，模型下一步即可看到',
         '',
         '**切换：** `/busy queue` 或 `/busy steer`（持久化）',
         '_一次性插话用 `/steer <内容>`_',
@@ -1970,8 +1970,8 @@ async function executeSlashCommand(
       return { kind: 'error', text: '⚠️ 未知 busy 模式。可选：queue | steer' }
     }
     bridge.setBusyMode(chatMessage, raw)
-    const desc = raw === 'steer' ? '插话发送（注入当前轮）' : '排队发送（当前轮结束后开新轮）'
-    return { kind: 'success', text: `✅ 已把本聊天运行中（busy）的 Enter 行为切为 \`${raw}\`（${desc}）。已持久化。` }
+    const desc = raw === 'steer' ? '插话发送（注入当前运行轮）' : '排队发送（当前轮结束后开新轮）'
+    return { kind: 'success', text: `✅ 已将本聊天的繁忙时发送行为切换为「${desc}」（\`${raw}\`），已持久化。` }
   }
   // /queue <text> is the conjugate of /steer: it forces a message onto the
   // QUEUE path even when the chat is in steer mode, so it runs as a new turn

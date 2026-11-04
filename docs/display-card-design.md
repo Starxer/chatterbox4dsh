@@ -23,7 +23,7 @@
 
 | 文件 | 交互形态 | 更新方式 | 可复用的点 |
 |---|---|---|---|
-| [`src/feishu-busy.ts`](../src/feishu-busy.ts) | 2 个按钮二选一（Enter 行为） | `channel.updateCard(messageId, …)` 就地更新 | `byCard: Map<messageId, ConversationMessage>` 记住话题坐标；`decodeCardValue` 解 value；`open(chat)` 发首卡 |
+| [`src/feishu-busy.ts`](../src/feishu-busy.ts) | 2 个按钮二选一（繁忙时的发送行为） | `channel.updateCard(messageId, …)` 就地更新 | `byCard: Map<messageId, ConversationMessage>` 记住话题坐标；`decodeCardValue` 解 value；`open(chat)` 发首卡 |
 | [`src/feishu-permission.ts`](../src/feishu-permission.ts) | 3 个按钮选权限 | 就地更新 | 同上；按钮 `disabled` 标当前项；`value: JSON.stringify({ p, mode })` |
 | [`src/feishu-onboarding.ts`](../src/feishu-onboarding.ts) `sendCard`（约 750–766 行） | 多步流程每步一张新卡 | **新卡 + `supersedePrevious`** | `createCardInstance` → `sendCardByReference` → `supersedePrevious(chatId)` → `note(chatId, {cardId, messageId})`；`topicOpts` / `chatTopic` / `recordTopic` 保证卡片落在原话题 |
 | [`src/card-supersede.ts`](../src/card-supersede.ts) | — | 旧卡改写为灰色「已失效」提示 | `createCardSuperseder({channel, logger, getTranslations, sequenceByCard})`；优先 `updateCardInstance`，回退 `updateCard` |

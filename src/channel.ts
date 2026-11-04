@@ -280,7 +280,7 @@ export interface ReplyCardMeta {
   lastInputTokens?: number
   /** Paired decode throughput of the turn (output tokens ÷ decode time). */
   tokensPerSecond?: number
-  /** Per-chat Enter-behavior-while-busy mode (Queue / Steer), shown in the Turn Complete footer. */
+  /** Per-chat send-behavior-while-busy mode (Queue / Steer), shown in the Turn Complete footer. */
   busyMode?: BusyMode
 }
 
@@ -1367,9 +1367,9 @@ export function renderFooterCard(
     metaParts.push(`📊 ${formatTokenCount(meta.lastInputTokens)}/${formatTokenCount(meta.contextWindow)} (${pct}%)`)
   }
   if (meta?.busyMode !== undefined) {
-    const label = meta.busyMode === 'steer' ? 'Steer' : 'Queue'
+    const label = meta.busyMode === 'steer' ? t.busySteerWord : t.busyQueueWord
     const icon = meta.busyMode === 'steer' ? '🎯' : '📥'
-    metaParts.push(`**${t.enterWhileBusy}:** ${icon} ${label}`)
+    metaParts.push(`**${t.busySendLabel}:** ${icon} ${label}`)
   }
 
   // If nothing to show, return undefined.
