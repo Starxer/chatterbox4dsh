@@ -5,6 +5,20 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.2-rc.1`（2026-11-05 自 0.2.1-rc.5 升级，停机 2m45s，构建门与兼容闸全过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.2-rc.1 与回滚目标 0.2.1-rc.5）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.2-rc.1` (upgraded from 0.2.1-rc.5 on 2026-11-05, 2m45s of downtime, every build gate and the compatibility gate passed); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：权限卡接入 Auto review、智能体团队看板（`src/feishu-permission.ts` / `src/feishu-team.ts` / `src/index.ts` / `src/i18n.ts` / `docs/architecture.md`，2026-11-05）
+
+两个能力都来自 DSH 官方实验插件，**是否启用由使用者决定**：插件只对接宿主已经广告出来的能力，没启用时不改变任何现有行为。
+
+- **权限卡读宿主目录，而不是硬编码三个预设**：`/permission` 卡与 `permissionPresets.catalog()` 对齐（与 DSH Web UI 同一个读面）——配置预设按宿主顺序在前，`auto` 只在 auto-review 集成 live 时出现。**没装 auto-review 时卡片逐字不变**（三个按钮、无额外提示）；装上后多一个「🧪 自动审查 EXP」按钮与一行实验说明。
+- **Auto 先确认再写**：对齐 Web UI 的风险确认对话框。点 Auto 只把卡片就地重画成确认卡（说明无沙箱运行、逐次审查、拒绝的调用仍会走审批、仍属实验性、会多耗 token），点「我已了解风险」才真正 `permissionPresets.set(session, 'auto')`；取消不写任何东西。集成已被卸载时 DSH 会拒绝，拒绝理由照旧显示在卡上而不是抛出。
+- **`/permission` 文本路径同步**：`/permission`（无参卡不可用时的文本列表）、`/permission <mode>` 的校验与回执都改为读目录，因此 `auto` 可用时 `auto` 也可直接命令切换；当前模式的读法改成优先 `permissionPresets.current()`（`auto` 与 `danger-full-access` 共享沙箱值，只读沙箱会把 Auto 会话显示成「完全权限」）。
+- **智能体团队看板（新模块 `src/feishu-team.ts`）**：Agent Teams 只在宿主启用实验包并由 Agent 自动组队时产生 `team/member` / `team/task` 会话事件。模块把这些事件**只当触发**，在 flush 时读 lead 会话的 `agentTeam` 投影（版本化、派生视图 `ownerName`/`ready`/写入范围告警、坏记录 `failure` 都由宿主保证），因此不新增 peer 依赖、也不重写团队状态机。
+- **更新逻辑与子代理看板一致**：复用 `feishu-panel` 的发送器——同名册变化**发新卡**（不就地改），同一突发合并、指纹去重、按聊天串行；看板内容 = 摘要 + 成员（Lead 只显示角色，队友显示运行/未运行/准备中/失败）+ 共享任务表（任务/状态/负责人/依赖，>12 行折叠成计数）+ 告警/坏记录行。成员活动读 live Agent registry，队友 `turn/start` / `turn/end` 走**非紧急**刷新（30s 地板），否则可续谈队友每轮都会把整张看板重发一遍；Lead 的回合是聊天自己的回合，永不触发看板。
+- **没启用 / 读不到就不存在**：没有 Agent Teams 插件时根本不会有团队事件，看板不出现；投影服务缺失或读失败只记一次 info/warn 后静默降级（不阻塞 boot，关键坑 2）。
+- **测试**：新增权限 Auto 10 例、团队看板 23 例（投影解析、指纹去重、`replyTo` 话题坐标、未绑定会话不出卡、任务变化发新卡、队友/Lead 回合差异、投影异常降级、dispose 后不再发）；全量 **1456 测试 / 73 文件**、`typecheck`、`build` 全绿。
+
+**English**: Two optional DSH experimental plugins are now bridged without hard dependencies. The `/permission` card renders `permissionPresets.catalog()` instead of a hardcoded preset table, so the `auto` (Auto review) entry appears exactly when that integration is live — and stays byte-for-byte identical to the previous three-button card when it is not. Selecting Auto first repaints the card as the risk confirmation the Web UI shows, and only the confirm button writes the preset; a refusal (for example after the integration unloaded) is shown on the card instead of thrown. `/permission`'s text path lists and validates the same catalog, and the current mode now prefers `permissionPresets.current()` because `auto` and `danger-full-access` share the sandbox value. A new `src/feishu-team.ts` posts an Agent Teams board when the experimental team packages append `team/member` / `team/task` events to a Feishu-bound Lead session: the events are only triggers, the board reads the `agentTeam` projection at flush time, and updates reuse the send-only panel sender (coalescing, fingerprint de-duplication, in-order sends). Members, shared tasks, write-scope warnings and invalid-record failures are rendered from the projection; teammate activity comes from the live Agent registry and its turn edges refresh non-urgently, while the Lead's own turns never repost. Without the plugins nothing is posted and nothing changes. 1456 tests / 73 files, typecheck and build pass.
+
 ### 兼容：适配 DSH 0.2.2-rc.1（`src/harness.ts` / `src/index.ts` / `package.json`，2026-11-05）
 
 上游 0.2.2-rc.1（0.2.1 → 0.2.2 跨 tuple，15638 commits、30 个新增包）改了两处插件用到的契约：

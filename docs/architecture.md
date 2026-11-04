@@ -61,6 +61,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [显示控制](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-display.ts>) / [Todo](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-todos.ts>) | 展示配置卡与进度清单 |
 | [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查；`onSent(key)` 交付后钩子（内容依赖「之前发过什么」的模块用它提交记忆，发送失败则下次重试） |
 | [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子智能体](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子智能体生命周期、模型、树与手动目录合并 |
+| [智能体团队看板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-team.ts>) | 只在宿主启用 Agent Teams 插件时出现：`team/member` / `team/task` 事件只当触发，flush 时读 lead 会话的 `agentTeam` 投影；成员/任务变化发新卡（同 `feishu-panel` 的合并与指纹去重），队友 `turn/start` / `turn/end` 刷新活动状态，Lead 只显示角色以免每轮重发 |
 
 ### 渲染、交付与可靠性
 
@@ -137,6 +138,7 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 | 交互流程 | 通常每步发新卡，旧卡去按钮/退休；**决策所在的那张卡整卡改写成结算卡**（绿色表头「✅ 已选定」+ 决策值 + 「已锁定，继续用下方最新卡」脚注，`card-supersede` 的 `replace` 模式）——只追加一行注释时，注释落在长列表最底部、看不出变化；纯路过的卡才收敛为灰通知。已点过可点行的卡不能复用。部分控制卡残余就地更新风险见待办 O4 |
 | 后台任务 | 一个聊天一份名册快照，变化发新消息；只认模型确实获得 job handle 的后台调用；前台 bash/pwsh 不列。表格的「任务」列截到 48 字符，被截断或多行的命令改到表格下方 `📜 完整命令` 代码块——**只在任务首次出现的那张卡上给一次**，后续进度/完成快照只留表格（命令仍可在首卡回看） |
 | 子智能体 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录，`tree` 读 descendants |
+| 智能体团队 | 宿主启用 `dsh-experimental-agent-team` 且 Agent 自动组队时，每个变化发一张新的看板卡（名册 + 共享任务表）；只读宿主 `agentTeam` 投影，不提供操作；成员活动读 live Agent registry，Lead 不显示运行状态 |
 | 名册容量 | 最多 8 行、已结算 30 分钟后退出内存名册；历史消息不更新。后台任务可“清理已完成”，仅清名册不清宿主记录。「完整命令」记忆按聊天存已交付的 job id、上限 256（id 不复用，超限丢最旧 ⇒ 最坏多显示一次），名册清空时一并忘掉 |
 
 卡片实体只能发送一次且仅 14 天可操作；长寿命过程卡不带按钮、不跨轮或跨重启复用，引用不落盘（关键坑 11 / 54 / 55 / 57）。

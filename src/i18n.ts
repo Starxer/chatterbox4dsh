@@ -136,6 +136,20 @@ export interface Translations {
   permissionReadOnly: string
   permissionWorkspaceWrite: string
   permissionFullAccess: string
+  /**
+   * DSH's experimental Auto review preset. Only rendered while the Host's
+   * process catalog lists it, i.e. while the auto-review integration is live.
+   */
+  permissionAuto: string
+  /** Short badge after the Auto label, mirroring the Web UI's `EXP` tag. */
+  permissionAutoBadge: string
+  /** One line explaining Auto; shown only while that preset is available. */
+  permissionAutoHint: string
+  permissionAutoConfirmTitle: string
+  /** The risk dialog the Web UI shows before switching to Auto, as card copy. */
+  permissionAutoConfirmBody: string
+  permissionAutoConfirmEnable: string
+  permissionAutoCancel: string
 
   // ---- Questions (feishu-questions.ts) ----
   questionSkip: string
@@ -798,6 +812,30 @@ export interface Translations {
 
   /** Shared by both panels: how many older roster entries a card left out. */
   panelMoreRows: (count: number) => string
+
+  // Agent Teams board (feishu-team.ts)
+  teamBoardTitle: string
+  teamBoardSummary: (tasks: number, active: number, members: number) => string
+  teamBoardMembersHeader: string
+  teamBoardTasksHeader: (total: number) => string
+  teamBoardEmpty: string
+  teamBoardMore: (count: number) => string
+  teamBoardFailure: (message: string) => string
+  teamBoardColTask: string
+  teamBoardColStatus: string
+  teamBoardColOwner: string
+  teamBoardColDependencies: string
+  /** Role tag after the Lead's name (`（Lead）` in CJK, ` (Lead)` in Latin). */
+  teamBoardLeadTag: string
+  teamBoardUnowned: string
+  teamBoardBlockedNote: string
+  teamMemberRunning: string
+  teamMemberInactive: string
+  teamMemberProvisioning: string
+  teamMemberFailed: string
+  teamTaskPending: string
+  teamTaskInProgress: string
+  teamTaskCompleted: string
 }
 
 /** The zh dictionary: terminology aligned with the DSH native UI. */
@@ -889,6 +927,13 @@ export const zh = {
   permissionReadOnly: '仅可查看',
   permissionWorkspaceWrite: '工作区内修改',
   permissionFullAccess: '完全权限',
+  permissionAuto: '自动审查',
+  permissionAutoBadge: 'EXP',
+  permissionAutoHint: '_🧪 **自动审查（实验）**：不使用沙箱；每次原生工具调用与 PTC 内层调用前，由与当前 agent 相同的模型审查风险——低风险直接放行，中/高风险交给你审批。启用前会再确认一次。_',
+  permissionAutoConfirmTitle: '🧪 启用自动审查（实验）？',
+  permissionAutoConfirmBody: '**自动审查不使用沙箱。** 每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型审查是否允许；被审查拒绝的调用仍然会作为审批请求发给你。此功能仍属**实验性**，可能误放行或误拒绝，并会消耗额外 token。\n\n启用后本会话切换为「完全权限」沙箱 + 「按需询问」审批策略。',
+  permissionAutoConfirmEnable: '✅ 我已了解风险，启用自动审查',
+  permissionAutoCancel: '↩️ 取消',
 
   questionSkip: '跳过',
   questionChoicePrefix: '选项',
@@ -1357,6 +1402,29 @@ export const zh = {
   subagentPanelSource: '来源：宿主目录 + 本进程事件',
 
   panelMoreRows: count => `另有 ${count} 条更早的记录未列出`,
+
+  // Agent Teams board (feishu-team.ts)
+  teamBoardTitle: '🤝 智能体团队',
+  teamBoardSummary: (tasks, active, members) => `共享任务 ${tasks} · 进行中 ${active} · 成员 ${members}`,
+  teamBoardMembersHeader: '**成员**',
+  teamBoardTasksHeader: total => `**共享任务**（${total}）`,
+  teamBoardEmpty: '暂无共享任务（Agent 可以在对话中创建）',
+  teamBoardMore: count => `… 另有 ${count} 个任务未列出`,
+  teamBoardFailure: message => `⚠️ 团队记录异常：${message}`,
+  teamBoardColTask: '任务',
+  teamBoardColStatus: '状态',
+  teamBoardColOwner: '负责人',
+  teamBoardColDependencies: '依赖',
+  teamBoardLeadTag: '（Lead）',
+  teamBoardUnowned: '未分配',
+  teamBoardBlockedNote: '被依赖阻塞',
+  teamMemberRunning: '运行中',
+  teamMemberInactive: '未运行',
+  teamMemberProvisioning: '准备中',
+  teamMemberFailed: '失败',
+  teamTaskPending: '待处理',
+  teamTaskInProgress: '进行中',
+  teamTaskCompleted: '已完成',
 } as const satisfies Translations
 
 /** The en dictionary, keyed identically to the zh dictionary. */
@@ -1448,6 +1516,13 @@ export const en: Translations = {
   permissionReadOnly: 'Read Only',
   permissionWorkspaceWrite: 'Workspace Write',
   permissionFullAccess: 'Full access',
+  permissionAuto: 'Auto review',
+  permissionAutoBadge: 'EXP',
+  permissionAutoHint: '_🧪 **Auto review (experimental)**: runs without a sandbox; before every native tool call and PTC inner call the same model as the current agent reviews the risk — low risk runs, medium/high risk asks you. Enabling asks for one confirmation._',
+  permissionAutoConfirmTitle: '🧪 Enable Auto review (experimental)?',
+  permissionAutoConfirmBody: '**Auto review does not use a sandbox.** Before every native tool call and PTC inner call, the same model as the current agent reviews whether to allow it; calls it denies are still sent to you as approval requests. This feature is **experimental**, can falsely allow or deny actions, and uses additional tokens.\n\nEnabling switches this session to the Full access sandbox with the ask approval policy.',
+  permissionAutoConfirmEnable: '✅ I understand the risks — enable Auto review',
+  permissionAutoCancel: '↩️ Cancel',
 
   questionSkip: 'Skip',
   questionChoicePrefix: 'Option',
@@ -1921,6 +1996,29 @@ export const en: Translations = {
   subagentPanelSource: 'Sources: host catalog + this process\'s events',
 
   panelMoreRows: count => `${count} older entries not shown`,
+
+  // Agent Teams board (feishu-team.ts)
+  teamBoardTitle: '🤝 Agent team',
+  teamBoardSummary: (tasks, active, members) => `Shared tasks ${tasks} · in progress ${active} · members ${members}`,
+  teamBoardMembersHeader: '**Members**',
+  teamBoardTasksHeader: total => `**Shared tasks** (${total})`,
+  teamBoardEmpty: 'No shared tasks yet (the agent can create them through the conversation)',
+  teamBoardMore: count => `… ${count} more task${count === 1 ? '' : 's'} not shown`,
+  teamBoardFailure: message => `⚠️ Invalid persisted team record: ${message}`,
+  teamBoardColTask: 'Task',
+  teamBoardColStatus: 'State',
+  teamBoardColOwner: 'Owner',
+  teamBoardColDependencies: 'Blocked by',
+  teamBoardLeadTag: ' (Lead)',
+  teamBoardUnowned: 'Unowned',
+  teamBoardBlockedNote: 'blocked by dependencies',
+  teamMemberRunning: 'Running',
+  teamMemberInactive: 'Inactive',
+  teamMemberProvisioning: 'Provisioning',
+  teamMemberFailed: 'Failed',
+  teamTaskPending: 'Pending',
+  teamTaskInProgress: 'In progress',
+  teamTaskCompleted: 'Completed',
 }
 
 /**

@@ -35,6 +35,7 @@ import { createCardInterleave, interleaveTargetOfSend } from './card-interleave.
 import { startFeishuTodos } from './feishu-todos.ts'
 import { startFeishuJobs, type DetachedJobNotice, type JobsServiceLike } from './feishu-jobs.ts'
 import { startFeishuSubagents, type SubagentPanelHandle } from './feishu-subagents.ts'
+import { startFeishuTeam, type FeishuTeamHandle, type TeamAgentReader, type TeamProjectionReader } from './feishu-team.ts'
 import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
@@ -88,7 +89,7 @@ import {
   NEW_SESSION_CONFIRM_ACTION,
   NEW_SESSION_CANCEL_ACTION,
 } from './new-session-card.ts'
-import { startFeishuPermission, SANDBOX_MODES, PERMISSION_LABELS, describePermissionSwitchFailure, type FeishuPermissionHandle } from './feishu-permission.ts'
+import { startFeishuPermission, PERMISSION_LABELS, AUTO_PRESET, availablePermissionModes, permissionModeLabel, permissionModeIcon, describePermissionSwitchFailure, type FeishuPermissionHandle } from './feishu-permission.ts'
 import { startFeishuBusy, type FeishuBusyHandle } from './feishu-busy.ts'
 import { startFeishuDisplay, type FeishuDisplayHandle } from './feishu-display.ts'
 import { startFeishuSession, renderSessionListCard, renderSessionResultCard, type FeishuSessionHandle } from './feishu-session.ts'
@@ -107,7 +108,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   const agentPresets = ctx.get('agentPresets')
   const sessionController = ctx.get('sessionController')
   const sandboxPolicy = ctx.get('sandboxPolicy') as { resolve?: (r: { session?: any }) => { mode: string; workspaceRoot?: string } } | undefined
-  const permissionPresets = ctx.get('permissionPresets') as { current: (session: any) => string; set: (session: any, name: string) => void } | undefined
+  // `catalog()` is the process-level list of selectable presets (configured
+  // presets plus `auto` while the auto-review integration is live) — the same
+  // reading DSH's own UI does, so the picker offers exactly what the Host
+  // advertises instead of a hardcoded table.
+  const permissionPresets = ctx.get('permissionPresets') as {
+    current: (session: any) => string
+    set: (session: any, name: string) => void
+    catalog?: () => { options?: readonly { value?: unknown; name?: unknown }[] } | undefined
+  } | undefined
   const userQuestions = ctx.get('userQuestions')
   const approval = ctx.get('approval')
   const workspaceRegistry = ctx.get('workspaceRegistry')
@@ -250,6 +259,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let stopTodos: () => void = () => undefined
   let stopJobs: () => void = () => undefined
   let stopSubagents: () => void = () => undefined
+  let teamBoard: FeishuTeamHandle | undefined = undefined
   let stopSendFileTool: () => void = () => undefined
   let stopReceiveFileTool: () => void = () => undefined
   let stopDocTools: () => void = () => undefined
@@ -906,6 +916,23 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     logger: ctx.logger('dsh-feishu'),
     getTranslations: () => translationsFor(currentLocale().id),
   })
+  // Agent Teams board (experimental, optional plugin). Independent of the
+  // questions/approvals seams, and read-only towards the Host: it subscribes to
+  // `session/event` only as a TRIGGER and reads the lead session's `agentTeam`
+  // projection at flush time. A composition without the Agent Teams packages
+  // appends no team events, so this module posts nothing; without the
+  // projection it reads nothing and stays silent. Both services are read
+  // through `ctx.get` — never injected — so a Host without them still boots
+  // (关键坑 2).
+  teamBoard = startFeishuTeam({
+    ctx,
+    channel: cardChannel,
+    bridgeHolder,
+    logger: ctx.logger('dsh-feishu'),
+    getTranslations: () => translationsFor(currentLocale().id),
+    projections: ctx.get('sessionProjections') as TeamProjectionReader | undefined,
+    agents: agents as TeamAgentReader | undefined,
+  })
   // Interactive `/busy` picker card. Independent of the questions/approvals
   // seams; only needs the live card channel + the bridge's per-chat busy mode.
   busyHandle = startFeishuBusy({
@@ -1378,6 +1405,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopTodos()
     stopJobs()
     stopSubagents()
+    teamBoard?.dispose()
     stopStreaming()
     stopExternalTurns()
     stopTurnTracker()
@@ -1717,7 +1745,11 @@ async function executeSlashCommand(
     current: () => { id: LocaleId; plugin: 'zh' | 'en' | 'auto'; dsh: string | undefined }
     set: (value: 'zh' | 'en' | 'auto') => Promise<void>
   },
-  permissionPresets?: { current?: (session: any) => string; set?: (session: any, name: string) => void },
+  permissionPresets?: {
+    current?: (session: any) => string
+    set?: (session: any, name: string) => void
+    catalog?: () => { options?: readonly { value?: unknown; name?: unknown }[] } | undefined
+  },
   cardTopics?: CardTopicRegistry,
   fork?: FeishuForkHandle,
 ): Promise<
@@ -2071,8 +2103,18 @@ async function executeSlashCommand(
       return { kind: 'error', text: '⚠️ 当前 chat 还没有会话，请先发一条消息再执行 /permission。' }
     }
     const raw = parsed.rawInput.trim()
-    const current = sandboxPolicy.resolve({ session }).mode
-    const currentLabel = PERMISSION_LABELS[current] ?? current
+    const t = translationsFor(localeControl?.current().id ?? 'zh')
+    // Read the preset identity rather than the sandbox knob: `auto` and
+    // `danger-full-access` share a sandbox mode, so the knob cannot tell them
+    // apart and the listing would mislabel an Auto session as Full access.
+    let current: string
+    try {
+      current = permissionPresets?.current?.(session) ?? sandboxPolicy.resolve({ session }).mode
+    } catch {
+      current = sandboxPolicy.resolve({ session }).mode
+    }
+    const currentLabel = permissionModeLabel(current, t)
+    const modes = availablePermissionModes(permissionPresets)
     if (raw === '') {
       // Interactive picker card: clicking a button switches the mode and the
       // card re-marks the active preset. Fall back to a text listing when the
@@ -2088,27 +2130,27 @@ async function executeSlashCommand(
       }
       const lines = [
         '**当前权限模式：**',
-        `- \`${current}\` ${currentLabel}${current === 'danger-full-access' ? ' 🔓' : current === 'workspace-write' ? ' ✍️' : ' 📖'}`,
+        `- \`${current}\` ${currentLabel}${permissionModeIcon(current)}`,
         '',
         '**切换方法：** `/permission <模式>`',
         '',
         '**可选模式：**',
-        ...SANDBOX_MODES.map(m => `- \`${m}\` ${PERMISSION_LABELS[m] ?? m}${m === current ? ' （当前）' : ''}`),
+        ...modes.map(m => `- \`${m}\` ${permissionModeLabel(m, t)}${m === current ? ' （当前）' : ''}`),
         '',
         '_切换写入会话日志，下一次受限调用（bash / 文件系统）即生效。_',
       ]
       return { kind: 'success', text: lines.join('\n') }
     }
-    if (!(SANDBOX_MODES as readonly string[]).includes(raw)) {
-      return { kind: 'error', text: `⚠️ 未知权限模式 \`${raw}\`。可选：${SANDBOX_MODES.join(' | ')}（对应 Read Only / Workspace Write / Full access）` }
+    if (!modes.includes(raw)) {
+      return { kind: 'error', text: `⚠️ 未知权限模式 \`${raw}\`。可选：${modes.join(' | ')}（${modes.map(m => permissionModeLabel(m, t)).join(' / ')}）` }
     }
     // Switch through DSH's preset write path when available: a preset bundles
     // the sandbox mode AND the approval policy, so writing only the sandbox
     // knob leaves the bundle unmatched and DSH shows it as "custom". Fall back
     // to the single-knob `sandbox/mode` append when the service is absent.
-    // The write can legitimately refuse (the persistent-shell fence), so
-    // report the reason here instead of letting it surface as a bare
-    // `命令执行出错` from the channel's catch-all.
+    // The write can legitimately refuse (the persistent-shell fence, and the
+    // Auto integration once unloaded), so report the reason here instead of
+    // letting it surface as a bare `命令执行出错` from the channel's catch-all.
     try {
       if (permissionPresets?.set !== undefined) {
         permissionPresets.set(session, raw)
@@ -2116,9 +2158,10 @@ async function executeSlashCommand(
         session.append('sandbox/mode', { mode: raw })
       }
     } catch (error: unknown) {
-      return { kind: 'error', text: describePermissionSwitchFailure(error, translationsFor(localeControl?.current().id ?? 'zh')) }
+      return { kind: 'error', text: describePermissionSwitchFailure(error, t) }
     }
-    return { kind: 'success', text: `✅ 权限模式已切换为 \`${raw}\`（${PERMISSION_LABELS[raw] ?? raw}）。将从下一次受限调用起生效。` }
+    const suffix = raw === AUTO_PRESET ? `\n\n_${t.permissionAutoHint}_` : ''
+    return { kind: 'success', text: `✅ 权限模式已切换为 \`${raw}\`（${permissionModeLabel(raw, t)}）。将从下一次受限调用起生效。${suffix}` }
   }
   // /model with no arguments renders the model selector card (V2 card
   // instance) instead of falling through to commands.execute. The card's
