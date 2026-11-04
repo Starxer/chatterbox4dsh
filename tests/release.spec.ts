@@ -44,5 +44,11 @@ describe('release configuration', () => {
     ]) expect(workflow).toContain(required)
     expect(workflow).not.toContain('NPM_TOKEN')
     expect(workflow).toContain('npm publish "$GITHUB_WORKSPACE/${{ steps.pack.outputs.path }}"')
+    // The pipeline must be verifiable without cutting a release, and the
+    // OIDC publish path must be explicit about provenance and tarball contents.
+    expect(workflow).toContain('workflow_dispatch:')
+    expect(workflow).toContain('--provenance')
+    expect(workflow).toContain('tar -tzf')
+    expect(workflow).toContain('timeout-minutes:')
   })
 })

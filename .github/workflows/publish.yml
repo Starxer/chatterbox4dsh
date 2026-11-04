@@ -3,19 +3,23 @@ name: Publish package
 on:
   release:
     types: [published]
+  # Manual dry run: every gate and the tarball, but no npm publish and no
+  # release upload (both steps only run on a `release` event).
+  workflow_dispatch:
 
 permissions:
   contents: write
   id-token: write
 
 concurrency:
-  group: npm-publish-${{ github.ref }}
+  group: npm-publish
   cancel-in-progress: false
 
 jobs:
   publish:
     name: Verify, pack, and publish
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
@@ -29,9 +33,16 @@ jobs:
           package-manager-cache: false
 
       - name: Update npm for trusted publishing
-        run: npm install --global npm@latest
+        shell: bash
+        run: |
+          # Trusted publishing needs npm >= 11.5.1. Pin the major line instead
+          # of `@latest` so a new npm release cannot change this job's behavior
+          # without a commit here.
+          npm install --global 'npm@^11.5.1'
+          npm --version
 
       - name: Verify release tag matches package version
+        if: github.event_name == 'release'
         shell: bash
         run: |
           package_version="$(node --input-type=commonjs --eval "process.stdout.write(require('./package.json').version)")"
@@ -62,7 +73,28 @@ jobs:
           test -f "dist/$tarball"
           echo "path=dist/$tarball" >> "$GITHUB_OUTPUT"
 
+      - name: Inspect tarball contents
+        shell: bash
+        run: |
+          # `lib/` is not committed, so a broken build would otherwise publish a
+          # package without its runtime entry point.
+          tarball="${{ steps.pack.outputs.path }}"
+          missing=0
+          for required in \
+            package/package.json \
+            package/lib/index.js \
+            package/lib/types/index.d.ts \
+            package/client/client.js \
+            package/cordis.patch.yml; do
+            if ! tar -tzf "$tarball" | grep -qx "$required"; then
+              echo "::error::tarball is missing $required"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Attach tarball to GitHub Release
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" "${{ steps.pack.outputs.path }}" --clobber
@@ -80,5 +112,20 @@ jobs:
           fi
 
       - name: Publish to npm
-        if: steps.npm-version.outputs.exists != 'true'
-        run: npm publish "$GITHUB_WORKSPACE/${{ steps.pack.outputs.path }}"
+        # Trusted publishing (OIDC) authenticates these calls; no token exists.
+        if: github.event_name == 'release' && steps.npm-version.outputs.exists != 'true'
+        run: npm publish "$GITHUB_WORKSPACE/${{ steps.pack.outputs.path }}" --provenance
+
+      - name: Verify the published version and its provenance
+        if: github.event_name == 'release' && steps.npm-version.outputs.exists != 'true'
+        shell: bash
+        run: |
+          package_name="$(node --input-type=commonjs --eval "process.stdout.write(require('./package.json').name)")"
+          package_version="$(node --input-type=commonjs --eval "process.stdout.write(require('./package.json').version)")"
+          npm view "$package_name@$package_version" version
+          attestations="$(npm view "$package_name@$package_version" dist.attestations --json 2>/dev/null || true)"
+          if [[ "$attestations" == *'"url"'* ]]; then
+            echo "provenance attestation present: $attestations"
+          else
+            echo "::warning::published $package_name@$package_version without a provenance attestation"
+          fi
