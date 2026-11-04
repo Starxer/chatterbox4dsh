@@ -59,6 +59,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [会话面板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-session.ts>) / [新建流程](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-onboarding.ts>) / [模型选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-model-select.ts>) | 会话与工作区操作、模型选择与创建确认 |
 | [分叉选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-fork.ts>) / [轮次历史](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-history.ts>) | `/fork` 的轮次选择卡（每轮带头部文本预览）与分叉执行；事件窗口归约为「已完成轮次」，`turn/end` 的 seq 即切点 |
 | [显示控制](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-display.ts>) / [Todo](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-todos.ts>) | 展示配置卡与进度清单 |
+| [权限卡](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-permission.ts>) / [繁忙模式](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-busy.ts>) | 权限卡渲染宿主 `permissionPresets.catalog()`（配置预设 + auto-review 集成 live 时才有的 `auto`）；Auto 与完全权限同为红色 danger，切换前先出风险确认卡；`/busy` 是每聊天的发送行为开关。两者都按人手点击就地更新 |
 | [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查；`onSent(key)` 交付后钩子（内容依赖「之前发过什么」的模块用它提交记忆，发送失败则下次重试） |
 | [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子智能体](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子智能体生命周期、模型、树与手动目录合并 |
 | [智能体团队看板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-team.ts>) | 只在宿主启用 Agent Teams 插件时出现：`team/member` / `team/task` 事件只当触发，flush 时读 lead 会话的 `agentTeam` 投影；成员/任务变化发新卡（同 `feishu-panel` 的合并与指纹去重），队友 `turn/start` / `turn/end` 刷新活动状态，Lead 只显示角色以免每轮重发 |
@@ -135,6 +136,7 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 | 问题 | 单选点选即记答案并结算问题卡；非最后题发可返回重答的回执；所有题完成后最终卡是唯一提交点。N 题通常为 N 问题卡 + N−1 回执 + 1 最终卡（重答会增加卡片） |
 | 多选 | 每个选项一个 `checker`，各有 name；一次表单提交全部勾选，中途不重绘 |
 | 双端问答/审批 | 外层 listener `prepend`，飞书先展示再 `next()` 交 Web；先答者胜出，另一端退休；取消批内问题/回执/最终卡 |
+| 权限 | 按钮来自宿主 `permissionPresets.catalog()`：目录不含 `auto` 时与三个预设的旧卡逐字一致；`auto`（无沙箱、实验性）与「完全权限」同为红色 danger，点击先就地改写成风险确认卡、确认按钮才写入；`/permission <mode>` 文本路径共用同一目录 |
 | 交互流程 | 通常每步发新卡，旧卡去按钮/退休；**决策所在的那张卡整卡改写成结算卡**（绿色表头「✅ 已选定」+ 决策值 + 「已锁定，继续用下方最新卡」脚注，`card-supersede` 的 `replace` 模式）——只追加一行注释时，注释落在长列表最底部、看不出变化；纯路过的卡才收敛为灰通知。已点过可点行的卡不能复用。部分控制卡残余就地更新风险见待办 O4 |
 | 后台任务 | 一个聊天一份名册快照，变化发新消息；只认模型确实获得 job handle 的后台调用；前台 bash/pwsh 不列。表格的「任务」列截到 48 字符，被截断或多行的命令改到表格下方 `📜 完整命令` 代码块——**只在任务首次出现的那张卡上给一次**，后续进度/完成快照只留表格（命令仍可在首卡回看） |
 | 子智能体 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录，`tree` 读 descendants |
