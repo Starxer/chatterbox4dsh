@@ -1,7 +1,7 @@
 # 项目文档 / Documentation
 
-> 当前文档基线：仓库主线；本机部署运行 DSH `0.2.1-rc.5`，已完成构建、插件加载与飞书收发的基本验证，不是全功能/全平台认证。依赖范围保留 `^0.2.0-rc.1`。这不是 npm 已发布版本的能力承诺。
-> Current baseline: repository main; the local deployment runs DSH `0.2.1-rc.5` with basic build, plugin-load and Feishu send/receive verification, not full feature or platform certification. Dependency ranges retain `^0.2.0-rc.1`. This does not describe every published npm version.
+> 当前文档基线：仓库主线；本机部署运行 DSH `0.2.2-rc.1`，已完成构建、插件加载与飞书收发的基本验证，不是全功能/全平台认证。依赖范围保留 `^0.2.0-rc.1`。这不是 npm 已发布版本的能力承诺。
+> Current baseline: repository main; the local deployment runs DSH `0.2.2-rc.1` with basic build, plugin-load and Feishu send/receive verification, not full feature or platform certification. Dependency ranges retain `^0.2.0-rc.1`. This does not describe every published npm version.
 
 ## 按任务阅读 / Start here
 
