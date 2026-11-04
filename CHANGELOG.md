@@ -5,6 +5,18 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 兼容：适配 DSH 0.2.2-rc.1（`src/harness.ts` / `src/index.ts` / `package.json`，2026-11-05）
+
+上游 0.2.2-rc.1（0.2.1 → 0.2.2 跨 tuple，15638 commits、30 个新增包）改了两处插件用到的契约：
+
+- **`agent/request` 不再允许改路由**：0.2.2 在提示词组装与 pre-step 之前固定本步的 provider/model/推理等级，`agent/request` 里再改会直接抛错（新代码提示改用 `agent.model.select()`）。插件的主路径一直走宿主自己的 `sessionController.selectModel`，这条 hook 只是「宿主没有 `selectModel` 时」的兜底；兜底保留但不会再被触发。同时把它依赖的 `AgentLike.ctx.on` 放宽成 `(...args: any[])`——Cordis 4.1.0 把事件名收窄为 `keyof Events`，原来的 `(event: string)` 结构性签名不再接受真实 `Agent`（`tsc` 3 处报错即此，非 API 被删）。
+- **Session projection 的 `stateOf(session, key)` 已废弃**且每次调用打一条 warning：会话列表改用新的按 key 读面 `snapshot(session, ['sessionListMetadata', 'title', 'agentPreset'])`（0.2.2 只计算传入的单元，语义等价且一次读齐）。
+- **依赖**：`devDependencies` 对齐到 `^0.2.2-rc.1`、`@deepseek-ai/cordis ^4.1.0`（`package-lock.json` 重新解析）；**`peerDependencies` 保持在 `^0.2.0-rc.1`**——运行时兼容闸按 `includePrerelease` 判定，这个范围同时覆盖 0.2.2-rc.1 与回滚目标 0.2.1-rc.5。
+- **升级前彩排**：宿主 0.2.2-rc.1 在隔离 clone 里构建全绿（`--version` = 0.2.2-rc.1、residue 0、30 个新增包与改动包产物齐、102 个 client bundle）；插件对 0.2.2 类型 `typecheck` 通过、全量 **1423 测试 / 72 文件**（1 例 `feishu-deliver` 并发用例首次超时、单跑通过，属既有的负载 flaky）、`build` 通过；真实 profile 在隔离 `DSH_HOME` 冷启动：`apply() called`、0 兼容闸拦截、0 条 `patch: entry … not found`、0 个未知配置键、0 条废弃告警。
+- **部署侧**：0.2.2 默认把 `fs-observation-policy` 行下发为 `disabled: true`（先读后写不再强制）。本机在 profile patch 里显式写回 `disabled: false`，保持升级前的行为不变（升级指南给的正规做法）；`apply_patch` 工具随 `standard` preset 默认关闭，本部署无新增工具。
+
+**English**: DSH 0.2.2-rc.1 fixes the per-step model at prompt-assembly time, so `agent/request` can no longer change the route (plugins must call `agent.model.select()` before step preparation). The plugin already switches models through the host's `sessionController.selectModel`, so the only change needed was loosening the legacy fallback's structural `ctx.on` type (Cordis 4.1.0 narrowed event names to `keyof Events`). The deprecated per-key projection reader `stateOf(session, key)` was replaced with `snapshot(session, [...])` for the session list, dev dependencies moved to `^0.2.2-rc.1` / `cordis ^4.1.0` while peer ranges stay `^0.2.0-rc.1` (still covers both the new runtime and an rc.5 rollback), and the read-before-write policy row is re-enabled in the deployment's profile patch because 0.2.2 ships it disabled. Rehearsed against an isolated 0.2.2-rc.1 build (all gates, plugin typecheck, 1423 tests / 72 files, build, and a real-profile cold boot with zero compat denials) before switching.
+
 ### 新增：LaTeX 公式写成飞书原生可编辑公式（`src/doc-formula.ts` / `src/inline-markdown.ts` / `src/feishu-doc.ts`，2026-11-04）
 
 起因：另一个 agent 在复习笔记里写 `$d = 0.61\lambda/NA$` 时踩到**静默吞内容**——飞书的 Markdown→块转换器不认公式：`$…$` 整段消失、`$$…$$` 变空文本块、`\[…\]` 反斜杠被吃掉。而飞书 docx API 其实**支持**公式（行内 `equation` 文本元素），只是转换器没实现。

@@ -23,8 +23,14 @@ const PRESET_SCAN_EVENTS = 64
 interface AgentLike {
   session: { id: unknown; seq: number; events?: readonly { seq: number; type: string; data: any }[] }
   /** Agent-scoped Cordis context; absent on older hosts that expose only the
-   *  session surface (a quick model switch then reports "unsupported"). */
-  ctx?: { on(event: string, handler: (...args: any[]) => unknown): () => void }
+   *  session surface (a quick model switch then reports "unsupported").
+   *
+   *  `on` is deliberately loose: DSH 0.2.2 types it as
+   *  `<K extends keyof Events>(name: K, …)`, so a structural
+   *  `(event: string, …)` signature no longer accepts the real `Agent` (the
+   *  event map is not exported for plugin-side narrowing). Only the legacy
+   *  route fallback installs listeners here. */
+  ctx?: { on(...args: any[]): any }
   whenIdle(): Promise<void>
   followup(message: ReturnType<typeof createUserMessage>): void
   steer(message: ReturnType<typeof createUserMessage>): void
@@ -85,7 +91,11 @@ export interface HarnessDependencies {
    * `ctx.get`, so a host without the service still boots (关键坑 2).
    */
   sessionProjections?: {
-    stateOf(session: unknown, key: string): unknown
+    /** One consistent cut of the requested client-visible units. 0.2.2 reads
+     *  only the units passed in `keys`, and the key-taking read face is the
+     *  supported one now (`stateOf(session, key)` is deprecated and logs a
+     *  warning per call). */
+    snapshot(session: unknown, keys?: readonly string[]): { values: Readonly<Record<string, unknown>> }
   }
   agentPresets: {
     resolve(id?: string): Promise<{ id: string }>
@@ -2151,12 +2161,13 @@ export class HarnessConversationService {
     if (projections === undefined) return undefined
     try {
       const session = (agent as unknown as { session: unknown }).session
-      const metadata = projections.stateOf(session, 'sessionListMetadata') as { blank?: unknown; lastPromptAt?: unknown } | undefined
+      const values = projections.snapshot(session, ['sessionListMetadata', 'title', 'agentPreset']).values
+      const metadata = values.sessionListMetadata as { blank?: unknown; lastPromptAt?: unknown } | undefined
       // The blank bit decides whether the session is listed at all, so without
       // it there is nothing worth projecting.
       if (metadata === undefined) return undefined
-      const title = projections.stateOf(session, 'title')
-      const preset = projections.stateOf(session, 'agentPreset')
+      const title = values.title
+      const preset = values.agentPreset
       const createdAt = Number((session as { header?: { createdAt?: unknown } })?.header?.createdAt ?? 0)
       const lastPromptAt = Number(metadata.lastPromptAt ?? 0)
       return {

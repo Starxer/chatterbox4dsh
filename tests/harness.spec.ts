@@ -642,15 +642,19 @@ describe('HarnessConversationService', () => {
     await f.create({ sessionId: sessionId as never })
     const deps = dependencies(f)
     deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId, header: { id: sessionId, createdAt: 1000 } }])
-    // The host maintains title / preset / list metadata; reading them is the
-    // intended replacement for the deprecated in-memory event snapshot.
-    const stateOf = vi.fn((_session: unknown, key: string) => {
-      if (key === 'title') return 'Projected title'
-      if (key === 'agentPreset') return 'cordis'
-      if (key === 'sessionListMetadata') return { blank: false, lastPromptAt: 5000 }
-      return undefined
+    // The host maintains title / preset / list metadata; the key-taking
+    // `snapshot()` read is the supported replacement for both the deprecated
+    // in-memory event snapshot and the deprecated per-key `stateOf` reader.
+    const snapshot = vi.fn((_session: unknown, keys?: readonly string[]) => {
+      const values: Record<string, unknown> = {}
+      for (const key of keys ?? []) {
+        if (key === 'title') values.title = 'Projected title'
+        if (key === 'agentPreset') values.agentPreset = 'cordis'
+        if (key === 'sessionListMetadata') values.sessionListMetadata = { blank: false, lastPromptAt: 5000 }
+      }
+      return { values }
     })
-    deps.sessionProjections = { stateOf }
+    deps.sessionProjections = { snapshot }
     const service = new HarnessConversationService(deps, { domain: 'feishu' })
 
     const sessions = await service.listSessions()

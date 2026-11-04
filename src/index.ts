@@ -689,7 +689,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       // projection state over replaying the live log (`snapshotEvents` is
       // deprecated for new callers). `ctx.get` keeps this out of `inject`, so a
       // host without the service still boots (关键坑 2 的教训).
-      const projectionsReader = ctx.get('sessionProjections') as { stateOf(session: unknown, key: string): unknown } | undefined
+      const projectionsReader = ctx.get('sessionProjections') as {
+        snapshot(session: unknown, keys?: readonly string[]): { values: Readonly<Record<string, unknown>> }
+      } | undefined
       const bridge = new HarnessConversationService({
         agents,
         sessions,
