@@ -23,8 +23,8 @@
  */
 
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
@@ -32,9 +32,13 @@ import { withLinkTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
 import { sniffImageMime } from './media-sniff.ts'
 import type { HarnessConversationService } from './harness.ts'
+import { createDocRegistry, type DocRegistry } from './doc-registry.ts'
 
 /** Budget for one document API call (reads a whole body, so not the 20s send budget). */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
+/** Blocks per insert request. Feishu's descendant create accepts around a
+ *  thousand blocks; stay below that so one request never trips the cap. */
+const MAX_INSERT_BLOCKS = 800
 /** Budget for the best-effort metadata lookup that produces the document URL. */
 const DOC_META_TIMEOUT_MS = 15_000
 /** Characters returned by default; long bodies are truncated with a `next_offset`. */
@@ -811,6 +815,68 @@ async function clearBody(channel: LarkChannel, documentId: string, count: number
   }
 }
 
+/** One `descendant.create` request: a set of top-level ids plus their subtree. */
+export interface InsertBatch {
+  firstLevel: string[]
+  blocks: DocBlock[]
+}
+
+/**
+ * Split a converted block tree into requests Feishu will accept.
+ *
+ * A long Markdown file can convert into well over the ~1000-block limit of one
+ * `documentBlockDescendant.create`. Batching must therefore split by TOP-LEVEL
+ * block: a subtree is never broken apart (its children reference their parent
+ * id), and each batch carries exactly the descendants reachable from its own
+ * top-level ids. A single subtree larger than the limit still goes out alone —
+ * there is nothing finer to split.
+ */
+export function splitInsertBatches(
+  firstLevel: string[],
+  blocks: DocBlock[],
+  limit: number = MAX_INSERT_BLOCKS,
+): InsertBatch[] {
+  const byId = new Map<string, DocBlock>()
+  for (const block of blocks) {
+    if (typeof block.block_id === 'string') byId.set(block.block_id, block)
+  }
+  const subtree = (id: string, into: Set<string>): number => {
+    if (into.has(id)) return 0
+    into.add(id)
+    const block = byId.get(id)
+    if (block?.children === undefined || block.children.length === 0) return 1
+    let size = 1
+    for (const child of block.children) size += subtree(child, into)
+    return size
+  }
+
+  const batches: InsertBatch[] = []
+  let ids: string[] = []
+  let members = new Set<string>()
+  let size = 0
+  const flush = (): void => {
+    if (ids.length === 0) return
+    // Preserve the converter's block order inside each request.
+    batches.push({
+      firstLevel: ids,
+      blocks: blocks.filter(block => typeof block.block_id === 'string' && members.has(block.block_id)),
+    })
+    ids = []
+    members = new Set<string>()
+    size = 0
+  }
+  for (const id of firstLevel) {
+    const contained = new Set<string>()
+    const count = subtree(id, contained)
+    if (ids.length > 0 && size + count > limit) flush()
+    ids.push(id)
+    for (const member of contained) members.add(member)
+    size += count
+  }
+  flush()
+  return batches.length === 0 ? [{ firstLevel, blocks }] : batches
+}
+
 /** Insert a converted block tree at `index` under the document root. */
 async function insertBlocks(
   channel: LarkChannel,
@@ -819,18 +885,71 @@ async function insertBlocks(
   blocks: DocBlock[],
   index: number,
 ): Promise<void> {
-  try {
-    await withLinkTimeout(
-      withRateLimitRetry(() => channel.rawClient.docx.v1.documentBlockDescendant.create({
-        path: { document_id: documentId, block_id: documentId },
-        data: { children_id: firstLevel, index, descendants: blocks },
-      })),
-      'write document blocks',
-      DOC_REQUEST_TIMEOUT_MS,
-    )
-  } catch (error: unknown) {
-    throw docError('write', error)
+  let offset = index
+  for (const batch of splitInsertBatches(firstLevel, blocks)) {
+    try {
+      await withLinkTimeout(
+        withRateLimitRetry(() => channel.rawClient.docx.v1.documentBlockDescendant.create({
+          path: { document_id: documentId, block_id: documentId },
+          data: { children_id: batch.firstLevel, index: offset, descendants: batch.blocks },
+        })),
+        'write document blocks',
+        DOC_REQUEST_TIMEOUT_MS,
+      )
+    } catch (error: unknown) {
+      throw docError('write', error)
+    }
+    offset += batch.firstLevel.length
   }
+}
+
+/**
+ * Pick the document title and drop a body H1 that would duplicate it.
+ *
+ * The title is a document-level property, so a leading `# Heading` in the body
+ * shows up as a second heading even when it repeats the title. Strip it when
+ * the title comes FROM that heading, and also when an explicit title is the
+ * same text — both cases would otherwise render the line twice. An explicit
+ * title that differs from the H1 is kept: the caller asked for that section.
+ */
+export function deriveTitleAndBody(
+  markdown: string,
+  sourcePath: string | undefined,
+  explicitTitle: string | undefined,
+): { title: string, markdown: string } {
+  const headingMatch = /^#\s+(.+)$/mu.exec(markdown)
+  const heading = headingMatch?.[1]?.trim()
+  const fileTitle = sourcePath === undefined ? undefined : basename(sourcePath).replace(/\.md$/iu, '')
+  const wanted = explicitTitle === undefined ? '' : explicitTitle.trim()
+  const titleFromBody = wanted === ''
+  const title = titleFromBody ? (heading ?? fileTitle ?? '未命名文档') : wanted
+  if (headingMatch !== null && (titleFromBody || heading === title)) {
+    return { title, markdown: markdown.replace(/^#\s+.+\r?\n?/mu, '') }
+  }
+  return { title, markdown }
+}
+
+/**
+ * Resolve where durable plugin state belongs.
+ *
+ * The host provides `dshHomePath` through context; asking it keeps the registry
+ * beside the host's own state file if the resolution rule ever changes (关键坑
+ * 51). The env-var + `~/.dsh` fallback mirrors what `src/index.ts` does for the
+ * session map, for hosts that do not expose the helper.
+ */
+export function resolveDshHome(ctx: Context): string {
+  try {
+    const provided = (ctx as unknown as { get?: (name: string) => unknown }).get?.('dshHomePath')
+    if (typeof provided === 'function') {
+      const home = (provided as (...segments: string[]) => string)()
+      if (typeof home === 'string' && home !== '') return home
+    }
+  } catch {
+    // fall through to the env/home fallback
+  }
+  const env = process.env.DSH_HOME
+  if (env !== undefined && env !== '') return env
+  return join(homedir(), '.dsh')
 }
 
 /** Create an empty docx document (owned by the app when no folder is given). */
@@ -898,6 +1017,13 @@ function clamp(value: number, min: number, max: number): number {
  */
 export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
   const { ctx, logger } = deps
+  // Opened on first publish/create so hosts that never use the doc tools never
+  // touch the registry file.
+  let registryPromise: Promise<DocRegistry> | undefined
+  const docsRegistry = (): Promise<DocRegistry> => {
+    registryPromise ??= createDocRegistry({ home: resolveDshHome(ctx), logger })
+    return registryPromise
+  }
 
   const readTool = ctx.tools.register(defineTool({
     name: 'feishu_doc_read',
@@ -1033,24 +1159,30 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
     name: 'feishu_doc_write',
     description:
       'Create or edit a Feishu/Lark online document (docx) from Markdown. Modes: `create` makes a new '
-      + 'document from `title` + `markdown`; `append` adds `markdown` at the end of the document given by '
-      + '`target`; `replace` deletes the whole existing body and writes `markdown` instead. Markdown is '
-      + 'converted to native document blocks (headings, lists, tables, code, checkboxes). Images are '
-      + 'uploaded and embedded when the reference points at a local png/jpeg/webp/gif under 10 MB '
-      + '(relative paths are resolved against `path` when the body comes from a file); remote URLs '
-      + 'are never fetched. The body comes from `path` (a Markdown file — preferred for long '
-      + 'documents) or inline `markdown`. With `create`, the new document is shared with the user '
-      + 'who asked for it. `append` and `replace` REQUIRE the `revision_id` from `feishu_doc_read`, '
-      + 'so a stale copy cannot silently overwrite newer edits; `replace` additionally refuses to '
-      + 'run when the document contains blocks Markdown cannot reproduce (pass '
-      + '`allow_format_loss: true` to accept that). The Feishu app must be able to edit the target '
-      + 'document. Prefer `append`.',
+      + 'document from `title` + `markdown`; `publish` is create-or-replace for a Markdown FILE — the '
+      + 'first run creates a document, later runs replace that same document, so rerunning a publish '
+      + 'never piles up copies; `append` adds `markdown` at the end of the document given by `target`; '
+      + '`replace` deletes the whole existing body and writes `markdown` instead. Markdown is converted '
+      + 'to native document blocks (headings, lists, tables, code, checkboxes). Images are uploaded and '
+      + 'embedded when the reference points at a local png/jpeg/webp/gif under 10 MB (relative image '
+      + 'paths are resolved against `path` when the body comes from a file); remote URLs are never '
+      + 'fetched — save the image locally first. The body comes from `path` (an ABSOLUTE path to a '
+      + 'Markdown file — preferred for long documents and required by `publish`) or inline `markdown`. '
+      + 'A body converted to more than ~800 blocks is inserted in several requests automatically. With '
+      + '`create`/`publish`, a new document is shared with the user who asked for it. `append` and '
+      + '`replace` REQUIRE the `revision_id` from `feishu_doc_read`, so a stale copy cannot silently '
+      + 'overwrite newer edits; `replace` (and a publishing update) additionally refuses to run when '
+      + 'the document contains blocks Markdown cannot reproduce (pass `allow_format_loss: true` to '
+      + 'accept that). The Feishu app must be able to edit the target document. Prefer `append`, or '
+      + '`publish` when a Markdown file is the source of truth.',
     parameters: {
       mode: {
         type: 'string',
-        enum: ['create', 'append', 'replace'],
+        enum: ['create', 'append', 'replace', 'publish'],
         required: true,
-        description: 'create a new document, append to the end, or replace the whole body (replace requires `revision`).',
+        description: 'create a new document; publish a Markdown file (create on first run, update the '
+          + 'same document on later runs; needs `path`); append to the end; or replace the whole body '
+          + '(append/replace require `revision`).',
       },
       markdown: {
         type: 'string',
@@ -1058,8 +1190,10 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       },
       path: {
         type: 'string',
-        description: 'Absolute path of a Markdown file in the workspace to read the body from. Images '
-          + 'referenced relatively are resolved against this file\'s directory.',
+        description: 'Absolute path of a Markdown file in the workspace to read the body from (relative '
+          + 'paths are rejected — no workspace base is known here). Required for `publish`, which keys '
+          + 'the document it updates by this path. Images referenced relatively are resolved against '
+          + 'this file\'s directory.',
       },
       target: {
         type: 'string',
@@ -1067,7 +1201,9 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       },
       title: {
         type: 'string',
-        description: 'Title for the new document (`create` only). Defaults to 未命名文档.',
+        description: 'Title for a new document (`create`, or the first `publish`). Defaults to the '
+          + 'body\'s first H1, else the file name, else 未命名文档. When the body opens with an H1 '
+          + 'that duplicates this title, that H1 is dropped so the heading does not appear twice.',
       },
       folder_token: {
         type: 'string',
@@ -1081,8 +1217,14 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       },
       allow_format_loss: {
         type: 'boolean',
-        description: '`replace` only. Set true to overwrite a document that contains blocks Markdown '
-          + 'cannot reproduce (callouts, grids, embeds, …); those blocks are destroyed.',
+        description: '`replace` (and a publishing update) only. Set true to overwrite a document that '
+          + 'contains blocks Markdown cannot reproduce (callouts, grids, embeds, …); those blocks are destroyed.',
+      },
+      allow_foreign_edits: {
+        type: 'boolean',
+        description: '`publish` only. Set true to replace a published document that someone edited in '
+          + 'Feishu since this plugin last wrote it (the default is to refuse and ask for a fresh '
+          + '`revision` instead).',
       },
     },
     output: {
@@ -1096,70 +1238,151 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
           url: { type: 'string' },
           blocks: { type: 'number', required: true },
           revision: { type: 'number' },
+          /** `publish`: true when this run created the document, false when it updated one. */
+          created: { type: 'boolean' },
           images_uploaded: { type: 'number', required: true },
           images_skipped: { type: 'number', required: true },
           shared: { type: 'boolean', required: true },
           content_chars: { type: 'number', required: true },
         },
       },
-      render: (_args, value) => [{
-        type: 'text',
-        text: `${value.mode === 'create' ? 'Created' : value.mode === 'append' ? 'Appended to' : 'Replaced the body of'} `
-          + `the Feishu document${value.title === undefined ? '' : ` "${value.title}"`} (document_id: ${value.document_id})`
-          + `${value.url === undefined ? '' : ` ${value.url}`}. `
-          + `Wrote ${value.blocks} block(s) from ${value.content_chars} characters; `
-          + `${value.images_uploaded} image(s) embedded`
-          + `${value.images_skipped === 0 ? '' : `, ${value.images_skipped} skipped`}.`
-          + (value.shared
-            ? ' The document was shared with the requesting user.'
-            : ' It was not shared — the requesting user may not be able to open it.'),
-      }],
+      render: (_args, value) => {
+        const action = value.mode === 'publish'
+          ? (value.created === true
+              ? 'Published the Markdown file as a new Feishu document'
+              : 'Re-published the Markdown file into the same Feishu document')
+          : `${value.mode === 'create' ? 'Created' : value.mode === 'append' ? 'Appended to' : 'Replaced the body of'} the Feishu document`
+        return [{
+          type: 'text',
+          text: `${action}${value.title === undefined ? '' : ` "${value.title}"`} (document_id: ${value.document_id})`
+            + `${value.url === undefined ? '' : ` ${value.url}`}. `
+            + `Wrote ${value.blocks} block(s) from ${value.content_chars} characters; `
+            + `${value.images_uploaded} image(s) embedded`
+            + `${value.images_skipped === 0 ? '' : `, ${value.images_skipped} skipped`}.`
+            + (value.shared
+              ? ' The document was shared with the requesting user.'
+              : ' It was not shared — the requesting user may not be able to open it.'),
+        }]
+      },
     },
     async execute(args, exec) {
       exec.signal.throwIfAborted()
       const channel = requireChannel(deps)
       const mode = args.mode
-      if (mode !== 'create' && args.revision === undefined) {
+      // `publish` keeps its own concurrency guard (the registry remembers the
+      // revision of this plugin's last write); a plain append/replace needs an
+      // explicit `revision_id` from the caller.
+      if ((mode === 'append' || mode === 'replace') && args.revision === undefined) {
         throw new Error(
           `mode "${mode}" needs the \`revision_id\` from feishu_doc_read: without it the write could `
           + 'overwrite edits made after the copy was read. Read the document first, then pass its '
-          + 'revision_id. (`create` is the only mode that does not edit an existing document.)',
+          + 'revision_id. (`create` and `publish` do not edit a document the caller did not name.)',
         )
       }
 
       if ((args.markdown === undefined) === (args.path === undefined)) {
         throw new Error('pass exactly one of `path` (a Markdown file) or `markdown` (inline text).')
       }
+      if (mode === 'publish' && args.path === undefined) {
+        throw new Error('`publish` needs `path`: the Markdown file is the key its document is remembered by.')
+      }
       let markdown: string
       let baseDir: string | undefined
+      const sourcePath = args.path === undefined ? undefined : resolve(args.path)
       if (args.path !== undefined) {
         try {
           markdown = await readFile(args.path, 'utf8')
         } catch (error: unknown) {
-          throw new Error(`Cannot read the Markdown file ${JSON.stringify(args.path)}: ${errorText(error, 'unknown file error')}`)
+          const relative = !isAbsolute(args.path)
+          throw new Error(
+            `Cannot read the Markdown file ${JSON.stringify(args.path)}: ${errorText(error, 'unknown file error')}.`
+            + (relative
+              ? ' That is a relative path and this tool does not resolve one (no workspace base is known here) — pass the absolute path.'
+              : ''),
+          )
         }
         baseDir = dirname(args.path)
       } else {
         markdown = args.markdown as string
       }
       if (markdown.trim() === '') throw new Error('the Markdown body is empty — nothing to write.')
+
+      // Where this write lands. For `publish` the file's absolute path is the
+      // key: the first run creates a document and records it, later runs
+      // replace THAT document so rerunning a publish never piles up copies.
+      const registry = sourcePath === undefined ? undefined : await docsRegistry()
+      const registryEntry = sourcePath === undefined ? undefined : registry?.get(sourcePath)
+      let effectiveMode: 'create' | 'append' | 'replace' =
+        mode === 'append' || mode === 'replace' ? mode : 'create'
+      let created = effectiveMode === 'create'
+      let publishedTarget: { documentId: string, recordedRevision?: number } | undefined
+
+      if (mode === 'publish') {
+        const entry = registryEntry
+        if (entry !== undefined) {
+          const current = await documentRevision(channel, entry.documentId)
+          if (current === undefined) {
+            // The document is gone (deleted, or the app lost access). Drop the
+            // stale entry and create a fresh document below.
+            await registry?.forget(sourcePath as string)
+            logger.warn(`dsh-feishu: feishu_doc_write publish dropped a stale registry entry for ${JSON.stringify(args.path)}`)
+          } else {
+            publishedTarget = {
+              documentId: entry.documentId,
+              ...(entry.revision === undefined ? {} : { recordedRevision: entry.revision }),
+            }
+          }
+        }
+        if (publishedTarget === undefined && args.target !== undefined && args.target.trim() !== '') {
+          // First publish of an existing document: adopt it.
+          const resolved = await resolveDoc(channel, parseDocTarget(args.target))
+          publishedTarget = { documentId: resolved.documentId }
+        }
+        if (publishedTarget !== undefined) {
+          effectiveMode = 'replace'
+          created = false
+          const current = await documentRevision(channel, publishedTarget.documentId)
+          // A caller that just read the document can vouch for the newer
+          // revision explicitly; otherwise the registry's record of our own
+          // last write is the baseline.
+          const lastKnown = args.revision ?? publishedTarget.recordedRevision
+          const unchanged = current === undefined || lastKnown === undefined || lastKnown === current
+          if (!unchanged && args.allow_foreign_edits !== true) {
+            throw new Error(
+              'The published document changed since this plugin last wrote it '
+              + `(recorded revision ${String(lastKnown)}, it is now ${String(current)}) — someone edited it in Feishu. `
+              + 'Read it with feishu_doc_read and pass that revision_id to accept the newer edits, '
+              + 'or pass `allow_foreign_edits: true` to replace them anyway.',
+            )
+          }
+        }
+      }
+
+      if (mode === 'create' && registryEntry !== undefined) {
+        const current = await documentRevision(channel, registryEntry.documentId)
+        if (current !== undefined) {
+          throw new Error(
+            `This Markdown file is already published as document ${registryEntry.documentId}`
+            + `${registryEntry.url === undefined ? '' : ` (${registryEntry.url})`}. `
+            + 'Use mode "publish" to update that same document; if a second copy is really wanted, '
+            + 'pass the body inline via `markdown` or read from a differently named file.',
+          )
+        }
+      }
+
       let documentId: string
       let url: string | undefined
       let title: string | undefined
-
-      if (mode === 'create') {
-        const headingMatch = /^#\s+(.+)$/mu.exec(markdown)
-        const heading = headingMatch?.[1]?.trim()
-        const fileTitle = args.path === undefined ? undefined : basename(args.path).replace(/\.md$/iu, '')
-        const titleFromBody = args.title === undefined || args.title.trim() === ''
-        title = titleFromBody ? (heading ?? fileTitle ?? '未命名文档') : (args.title ?? '').trim()
-        // The document title is its own block; keeping the source H1 in the body
-        // would render the same heading twice.
-        if (titleFromBody && headingMatch !== null) {
-          markdown = markdown.replace(/^#\s+.+\r?\n?/mu, '')
-        }
+      if (effectiveMode === 'create') {
+        const derived = deriveTitleAndBody(markdown, args.path, args.title)
+        title = derived.title
+        markdown = derived.markdown
         documentId = await createDocument(channel, title, args.folder_token)
         url = await documentUrl(channel, documentId)
+      } else if (publishedTarget !== undefined) {
+        documentId = publishedTarget.documentId
+        url = await documentUrl(channel, documentId)
+        title = await documentTitle(channel, documentId)
       } else {
         if (args.target === undefined || args.target.trim() === '') {
           throw new Error(`target is required for mode "${mode}" — pass the document URL or token.`)
@@ -1170,7 +1393,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         title = resolved.title
       }
 
-      if (mode === 'replace' && args.allow_format_loss !== true) {
+      if (effectiveMode === 'replace' && args.allow_format_loss !== true) {
         const lossy = await lossyBlockTypes(channel, documentId)
         if (lossy.length > 0) {
           throw new Error(
@@ -1223,11 +1446,11 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         throw new Error('The Markdown produced no insertable blocks — add some text content.')
       }
 
-      if (mode === 'create') {
+      if (effectiveMode === 'create') {
         await insertBlocks(channel, documentId, prepared.firstLevel, prepared.blocks, 0)
       } else {
         const children = await bodyChildIds(channel, documentId)
-        if (mode === 'replace') {
+        if (effectiveMode === 'replace') {
           await clearBody(channel, documentId, children.length)
           await insertBlocks(channel, documentId, prepared.firstLevel, prepared.blocks, 0)
         } else {
@@ -1242,7 +1465,7 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       // A tenant-token document is owned by the bot; grant the asking user
       // access so the link they get is actually openable.
       let shared = false
-      if (mode === 'create') {
+      if (created) {
         const bridge = deps.bridgeHolder?.current
         const agent = exec.agent
         if (bridge !== undefined && agent !== undefined) {
@@ -1255,12 +1478,26 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       if (title === undefined) title = await documentTitle(channel, documentId)
       if (url === undefined) url = await documentUrl(channel, documentId)
       const revision = await documentRevision(channel, documentId)
+      // Remember which document this file publishes to. `append`/`replace` do
+      // not re-point the registry: the caller edited a document it named, and
+      // silently binding the file to it would make a later publish replace that
+      // whole document with just this file.
+      if (registry !== undefined && sourcePath !== undefined && (mode === 'publish' || created)) {
+        await registry.record(sourcePath, {
+          documentId,
+          updatedAt: Date.now(),
+          ...(revision === undefined ? {} : { revision }),
+          ...(title === undefined ? {} : { title }),
+          ...(url === undefined ? {} : { url }),
+        })
+      }
       logger.warn(
         `dsh-feishu: feishu_doc_write ${mode} ${prepared.blocks.length} block(s) into ${documentId}`
         + ` (${filled.uploaded}/${loaded.length} image(s) embedded, shared=${shared})`,
       )
       return {
         mode,
+        created,
         document_id: documentId,
         ...(title === undefined ? {} : { title }),
         ...(url === undefined ? {} : { url }),

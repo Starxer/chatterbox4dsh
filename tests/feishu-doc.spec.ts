@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { htmlTablesToMarkdown, imageRefsIn, parseDocTarget, prepareBlocks, startFeishuDocTools } from '../src/feishu-doc.ts'
+import {
+  deriveTitleAndBody, htmlTablesToMarkdown, imageRefsIn, parseDocTarget, prepareBlocks,
+  splitInsertBatches, startFeishuDocTools,
+} from '../src/feishu-doc.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { HarnessConversationService } from '../src/harness.ts'
@@ -20,11 +23,13 @@ async function tempImage(name = 'pic.png', bytes: Buffer = PNG_1X1): Promise<str
   return path
 }
 
-/** Minimal Cordis context exposing only tools.register. */
-function fakeCtx() {
+/** Minimal Cordis context: tools.register plus the host's `dshHomePath` helper
+ *  (the doc tools persist their publish registry under it). */
+function fakeCtx(home: string = join(tmpdir(), 'dsh-doc-home-unused')) {
   const registered: Array<any> = []
   return {
     registered,
+    get: (name: string) => (name === 'dshHomePath' ? () => home : undefined),
     tools: {
       register: (tool: any) => {
         registered.push(tool)
@@ -104,8 +109,12 @@ function fakeChannel(overrides: Partial<FakeClient> = {}): { channel: LarkChanne
   return { channel: { rawClient: client } as unknown as LarkChannel, client }
 }
 
-function toolsOver(channel: LarkChannel, bridge?: HarnessConversationService) {
-  const fake = fakeCtx()
+function toolsOver(
+  channel: LarkChannel,
+  bridge?: HarnessConversationService,
+  home: string = join(tmpdir(), 'dsh-doc-home-default'),
+) {
+  const fake = fakeCtx(home)
   startFeishuDocTools({
     ctx: fake as unknown as Context,
     channelHolder: { current: channel },
@@ -486,5 +495,151 @@ describe('feishu_doc_write', () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).write!
     await expect(tool.execute({ mode: 'append', markdown: 'x', revision: 1 }, execCtx())).rejects.toThrow(/target is required/)
+  })
+})
+
+describe('deriveTitleAndBody', () => {
+  it('drops an H1 that duplicates the title', () => {
+    expect(deriveTitleAndBody('# 标题\n\n正文', undefined, '标题')).toEqual({ title: '标题', markdown: '\n正文' })
+    expect(deriveTitleAndBody('# 标题\n\n正文', '/tmp/notes/note.md', undefined)).toEqual({ title: '标题', markdown: '\n正文' })
+  })
+
+  it('keeps an H1 that differs from an explicit title', () => {
+    expect(deriveTitleAndBody('# 小节\n\n正文', '/tmp/notes/note.md', '标题')).toEqual({
+      title: '标题',
+      markdown: '# 小节\n\n正文',
+    })
+  })
+
+  it('falls back to the file name, then to 未命名文档', () => {
+    expect(deriveTitleAndBody('正文', '/tmp/notes/note.md', undefined)).toEqual({ title: 'note', markdown: '正文' })
+    expect(deriveTitleAndBody('正文', undefined, undefined)).toEqual({ title: '未命名文档', markdown: '正文' })
+  })
+})
+
+describe('splitInsertBatches', () => {
+  it('splits by top-level block so each request stays under the limit', () => {
+    const blocks = [
+      { block_id: 'a', block_type: 2, children: ['a1', 'a2'] },
+      { block_id: 'a1', block_type: 2 },
+      { block_id: 'a2', block_type: 2 },
+      { block_id: 'b', block_type: 2, children: ['b1'] },
+      { block_id: 'b1', block_type: 2 },
+      { block_id: 'c', block_type: 2 },
+    ] as any
+    const batches = splitInsertBatches(['a', 'b', 'c'], blocks, 3)
+    expect(batches.map(batch => batch.firstLevel)).toEqual([['a'], ['b', 'c']])
+    expect(batches[0]?.blocks.map(block => block.block_id)).toEqual(['a', 'a1', 'a2'])
+    expect(batches[1]?.blocks.map(block => block.block_id)).toEqual(['b', 'b1', 'c'])
+  })
+
+  it('keeps an oversized subtree in one request — there is nothing finer to split', () => {
+    const blocks = [
+      { block_id: 'big', block_type: 2, children: ['1', '2', '3', '4'] },
+      { block_id: '1', block_type: 2 },
+      { block_id: '2', block_type: 2 },
+      { block_id: '3', block_type: 2 },
+      { block_id: '4', block_type: 2 },
+    ] as any
+    expect(splitInsertBatches(['big'], blocks, 2)).toHaveLength(1)
+    expect(splitInsertBatches(['big'], blocks, 2)[0]?.blocks).toHaveLength(5)
+  })
+})
+
+describe('feishu_doc_write publish', () => {
+  async function publishFixture() {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-doc-reg-'))
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-doc-pub-'))
+    const mdPath = join(dir, 'note.md')
+    await writeFile(mdPath, '# 笔记\n\n第一版')
+    const { channel, client } = fakeChannel()
+    let revision = 2
+    client.docx.v1.document.get = vi.fn(async () => ({ data: { document: { title: '笔记', revision_id: revision } } }))
+    const write = toolsOver(channel, undefined, home).write!
+    return { home, dir, mdPath, client, write, setRevision: (next: number) => { revision = next } }
+  }
+
+  it('creates once, then re-publishes into the same document', async () => {
+    const fixture = await publishFixture()
+    const first = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    expect(first.mode).toBe('publish')
+    expect(first.created).toBe(true)
+    expect(first.document_id).toBe('doxcnNEW')
+    expect(fixture.client.docx.v1.document.create).toHaveBeenCalledTimes(1)
+
+    await writeFile(fixture.mdPath, '# 笔记\n\n第二版')
+    const second = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    expect(second.created).toBe(false)
+    expect(second.document_id).toBe('doxcnNEW')
+    expect(fixture.client.docx.v1.document.create).toHaveBeenCalledTimes(1)
+    expect(fixture.client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalled()
+
+    const registry = JSON.parse(await readFile(join(fixture.home, 'lark-doc-registry.json'), 'utf8'))
+    expect(Object.values(registry.docs)[0]).toMatchObject({ documentId: 'doxcnNEW', revision: 2 })
+  })
+
+  it('refuses to overwrite a document someone edited, and takes an override', async () => {
+    const fixture = await publishFixture()
+    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+
+    fixture.setRevision(7)
+    await expect(fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx()))
+      .rejects.toThrow(/changed since this plugin last wrote it/)
+    expect(fixture.client.docx.v1.documentBlockChildren.batchDelete).not.toHaveBeenCalled()
+
+    const forced = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath, allow_foreign_edits: true }, execCtx())
+    expect(forced.created).toBe(false)
+    expect(fixture.client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalled()
+  })
+
+  it('accepts a fresh revision instead of the override flag', async () => {
+    const fixture = await publishFixture()
+    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    fixture.setRevision(9)
+    const value = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath, revision: 9 }, execCtx())
+    expect(value.created).toBe(false)
+  })
+
+  it('refuses plain create for a file that is already published', async () => {
+    const fixture = await publishFixture()
+    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    await expect(fixture.write.execute({ mode: 'create', path: fixture.mdPath }, execCtx()))
+      .rejects.toThrow(/already published/)
+  })
+
+  it('adopts an existing document when target is given on the first publish', async () => {
+    const fixture = await publishFixture()
+    const value = await fixture.write.execute({
+      mode: 'publish',
+      path: fixture.mdPath,
+      target: 'https://acme.feishu.cn/docx/doxcnOld',
+    }, execCtx())
+    expect(value.created).toBe(false)
+    expect(value.document_id).toBe('doxcnOld')
+    expect(fixture.client.docx.v1.document.create).not.toHaveBeenCalled()
+  })
+
+  it('creates a fresh document when the recorded one disappeared', async () => {
+    const fixture = await publishFixture()
+    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    fixture.setRevision(2)
+    let calls = 0
+    fixture.client.docx.v1.document.get = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) throw new Error('not found')
+      return { data: { document: { title: '笔记', revision_id: 2 } } }
+    })
+    const value = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    expect(value.created).toBe(true)
+    expect(fixture.client.docx.v1.document.create).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('feishu_doc_write path handling', () => {
+  it('names the absolute-path rule when a relative path is passed', async () => {
+    const { channel } = fakeChannel()
+    const tool = toolsOver(channel).write!
+    await expect(tool.execute({ mode: 'create', path: 'notes/relative.md' }, execCtx()))
+      .rejects.toThrow(/pass the absolute path/)
   })
 })

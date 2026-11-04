@@ -172,8 +172,9 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 `src/feishu-doc.ts`（读/写）与 `src/feishu-doc-collab.ts`（评论/块级）；四个工具都注册在全局 host 上下文，任何会话可用，只要求通道在线。
 
 - **读**：`docs.v1.content.get` 取 Markdown（权限缺失时回退 `document.rawContent` 纯文本）；读取层把飞书输出的 HTML 表格重写成 Markdown；额外扫块返回图片块，`download_images` 用 `drive.v1.media.download` 把图片存到临时目录并给出本地路径；返回 `revision_id` 供写入守卫。
-- **写**：正文来自 `path`（`.md` 文件）或内联 `markdown`；`document.convert` 转原生块，`documentBlockDescendant.create` 一次插入（单次上限 1000 块），本地图片走 `media.uploadAll(docx_image)` + `documentBlock.patch(replace_image)`。`append`/`replace` 必须带 revision 且写前比对；`replace` 先扫块，遇到 Markdown 表达不了的块默认拒绝。写调用对限流退避重试两次。
-- **评论/块级**：`fileComment.list/create`（全文评论；平台不支持回复）；`documentBlock.list/patch`（按 block id 改文本，行内样式重置为纯文本）。
+- **写**：正文来自 `path`（绝对路径的 `.md` 文件）或内联 `markdown`；`document.convert` 转原生块，`documentBlockDescendant.create` 插入（单次上限 1000 块 → 按顶层块分批、每批 ≤800，子树不拆），本地图片走 `media.uploadAll(docx_image)` + `documentBlock.patch(replace_image)`。`append`/`replace` 必须带 revision 且写前比对；`replace` 先扫块，遇到 Markdown 表达不了的块默认拒绝。写调用对限流退避重试两次。显式 title 与正文首个 H1 相同时剥掉那行 H1。
+- **发布登记**：`publish` 模式把 `.md` 的绝对路径映射到文档（`$DSH_HOME/lark-doc-registry.json`，宿主 `dshHomePath` + 原子写 + 空/坏表兜底），首次创建、之后替换同一篇；登记里的 revision 用来判断「这篇是不是被人改过」，不符就拒绝（可用新 revision 或 `allow_foreign_edits` 解除）。实现在 `src/doc-registry.ts`。
+- **评论/块级**：`fileComment.list/create`（全文评论；平台不支持回复）；`documentBlock.list/patch`（按 block id 改文本；新文本按行内 Markdown 解析成带 `bold`/`italic`/`strikethrough`/`inline_code`/`link` 的 `text_run`，实现在 `src/inline-markdown.ts`；行内 Markdown 之外的块级结构仍走写工具）。
 - **权限**：扫码预填 `FEISHU_DOC_SCOPES`；维护用的 `space:document:retrieve/delete` 单列、不预填（见 README「在线文档权限」）。应用身份只能操作自己是协作者的文档；新建文档归机器人，`create` 后自动共享给发起用户。
 
 ## 验证入口

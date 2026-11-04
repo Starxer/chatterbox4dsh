@@ -355,7 +355,7 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 | 读 Markdown | `docs.v1.content.get`（`doc_type: docx`、`content_type: markdown`） | 目前唯一返回 Markdown 的接口；需要 `docs:document.content:read` |
 | 读纯文本（回退） | `docx.v1.document.rawContent` | Markdown 读取权限缺失时降级，标题/列表结构丢失，结果里 `format: text` |
 | Markdown → 块 | `docx.v1.document.convert` | 支持文本、1–6 级标题、有序/无序列表、代码块、引用、待办、图片、表格、单元格（逐项实测见下） |
-| 插入块 | `docx.v1.documentBlockDescendant.create` | 单次上限 1000 块；`children_id` 用转换结果的 `first_level_block_ids` |
+| 插入块 | `docx.v1.documentBlockDescendant.create` | 单次上限 1000 块；`children_id` 用转换结果的 `first_level_block_ids`。插件按**顶层块**分批（每批 ≤800 块，子树不拆开），一批一个请求、`index` 递增 |
 | 清空正文 | `docx.v1.documentBlockChildren.batchDelete` | `replace` 模式先删 `0..N`，N 取根块 `children` 长度 |
 | 新建文档 | `docx.v1.document.create` | 归应用所有；`folder_token` 可指定落点 |
 | 取链接 | `drive.v1.meta.batchQuery`（`with_url`） | 只用于回显 URL，失败不影响读写 |
@@ -367,6 +367,8 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 - 清理用的 `space:document:retrieve` / `space:document:delete` 也已补齐（**不进扫码默认**，见 `FEISHU_DOC_MAINTENANCE_SCOPES`），当前应用共 46 项授权（另有实验性开通但工具未使用的 `search:docs:read`）。
 - 其余链路（`document.get`、`documentBlock.*`、`documentChild create/batchDelete`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）从一开始就没有权限码，假 token 时报的是资源级 `1770002` / `131005`。
 - 删除文档需要 `space:document:delete`（已补齐、已实测）；应用自建文档归机器人所有，`create` 后由工具自动共享给发起用户。
+
+**发布登记（`publish`，2026-11-04）**：`feishu_doc_write` 新增 `publish` 模式，把 Markdown 文件当发布源。登记文件在 `$DSH_HOME/lark-doc-registry.json`（路径来自宿主 `dshHomePath`，原子 tmp+rename，最多 300 条，坏文件只当空表），键是 `.md` 的**绝对路径**，值是 `documentId` + 上次写入后的 `revision` + 标题/URL。首次发布走 `create`；之后命中登记就 `replace` 同一篇；若当前 revision 与登记不符（有人在飞书改过）则拒绝，除非调用方给出刚读到的 `revision` 或 `allow_foreign_edits: true`；登记里的文档被删/失去权限时自动回到新建。**实测（2026-11-04 真机）**：同一文件连续发布两次 → 同一个 `document_id`、第二次 `created=false`、读回只有新版本；手动改文档后再发布 → 拒绝；`allow_foreign_edits` 后成功；900 段正文 → **2 次**插入请求；测试文档用 `drive.v1.file.delete`（维护 scope）清理成功。
 
 **端到端回环（2026-11-04，`feishu_doc_write` → `feishu_doc_read`）**：新建 → `convert`（27 块 / 18 个一级块）→ 插入 → Markdown 读回，全部成功。回读侧观察到的差异（写进去的块是对的，读回文本是飞书的口径）：
 

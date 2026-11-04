@@ -15,7 +15,9 @@
  * - **blocks** — list the document's blocks with their ids and text, and
  *   rewrite one block's text in place. This is the surgical edit path: it
  *   leaves every other block (and every human-made structure the Markdown
- *   converter cannot reproduce) untouched.
+ *   converter cannot reproduce) untouched. The new text is inline Markdown, so
+ *   `**bold**`, `*italic*`, `` `code` ``, `~~strikethrough~~` and
+ *   `[links](url)` keep their formatting instead of flattening to plain text.
  *
  * Both tools share the document resolution rules of `feishu-doc.ts` (docx and
  * wiki links) and the same bounded outbound calls.
@@ -29,6 +31,7 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import { withLinkTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
 import { parseDocTarget, resolveDoc } from './feishu-doc.ts'
+import { textElementsFromMarkdown } from './inline-markdown.ts'
 
 /** Budget for one document API call. */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
@@ -409,8 +412,10 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
       'List or rewrite blocks of a Feishu/Lark online document (docx). `action: list` returns block '
       + 'ids with their type and a text preview — use it to find the block to change. `action: update` '
       + 'replaces one block\'s text in place (`block_id` + `text`), leaving every other block and the '
-      + 'document\'s human-made structure untouched; the block keeps its type, but its inline formatting '
-      + 'is reset to plain text.',
+      + 'document\'s human-made structure untouched. The block keeps its type and the new text is inline '
+      + 'Markdown, so `**bold**`, `*italic*`, `` `code` ``, `~~strikethrough~~` and `[links](url)` are '
+      + 'applied as formatting. Content that is not supported inline (headings, lists, tables, '
+      + 'superscript/subscript) stays literal — use feishu_doc_write for block structure.',
     parameters: {
       target: {
         type: 'string',
@@ -429,7 +434,8 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
       },
       text: {
         type: 'string',
-        description: 'New plain text for the block (`update` only).',
+        description: 'New text for the block (`update` only), written as inline Markdown: bold, '
+          + 'italic, strikethrough, inline code and links are applied; everything else stays literal.',
       },
       page_size: {
         type: 'number',
@@ -491,7 +497,7 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
           await withLinkTimeout(
             channel.rawClient.docx.v1.documentBlock.patch({
               path: { document_id: documentId, block_id: args.block_id },
-              data: { update_text_elements: { elements: [{ text_run: { content: args.text } }] } },
+              data: { update_text_elements: { elements: textElementsFromMarkdown(args.text) } },
             }),
             'update document block',
             DOC_REQUEST_TIMEOUT_MS,

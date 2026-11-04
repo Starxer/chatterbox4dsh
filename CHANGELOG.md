@@ -5,6 +5,21 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：文档工具的发布登记、行内格式与大文档分批（`src/doc-registry.ts` / `src/inline-markdown.ts` / `src/feishu-doc.ts` / `src/feishu-doc-collab.ts`，2026-11-04）
+
+起因：另一个 agent 用这批工具真实发布了两篇文档后给了实测评价（一次写入 313 块成功，但「改一段要重写整篇」「块更新把行内格式重置」「超长文档没底」）。逐条吸收后：
+
+- **`feishu_doc_write` 新增 `publish` 模式**：把 `.md` 文件的**绝对路径**当键，第一次发布 `create`，之后再发 `replace` **同一篇**——「Markdown 当源文件、改完重跑一次」不再堆出重复文档。登记持久化在 `$DSH_HOME/lark-doc-registry.json`（路径问宿主 `dshHomePath`、原子 tmp+rename、最多 300 条、坏文件当空表），记 `documentId` + 上次自己写入后的 `revision`；登记里的文档被删或失去权限时自动回到新建。**防误覆盖**：若文档被人在飞书改过（当前 revision ≠ 登记值），发布拒绝并提示先 `feishu_doc_read` 拿新 revision，或显式 `allow_foreign_edits: true`。`create` 遇到已登记的同一文件会报错并指向 `publish`，避免悄悄建第二篇。`publish` 第一次发布也可以传 `target` 收养一篇已有文档。
+- **块更新的行内格式**：`feishu_doc_blocks update` 的新文本现在按行内 Markdown 解析成多个 `text_run`（`bold` / `italic` / `strikethrough` / `inline_code` / `link`），不再整块压成纯文本；`src/inline-markdown.ts` 处理转义、嵌套、链接标签内的格式与 `snake_case` 不误判。整块结构（标题/列表/表格）仍归写工具。
+- **大文档分批插入**：`documentBlockDescendant.create` 的 ~1000 块上限改为自动分批——按**顶层块**切、子树不拆、每批 ≤800，批间 `index` 递增。
+- **标题去重**：显式 `title` 与正文首个 H1 相同时剥掉那行 H1（此前只在省略 title 时剥），不再出现两个一级标题。
+- **路径错误**：相对 `path` 报错会直说「本工具不解析相对路径，请传绝对路径」，不再是裸 ENOENT。
+- **真机验证（2026-11-04，真实租户）**：同文件连发两次 → 同一 `document_id`、第二次 `created=false`、读回只有新版本；手动改文档后再发布 → 拒绝；`allow_foreign_edits` 后成功；900 段正文 → **2 次**插入请求；两篇探测文档用 `drive.v1.file.delete`（维护 scope）删净。
+- **文档**：README / 能力参考 / 架构补上 `publish`、登记文件、分批、行内格式与**已确认的平台限制**（docx 无上下标样式、不抓远程图片、评论不能回复线程、工具不删文档）。
+- 测试：新增 registry 6 例、行内解析 8 例，写工具新增 publish/标题/分批/路径 10 例；全量 **1410 测试 / 71 文件**、`typecheck`、`build` 全绿。
+
+**English**: `feishu_doc_write` gained a `publish` mode keyed by a Markdown file's absolute path — the first run creates the document, later runs replace that same document (registry in `$DSH_HOME/lark-doc-registry.json`, host-provided home, atomic write, 300-entry cap) and refuse to overwrite edits made in Feishu unless a fresh revision or `allow_foreign_edits` is supplied. `feishu_doc_blocks update` now parses inline Markdown into styled `text_run` elements instead of flattening to plain text, oversized bodies insert in batches of at most 800 top-level blocks, a body H1 duplicating an explicit title is dropped, and a relative `path` fails with the absolute-path rule stated. Live-verified against a real tenant (same document on re-publish, foreign-edit refusal, 900 blocks in 2 insert requests, probe documents deleted). 1410 tests / 71 files, typecheck and build pass.
+
 ### 改进：全量校对用户可见文案与 DSH Web UI 的术语（`src/i18n.ts` / `src/commands-i18n.ts` / `src/index.ts` / `src/feishu-streaming.ts`，2026-11-04）
 
 对照本机 DSH `0.2.1-rc.5` 的客户端语言包（`packages/client/*/src/client/locale*.ts`）逐项核对插件文案，凡 Web UI 已有同一概念的一律采用它的中英文命名：

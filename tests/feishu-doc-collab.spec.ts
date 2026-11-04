@@ -149,19 +149,28 @@ describe('feishu_doc_blocks', () => {
     expect(value.has_more).toBe(false)
   })
 
-  it('updates one block in place', async () => {
+  it('updates one block in place, keeping inline Markdown formatting', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).blocks!
     const value = await tool.execute({
       target: 'doxcnDoc',
       action: 'update',
       block_id: 'b-text',
-      text: '新正文',
+      text: '新**正文**与 `code`',
     }, execCtx())
 
     expect(client.docx.v1.documentBlock.patch).toHaveBeenCalledWith({
       path: { document_id: 'doxcnDoc', block_id: 'b-text' },
-      data: { update_text_elements: { elements: [{ text_run: { content: '新正文' } }] } },
+      data: {
+        update_text_elements: {
+          elements: [
+            { text_run: { content: '新' } },
+            { text_run: { content: '正文', text_element_style: { bold: true } } },
+            { text_run: { content: '与 ' } },
+            { text_run: { content: 'code', text_element_style: { inline_code: true } } },
+          ],
+        },
+      },
     })
     expect(value).toEqual({ document_id: 'doxcnDoc', updated: true })
   })
