@@ -79,6 +79,10 @@ jobs:
           # `lib/` is not committed, so a broken build would otherwise publish a
           # package without its runtime entry point.
           tarball="${{ steps.pack.outputs.path }}"
+          # Capture the listing once: piping `tar` straight into `grep -q`
+          # makes tar die of SIGPIPE as soon as grep quits on its first match,
+          # and `bash -eo pipefail` would then report the pipeline as failed.
+          tar -tzf "$tarball" > "$RUNNER_TEMP/tarball-files.txt"
           missing=0
           for required in \
             package/package.json \
@@ -86,7 +90,7 @@ jobs:
             package/lib/types/index.d.ts \
             package/client/client.js \
             package/cordis.patch.yml; do
-            if ! tar -tzf "$tarball" | grep -qx "$required"; then
+            if ! grep -qx "$required" "$RUNNER_TEMP/tarball-files.txt"; then
               echo "::error::tarball is missing $required"
               missing=1
             fi
