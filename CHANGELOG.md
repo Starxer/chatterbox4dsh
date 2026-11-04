@@ -5,6 +5,20 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 新增：LaTeX 公式写成飞书原生可编辑公式（`src/doc-formula.ts` / `src/inline-markdown.ts` / `src/feishu-doc.ts`，2026-11-04）
+
+起因：另一个 agent 在复习笔记里写 `$d = 0.61\lambda/NA$` 时踩到**静默吞内容**——飞书的 Markdown→块转换器不认公式：`$…$` 整段消失、`$$…$$` 变空文本块、`\[…\]` 反斜杠被吃掉。而飞书 docx API 其实**支持**公式（行内 `equation` 文本元素），只是转换器没实现。
+
+- **写工具支持公式**：`feishu_doc_write` 在 `document.convert` 之前把公式换成分级占位符（行内 `DSHMFI…`、独占一行 `DSHMFB…`），转换后把占位符还原成 `equation` 文本元素。行内 `$…$` / `\(…\)` 留在原段落；独占一行的 `$$…$$` / `\[…\]` 变成居中、只含公式的文本段（读起来就是展示公式）。结果里的 `formulas` 报出写入了几个公式，`content_chars` 仍是源文件字符数。
+- **不会误伤**：代码围栏与行内代码里的 `$` 原样保留；`$5` / `$10` 这类货币金额、`\$` 转义不当作公式；多行 `$$` 用 LaTeX `\\` 连接；某个占位符万一没被还原会打日志，不再静默丢内容。
+- **块更新同样支持**：`feishu_doc_blocks update` 的 `text` 里 `$…$` 也解析成 `equation` 元素，与粗体/代码/链接并存。
+- **读回**：`docs.v1.content.get` 把公式读成 `$…$`，所以读 → 改 → 写可以完整往返。
+- **平台限制（已写进文档）**：docx **没有可创建的公式块**（`block_type` 选项列表不含 16），所以展示公式是「居中、只含 equation 的文本段」；上下标仍无行内样式，用公式代替。
+- **真机验证（2026-11-04）**：创建含行内公式 + `\frac` 展示公式的文档（`formulas=2`）→ 读回 `$x^2 + y^2$` 与独占一行的 `$d = \frac{0.61\lambda}{n\sin\alpha}$`；行内代码里的 `$not a formula$` 保持代码；块更新写入 `前 $a+b$ 后 **粗体**` 后读回一致；探测文档已删除。
+- 测试：新增公式提取/还原 10 例、行内解析公式 2 例、写工具端到端 1 例；全量 **1423 测试 / 72 文件**、`typecheck`、`build` 全绿。
+
+**English**: Feishu's Markdown→blocks converter silently drops formulas (`$…$` vanishes, `$$…$$` becomes an empty paragraph, `\[…\]` loses its backslashes) even though the docx API supports formulas as an inline `equation` text element. `feishu_doc_write` now swaps formulas for typed placeholders before conversion and splices them back as equations: inline ones stay in their paragraph, a formula on its own line becomes a centred equation-only paragraph, code fences and inline code stay literal, currency amounts like `$5` are not mistaken for math, and an unresolved placeholder is logged instead of losing content. `feishu_doc_blocks update` understands `$…$` too, and reads come back as `$…$` so a read → edit → write round-trip works. Platform limits: docx has no creatable equation block type (so display formulas are centred text paragraphs) and no superscript/subscript style. Live-verified on the real tenant. 1423 tests / 72 files, typecheck and build pass.
+
 ### 新增：文档工具的发布登记、行内格式与大文档分批（`src/doc-registry.ts` / `src/inline-markdown.ts` / `src/feishu-doc.ts` / `src/feishu-doc-collab.ts`，2026-11-04）
 
 起因：另一个 agent 用这批工具真实发布了两篇文档后给了实测评价（一次写入 313 块成功，但「改一段要重写整篇」「块更新把行内格式重置」「超长文档没底」）。逐条吸收后：

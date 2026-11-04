@@ -370,6 +370,8 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 
 **发布登记（`publish`，2026-11-04）**：`feishu_doc_write` 新增 `publish` 模式，把 Markdown 文件当发布源。登记文件在 `$DSH_HOME/lark-doc-registry.json`（路径来自宿主 `dshHomePath`，原子 tmp+rename，最多 300 条，坏文件只当空表），键是 `.md` 的**绝对路径**，值是 `documentId` + 上次写入后的 `revision` + 标题/URL。首次发布走 `create`；之后命中登记就 `replace` 同一篇；若当前 revision 与登记不符（有人在飞书改过）则拒绝，除非调用方给出刚读到的 `revision` 或 `allow_foreign_edits: true`；登记里的文档被删/失去权限时自动回到新建。**实测（2026-11-04 真机）**：同一文件连续发布两次 → 同一个 `document_id`、第二次 `created=false`、读回只有新版本；手动改文档后再发布 → 拒绝；`allow_foreign_edits` 后成功；900 段正文 → **2 次**插入请求；测试文档用 `drive.v1.file.delete`（维护 scope）清理成功。
 
+**公式（equation，2026-11-04 实测）**：飞书**编辑器**支持公式，**docx API 也支持**——但只能作为**行内文本元素** `{ equation: { content } }` 出现在任一文本类块里，**没有可创建的公式块**（`documentBlockDescendant.create` 的 `block_type` 选项列表是 `[1..15, 17..59, 999]`，16 不在其中；按 16 提交报 `field validation failed`）。`document.convert` 完全不认公式：`$x$` 整段消失、`$$x$$` 变空文本块、`\[x\]` 只剩被吃掉反斜杠的字面量。因此写工具在 `convert` **之前**把公式换成占位符（`DSHMFI…` / `DSHMFB…`），**之后**把 equation 元素拼回转换结果：行内公式留在原段落，独占一行的公式变成**居中、只含 equation 的文本段**（`style.align=2`）。代码围栏与行内代码不处理；`$5` / `$10` 这类货币金额与转义 `\$` 不误判；多行 `$$` 公式用 LaTeX `\\` 连接；还原不了的占位符会打日志（不再静默丢内容）。**真机验证（2026-11-04）**：一篇含 1 个行内公式 + 1 个 `\frac` 展示公式的文档创建成功（`formulas=2`），读回 Markdown 是 `$x^2 + y^2$` 与独占一行的 `$d = \frac{0.61\lambda}{n\sin\alpha}$`；行内代码里的 `$not a formula$` 原样保留；`feishu_doc_blocks update` 写入 `前 $a+b$ 后 **粗体**` 后端到端读回 `前 $a+b$ 后 **粗体**`；探测文档已删除。
+
 **端到端回环（2026-11-04，`feishu_doc_write` → `feishu_doc_read`）**：新建 → `convert`（27 块 / 18 个一级块）→ 插入 → Markdown 读回，全部成功。回读侧观察到的差异（写进去的块是对的，读回文本是飞书的口径）：
 
 - 文档标题本身是正文第一块（H1），`docs.v1.content.get` 会把它一并返回；

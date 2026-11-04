@@ -68,3 +68,23 @@ describe('textElementsFromMarkdown', () => {
     expect(textElementsFromMarkdown('新正文')).toEqual([{ text_run: { content: '新正文' } }])
   })
 })
+
+describe('inline formulas', () => {
+  it('maps $…$ and \\(…\\) onto equation elements', () => {
+    expect(textElementsFromMarkdown('a $x^2$ b')).toEqual([
+      { text_run: { content: 'a ' } },
+      { equation: { content: 'x^2' } },
+      { text_run: { content: ' b' } },
+    ])
+    expect(textElementsFromMarkdown('看 \\(a+b\\) 这里')).toEqual([
+      { text_run: { content: '看 ' } },
+      { equation: { content: 'a+b' } },
+      { text_run: { content: ' 这里' } },
+    ])
+  })
+
+  it('keeps currency amounts and escaped dollars literal', () => {
+    expect(textElementsFromMarkdown('价格 $5 和 $10')).toEqual([{ text_run: { content: '价格 $5 和 $10' } }])
+    expect(textElementsFromMarkdown('\\$x\\$')).toEqual([{ text_run: { content: '$x$' } }])
+  })
+})

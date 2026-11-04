@@ -25,6 +25,8 @@ export interface InlineStyle {
   inlineCode?: boolean
   /** Absolute or scheme-ful URL the run links to. */
   link?: string
+  /** LaTeX of an inline equation; such a run carries no text. */
+  equation?: string
 }
 
 /** One contiguous piece of text sharing a style. */
@@ -65,6 +67,7 @@ function styleSignature(style: InlineStyle): string {
     style.strikethrough === true,
     style.inlineCode === true,
     style.link ?? '',
+    style.equation ?? '',
   ])
 }
 
@@ -72,9 +75,15 @@ function styleSignature(style: InlineStyle): string {
 function merge(runs: InlineRun[]): InlineRun[] {
   const out: InlineRun[] = []
   for (const run of runs) {
+    // An equation run carries no text; never merge it away.
+    if (run.style.equation !== undefined) {
+      out.push({ text: '', style: { ...run.style } })
+      continue
+    }
     if (run.text === '') continue
     const previous = out[out.length - 1]
-    if (previous !== undefined && styleSignature(previous.style) === styleSignature(run.style)) {
+    if (previous !== undefined && previous.style.equation === undefined
+      && styleSignature(previous.style) === styleSignature(run.style)) {
       previous.text += run.text
       continue
     }
@@ -87,11 +96,13 @@ function merge(runs: InlineRun[]): InlineRun[] {
 function findClose(text: string, from: number, token: string): number {
   let index = from
   while (index <= text.length - token.length) {
+    // Match before treating a backslash as an escape: `\)` and `\$` are
+    // themselves closing tokens.
+    if (text.startsWith(token, index)) return index
     if (text[index] === '\\') {
       index += 2
       continue
     }
-    if (text.startsWith(token, index)) return index
     index += 1
   }
   return -1
@@ -111,13 +122,6 @@ function parseSegment(text: string, inherited: InlineStyle): InlineRun[] {
   while (index < text.length) {
     const char = text[index] as string
 
-    // Backslash escapes any next character (CommonMark's punctuation escapes).
-    if (char === '\\' && index + 1 < text.length) {
-      buffer += text[index + 1] as string
-      index += 2
-      continue
-    }
-
     // Inline code spans do not nest: everything inside is literal.
     if (char === '`') {
       const close = findClose(text, index + 1, '`')
@@ -127,6 +131,38 @@ function parseSegment(text: string, inherited: InlineStyle): InlineRun[] {
         index = close + 1
         continue
       }
+    }
+
+    // `$…$` / `\(…\)`: an inline Feishu equation. Same conservative rules as
+    // the document writer: no escaped opener, no whitespace at either edge, and
+    // a digit-only body is treated as currency, not math.
+    if (char === '$' || (char === '\\' && text[index + 1] === '(')) {
+      const openLength = char === '$' ? 1 : 2
+      const closeToken = char === '$' ? '$' : '\\)'
+      const bodyStart = index + openLength
+      const first = text[bodyStart]
+      if (first !== undefined && !/\s/u.test(first)) {
+        const close = findClose(text, bodyStart + 1, closeToken)
+        if (close > bodyStart) {
+          const latex = text.slice(bodyStart, close).trim()
+          const previous = text[close - 1]
+          const tight = previous !== undefined && !/\s/u.test(previous)
+          const currency = /^\d[\d.,]*$/u.test(latex)
+          if (tight && latex !== '' && !currency) {
+            flush()
+            runs.push({ text: '', style: { ...inherited, equation: latex } })
+            index = close + closeToken.length
+            continue
+          }
+        }
+      }
+    }
+
+    // Backslash escapes any next character (CommonMark's punctuation escapes).
+    if (char === '\\' && index + 1 < text.length) {
+      buffer += text[index + 1] as string
+      index += 2
+      continue
     }
 
     // `[label](url)` — the label keeps its own inline formatting.
@@ -201,8 +237,9 @@ function toElementStyle(style: InlineStyle): DocxTextElement['text_run']['text_e
 }
 
 /** Convert inline Markdown into the `elements` array `documentBlock.patch` accepts. */
-export function textElementsFromMarkdown(text: string): DocxTextElement[] {
+export function textElementsFromMarkdown(text: string): Array<DocxTextElement | { equation: { content: string } }> {
   return parseInlineMarkdown(text).map(run => {
+    if (run.style.equation !== undefined) return { equation: { content: run.style.equation } }
     const text_element_style = toElementStyle(run.style)
     return { text_run: { content: run.text, ...(text_element_style === undefined ? {} : { text_element_style }) } }
   })

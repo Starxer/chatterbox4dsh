@@ -33,6 +33,7 @@ import { errorText } from './error-text.ts'
 import { sniffImageMime } from './media-sniff.ts'
 import type { HarnessConversationService } from './harness.ts'
 import { createDocRegistry, type DocRegistry } from './doc-registry.ts'
+import { applyFormulas, extractFormulas } from './doc-formula.ts'
 
 /** Budget for one document API call (reads a whole body, so not the 20s send budget). */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
@@ -1032,8 +1033,9 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'or `…/wiki/<token>` link — or its token. Returns the title, the Markdown body and the document id '
       + 'needed by `feishu_doc_write`. Long bodies are truncated and give a `next_offset` to continue. '
       + 'When the app only has the plain-text scope the body comes back unformatted and `format` says `text`. '
-      + 'Also returns the current `revision_id` (pass it to `feishu_doc_write` to avoid overwriting newer '
-      + 'edits) and the image blocks, which the Markdown body never includes. '
+      + 'Formulas in the document come back as `$…$` inside the Markdown body. Also returns the current '
+      + '`revision_id` (pass it to `feishu_doc_write` to avoid overwriting newer edits) and the image blocks, '
+      + 'which the Markdown body never includes. '
       + 'The Feishu app must be able to read the document, otherwise the call fails and says what to fix.',
     parameters: {
       target: {
@@ -1163,7 +1165,9 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'first run creates a document, later runs replace that same document, so rerunning a publish '
       + 'never piles up copies; `append` adds `markdown` at the end of the document given by `target`; '
       + '`replace` deletes the whole existing body and writes `markdown` instead. Markdown is converted '
-      + 'to native document blocks (headings, lists, tables, code, checkboxes). Images are uploaded and '
+      + 'to native document blocks (headings, lists, tables, code, checkboxes). LaTeX formulas are supported: '
+      + '`$…$` / `\(…\)` become inline equations, and `$$…$$` / `\[…\]` on their own line become display '
+      + 'equations (Feishu-native and editable); formulas inside code fences stay literal. Images are uploaded and '
       + 'embedded when the reference points at a local png/jpeg/webp/gif under 10 MB (relative image '
       + 'paths are resolved against `path` when the body comes from a file); remote URLs are never '
       + 'fetched — save the image locally first. The body comes from `path` (an ABSOLUTE path to a '
@@ -1242,6 +1246,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
           created: { type: 'boolean' },
           images_uploaded: { type: 'number', required: true },
           images_skipped: { type: 'number', required: true },
+          /** LaTeX formulas embedded as Feishu equation elements. */
+          formulas: { type: 'number' },
           shared: { type: 'boolean', required: true },
           content_chars: { type: 'number', required: true },
         },
@@ -1258,7 +1264,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
             + `${value.url === undefined ? '' : ` ${value.url}`}. `
             + `Wrote ${value.blocks} block(s) from ${value.content_chars} characters; `
             + `${value.images_uploaded} image(s) embedded`
-            + `${value.images_skipped === 0 ? '' : `, ${value.images_skipped} skipped`}.`
+            + `${value.images_skipped === 0 ? '' : `, ${value.images_skipped} skipped`}`
+            + `${value.formulas === undefined || value.formulas === 0 ? '' : `, ${value.formulas} formula(s) as equations`}.`
             + (value.shared
               ? ' The document was shared with the requesting user.'
               : ' It was not shared — the requesting user may not be able to open it.'),
@@ -1404,6 +1411,14 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         }
       }
 
+      // Feishu's Markdown→blocks converter does not understand formulas (it
+      // drops `$…$`/`$$…$$` and eats `\[…\]`), while the docx API does support
+      // them as inline equation elements. Swap formulas for placeholder tokens
+      // first, then splice the real equations into the converted blocks below.
+      const sourceChars = markdown.length
+      const formulas = extractFormulas(markdown)
+      markdown = formulas.markdown
+
       // Decide per image reference whether it can be uploaded. The converter
       // emits one image block per reference in the same order, so the flags
       // line up with the blocks `prepareBlocks` is about to see.
@@ -1441,7 +1456,14 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       }
 
       const converted = await convertMarkdown(channel, markdown)
-      const prepared = prepareBlocks(converted.blocks, converted.firstLevel, index => keep[index] === true)
+      const spliced = applyFormulas(converted.blocks, formulas)
+      if (spliced.unresolved.length > 0) {
+        logger.warn(
+          `dsh-feishu: feishu_doc_write left ${spliced.unresolved.length} formula placeholder(s) in the `
+          + 'converted blocks — the formulas may appear as raw tokens',
+        )
+      }
+      const prepared = prepareBlocks(spliced.blocks, converted.firstLevel, index => keep[index] === true)
       if (prepared.firstLevel.length === 0) {
         throw new Error('The Markdown produced no insertable blocks — add some text content.')
       }
@@ -1506,7 +1528,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         images_uploaded: filled.uploaded,
         images_skipped: refs.length - filled.uploaded,
         shared,
-        content_chars: markdown.length,
+        content_chars: sourceChars,
+        formulas: spliced.applied,
       }
     },
   }))

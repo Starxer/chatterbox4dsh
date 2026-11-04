@@ -643,3 +643,38 @@ describe('feishu_doc_write path handling', () => {
       .rejects.toThrow(/pass the absolute path/)
   })
 })
+
+describe('feishu_doc_write formulas', () => {
+  it('splices LaTeX into equation elements instead of dropping it', async () => {
+    const { channel, client } = fakeChannel()
+    // Echo the placeholders the writer fed the converter, the way
+    // `document.convert` would (it does not understand formulas at all).
+    client.docx.v1.document.convert = vi.fn(async ({ data }: any) => {
+      const paragraphs = String(data.content).split('\n\n').map(part => part.trim()).filter(Boolean)
+      return {
+        data: {
+          first_level_block_ids: paragraphs.map((_, index) => `t${index}`),
+          blocks: paragraphs.map((text, index) => ({
+            block_id: `t${index}`,
+            block_type: 2,
+            text: { elements: [{ text_run: { content: text } }], style: { align: 1 } },
+          })),
+        },
+      }
+    })
+    const tool = toolsOver(channel).write!
+    const markdown = '质心 $x^2+y^2$ 的值\n\n$$E=mc^2$$\n'
+    const value = await tool.execute({ mode: 'create', markdown }, execCtx())
+
+    expect(value.formulas).toBe(2)
+    expect(value.content_chars).toBe(markdown.length)
+    const payload = (client.docx.v1.documentBlockDescendant.create as any).mock.calls[0][0].data
+    const sent = JSON.stringify(payload.descendants)
+    expect(sent).toContain('"equation":{"content":"x^2+y^2"')
+    expect(sent).toContain('"equation":{"content":"E=mc^2"')
+    // The display formula paragraph is centred.
+    expect(sent).toContain('"align":2')
+    // No placeholder ever reaches Feishu.
+    expect(sent).not.toContain('DSHMF')
+  })
+})

@@ -413,9 +413,9 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
       + 'ids with their type and a text preview — use it to find the block to change. `action: update` '
       + 'replaces one block\'s text in place (`block_id` + `text`), leaving every other block and the '
       + 'document\'s human-made structure untouched. The block keeps its type and the new text is inline '
-      + 'Markdown, so `**bold**`, `*italic*`, `` `code` ``, `~~strikethrough~~` and `[links](url)` are '
-      + 'applied as formatting. Content that is not supported inline (headings, lists, tables, '
-      + 'superscript/subscript) stays literal — use feishu_doc_write for block structure.',
+      + 'Markdown, so `**bold**`, `*italic*`, `` `code` ``, `~~strikethrough~~`, `[links](url)` and '
+      + '`$…$` formulas are applied. Content that is not supported inline (headings, lists, tables, '
+      + 'superscript/subscript outside a formula) stays literal — use feishu_doc_write for block structure.',
     parameters: {
       target: {
         type: 'string',
@@ -435,7 +435,8 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
       text: {
         type: 'string',
         description: 'New text for the block (`update` only), written as inline Markdown: bold, '
-          + 'italic, strikethrough, inline code and links are applied; everything else stays literal.',
+          + 'italic, strikethrough, inline code, links and `$…$` formulas are applied; everything else '
+          + 'stays literal.',
       },
       page_size: {
         type: 'number',
