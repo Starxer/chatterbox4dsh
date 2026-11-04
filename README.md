@@ -33,7 +33,7 @@ npx @deepseek-ai/dsh web
 
 1. 打开 Web 页面 → **Plugins → 飞书与 Lark** → **扫码配置**，用飞书扫码并确认授权。
 2. 在飞书里找到机器人，发一条消息（群聊默认需要 @ 机器人）。
-3. 之后在 **Settings → 飞书与 Lark** 里调整凭据、访问策略和展示档位。
+3. 之后在 **Settings** → 飞书与 Lark 里调整凭据、访问策略和展示档位。
 
 > 手动建应用、权限清单、事件订阅与收发故障排查见 [配置指南](<./docs/feishu-setup.md>)。
 
@@ -50,7 +50,7 @@ npx @deepseek-ai/dsh web
 
 ## 配置
 
-日常配置走 **Settings → 飞书与 Lark**；也可以写在 DSH profile 的 patch 文件里。凭据只保存引用（`appSecretRef`），不写明文。完整配置项见[配置指南](<./docs/feishu-setup.md>)。
+日常配置走 **Settings** → 飞书与 Lark；也可以写在 DSH profile 的 patch 文件里。凭据只保存引用（`appSecretRef`），不写明文。完整配置项见[配置指南](<./docs/feishu-setup.md>)。
 
 ## 文档
 
