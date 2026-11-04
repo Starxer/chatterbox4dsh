@@ -414,7 +414,7 @@ describe('startChannel', () => {
     expect(sent).toContain('report.pdf')
     expect(sent).toContain('自动投递')
     // The title is in the card header, so the body does not repeat it.
-    expect(sent).not.toContain('交付文件')
+    expect(sent).not.toContain('**交付文件**')
     // Nothing about a Turn Complete card, and the answer was not re-posted.
     expect(sent).not.toContain(translationsFor('zh').turnCompleteTitle)
     expect(sent).not.toContain('the full answer')

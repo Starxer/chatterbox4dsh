@@ -5,6 +5,23 @@
 > 当前未发布主线：本机部署运行 DSH `0.2.1-rc.5`（构建、插件加载、飞书收发与文档工具基本验证通过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.1-rc.5 与回滚目标 0.2.0-rc.2）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
 > The local deployment runs DSH `0.2.1-rc.5` (build, plugin load, Feishu messaging and the document tools are basically verified); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
 
+### 改进：全量校对用户可见文案与 DSH Web UI 的术语（`src/i18n.ts` / `src/commands-i18n.ts` / `src/index.ts` / `src/feishu-streaming.ts`，2026-11-04）
+
+对照本机 DSH `0.2.1-rc.5` 的客户端语言包（`packages/client/*/src/client/locale*.ts`）逐项核对插件文案，凡 Web UI 已有同一概念的一律采用它的中英文命名：
+
+- **子智能体**（原「子代理」）：面板标题/列名/未命名项/`/subagents` 说明/归档确认里的活动类型/注入提示；模式 `可继续`（原「可续谈」）、`模式未知`（原「未知」）；文档同步。
+- **推理等级**（原「思考强度」「推理强度」）：模型选择卡当前行、档位选择器、`/reasoning` 卡片与切换回执、`/status` 的推理一行、新会话默认模型行。选项文案里的 `关闭思考` 保留——Web UI 自己的帮助文本就是这么说。
+- **提供商**（原「Provider」）：模型选择卡的 Provider 行/占位符/返回按钮/无模型提示；`provider 默认` → `提供商默认`。
+- **权限**：卡片标题 `Permission` → `权限`；当前行改为 `访问模式：`（Web UI 的说法）；说明改为「权限预设（沙箱模式与审批策略）」；`/permission` 与 `/help` 同步。三个预设名（仅可查看/工作区内修改/完全权限）本来就与 Web UI 逐字一致。
+- **会话操作**：`改名` → `重命名`（含结果卡与失败提示），`Detach` → `释放`，`归档`/`置顶` 补成 Web UI 的 `归档会话`/`置顶会话`；归档确认里的活动类型改为「进行中的回合 / 运行中的子智能体 / 后台任务 / 定时提醒」。
+- **后台任务**：`已停止` → `已取消`、`失败` → `已失败`（对齐 Web UI 任务状态）。
+- **注入 / 压缩 / 交付 / 待办**：`注入上下文` → `上下文注入`（Web UI 原文），`已折叠 N 条历史记录` → `已压缩 N 条历史记录`，`交付物 / 文件投递` → `交付文件`（Web UI `row.title`），待办摘要改为 `任务清单 · 进行中 / 待处理 / 已完成`（Web UI 的任务状态用词）。
+- **去掉面向用户的内部术语**：`sessionController.fork 缺失`、`这个宿主的 agent 不支持…`、`当前 turn`、`工作区 WebUI` 等改为「当前部署…」「本轮…」「Web UI」；`/status` 卡里原本中英混排的 `**Activity:** / **Tokens:** / **Context:**` 改为本地化标签（`活动` / `Token 用量` / `上下文`，数字行采用 Web UI 的 `N 轮 · N 步 · N 次工具调用`）；`Agent 模板` → `Agent 预设`，`模板` → `预设`。
+- 核对后确认**已经一致**的部分：权限预设名、交付文件标题、工作步骤四档（简洁/标准/详细/完全展开）、压缩卡三态、`本轮运行失败` / `API 密钥无效`、审批 `允许一次`/`拒绝`、自动回合触发原因、`深度求索中`、`上下文注入` 的行动词（已载入/已新增/已更新/已移除）、`第 N 轮` 等。
+- 测试：更新受影响的断言（会话面板按钮、归档确认活动、权限卡当前行、注入行前缀、待办摘要、`/help` 停止说明、交付卡标题不复述）；全量 **1384 测试 / 69 文件**、`typecheck`、`build` 全绿。
+
+**English**: Audited every user-visible string against the local DSH `0.2.1-rc.5` client locales and adopted the Web UI's own wording wherever it already names the concept: subagents (子智能体), reasoning effort (推理等级), provider (提供商), permission title/current row (权限 / 访问模式), session actions (重命名 / 释放 / 归档会话 / 置顶会话), background-job states (已取消 / 已失败), context injection (上下文注入), compaction count (已压缩), deliverables (交付文件) and the todo status words (进行中 / 待处理 / 已完成). Developer jargon was removed from end-user copy (`sessionController.fork`, `this host's agent`, `current turn`, `workspace WebUI`), and the `/status` card no longer mixes English labels into Chinese output. 1384 tests / 69 files, typecheck and build pass.
+
 ### 改进：`/busy` 与状态卡改用 WebUI 的正式说法（`src/i18n.ts` / `src/feishu-busy.ts` / `src/index.ts` / `src/channel.ts`，2026-11-04）
 
 - **术语纠正**：`Enter while busy` / `忙碌时进入` 是对 WebUI 设置名的生硬直译，而飞书里根本没有 Enter 键。现在统一采用 DSH WebUI 自己的中英文命名：**繁忙时的发送行为**（`Send behavior while busy`），两个选项译为 **排队发送** / **插话发送**（English 仍为 `Queue` / `Steer`）。

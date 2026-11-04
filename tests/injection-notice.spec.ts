@@ -19,26 +19,26 @@ describe('injectionNotice', () => {
       baseline: true,
       baselineIdentity: '{"projectRoot":""}',
       changes: [{ action: 'set', scope: '.\u0000AGENTS.md', path: 'AGENTS.md', digest: 'abc' }],
-    }, zh)).toBe('📥 注入上下文 · AGENTS.md（已载入）')
+    }, zh)).toBe('📥 上下文注入 · AGENTS.md（已载入）')
 
     expect(injectionNotice({
       kind: 'agent-instructions',
       form: 'instructions',
       changes: [{ action: 'replace', path: 'AGENTS.md' }, { action: 'replace', path: 'docs/AGENTS.md' }],
-    }, zh)).toBe('📥 注入上下文 · AGENTS.md、docs/AGENTS.md（已更新）')
+    }, zh)).toBe('📥 上下文注入 · AGENTS.md、docs/AGENTS.md（已更新）')
 
     expect(injectionNotice({ kind: 'agent-instructions', changes: [{ action: 'remove', path: 'OLD.md' }] }, zh))
-      .toBe('📥 注入上下文 · OLD.md（已移除）')
+      .toBe('📥 上下文注入 · OLD.md（已移除）')
   })
 
   it('does not repeat a path that appears twice', () => {
     expect(injectionNotice({
       kind: 'agent-instructions', changes: [{ action: 'set', path: 'A.md' }, { action: 'set', path: 'A.md' }],
-    }, zh)).toBe('📥 注入上下文 · A.md（已新增）')
+    }, zh)).toBe('📥 上下文注入 · A.md（已新增）')
   })
 
   it('falls back to the bare prefix when an instruction payload has no paths', () => {
-    expect(injectionNotice({ kind: 'agent-instructions' }, zh)).toBe('📥 注入上下文')
+    expect(injectionNotice({ kind: 'agent-instructions' }, zh)).toBe('📥 上下文注入')
   })
 
   it('counts a skill catalog instead of listing it', () => {
@@ -46,9 +46,9 @@ describe('injectionNotice', () => {
       kind: 'skill-catalog',
       form: 'catalog',
       entries: [{ name: 'a', description: 'x' }, { name: 'b', description: 'y' }],
-    }, zh)).toBe('📥 注入上下文 · 技能目录（2 条）')
+    }, zh)).toBe('📥 上下文注入 · 技能目录（2 条）')
     expect(injectionNotice({ kind: 'skill-catalog', form: 'catalog', entries: [] }, en))
-      .toBe('📥 Context injected · skill catalog (0)')
+      .toBe('📥 Context injection · skill catalog (0)')
   })
 
   it('names the plugin package of a re-injection', () => {
@@ -57,7 +57,7 @@ describe('injectionNotice', () => {
     expect(injectionNotice({
       kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt', form: 'snapshot',
       compactionId: 'c1', sourceCommandId: 'cmd-1', sections: [{ name: 'x', text: 'y' }],
-    }, zh)).toBe('📥 注入上下文 · 插件 @deepseek-ai/dsh-system-prompt')
+    }, zh)).toBe('📥 上下文注入 · 插件 @deepseek-ai/dsh-system-prompt')
   })
 
   it('attributes cross-session recall, inter-session messages and settled subagents', () => {
@@ -71,7 +71,7 @@ describe('injectionNotice', () => {
     expect(injectionNotice({
       kind: 'subagent-settled', form: 'notice',
       summary: 'Background subagent sub-1 finished and will do no further work.', senderSessionId: 'sub-1',
-    }, zh)).toBe('🤖 子代理已结算 · 来自会话 sub-1')
+    }, zh)).toBe('🤖 子智能体已结算 · 来自会话 sub-1')
   })
 
   it('reports a goal round without quoting the goal', () => {
@@ -84,11 +84,11 @@ describe('injectionNotice', () => {
     // without expanding the row, so it is metadata rather than content.
     expect(injectionNotice({
       kind: 'model-selection', form: 'notice', summary: 'provider-a/m1 → provider-b/m2',
-    }, zh)).toBe('📥 注入上下文 · provider-a/m1 → provider-b/m2')
+    }, zh)).toBe('📥 上下文注入 · provider-a/m1 → provider-b/m2')
 
     const long = 'z'.repeat(400)
     const line = injectionNotice({ kind: 'plan-mode', form: 'notice', summary: long }, zh) ?? ''
-    expect(line).toHaveLength('📥 注入上下文 · '.length + 101)
+    expect(line).toHaveLength('📥 上下文注入 · '.length + 101)
     expect(line.endsWith('…')).toBe(true)
   })
 
@@ -100,7 +100,7 @@ describe('injectionNotice', () => {
 
   it('names an unknown kind and never dumps its fields', () => {
     expect(injectionNotice({ kind: 'brand-new-producer', secretField: 'leak me' }, zh))
-      .toBe('📥 注入上下文 · brand-new-producer')
+      .toBe('📥 上下文注入 · brand-new-producer')
     expect(injectionNotice(undefined, zh)).toBeUndefined()
     expect(injectionNotice('a string', zh)).toBeUndefined()
     expect(injectionNotice({}, zh)).toBeUndefined()
@@ -109,7 +109,7 @@ describe('injectionNotice', () => {
 
   it('localizes the whole line', () => {
     expect(injectionNotice({ kind: 'runtime-context', form: 'snapshot' }, en))
-      .toBe('📥 Context injected · runtime snapshot')
-    expect(injectionNotice({ kind: 'user-approval' }, en)).toBe('📥 Context injected · approval result')
+      .toBe('📥 Context injection · runtime snapshot')
+    expect(injectionNotice({ kind: 'user-approval' }, en)).toBe('📥 Context injection · approval result')
   })
 })

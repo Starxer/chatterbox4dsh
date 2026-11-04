@@ -54,7 +54,7 @@ describe('renderSessionPanelCard', () => {
     expect(selects[0].options).toHaveLength(3)
     const opButtons = forms[0].elements.filter((el: any) => el.tag === 'button')
     const labels = opButtons.map((b: any) => b.text?.content)
-    expect(labels).toEqual(expect.arrayContaining(['🔀 切换', '🔓 Detach', '🗄️ 归档', '🍴 分叉', '✏️ 改名', '📌 置顶', '📍 取消置顶']))
+    expect(labels).toEqual(expect.arrayContaining(['🔀 切换', '🔓 释放', '🗄️ 归档会话', '🍴 分叉', '✏️ 重命名', '📌 置顶会话', '📍 取消置顶']))
   })
 
   it('renders an empty state when there are no sessions', () => {
@@ -96,7 +96,7 @@ describe('renderSessionConfirmCard (archive while running)', () => {
     }, t) as any
     const md = markdownOf(card)
     expect(md).toContain('仍在运行')
-    expect(md).toContain('正在运行的一轮')
+    expect(md).toContain('进行中的回合')
     expect(md).toContain('后台任务')
     const buttons = card.body.elements.filter((el: any) => el.tag === 'button')
     expect(buttons[0].text.content).toBe('✅ 停止并归档')
@@ -171,7 +171,7 @@ describe('archive while the session is running', () => {
       expect(archiveSession).toHaveBeenCalledWith('s2', undefined)
       const stopCard = harness.sentCards[harness.sentCards.length - 1].card
       expect(markdownOf(stopCard)).toContain('仍在运行')
-      expect(markdownOf(stopCard)).toContain('正在运行的一轮')
+      expect(markdownOf(stopCard)).toContain('进行中的回合')
       expect(stopCard.body.elements.filter((el: any) => el.tag === 'button')[0].text.content).toBe('✅ 停止并归档')
       // Confirming that card is the only path that stops the session's work.
       await harness.cardActionHandler!({ messageId: 'om_card', action: { value: { action: 'confirm-ok' } } })

@@ -47,10 +47,10 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 | 过程透明 / Work details | 推理、文本、工具与结果按档位展示；步骤卡附耗时、token、速度和上下文；思考 token 无上游数据时不估算 | Reasoning, text, calls and results follow the detail level; cards carry time, tokens, speed and context; no invented thinking-token counts |
 | 实时相位 / Live phases | 区分“正在分析请求 → 等待输出 → 思考中 → 回复中”，工具调用另示状态；**不逐 token 更新正文** | Distinguishes preparing, awaiting output, thinking and replying, plus tool states; **not token-by-token text streaming** |
 | 上下文与压缩 / Context & compaction | 注入只显示来源提示、不贴注入正文；压缩卡就地更新，摘要折叠，正文预算 22,000 UTF-8 字节，超出会注明 | Injection notices show the source, not the payload; compaction updates one card, with a folded summary capped at 22,000 UTF-8 bytes and an explicit truncation notice |
-| 会话管理 / Session management | 切换、断开绑定、归档、分叉（`/fork` 可选任一已完成轮次并预览该轮开头，分叉出包含到该轮为止历史的新会话）、改名、置顶；新会话可选工作区、预设与模型 | Switch, detach, archive, fork (`/fork` picks any completed turn with a preview of its opening and copies history through that turn into a new session), rename and pin; new sessions select workspace, preset and model |
+| 会话管理 / Session management | 切换、断开绑定、归档、分叉（`/fork` 可选任一已完成轮次并预览该轮开头，分叉出包含到该轮为止历史的新会话）、重命名、置顶；新会话可选工作区、预设与模型 | Switch, detach, archive, fork (`/fork` picks any completed turn with a preview of its opening and copies history through that turn into a new session), rename and pin; new sessions select workspace, preset and model |
 | 新建工作区 / Workspace creation | 不存在的手输路径先确认、最终创建会话时才建目录并注册；浏览器“新建文件夹”是独立的立即操作 | A missing typed path is confirmed, then created/registered at final session creation; the browser's **New folder** is a separate immediate action |
 | PTC 工具调用 / PTC tool calls | `compact` 过程卡汇总 `run_code` 内的工具调用，并展示可见子调用；具体内容取决于宿主事件 | Compact progress summarizes tool calls dispatched by `run_code` and shows available child calls; details depend on host events |
-| 后台任务与子代理 / Jobs & subagents | 每类一张名册快照，名册变更发新卡、不就地更新；只列真正后台任务；长/多行命令的「完整命令」块（代码块、换行原样）**只在任务首次出现的那张卡上给一次**，之后的进度/完成快照只留表格；子代理显示模型和树形关系，支持 `/subagents tree` | Send-only roster snapshots, not one card per job; foreground tool jobs are excluded. A long/multi-line command's **full command block** (fenced, line breaks preserved) appears **only on the card that introduces the job**; later progress/settle snapshots keep the table alone. Subagents show model and nesting, with `/subagents tree` |
+| 后台任务与子智能体 / Jobs & subagents | 每类一张名册快照，名册变更发新卡、不就地更新；只列真正后台任务；长/多行命令的「完整命令」块（代码块、换行原样）**只在任务首次出现的那张卡上给一次**，之后的进度/完成快照只留表格；子智能体显示模型和树形关系，支持 `/subagents tree` | Send-only roster snapshots, not one card per job; foreground tool jobs are excluded. A long/multi-line command's **full command block** (fenced, line breaks preserved) appears **only on the card that introduces the job**; later progress/settle snapshots keep the table alone. Subagents show model and nesting, with `/subagents tree` |
 | 审批 / Approvals | 与 Web UI 共享 pending 状态，两端都显示，谁先处理谁生效；中止后卡片作废 | Shared pending state on both surfaces; the first answer wins and aborted requests retire their cards |
 | 问答 / Questions | 单选整行点选即记录，回执可返回重答；全部答完后最终确认才提交。多选每选项一个复选框，一次提交 | Single-select records on tap, with undo receipts; only final batch confirmation submits to the model. Multi-select uses one checkbox per option and one submit |
 | 媒体与文件 / Media & files | 接收入站图片、文件、视频与语音到 DSH 附件库；支持卡内图片/视频/音频与 `feishu_send_file` 主动发原件 | Intake uses DSH's attachment store; card media is inlined and `feishu_send_file` can send original files |
@@ -79,7 +79,7 @@ See the [setup guide](<./docs/feishu-setup.md>) for manual app creation, permiss
 
 | 档位 / Level | 中文 | English |
 |---|---|---|
-| `compact` | 答案卡 + 按需创建的回合过程卡；**不发 Turn Complete 卡**：筛选后的回合摘要（完成+总时长、回合 tokens、模型与推理强度、本轮新生成文件数）并进答案卡 footer，交付物另发一张「交付物」卡 | Answer cards plus a lazy turn-progress card; **no Turn Complete card**: a filtered summary (done + wall clock, turn tokens, model + effort, produced-file count) folds into the answer card's footer, and delivered files get their own `📦 Deliverables` card |
+| `compact` | 答案卡 + 按需创建的回合过程卡；**不发 Turn Complete 卡**：筛选后的回合摘要（完成+总时长、回合 tokens、模型与推理等级、本轮新生成文件数）并进答案卡 footer，交付文件另发一张「交付文件」卡 | Answer cards plus a lazy turn-progress card; **no Turn Complete card**: a filtered summary (done + wall clock, turn tokens, model + effort, produced-file count) folds into the answer card's footer, and delivered files get their own `📦 Deliverables` card |
 | `standard` | 每个可见步骤一张卡；推理首行预览、工具一行摘要，无参数或结果块 | Visible steps get cards; one-line reasoning and tool summaries, no args/results blocks |
 | `detailed`（默认 / default） | 推理折叠，预览 200 字；工具参数最多 2,000 字符、结果预览最多 1,500 字符 | Folded reasoning, 200-character preview; args up to 2,000 characters, result previews up to 1,500 |
 | `verbose` | 推理面板保留全文，工具参数/结果上限各 6,000 字符；**不是无限长度**，推理仍默认折叠 | Full reasoning inside a folded panel; args/results capped at 6,000 each; **not unlimited**, reasoning still starts collapsed |
@@ -90,7 +90,7 @@ The four `show*` switches are **ANDed with the level and only subtract**. Feishu
 
 `compact` 过程卡运行标题为“🐳 深度求索中 · 耗时”（`🐳 DeepSeeking · elapsed`）。最多显示最新 **5 步 / 40 行**，更早内容最多 **60 行**折叠；每步标题在引用框外，可见与折叠区共用按步分组。运行步骤带等待/思考/回复/工具状态灯；运行时钟默认每 5 秒刷新，可选 3／5／10／30 秒。别的卡片插入后，下一件实际活动另开分段，避免新内容更新到更早位置。**回合失败时，死在其中的那一步会标成 `❌ 失败`**，并列出它当时正在流式生成、但没来得及真正执行的工具调用（`⚠️ \`edit\` · 未执行`）——DSH 的 `assistant/attempt` 只在尝试未提交时追加，那是这些调用唯一的去处；它们不算工具调用，也不进标题里的计数。
 
-紧凑档**没有** Turn Complete 卡：**承载答案的那张卡就是收尾卡**——回合结束时它的标题变成 `✅ 完成 · 总时长`（绿头，**不再带「第几轮/第几步」**），正文与 footer 之间加一道分隔线，footer 只留筛选后的数字：`📦 回合 tokens · ♻️ 缓存命中率`，必要时再补 `🧠 模型 · 💡 推理强度 · 📦 本轮新生成 N 个文件`（这一行**自成一行**）；答案卡原有的 `🚀 tok/s · 📊 上下文` 行保留。**总时长只出现在标题里**、不在 footer 重复；**入/出 token 拆分已去掉**（那个总数就是两者之和，而它旁边那行的 `📥` 又是另一个含义）。`🧠 LLM / 🔧 Tools` 拆分、`🔄 N 步`、`⚡ TTFT`、workspace 与 busy 回显同样被去掉（过程卡、`/status` 已经有了）。答案被切成多张续卡时，续卡标题是 `📄 续 n/m`，**最后一张**改成 `✅ 完成 · 续 n/n · 总时长`。有交付物时另发一张标题为「📦 交付物」的卡片：它只发一次、不就地更新，所以里面的「点击发送」行始终可点。
+紧凑档**没有** Turn Complete 卡：**承载答案的那张卡就是收尾卡**——回合结束时它的标题变成 `✅ 完成 · 总时长`（绿头，**不再带「第几轮/第几步」**），正文与 footer 之间加一道分隔线，footer 只留筛选后的数字：`📦 回合 tokens · ♻️ 缓存命中率`，必要时再补 `🧠 模型 · 💡 推理等级 · 📦 本轮新生成 N 个文件`（这一行**自成一行**）；答案卡原有的 `🚀 tok/s · 📊 上下文` 行保留。**总时长只出现在标题里**、不在 footer 重复；**入/出 token 拆分已去掉**（那个总数就是两者之和，而它旁边那行的 `📥` 又是另一个含义）。`🧠 LLM / 🔧 Tools` 拆分、`🔄 N 步`、`⚡ TTFT`、workspace 与 busy 回显同样被去掉（过程卡、`/status` 已经有了）。答案被切成多张续卡时，续卡标题是 `📄 续 n/m`，**最后一张**改成 `✅ 完成 · 续 n/n · 总时长`。有交付文件时另发一张标题为「📦 交付文件」的卡片：它只发一次、不就地更新，所以里面的「点击发送」行始终可点。
 
 The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five steps / 40 visible rows**, plus **60 folded rows**; headings stay outside per-step quote frames in both areas. A live phase light and configurable clock (3/5/10/30 seconds; default 5) track activity. Interleaved cards close a segment; the next real activity opens another. **When the turn fails, the step it died in is marked `❌ failed`** and names the call it was still streaming but never got to run (`⚠️ \`edit\` · not run`) — DSH appends `assistant/attempt` only for an attempt that did not commit, which is the only place such a call exists; it is not a tool call and is not counted as one.
 
@@ -105,7 +105,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 | `/session [N\|list]` | 会话管理面板、列表或按编号切换 | Session panel, list or switch by index |
 | `/fork [<轮次>]` | 分叉会话：无参发轮次选择卡（每行带该轮开头预览），点选后以该轮**结束**为界复制到新会话；带轮次则直接分叉 | Fork a session: no args opens the turn picker (each row previews that turn's opening), tapping forks at the turn's **end**; a turn number forks directly |
 | `/status` | 会话与性能指标、权限、运行中发送模式 | Session metrics, permissions and busy-message mode |
-| `/reasoning [档位 / effort]` | 支持的推理强度随模型而变；无参发一键切换卡（点一行即切，只改本会话；全局默认同步，仅影响以后新建的会话）；`show on\|off` 控制思考显示 | Supported efforts depend on the model; no args opens a one-tap effort card (this session only; the global default follows, seeding only sessions created later); `show on\|off` controls display |
+| `/reasoning [档位 / effort]` | 支持的推理等级随模型而变；无参发一键切换卡（点一行即切，只改本会话；全局默认同步，仅影响以后新建的会话）；`show on\|off` 控制思考显示 | Supported efforts depend on the model; no args opens a one-tap effort card (this session only; the global default follows, seeding only sessions created later); `show on\|off` controls display |
 | `/display [compact\|standard\|detailed\|verbose]` | 切档；无参发控制卡 | Switch level; no args opens controls |
 | `/display [reasoning\|tools\|args\|results] [on\|off]` | 切四个显示开关 | Toggle the four display switches |
 | `/display tick [3\|5\|10\|30]` | 查询／设置运行中耗时刷新间隔（秒），默认 5；也可在控制卡中选 | Query/set elapsed-time refresh seconds (default 5); also available on the control card |
@@ -114,7 +114,7 @@ The running title is `🐳 DeepSeeking · elapsed`. Progress keeps up to **five 
 | `/queue <text>` | 强制排队到下一轮；空闲时作为新消息 | Force next-turn queueing; new message if idle |
 | `/busy [queue\|steer]` | 运行中普通消息的行为，持久化 | Persist what ordinary messages do while busy |
 | `/permission [mode]` | 查看/切换会话权限，无参发选择卡 | View/switch permissions; no args opens a card |
-| `/subagents [tree]` | 子代理名册；`tree` 列完整子树 | Subagent roster; `tree` lists descendants |
+| `/subagents [tree]` | 子智能体名册；`tree` 列完整子树 | Subagent roster; `tree` lists descendants |
 | `/approve` `/deny` `/approvals` | 处理/查看审批 | Handle/view approvals |
 | `/lang [zh\|en\|auto]` | 插件语言 | Plugin language |
 | `/help` | 插件与宿主提供的可用命令 | Available plugin and host commands |

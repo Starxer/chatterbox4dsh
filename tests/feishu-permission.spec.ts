@@ -12,7 +12,7 @@ describe('renderPermissionCard', () => {
   it('shows the current mode and marks the active button disabled', () => {
     const card = renderPermissionCard('workspace-write', t) as any
     const markdown = card.body.elements.filter((el: any) => el.tag === 'markdown').map((el: any) => el.content).join('\n')
-    expect(markdown).toContain('**Current permission mode:** `workspace-write` Workspace Write')
+    expect(markdown).toContain('**Access mode:** `workspace-write` Workspace Write')
     const buttons = buttonsOf(card)
     expect(buttons).toHaveLength(3)
     const active = buttons.find((b: any) => textOf(b).startsWith('✓ '))

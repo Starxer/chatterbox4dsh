@@ -679,7 +679,7 @@ describe('/help command', () => {
     expect(text).toContain('NATIVE:')
     // Feishu section: registered `model` plus intercepted busy/steer/queue/permission/stop.
     expect(text).toContain('model: Show, list, or switch the active model')
-    expect(text).toContain('stop: 停止当前运行中的 agent')
+    expect(text).toContain('stop: 停止当前运行中的智能体')
     expect(text).toContain('busy:')
     expect(text).toContain('steer:')
     expect(text).toContain('queue:')

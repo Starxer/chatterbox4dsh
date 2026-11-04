@@ -1542,16 +1542,14 @@ function renderStatusCard(meta: {
   }
   fields.push(`**${t.statusAgentLabel}:** ${agentRunning ? t.statusAgentRunning : t.statusAgentIdle}`)
   if (meta.turns > 0 || meta.steps > 0) {
-    const parts: string[] = [`${meta.turns} turns`, `${meta.steps} steps`]
-    if (meta.toolCalls > 0) parts.push(`${meta.toolCalls} tool calls`)
-    fields.push(`**Activity:** ${parts.join(' · ')}`)
+    fields.push(`**${t.statusActivityLabel}:** ${t.statusActivityLine(meta.turns, meta.steps, meta.toolCalls)}`)
     if (meta.inputTokens > 0 || meta.outputTokens > 0) {
-      fields.push(`**Tokens:** ${formatTokenCount(meta.inputTokens)} in · ${formatTokenCount(meta.outputTokens)} out`)
+      fields.push(`**${t.statusTokensLabel}:** ${t.statusTokensLine(formatTokenCount(meta.inputTokens), formatTokenCount(meta.outputTokens))}`)
     }
   }
   if (meta.contextWindow > 0) {
     const pct = Math.min(100, Math.round(meta.lastInputTokens / meta.contextWindow * 100))
-    fields.push(`**Context:** ${formatTokenCount(meta.lastInputTokens)} / ${formatTokenCount(meta.contextWindow)} (${pct}%)`)
+    fields.push(`**${t.statusContextLabel}:** ${t.statusContextLine(formatTokenCount(meta.lastInputTokens), formatTokenCount(meta.contextWindow), pct)}`)
   }
   if (agentRunning) {
     fields.push('')
@@ -1809,12 +1807,12 @@ async function executeSlashCommand(
     }
     // Validate preset exists
     if (agentPresets === undefined) {
-      return { kind: 'error', text: '⚠️ Agent 模板服务不可用。' }
+      return { kind: 'error', text: '⚠️ Agent 预设服务不可用。' }
     }
     const presets = await agentPresets.list()
     if (!presets.some(p => p.id === presetArg)) {
       const ids = presets.map(p => p.id).join('`, `')
-      return { kind: 'error', text: `⚠️ 未知 Agent 模板 \`${presetArg}\`。可用：\`${ids}\`` }
+      return { kind: 'error', text: `⚠️ 未知 Agent 预设 \`${presetArg}\`。可用：\`${ids}\`` }
     }
     // Optional model route: provider/model[:reasoning]
     let modelOptions: ChatCreationOptions = {}
@@ -1929,7 +1927,7 @@ async function executeSlashCommand(
     if (!bridge.stopSession(chatMessage)) {
       return { kind: 'error', text: '⚠️ 该 session 当前没有运行中的 agent，无需停止。' }
     }
-    return { kind: 'success', text: '⏹️ Agent 已停止，排队中的消息已丢弃。当前 turn 的工具执行将尽快终止。' }
+    return { kind: 'success', text: '⏹️ 智能体已停止，排队中的消息已丢弃。正在执行的工具调用会尽快终止。' }
   }
   // /busy [queue|steer] sets the per-chat behavior for messages sent while the
   // agent is running: queue (wait for the turn, then run as a new turn) or
@@ -1981,7 +1979,7 @@ async function executeSlashCommand(
   if (parsed.name === 'queue') {
     const text = parsed.rawInput.trim()
     if (text === '') {
-      return { kind: 'error', text: '⚠️ 用法：/queue <内容> —— 在 steer 模式下也强制把一条消息排队为新轮（/steer 的共轭）。' }
+      return { kind: 'error', text: '⚠️ 用法：/queue <内容> —— 在「插话发送」模式下也强制把一条消息排队为新轮。' }
     }
     // Idle fallback: nothing is running, so "queue behind a live turn" is moot —
     // just send the content as a new message (the Feishu default) instead of
@@ -1993,11 +1991,11 @@ async function executeSlashCommand(
       })
       return {
         kind: 'success',
-        text: `💬 Agent 当前空闲，已把内容作为新消息发送：\`${text}\``,
+        text: `💬 智能体当前空闲，已把内容作为新消息发送：\`${text}\``,
       }
     }
     if (bridge.busyMode(chatMessage) === 'queue') {
-      return { kind: 'error', text: '⚠️ 本聊天已在 queue 模式：直接发送消息即会排队为新轮，无需 /queue。\n\n若想注入当前运行轮，用 `/steer <内容>` 或改用 `/busy steer`。' }
+      return { kind: 'error', text: '⚠️ 本聊天已设为「排队发送」：直接发送消息即会排队为新轮，无需 /queue。\n\n若想注入当前运行轮，用 `/steer <内容>` 或改用 `/busy steer`。' }
     }
     // Submit in the background so the command can acknowledge immediately; the
     // queue path waits for the current turn then runs it as a new turn. A
@@ -2023,7 +2021,7 @@ async function executeSlashCommand(
   if (parsed.name === 'steer') {
     const text = parsed.rawInput.trim()
     if (text === '') {
-      return { kind: 'error', text: '⚠️ 用法：/steer <内容> —— 在 agent 运行中把一条消息注入当前 turn。' }
+      return { kind: 'error', text: '⚠️ 用法：/steer <内容> —— 在智能体运行中把一条消息注入当前回合。' }
     }
     // Idle fallback: nothing is running (no agent or agent not in a turn), so an
     // injection cannot apply. Instead of erroring, send the content as a new
@@ -2036,11 +2034,11 @@ async function executeSlashCommand(
       })
       return {
         kind: 'success',
-        text: `💬 Agent 当前空闲，已把内容作为新消息发送：\`${text}\`\n\n若要在 agent 运行中插话，请等本轮结束后用它再发一条普通消息即可（或改用 \`/busy steer\` 常开插话）。`,
+        text: `💬 智能体当前空闲，已把内容作为新消息发送：\`${text}\`\n\n若要在智能体运行中插话，请等本轮结束后用它再发一条普通消息即可（或改用 \`/busy steer\` 常开插话）。`,
       }
     }
     if (bridge.busyMode(chatMessage) === 'steer') {
-      return { kind: 'error', text: '⚠️ 本聊天已在 steer 模式：直接发送消息即会注入当前运行轮，无需 /steer。\n\n若想排队为新轮，用 `/queue <内容>` 或改用 `/busy queue`。' }
+      return { kind: 'error', text: '⚠️ 本聊天已设为「插话发送」：直接发送消息即会注入当前运行轮，无需 /steer。\n\n若想排队为新轮，用 `/queue <内容>` 或改用 `/busy queue`。' }
     }
     try {
       await bridge.steer({ ...chatMessage, content: text })

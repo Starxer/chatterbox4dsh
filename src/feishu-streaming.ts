@@ -2867,7 +2867,7 @@ function deriveToolSummaryValue(variant: ToolSummaryVariant, argsRaw: string): s
     const pending = items.filter((item) => item.status === 'pending').length
     const inProgress = items.filter((item) => item.status === 'in_progress').length
     const completed = items.filter((item) => item.status === 'completed').length
-    return `待办清单：${items.length} 项 · 进行中 ${inProgress} · 待办 ${pending} · 完成 ${completed}`
+    return `任务清单：${items.length} 项 · 进行中 ${inProgress} · 待处理 ${pending} · 已完成 ${completed}`
   }
   if (variant === 'search' && Array.isArray(args.queries)) {
     const queries = args.queries

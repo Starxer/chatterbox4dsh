@@ -60,7 +60,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [分叉选择](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-fork.ts>) / [轮次历史](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-history.ts>) | `/fork` 的轮次选择卡（每轮带头部文本预览）与分叉执行；事件窗口归约为「已完成轮次」，`turn/end` 的 seq 即切点 |
 | [显示控制](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-display.ts>) / [Todo](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-todos.ts>) | 展示配置卡与进度清单 |
 | [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查；`onSent(key)` 交付后钩子（内容依赖「之前发过什么」的模块用它提交记忆，发送失败则下次重试） |
-| [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子代理](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子代理生命周期、模型、树与手动目录合并 |
+| [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子智能体](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子智能体生命周期、模型、树与手动目录合并 |
 
 ### 渲染、交付与可靠性
 
@@ -123,20 +123,20 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 - 文件工具摘要只写裸文件名，脚本工具写可可靠解析的程序名；合并同名调用累加耗时与次数，细节去重最多 3 个。同名文件在这份摘要里可能不可区分，需查原调用。
 - **回合失败时标出死在哪一步**：`turn/end` 报错就给最新一步加 `❌ 失败`，并列出这一步**流式生成过、但没真正执行**的工具调用（`⚠️ \`edit\` · 未执行`）。DSH 只在尝试**未提交**时追加 `assistant/attempt`，那是这类调用唯一的去处——失败的那一步因此不再只剩一个光秃秃的步头。这些调用不是工具行：没有状态与耗时，也**不计入标题的工具数**；重试提交或真出现 `tool/call` 时标记会被清掉，避免“恢复过的一步还在说自己什么都没跑”。
 - 卡片穿插后关当前分段，**下一件真实活动才开新卡**，不因穿插通知立即复制旧内容。于是“一轮过程”可能有多个消息分段，不是强制一轮一消息（关键坑 57）。
-- **没有 Turn Complete 卡**：`turn/end` 把筛选后的摘要写进承载答案的那张卡（答案被切成续卡时写在最后一张），内容取舍与理由见 [摘要模块](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-summary.ts>)；这次写入不带正文，不影响 `flushed()` 的送达判定。**收尾卡在 header 上自报完成**：标题 `✅ 完成 · 总时长`（绿头、不带轮/步坐标——总时长因此不在 footer 重复），正文与 footer 之间一道 `hr`，footer 只留 `📦 回合 tokens · ♻️ 命中率`（入/出拆分去掉：总数即两者之和）与可选第二行；答案分片时 `📄 续 n/m`，最后一片换成完成标题。交付物另发一张只发一次的「📦 交付物」卡——载着可点行的卡就地更新 2–3 次后不再投递回调（关键坑 11 / 55）。没有任何卡承载正文时（例如镜像回合）发一张最小收尾卡（同一套标题/摘要，标题兜住「回合已结束」这句话）。
+- **没有 Turn Complete 卡**：`turn/end` 把筛选后的摘要写进承载答案的那张卡（答案被切成续卡时写在最后一张），内容取舍与理由见 [摘要模块](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-summary.ts>)；这次写入不带正文，不影响 `flushed()` 的送达判定。**收尾卡在 header 上自报完成**：标题 `✅ 完成 · 总时长`（绿头、不带轮/步坐标——总时长因此不在 footer 重复），正文与 footer 之间一道 `hr`，footer 只留 `📦 回合 tokens · ♻️ 命中率`（入/出拆分去掉：总数即两者之和）与可选第二行；答案分片时 `📄 续 n/m`，最后一片换成完成标题。交付文件另发一张只发一次的「📦 交付文件」卡——载着可点行的卡就地更新 2–3 次后不再投递回调（关键坑 11 / 55）。没有任何卡承载正文时（例如镜像回合）发一张最小收尾卡（同一套标题/摘要，标题兜住「回合已结束」这句话）。
 
 ### 压缩、交互与面板
 
 | 卡片类型 | 策略 |
 |---|---|
-| Turn Complete | 非紧凑档在回合末发一张：交付物行 + 统计 + 元信息；`compact` 不发（见上） |
+| Turn Complete | 非紧凑档在回合末发一张：交付文件行 + 统计 + 元信息；`compact` 不发（见上） |
 | 压缩 | 一次事务一张无按钮卡，start → summary/prune → end；摘要正文最多 22,000 UTF-8 字节，切口避开字形簇，截断有说明；不提供全文文件按钮 |
 | 问题 | 单选点选即记答案并结算问题卡；非最后题发可返回重答的回执；所有题完成后最终卡是唯一提交点。N 题通常为 N 问题卡 + N−1 回执 + 1 最终卡（重答会增加卡片） |
 | 多选 | 每个选项一个 `checker`，各有 name；一次表单提交全部勾选，中途不重绘 |
 | 双端问答/审批 | 外层 listener `prepend`，飞书先展示再 `next()` 交 Web；先答者胜出，另一端退休；取消批内问题/回执/最终卡 |
 | 交互流程 | 通常每步发新卡，旧卡去按钮/退休；**决策所在的那张卡整卡改写成结算卡**（绿色表头「✅ 已选定」+ 决策值 + 「已锁定，继续用下方最新卡」脚注，`card-supersede` 的 `replace` 模式）——只追加一行注释时，注释落在长列表最底部、看不出变化；纯路过的卡才收敛为灰通知。已点过可点行的卡不能复用。部分控制卡残余就地更新风险见待办 O4 |
 | 后台任务 | 一个聊天一份名册快照，变化发新消息；只认模型确实获得 job handle 的后台调用；前台 bash/pwsh 不列。表格的「任务」列截到 48 字符，被截断或多行的命令改到表格下方 `📜 完整命令` 代码块——**只在任务首次出现的那张卡上给一次**，后续进度/完成快照只留表格（命令仍可在首卡回看） |
-| 子代理 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录，`tree` 读 descendants |
+| 子智能体 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录，`tree` 读 descendants |
 | 名册容量 | 最多 8 行、已结算 30 分钟后退出内存名册；历史消息不更新。后台任务可“清理已完成”，仅清名册不清宿主记录。「完整命令」记忆按聊天存已交付的 job id、上限 256（id 不复用，超限丢最旧 ⇒ 最坏多显示一次），名册清空时一并忘掉 |
 
 卡片实体只能发送一次且仅 14 天可操作；长寿命过程卡不带按钮、不跨轮或跨重启复用，引用不落盘（关键坑 11 / 54 / 55 / 57）。

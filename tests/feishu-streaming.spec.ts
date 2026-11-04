@@ -296,7 +296,7 @@ describe('deriveToolSummary', () => {
       { content: 'c', status: 'in_progress' },
       { content: 'd', status: 'completed' },
     ] })
-    expect(deriveToolSummary('todo_write', args)).toBe('待办清单：4 项 · 进行中 2 · 待办 1 · 完成 1')
+    expect(deriveToolSummary('todo_write', args)).toBe('任务清单：4 项 · 进行中 2 · 待处理 1 · 已完成 1')
   })
 
   it('empty or non-string args fall back to the raw text', () => {

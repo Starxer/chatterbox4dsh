@@ -22,7 +22,7 @@
 
 | # | 缺口 | DSH 侧事实 | WebUI 怎么演 | 飞书现状 | 建议修法 |
 |---|---|---|---|---|---|
-| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子代理通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`）；来源是**开放集合**（rc.2 复核 29 个声明点，实测出现过 12 种） | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派；**但会被整轮折叠吃掉**（§1.4②） | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **插进「声明它的那个 step」卡片正文最前面，且只显示一行提示、不渲染注入内容**（✅ 已实现，见 §1.5；位置实测 §1.6） |
+| 1 | **上下文注入不可见**（AGENTS.md、技能目录、子智能体通知…） | 注入是**持久** `user/message` 事件（`data.source.kind !== 'user'`）；来源是**开放集合**（rc.2 复核 29 个声明点，实测出现过 12 种） | 一条可折叠的「上下文注入」行；展开按 6 种 `form` 分派；**但会被整轮折叠吃掉**（§1.4②） | handler 只认 `source.kind === 'tool-jobs'`，其余**全部静默丢弃** | **插进「声明它的那个 step」卡片正文最前面，且只显示一行提示、不渲染注入内容**（✅ 已实现，见 §1.5；位置实测 §1.6） |
 | 2 | **压缩不可见**（自动压缩 + `/compact`） | `compaction/start` → `compaction/summary` → `compaction/end`（失败时 `end` 带 `error`），外加一条 replacement checkpoint | 「上下文已压缩 · 已折叠 N 条历史 · ~M tokens」+ 展开看摘要 | **完全没有订阅**（`compaction/*`、`command/*` 都没订阅） | 一张压缩卡：进行中 → **详情行在折叠区之上、摘要可折叠且 ≤200 字** → 收尾/失败原因（✅ 已拍板，见 §2.4） |
 | 3 | **显示级别不对齐** | WebUI 是**一个 4 档枚举 + 4 条策略轴** | 简洁 / 标准 / 详细 / 完全展开（默认「详细」） | **4 个互不相干的布尔**（思考 / 工具 / 参数 / 结果），轴的含意都不同 | 引入同名的 4 档 `transcriptView` 作权威档位，4 个布尔降为「自定义」档的细分 |
 
@@ -34,7 +34,7 @@
 
 ### 1.1 DSH 侧：注入是持久事件，不是隐藏的请求头
 
-`@deepseek-ai/dsh-agent-instructions`（`packages/context/agent-instructions/`）把工作区指令文件（`AGENTS.md` 这一族）作为**上下文消息**写进会话；同族还有技能目录、插件清单、跨会话召回、子代理结算通知等。它们的持久形态**统一是 `user/message`**，靠 `data.source.kind` 区分。
+`@deepseek-ai/dsh-agent-instructions`（`packages/context/agent-instructions/`）把工作区指令文件（`AGENTS.md` 这一族）作为**上下文消息**写进会话；同族还有技能目录、插件清单、跨会话召回、子智能体结算通知等。它们的持久形态**统一是 `user/message`**，靠 `data.source.kind` 区分。
 
 **这不是一份固定清单**：`MessageSourceMap`（`packages/llm/llm/src/message.ts:110`）是 merge-extensible 接口，任何插件都能 `declare module` 往里加一种——0.2.0-rc.1 里有 **17 个真实声明点**，0.2.0-rc.2 复核时按「生产代码里 `interface MessageSourceMap` 的声明文件数」计是 **29 个**（rc.1 是 28 个，新增的就是下面那行 `user-question-reply`；两个数字口径不同，只说明一件事：**它在持续增长**）。所以渲染**必须按未知 kind 兜底**，不能写死一张表。本次全量会话统计里实际出现过的：
 
@@ -48,7 +48,7 @@
 | `skill-invocation` | — | 模型调用某个 skill | `name` |
 | `model-selection` / `plan-mode` / `user-approval` | 多为 `notice` / 无 | 模型切换 / 计划模式进出 / 审批结果回填 | 各自的判定字段 |
 | `agent-message` | `relay` | 别的会话发来的消息 | `senderSessionId` |
-| `subagent-settled` | `notice` | **子代理结算**（宿主把结果注入父会话） | `senderSessionId`、`summary` |
+| `subagent-settled` | `notice` | **子智能体结算**（宿主把结果注入父会话） | `senderSessionId`、`summary` |
 | `tool-jobs` | — | 后台任务完成通知（**插件已识别**，见 O11） | 任务 id / 结果 |
 | `goal` | — | 目标轮次推进 | `goalId`、`revision`、`round` |
 | **`compact-checkpoint`** | — | 压缩落地时的替换型 checkpoint | **必须排除**，见 §2.3 |
@@ -70,7 +70,7 @@
 
 [`src/feishu-streaming.ts:1469`](../src/feishu-streaming.ts) 的 `user/message` 分支只做一件事：判断「本轮是不是被后台任务完成通知唤醒的」（O11）。命中条件是 `source.kind === 'tool-jobs'`，**其余来源一律落空**（来源是开放集合，§1.1）——`agent-instructions` 连一行日志都没有。
 
-后果：使用者看不到「这一轮被喂了哪些上下文」；**子代理结算通知**（`subagent-settled`）看不到；跨会话召回（`session-reference`）看不到；指令文件被改动时的增量（`changes`）也看不到。
+后果：使用者看不到「这一轮被喂了哪些上下文」；**子智能体结算通知**（`subagent-settled`）看不到；跨会话召回（`session-reference`）看不到；指令文件被改动时的增量（`changes`）也看不到。
 
 ### 1.4 实测：真实频次，以及 WebUI 为什么看起来不频繁
 
@@ -108,7 +108,7 @@
 
 > 「能否把注入提醒放在现有卡片里面？也就是在哪个步骤注入，就把消息插入到哪里。……1. 如果是在调用模型之前发生了注入，那就在这个 step 卡片的最前面显示"注入 agent MD"。2. 如果是在模型调用之后、下一个 turn 之前，那就在这个卡片的最后（即 footer 之前）加上注入的消息。」
 
-**核验结论：位置模型成立，但方向比提案更简单——"情况 2"在持久事件里根本不存在（§1.6 实测）**：DSH 是在步骤**认领收件箱**的那一刻把注入落盘的，所以"语义上晚到"的注入（子代理结算、会话间消息）也会被物化到**下一个 step 的开头**，而不是上一步的末尾。因此只有一条规则：
+**核验结论：位置模型成立，但方向比提案更简单——"情况 2"在持久事件里根本不存在（§1.6 实测）**：DSH 是在步骤**认领收件箱**的那一刻把注入落盘的，所以"语义上晚到"的注入（子智能体结算、会话间消息）也会被物化到**下一个 step 的开头**，而不是上一步的末尾。因此只有一条规则：
 
 > **每条注入都插进「声明它的那个 step」的卡片正文最前面。**
 
@@ -134,7 +134,7 @@
 | `session-reference` | `🔗 跨会话召回 · <references[].label 连接>` |
 | `skill-invocation` | `📥 已载入技能 · <name>` |
 | `agent-message` | `✉️ 会话间消息 · 来自会话 <senderSessionId>` |
-| `subagent-settled` | `🤖 子代理已结算 · <senderSessionId>`（**不显示 `summary`**，那是内容） |
+| `subagent-settled` | `🤖 子智能体已结算 · <senderSessionId>`（**不显示 `summary`**，那是内容） |
 | `goal` / `model-selection` / `plan-mode` / `user-approval` | 各自一行标题 + 一个判定字段 |
 | **`tool-jobs`** | **不在顶部重复**：它已有 O11 的「本回合由后台任务完成通知触发」标记 |
 | 未知 `kind` | `📥 注入上下文 · <kind>`（只报种类，**不渲染原始字段**） |
@@ -358,7 +358,7 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 3. **排除清单**：接线 `user/message` 时显式跳过 `compact-checkpoint`（§2.3）与 `tool-jobs`（已有分支，避免在顶部重复显示），避免污染「本轮触发原因」的判定。
 4. **发/更新策略**：压缩卡是一张**可更新**的卡（start → summary → end 三次写入，同一步骤卡的模式）；注入块随所属 step 卡的每次重渲染一起出现，**不额外增加写入次数**（唯一例外：注入先于 `step/start` 到达时，把它并入首版渲染，见 §1.5 的缓冲规则）。
 5. **有界**：摘要 200 字硬上限（§2.4）；注入**只显示一行提示**（§1.5），所以既没有正文截断、也没有全文出口（使用者已否掉发文按钮）。
-6. **验证方式（真机）**：一轮里制造 ① 自动压缩（长会话）② `/compact` ③ 子代理结算 ④ 改一次 `AGENTS.md` 让指令增量触发，检查：压缩卡三次状态是否按序、详情行与折叠区位置是否正确、折叠组件是否真的渲染、`230020` 是否出现、journal 是否干净；注入块是否出现在**正确那张 step 卡的最前面**（步骤内注入＝该步；压缩后重注入＝下一张 step 卡）且提示行点明了注入的种类与来源（如 `AGENTS.md（已更新）`）；**卡片正文里不应出现注入内容**。
+6. **验证方式（真机）**：一轮里制造 ① 自动压缩（长会话）② `/compact` ③ 子智能体结算 ④ 改一次 `AGENTS.md` 让指令增量触发，检查：压缩卡三次状态是否按序、详情行与折叠区位置是否正确、折叠组件是否真的渲染、`230020` 是否出现、journal 是否干净；注入块是否出现在**正确那张 step 卡的最前面**（步骤内注入＝该步；压缩后重注入＝下一张 step 卡）且提示行点明了注入的种类与来源（如 `AGENTS.md（已更新）`）；**卡片正文里不应出现注入内容**。
 
 ---
 
