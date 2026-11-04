@@ -183,7 +183,21 @@ jobs:
         run: |
           package_name="$(node --input-type=commonjs --eval "process.stdout.write(require('./package.json').name)")"
           package_version="$(node --input-type=commonjs --eval "process.stdout.write(require('./package.json').version)")"
-          npm view "$package_name@$package_version" version
+          # npm acknowledges the publish ("Your package is being processed and
+          # may take a few minutes to become available") before the version is
+          # readable, so a single `npm view` right after `npm publish` can 404
+          # on a release that actually shipped. Poll instead of failing here.
+          for attempt in $(seq 1 20); do
+            if visible="$(npm view "$package_name@$package_version" version 2>/dev/null)"; then
+              echo "published version is visible: $visible"
+              break
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::published $package_name@$package_version is still not readable from the registry"
+              exit 1
+            fi
+            sleep 15
+          done
           attestations="$(npm view "$package_name@$package_version" dist.attestations --json 2>/dev/null || true)"
           if [[ "$attestations" == *'"url"'* ]]; then
             echo "provenance attestation present: $attestations"
