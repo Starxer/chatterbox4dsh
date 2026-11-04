@@ -232,12 +232,14 @@ export function renderPermissionCard(
   if (modes.includes(AUTO_PRESET)) elements.push({ tag: 'markdown', content: t.permissionAutoHint })
   for (const mode of modes) {
     const active = mode === current
-    // Color language: keep every selectable button clearly clickable. Only
-    // "Full access" keeps the red danger tint (a warning); the other presets
-    // share the blue primary so none of them look like the grayed-out
-    // (disabled) current-mode button. The current mode is the ONE disabled +
-    // gray + ✓ button, so it is never confusable with Read Only.
-    const type = mode === 'danger-full-access' ? 'danger' : 'primary'
+    // Color language: keep every selectable button clearly clickable. "Full
+    // access" and the experimental "Auto review" preset BOTH run without a
+    // sandbox (Auto's fixed bundle is Full access + the ask approval policy),
+    // so they share the red danger tint; Read Only and Workspace Write share
+    // the blue primary so none of them look like the grayed-out (disabled)
+    // current-mode button. The current mode is the ONE disabled + gray + ✓
+    // button, so it is never confusable with Read Only.
+    const type = mode === 'danger-full-access' || mode === AUTO_PRESET ? 'danger' : 'primary'
     const badge = mode === AUTO_PRESET ? ` ${t.permissionAutoBadge}` : ''
     elements.push({
       tag: 'button',

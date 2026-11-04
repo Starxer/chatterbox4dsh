@@ -256,8 +256,12 @@ describe('catalog-driven presets (Auto review)', () => {
     const auto = buttons.find((b: any) => textOf(b).includes(t.permissionAuto))
     expect(textOf(auto)).toBe(`${t.permissionAuto} ${t.permissionAutoBadge}`)
     expect(auto.value).toBe(JSON.stringify({ p: 'permission', mode: 'auto' }))
-    // The three shipped presets keep their labels and colors.
+    // Auto runs without a sandbox too, so it carries the same red danger
+    // tint as Full access; the sandboxed presets keep the blue primary.
+    expect(auto.type).toBe('danger')
     expect(buttons.find((b: any) => textOf(b).includes('Full access')).type).toBe('danger')
+    expect(buttons.find((b: any) => textOf(b).includes('Read Only')).type).toBe('primary')
+    expect(buttons.find((b: any) => textOf(b).includes('Workspace Write')).type).toBe('primary')
   })
 
   it('stays exactly as before when the catalog does not list Auto', () => {

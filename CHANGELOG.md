@@ -11,6 +11,7 @@
 
 - **权限卡读宿主目录，而不是硬编码三个预设**：`/permission` 卡与 `permissionPresets.catalog()` 对齐（与 DSH Web UI 同一个读面）——配置预设按宿主顺序在前，`auto` 只在 auto-review 集成 live 时出现。**没装 auto-review 时卡片逐字不变**（三个按钮、无额外提示）；装上后多一个「🧪 自动审查 EXP」按钮与一行实验说明。
 - **Auto 先确认再写**：对齐 Web UI 的风险确认对话框。点 Auto 只把卡片就地重画成确认卡（说明无沙箱运行、逐次审查、拒绝的调用仍会走审批、仍属实验性、会多耗 token），点「我已了解风险」才真正 `permissionPresets.set(session, 'auto')`；取消不写任何东西。集成已被卸载时 DSH 会拒绝，拒绝理由照旧显示在卡上而不是抛出。
+- **Auto 与「完全权限」同色**：Auto 的固定组合就是无沙箱（完全权限），所以按钮改用与「完全权限」相同的红色 danger 提示；仅可查看 / 工作区内修改仍是蓝色 primary。
 - **`/permission` 文本路径同步**：`/permission`（无参卡不可用时的文本列表）、`/permission <mode>` 的校验与回执都改为读目录，因此 `auto` 可用时 `auto` 也可直接命令切换；当前模式的读法改成优先 `permissionPresets.current()`（`auto` 与 `danger-full-access` 共享沙箱值，只读沙箱会把 Auto 会话显示成「完全权限」）。
 - **智能体团队看板（新模块 `src/feishu-team.ts`）**：Agent Teams 只在宿主启用实验包并由 Agent 自动组队时产生 `team/member` / `team/task` 会话事件。模块把这些事件**只当触发**，在 flush 时读 lead 会话的 `agentTeam` 投影（版本化、派生视图 `ownerName`/`ready`/写入范围告警、坏记录 `failure` 都由宿主保证），因此不新增 peer 依赖、也不重写团队状态机。
 - **更新逻辑与子代理看板一致**：复用 `feishu-panel` 的发送器——同名册变化**发新卡**（不就地改），同一突发合并、指纹去重、按聊天串行；看板内容 = 摘要 + 成员（Lead 只显示角色，队友显示运行/未运行/准备中/失败）+ 共享任务表（任务/状态/负责人/依赖，>12 行折叠成计数）+ 告警/坏记录行。成员活动读 live Agent registry，队友 `turn/start` / `turn/end` 走**非紧急**刷新（30s 地板），否则可续谈队友每轮都会把整张看板重发一遍；Lead 的回合是聊天自己的回合，永不触发看板。
