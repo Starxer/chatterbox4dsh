@@ -47,13 +47,13 @@ jobs:
           npm install --global 'npm@^11.5.1'
           npm --version
 
-      - name: Assert npm authenticates through OIDC only
+      - name: Check trusted-publishing prerequisites
         shell: bash
         run: |
           # Trusted publishing only works when npm has no token to prefer: any
-          # _authToken in the config is sent instead of the OIDC exchange, and
-          # the registry reports that as a 404 on PUT. setup-node used to export
-          # a dummy NODE_AUTH_TOKEN; fail loudly if one ever comes back.
+          # _authToken in the config is sent instead of the OIDC exchange.
+          # setup-node v6 used to export a dummy NODE_AUTH_TOKEN; fail loudly if
+          # one ever comes back.
           if [[ -n "${NODE_AUTH_TOKEN:-}" ]]; then
             echo "::error::NODE_AUTH_TOKEN is set; npm would use it instead of the OIDC exchange"
             exit 1
@@ -65,7 +65,36 @@ jobs:
               exit 1
             fi
           done
-          echo "registry: $(npm config get registry)"
+
+          # npm only attempts the OIDC exchange when the runner handed it these
+          # variables, which requires `permissions: id-token: write`. Without
+          # them `npm publish` reports ENEEDAUTH ("You need to authorize this
+          # machine using npm adduser"), which says nothing about the real cause.
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "::error::OIDC request variables are missing; the job did not get id-token: write"
+            exit 1
+          fi
+
+          # Then exercise the exact exchange npm performs, and print what npm
+          # only reveals at --loglevel=verbose. A 404 here means the npm
+          # Trusted Publisher entry (repository, workflow filename, environment)
+          # does not match this run.
+          audience="npm:registry.npmjs.org"
+          oidc="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience")"
+          id_token="$(node --input-type=commonjs -e 'process.stdout.write(JSON.parse(process.argv[1]).value)' "$oidc")"
+          package_name="$(node --input-type=commonjs --eval "process.stdout.write(require('./package.json').name)")"
+          escaped_name="$(node --input-type=commonjs -e 'process.stdout.write(process.argv[1].replace("/", "%2f"))' "$package_name")"
+          status="$(curl -sS -o "$RUNNER_TEMP/exchange.json" -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $id_token" \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$escaped_name")"
+          echo "OIDC token exchange status: $status"
+          if [[ "$status" != "200" ]]; then
+            cat "$RUNNER_TEMP/exchange.json" || true
+            echo "::error::npm rejected the OIDC token exchange; check the package's Trusted Publisher entry"
+            exit 1
+          fi
+          echo "OIDC exchange accepted (no token printed)"
 
       - name: Verify release tag matches package version
         if: github.event_name == 'release'
