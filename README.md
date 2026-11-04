@@ -23,7 +23,7 @@ DSH 才是 agent 本体，这个插件只做一件事：把 DSH 的原生能力�
 
 ## 安装
 
-前置：Node.js 24.9+，已安装 DSH。
+前置：Node.js 24.9+，已安装 DSH `0.2.x`（peer 范围 `^0.2.0-rc.1`，本版在 `0.2.2-rc.1` 上构建并验证）。
 
 ```sh
 # 安装插件并启动 DSH Web
@@ -80,6 +80,8 @@ A chat channel that brings [DeepSeek Harness](https://github.com/deepseek-ai/dee
 npx @deepseek-ai/dsh plugin --profile web add @starxer/chatterbox4dsh
 npx @deepseek-ai/dsh web
 ```
+
+Requires DSH `0.2.x` (peer range `^0.2.0-rc.1`; built and verified on `0.2.2-rc.1`) and Node.js 24.9+.
 
 Open the Web page, go to **Plugins → Feishu & Lark** and choose **scan to configure**, or follow the [setup guide](<./docs/feishu-setup.md>).
 

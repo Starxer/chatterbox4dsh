@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-> 当前未发布主线：本机部署运行 DSH `0.2.2-rc.1`（2026-11-05 自 0.2.1-rc.5 升级，停机 2m45s，构建门与兼容闸全过）；最后一次完整回归基线为 `0.2.1-rc.2`。peer 范围保留 `^0.2.0-rc.1`（新兼容闸按 `includePrerelease` 判定，该范围同时覆盖 0.2.2-rc.1 与回滚目标 0.2.1-rc.5）。已发布的插件 `0.2.0` 是较早快照，不代表下面所有改动；现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
-> The local deployment runs DSH `0.2.2-rc.1` (upgraded from 0.2.1-rc.5 on 2026-11-05, 2m45s of downtime, every build gate and the compatibility gate passed); `0.2.1-rc.2` remains the last full regression baseline. Ranges retain `^0.2.0-rc.1`. The published plugin `0.2.0` is an earlier snapshot, not all entries below.
+## 0.3.0 (2026-11-05)
+
+> 自 `0.2.0`（2026-09-08）以来累积的全部改动，**要求 DSH `0.2.x`**（peer `^0.2.0-rc.1`；在 `0.2.2-rc.1` 上构建、加载并完成飞书收发验证）。`0.2.0` 要求 DSH `0.1.3-alpha.x`，本版不再支持 0.1.x——这是本次唯一的破坏性变更。本机最后一次完整回归基线为 DSH `0.2.1-rc.2`，`0.2.2-rc.1` 的适配见下文「兼容」条。现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
+>
+> The complete set of changes accumulated since `0.2.0` (2026-09-08). **Requires DSH `0.2.x`** (peer `^0.2.0-rc.1`; built, loaded and Feishu-verified on `0.2.2-rc.1`). `0.2.0` required DSH `0.1.3-alpha.x`, so 0.1.x is no longer supported — the only breaking change in this release. The last full regression baseline was DSH `0.2.1-rc.2`; the `0.2.2-rc.1` adaptation is the "兼容" entry below.
 
 ### 新增：权限卡接入 Auto review、智能体团队看板（`src/feishu-permission.ts` / `src/feishu-team.ts` / `src/index.ts` / `src/i18n.ts` / `docs/architecture.md`，2026-11-05）
 
