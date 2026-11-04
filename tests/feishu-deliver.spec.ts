@@ -585,11 +585,14 @@ describe('tap → confirm → send', () => {
       const plan = await handle.plan({ sessionId: 's', chatId: 'oc_1', workspace: root, files: [{ path: 'out/notes.md' }] })
       const token = plan.rows[0]!.token!
       const first = channel.tap({ chatId: 'oc_1', messageId: 'confirm-1', action: { value: { p: DELIVER_SEND, token } } })
-      // Let the first tap reach the (still pending) send before the second one
-      // arrives — that is exactly the window the `sending` guard covers.
-      await new Promise(resolve => setTimeout(resolve, 0))
+      // Wait until the first tap has actually reached the still-pending send,
+      // which is exactly the window the `sending` guard covers. A bare
+      // `setTimeout(0)` used to be enough locally but can fire before the tap's
+      // async path gets there under load, leaving `release` undefined and
+      // hanging the test until its 5s timeout (seen on CI).
+      await vi.waitFor(() => expect(sendFile).toHaveBeenCalledTimes(1), { timeout: 2000 })
       const second = channel.tap({ chatId: 'oc_1', messageId: 'confirm-1', action: { value: { p: DELIVER_SEND, token } } })
-      release?.()
+      release!()
       await Promise.all([first, second])
       expect(sendFile).toHaveBeenCalledTimes(1)
     } finally {
