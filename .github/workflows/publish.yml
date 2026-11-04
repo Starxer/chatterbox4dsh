@@ -89,12 +89,14 @@ jobs:
             -H "Authorization: Bearer $id_token" \
             "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$escaped_name")"
           echo "OIDC token exchange status: $status"
-          if [[ "$status" != "200" ]]; then
+          # npm answers 201 Created because the exchange mints a token, so any
+          # 2xx means the Trusted Publisher entry matched this run.
+          if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$RUNNER_TEMP/exchange.json" || true
             echo "::error::npm rejected the OIDC token exchange; check the package's Trusted Publisher entry"
             exit 1
           fi
-          echo "OIDC exchange accepted (no token printed)"
+          echo "OIDC exchange accepted (the minted token is intentionally not printed)"
 
       - name: Verify release tag matches package version
         if: github.event_name == 'release'
