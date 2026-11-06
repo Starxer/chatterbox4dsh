@@ -389,6 +389,14 @@ export interface Translations {
   busySteeredNotice: string
   /** Plain-text notice sent when a busy-mode message is queued behind the running turn. */
   busyQueuedNotice: string
+  /** Plain-text notice sent before the plugin automatically resends a message a
+   *  reload/restart interrupted mid-turn (`src/channel.ts`, pending turns). */
+  pendingTurnResendNotice: string
+  /** Plain-text notice sent when the automatic resend itself was interrupted too. */
+  pendingTurnGaveUpNotice: string
+  /** Plain-text notice sent when the interrupted message carried attachments a
+   *  text-only resend cannot rebuild. */
+  pendingTurnAttachmentsNotice: string
   // ---- Turn failure (turn-failure.ts; mirrors DSH Web UI `message.turnError`
   // and `message.failure.auth` — the Web UI is the source of truth) ----
   /** Red-card title for a failed turn, e.g. `本轮运行失败`. */
@@ -1069,6 +1077,9 @@ export const zh = {
   busySendLabel: '繁忙时的发送行为',
   busySteeredNotice: '🎯 已插入当前运行轮，模型会在下一步看到这条消息。',
   busyQueuedNotice: '📥 已排队，当前轮结束后会自动执行这条消息（排队期间可用 /stop 丢弃）。',
+  pendingTurnResendNotice: '↻ 上一轮被插件重载/重启打断，正在自动重发。',
+  pendingTurnGaveUpNotice: '⚠️ 上一轮被中断后，自动重发也没能完成，请手动重发这条消息。',
+  pendingTurnAttachmentsNotice: '⚠️ 上一轮（含附件）被中断，附件无法自动重发，请手动重发。',
   turnFailedTitle: '本轮运行失败',
   failureAuth: 'API 密钥无效',
 
@@ -1661,6 +1672,9 @@ export const en: Translations = {
   busySendLabel: 'Send behavior while busy',
   busySteeredNotice: '🎯 Injected into the running turn — the model will see it on the next step.',
   busyQueuedNotice: '📥 Queued — it will run after the current turn finishes (send /stop while waiting to discard it).',
+  pendingTurnResendNotice: '↻ The previous turn was interrupted by a plugin reload/restart — resending it automatically.',
+  pendingTurnGaveUpNotice: '⚠️ The previous turn was interrupted and the automatic resend did not finish either. Please send that message again.',
+  pendingTurnAttachmentsNotice: '⚠️ The previous turn (with attachments) was interrupted; attachments cannot be resent automatically. Please send that message again.',
   turnFailedTitle: 'This turn failed',
   failureAuth: 'API key is invalid',
 

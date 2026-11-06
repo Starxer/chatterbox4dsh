@@ -72,6 +72,11 @@ export async function sendStartupNotice(deps: StartupNoticeDeps): Promise<Startu
   for (const candidate of bridge.recentActiveSessions(CANDIDATE_LIMIT)) {
     const chat = bridge.resolveChat(candidate.sessionId)
     if (chat === undefined) continue
+    // A turn this chat lost to a reload/restart is resent automatically a
+    // moment later, and that resend announces itself — repeating the generic
+    // "your turn may have been interrupted" sentence would be the same news
+    // twice in one chat.
+    if (candidate.interrupted && bridge.hasPendingTurnForSession?.(candidate.sessionId) === true) continue
 
     const t = deps.getTranslations()
     const text = candidate.interrupted

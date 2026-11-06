@@ -159,6 +159,60 @@ export interface InboundMessage extends ConversationMessage {
   fileBlocks?: readonly { attachment: any; hostPath?: string }[]
 }
 
+/**
+ * One turn this plugin dispatched through {@link HarnessConversationService.reply}
+ * and never saw finish — the durable half of the automatic resend.
+ *
+ * The channel records the record right before handing the message to the agent
+ * and clears it once the reply promise settles. A plugin unload (HMR reload,
+ * `dsh` restart) kills the in-flight promise, so the record survives on disk and
+ * the NEXT instance resends it once. The record is deliberately short-lived:
+ * a turn interrupted 20 minutes ago is ancient history, and the startup notice
+ * already says the session may be interrupted.
+ */
+export interface PendingTurn {
+  /** Conversation key the record belongs to (`conversationKey`). */
+  key: string
+  /** Session the turn was dispatched to (empty when the chat was still unbound). */
+  sessionId: string
+  chatId: string
+  chatType: 'p2p' | 'group'
+  threadId?: string
+  rootId?: string
+  /** Inbound message the resend replies under. */
+  messageId: string
+  senderId: string
+  /** Verbatim user text (the model's own history is NOT assumed to contain it). */
+  content: string
+  /** The interrupted message carried images/files a text-only resend cannot rebuild. */
+  attachments: boolean
+  /** When the original dispatch happened (epoch ms). */
+  at: number
+  /** How many automatic resends this record already consumed (0 = the user's own send). */
+  attempts: number
+}
+
+/** A pending turn older than this is not resent: the interruption is stale. */
+export const PENDING_TURN_MAX_AGE_MS = 15 * 60_000
+
+/** Automatic resends allowed per user message. One, never a loop. */
+export const PENDING_TURN_MAX_ATTEMPTS = 1
+
+/**
+ * How long a pending turn is trusted WITHOUT an interrupted marker. The marker
+ * is written at `turn/start`; a turn killed while the agent was still being
+ * resumed (cold session replay can take seconds) never gets one. Past this
+ * window a missing marker means the turn really did end, and a resend would
+ * re-run work that already finished.
+ */
+export const PENDING_TURN_START_GRACE_MS = 2 * 60_000
+
+/** A claimed pending turn: `retry` is dispatched, `giveUp` is dropped after notifying. */
+export interface PendingTurnClaim {
+  retry: PendingTurn[]
+  giveUp: Array<{ turn: PendingTurn; reason: 'expired' | 'exhausted' | 'attachments' }>
+}
+
 /** Per-chat creation options captured from the `/new` card flow or text
  *  command. Applied when the bridge creates the session agent, overriding
  *  the deployment-wide config defaults for workspace / preset / model. */
@@ -186,6 +240,29 @@ interface RouteOverride {
 
 /** Per-agent override state, so repeated quick picks reuse the same hooks. */
 const routeOverrides = new WeakMap<object, RouteOverride>()
+
+/**
+ * Structural check for one persisted {@link PendingTurn} record.
+ *
+ * Written by a previous process; a torn or hand-edited state file must not hand
+ * the channel a record it then dispatches blindly.
+ */
+function isPendingTurn(value: unknown): value is PendingTurn {
+  if (typeof value !== 'object' || value === null) return false
+  const turn = value as Record<string, unknown>
+  return typeof turn.key === 'string' && turn.key !== ''
+    && typeof turn.sessionId === 'string'
+    && typeof turn.chatId === 'string' && turn.chatId !== ''
+    && (turn.chatType === 'p2p' || turn.chatType === 'group')
+    && typeof turn.messageId === 'string'
+    && typeof turn.senderId === 'string'
+    && typeof turn.content === 'string'
+    && typeof turn.attachments === 'boolean'
+    && typeof turn.at === 'number' && Number.isFinite(turn.at)
+    && typeof turn.attempts === 'number' && Number.isInteger(turn.attempts) && turn.attempts >= 0
+    && (turn.threadId === undefined || typeof turn.threadId === 'string')
+    && (turn.rootId === undefined || typeof turn.rootId === 'string')
+}
 
 /**
  * Install (once per agent) the hooks that make the next request use `route`;
@@ -330,6 +407,16 @@ export class HarnessConversationService {
    */
   private readonly interruptedSessions = new Set<string>()
   /**
+   * Turns dispatched but not yet finished, keyed by conversation key (at most
+   * one per chat). Persisted so the NEXT process can resend whatever a plugin
+   * unload killed. See {@link PendingTurn}.
+   *
+   * Deliberately NOT cleared by {@link dispose}: the on-disk copy written at
+   * dispatch is what the next instance reads, and `saveSessionMap` refuses
+   * writes after disposal, so the in-memory copy cannot overwrite it.
+   */
+  private readonly pendingTurns = new Map<string, PendingTurn>()
+  /**
    * Sessions for which intermediate assistant message cards were sent during
    * the current turn. The channel skips the final reply card for these
    * sessions to avoid duplication.
@@ -378,6 +465,7 @@ export class HarnessConversationService {
         chatToSender?: Record<string, string>
         sessionActivity?: Record<string, number>
         interruptedSessions?: string[]
+        pendingTurns?: unknown[]
         recentModels?: unknown[]
       }
       for (const [k, v] of Object.entries(parsed.chatToSession ?? {})) this.chatToSession.set(k, v)
@@ -398,6 +486,9 @@ export class HarnessConversationService {
       }
       for (const sessionId of parsed.interruptedSessions ?? []) {
         if (typeof sessionId === 'string' && sessionId !== '') this.interruptedSessions.add(sessionId)
+      }
+      for (const turn of Array.isArray(parsed.pendingTurns) ? parsed.pendingTurns : []) {
+        if (isPendingTurn(turn)) this.pendingTurns.set(turn.key, turn)
       }
       if (Array.isArray(parsed.recentModels)) {
         this.recentModels = parsed.recentModels.filter(isRecentModelEntry)
@@ -466,6 +557,7 @@ export class HarnessConversationService {
         chatToSender: Object.fromEntries(this.chatToSender),
         sessionActivity: Object.fromEntries(this.sessionActivity),
         interruptedSessions: [...this.interruptedSessions],
+        pendingTurns: [...this.pendingTurns.values()],
         recentModels: this.recentModels,
       })
       // Atomic: a restart (or SIGKILL) landing mid-write must never leave a
@@ -1378,6 +1470,110 @@ export class HarnessConversationService {
    */
   clearInterrupted(sessionId: string): void {
     if (this.interruptedSessions.delete(sessionId)) this.saveSessionMap()
+  }
+
+  /**
+   * Record the turn the channel is about to dispatch (automatic-resend
+   * bookkeeping). Persisted immediately: the whole point is that the record
+   * outlives the process that is about to be unloaded.
+   *
+   * @param turn - the message coordinates; `at`/`attempts` are derived here.
+   * @param opts.keepAttempts - the channel is replaying a claimed record, so
+   *   the resend budget must not reset to zero.
+   */
+  notePendingTurn(
+    turn: Omit<PendingTurn, 'at' | 'attempts'> & { at?: number },
+    opts?: { keepAttempts?: boolean },
+  ): void {
+    const previous = this.pendingTurns.get(turn.key)
+    const attempts = opts?.keepAttempts === true ? previous?.attempts ?? 0 : 0
+    this.pendingTurns.set(turn.key, { ...turn, at: turn.at ?? Date.now(), attempts })
+    this.saveSessionMap()
+  }
+
+  /**
+   * Forget the pending turn of one chat: its reply promise settled, so the
+   * turn is no longer "dispatched but unfinished".
+   *
+   * @param key - conversation key the dispatch belonged to.
+   */
+  clearPendingTurn(key: string): void {
+    if (this.pendingTurns.delete(key)) this.saveSessionMap()
+  }
+
+  /**
+   * Take every retained pending turn and decide what the current process
+   * should do with it (see {@link PendingTurn}):
+   *
+   * - the turn is old or already resent once → `giveUp`;
+   * - the interrupted marker is gone → the turn finished, drop it silently;
+   * - it carried attachments → a text-only resend would lose them → `giveUp`;
+   * - otherwise claim it (bump `attempts`, persist) so a crash loop cannot
+   *   resend the same message forever.
+   *
+   * @param now - clock to compare records against (tests inject it).
+   * @returns what to resend and what to announce-and-drop.
+   */
+  claimPendingTurns(now = Date.now()): PendingTurnClaim {
+    const retry: PendingTurn[] = []
+    const giveUp: PendingTurnClaim['giveUp'] = []
+    let changed = false
+    for (const [key, turn] of [...this.pendingTurns]) {
+      const age = now - turn.at
+      if (age > PENDING_TURN_MAX_AGE_MS) {
+        this.pendingTurns.delete(key)
+        giveUp.push({ turn, reason: 'expired' })
+        changed = true
+        continue
+      }
+      if (turn.attempts >= PENDING_TURN_MAX_ATTEMPTS) {
+        this.pendingTurns.delete(key)
+        giveUp.push({ turn, reason: 'exhausted' })
+        changed = true
+        continue
+      }
+      // The turn tracker marks `turn/start` and clears it at `turn/end`. A
+      // record whose session is no longer interrupted therefore describes a
+      // turn that ENDED — resending it would re-run finished work. The one
+      // exception is the narrow window before `turn/start` was ever written
+      // (the instance died while resuming a cold session), recognised by age.
+      const interrupted = turn.sessionId !== '' && this.interruptedSessions.has(turn.sessionId)
+      if (!interrupted && age > PENDING_TURN_START_GRACE_MS) {
+        this.pendingTurns.delete(key)
+        changed = true
+        continue
+      }
+      const claimed = { ...turn, attempts: turn.attempts + 1 }
+      changed = true
+      if (turn.attachments) {
+        this.pendingTurns.delete(key)
+        giveUp.push({ turn: claimed, reason: 'attachments' })
+      } else {
+        // Kept (with the bumped counter) so the replay's own dispatch inherits
+        // the budget instead of resetting it — a crash loop must not resend the
+        // same message forever.
+        this.pendingTurns.set(key, claimed)
+        retry.push(claimed)
+      }
+    }
+    if (changed) this.saveSessionMap()
+    return { retry, giveUp }
+  }
+
+  /**
+   * Whether one session still has a turn waiting to be resent — the startup
+   * notice uses it to stay quiet when the resend itself will announce the
+   * interruption.
+   *
+   * @param sessionId - session to look up.
+   * @returns true when a pending turn addresses it.
+   */
+  hasPendingTurnForSession(sessionId: string): boolean {
+    if (sessionId === '') return false
+    for (const turn of this.pendingTurns.values()) {
+      if (turn.sessionId === sessionId) return true
+    }
+    return false
   }
 
   /** Attach the stored topic root id (if any) to a reconstructed chat message. */

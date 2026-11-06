@@ -41,6 +41,14 @@ export interface PluginLogger {
 const REASONING_CAP = 200
 
 /**
+ * How long the fresh instance waits before resending a turn the previous one
+ * lost. Short enough to feel automatic, long enough that the unloaded
+ * instance's session handles are really closed (a hot reload tears them down
+ * asynchronously).
+ */
+const PENDING_TURN_RESEND_DELAY_MS = 2_000
+
+/**
  * Dispatch a parsed slash command against the receiving chat.
  * Returning `undefined` means the message is not a command; the bridge
  * falls back to its ordinary agent reply.  When `card` is present the
@@ -299,6 +307,10 @@ export async function startChannel(
     & {
       noteInboundSender?: HarnessConversationService['noteInboundSender']
       noteSessionActivity?: HarnessConversationService['noteSessionActivity']
+      /** Automatic resend of a turn the previous instance did not finish. */
+      notePendingTurn?: HarnessConversationService['notePendingTurn']
+      clearPendingTurn?: HarnessConversationService['clearPendingTurn']
+      claimPendingTurns?: HarnessConversationService['claimPendingTurns']
     },
   factory: ChannelFactory = createLarkChannel,
   logger: PluginLogger = console,
@@ -517,8 +529,19 @@ export async function startChannel(
     pending.bindingChanged(chat, sessionId)
   })
   let stopped = false
-  const unsubscribers = [
-    channel.on('message', async (message: NormalizedMessage) => {
+  /**
+   * True while the auto-resend replays a claimed pending turn. The dispatch
+   * must keep the record's resend budget instead of resetting it to zero,
+   * otherwise a crash loop could resend the same message indefinitely.
+   */
+  let replaying = false
+  /**
+   * One inbound message, end to end. Named (rather than inline in the event
+   * registration) because the automatic resend re-enters this exact pipeline
+   * with a reconstructed message: same session resolution, same cards, same
+   * topic coordinates, no second implementation.
+   */
+  const handleInbound = async (message: NormalizedMessage): Promise<void> => {
       if (stopped) return
       const resources = (message.resources ?? []).filter(resource => resource.type === 'image' || ADMITTED_RESOURCE_TYPES.has(resource.type))
       const userText = attachmentMessageText(message)
@@ -777,6 +800,29 @@ export async function startChannel(
           const restoreDraft = pending.reserve(message, currentAddition)
           suspended = restoreDraft
           let accepted = false
+          // Durable "dispatched but unfinished" record (see `PendingTurn`): if
+          // THIS instance is unloaded mid-turn the next one resends the message.
+          // Written before the dispatch, cleared when the reply promise settles.
+          bridge.notePendingTurn?.({
+            key,
+            sessionId: bridge.resolveSessionIdFor(inboundMessage),
+            chatId,
+            chatType: message.chatType,
+            ...(threadId === undefined ? {} : { threadId }),
+            ...(replyToId === undefined ? {} : { rootId: replyToId }),
+            messageId: message.messageId,
+            senderId: message.senderId,
+            content: inboundMessage.content,
+            attachments: resources.length > 0
+              || (inboundMessage.imageBlocks?.length ?? 0) > 0
+              || (inboundMessage.fileBlocks?.length ?? 0) > 0,
+          }, replaying ? { keepAttempts: true } : undefined)
+          const settlePendingTurn = (): void => {
+            // A stop in progress means the record must survive for the next
+            // instance's resend; `bridge.dispose()` refuses writes anyway.
+            if (stopped) return
+            bridge.clearPendingTurn?.(key)
+          }
           void bridge.reply(inboundMessage, {
             onAccepted: () => { accepted = true; restoreDraft?.accept(); suspended = undefined },
             // Plain-text acknowledgement when the agent is busy: steer injects
@@ -793,6 +839,7 @@ export async function startChannel(
               })
             },
           }).then(async (text) => {
+            settlePendingTurn()
             // A steered message produces no reply of its own: the running turn's
             // reply card already answers it (otherwise the user gets two cards
             // for one turn).
@@ -962,9 +1009,19 @@ export async function startChannel(
             if (error instanceof TurnDroppedError) {
               // Message intentionally dropped because the session was stopped
               // while it waited for the current turn — no error card needed.
+              settlePendingTurn()
               logError(`dsh-feishu: message dropped (session stopped): ${error.message}`)
               return
             }
+            if (stopped) {
+              // This instance is being unloaded (HMR reload / restart) and the
+              // turn died with it. The pending record is left on disk, so the
+              // NEXT instance resends it: a raw "flush on a closed handle"
+              // error card here would only tell the user to resend by hand.
+              logError(`dsh-feishu: turn interrupted by the plugin unloading; leaving it to the next start's auto-resend: ${error instanceof Error ? error.message : String(error)}`)
+              return
+            }
+            settlePendingTurn()
             logError(`dsh-feishu: message handling failed: ${error instanceof Error ? error.message : String(error)}`)
             void sendFailure(chatId, error, { replyTo: replyToId, replyInThread })
           })
@@ -987,7 +1044,9 @@ export async function startChannel(
         // submitted text has already cleared the draft, so this is a no-op.
         if (resources.length > 0 || noticeWasArmed) pending.resume(message)
       }
-    }),
+  }
+  const unsubscribers = [
+    channel.on('message', handleInbound),
     channel.on('reconnecting', () => { logger.warn('dsh-feishu: WebSocket reconnecting') }),
     channel.on('reconnected', () => { logger.info('dsh-feishu: WebSocket reconnected') }),
     channel.on('error', (error) => { logError(`dsh-feishu: channel error: ${String(error)}`) }),
@@ -1011,10 +1070,80 @@ export async function startChannel(
   logger.info('dsh-feishu: WebSocket connected')
   console.log('dsh-feishu: channel up (inbound live)')
 
+  /**
+   * Resend the message a previous instance was running when it was unloaded
+   * (HMR reload, `dsh` restart) — see {@link PendingTurn}. Runs once per
+   * process: the claim bumps the attempt counter, so a crash loop resends at
+   * most once and then tells the user instead.
+   *
+   * The wait is deliberate: during a hot reload the previous instance's session
+   * handles are still being closed, and dispatching into a half-disposed
+   * session would just fail again.
+   */
+  const retryInterruptedTurns = async (): Promise<void> => {
+    if (stopped) return
+    const claim = bridge.claimPendingTurns?.()
+    if (claim === undefined) return
+    const t = getTranslations?.() ?? translationsFor('zh')
+    for (const turn of claim.retry) {
+      if (stopped) return
+      const replyTo = turn.rootId ?? turn.messageId
+      const replyInThread = turn.threadId !== undefined
+      console.log(`dsh-feishu: auto-resending an interrupted turn in ${turn.chatId}`)
+      await sendOutbound(turn.chatId, { text: t.pendingTurnResendNotice }, { replyTo, replyInThread })
+        .catch((error: unknown) => {
+          logError(`dsh-feishu: resend notice failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      if (stopped) return
+      replaying = true
+      try {
+        // The same pipeline an inbound message takes: session binding, topic
+        // coordinates and every card come out exactly as if the user had sent
+        // it again just now.
+        await handleInbound({
+          messageId: turn.messageId,
+          chatId: turn.chatId,
+          chatType: turn.chatType,
+          senderId: turn.senderId,
+          content: turn.content,
+          rawContentType: 'text',
+          resources: [],
+          mentions: [],
+          mentionAll: false,
+          mentionedBot: true,
+          createTime: turn.at,
+          ...(turn.rootId === undefined ? {} : { rootId: turn.rootId }),
+          ...(turn.threadId === undefined ? {} : { threadId: turn.threadId }),
+        } as NormalizedMessage)
+      } catch (error: unknown) {
+        logError(`dsh-feishu: automatic resend failed: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        replaying = false
+      }
+    }
+    for (const { turn, reason } of claim.giveUp) {
+      if (stopped) return
+      // An expired record carries no claim ("it was interrupted at some point");
+      // the startup notice already covers that case.
+      if (reason === 'expired') continue
+      const text = reason === 'attachments' ? t.pendingTurnAttachmentsNotice : t.pendingTurnGaveUpNotice
+      await sendOutbound(turn.chatId, { text }, {
+        replyTo: turn.rootId ?? turn.messageId,
+        replyInThread: turn.threadId !== undefined,
+      }).catch((error: unknown) => {
+        logError(`dsh-feishu: resend notice failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+  }
+  const retryTimer = setTimeout(() => { void retryInterruptedTurns() }, PENDING_TURN_RESEND_DELAY_MS)
+  // A pending resend must never hold the process (or a test run) open.
+  ;(retryTimer as unknown as { unref?: () => void }).unref?.()
+
   return {
     channel,
     stop: async () => {
       stopped = true
+      clearTimeout(retryTimer)
       pending.stop()
       stopBindingChanges?.()
       for (const unsubscribe of unsubscribers) unsubscribe()

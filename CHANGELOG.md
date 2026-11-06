@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### 新增：被重载/重启打断的那一轮会自动重发（`src/harness.ts` / `src/channel.ts` / `src/feishu-startup-notice.ts` / `src/i18n.ts`，2026-11-06）
+
+起因：插件热重载会在进程内把正在跑的一轮拆掉，会话写句柄被关闭，在飞的回复撞上 `session "…": flush on a closed handle`。过去的结果是**用户收到一行内部错误、那条消息静默丢失、只能手动重发**。现在新实例会自己把它补上。
+
+- **dispatch 前落一条「未完成」记录**：`bridge.reply()` 之前写入 `pendingTurns`（会话键、会话 id、聊天/话题/根消息坐标、原文、是否带附件、时间、重发次数），随会话状态文件原子落盘；回复 promise 结算时清掉。**卸载中不清**（`bridge.dispose()` 本来就拒写），所以磁盘上的那条记录留给下一个实例。
+- **新实例连上后自动重发**：等 2s（热重载时旧实例的句柄还在关）→ `claimPendingTurns()` → 先在该话题发一条「↻ 上一轮被插件重载/重启打断，正在自动重发」→ 把消息**送进同一条入站管线**（同一个会话绑定、同一套卡片、同一个 `replyTo`），不是另写一条简化路径。
+- **只重发一次，不循环**：每条消息至多一次自动重发（`PENDING_TURN_MAX_ATTEMPTS = 1`），第二次被打断就发「自动重发也没能完成，请手动重发」。
+- **几个不重发的判据**：超过 15 分钟（`PENDING_TURN_MAX_AGE_MS`）视为陈旧，静默丢弃（启动通知已经说过）；会话的 `turn/end` 已落盘（中断标记已清）说明那一轮其实跑完了，重发会重做已完成的活，所以丢弃——唯一例外是 `turn/start` 还没写下的 2 分钟宽限窗（冷会话 resume 期间被卸载）；带图片/附件的消息无法用纯文本重建，不重发并提示手动重发（附件 ref 重建不在本次范围）。
+- **卸载时不再把原始错误发给用户**：`stopped` 为真的失败分支只记日志、保留记录，让下一个实例接手；正常失败（模型报错、Feishu API 报错）照旧走错误卡。
+- **启动通知去重**：有待重发记录的会话不再发「上一轮可能被中断」那句，避免同一个话题里两条通知说同一件事。
+- **测试**：新增 13 例（`tests/pending-turns.spec.ts` 9 例覆盖 claim 的每条判据与跨实例持久化；`tests/auto-resend.spec.ts` 4 例覆盖延时重发、附件不重发、过期静默、卸载时不发原始错误），全量 **1469 测试 / 75 文件**、`typecheck`、`build` 全绿。
+
+**English**: A plugin hot reload tears down the running turn in-process, and the in-flight reply used to die with `session "…": flush on a closed handle` — the user got a raw internal error and the message silently vanished. The channel now writes a durable "dispatched but unfinished" record (`pendingTurns`) right before `bridge.reply`, clears it when the reply promise settles, and deliberately keeps it when the instance is unloaded. The next instance, after connecting and a 2 s settle delay, claims it, posts a short "the previous turn was interrupted — resending" notice into the same topic, and replays the message through the ordinary inbound pipeline (same binding, same cards, same `replyTo`). Each message is resent at most once: a second interruption produces "the automatic resend did not finish either, please send it again". Records older than 15 minutes are dropped silently (the startup notice already covers them), a record whose session no longer carries the interrupted marker is dropped because that turn actually finished (except inside the 2-minute pre-`turn/start` grace window), and messages with images/attachments are not replayed because a text-only resend cannot rebuild them. Failures caused by the unload itself send no error card at all, and the startup notice stays quiet for sessions that are about to be resent. New tests: 13 (claim decisions plus cross-instance persistence, delayed replay, attachment/expiry/unload paths); full suite 1469 tests / 75 files, typecheck and build pass.
+
 ### 构建：修好发布链路，`0.3.0` 完成首次 trusted publishing 发布（`.github/workflows/publish.yml`，2026-11-05）
 
 `0.3.0` 是第一个真正走 OIDC trusted publishing 发布的版本（`0.2.0` 当年是 granular token 手动发的）。首发连踩三个坑，现在都已修好并留了守卫：
