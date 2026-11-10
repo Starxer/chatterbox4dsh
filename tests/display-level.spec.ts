@@ -105,9 +105,9 @@ describe('compact tool-row style', () => {
       expect(parseCompactToolRow(style)).toBe(style)
       expect(isCompactToolRowStyle(style)).toBe(true)
     }
-    expect(DEFAULT_COMPACT_TOOL_ROW).toBe('tool')
+    expect(DEFAULT_COMPACT_TOOL_ROW).toBe('tool-description')
     for (const raw of ['nope', '', undefined, null, 1, {}]) {
-      expect(parseCompactToolRow(raw)).toBe('tool')
+      expect(parseCompactToolRow(raw)).toBe('tool-description')
       expect(isCompactToolRowStyle(raw)).toBe(false)
     }
   })

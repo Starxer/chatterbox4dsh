@@ -14,7 +14,7 @@
 
 起因：`compact` 的过程卡工具行只显示「碰了什么」（裸文件名 / 程序名），而标准及以上档位的步骤卡会显示模型写的 `description`；`/display` 卡上却只有四个布尔开关——其中参数/结果在简洁与标准档本来就不渲染、思考在简洁档被强制关闭，等于摆了几个按了没反应的按钮，也没有地方选工具行的内容。
 
-- **新增 `compactToolRow`（三选一，默认 `tool`）**：`tool` = 现在的工具名 + 碰了什么；`tool-description` = 模型写的 description 在前、工具行在后；`description` = 只显示 description，没写就只留工具名（**不回退**到派生的「碰了什么」）。只影响简洁档过程卡；其它档位有自己的摘要行。
+- **新增 `compactToolRow`（三选一，默认 `tool-description`）**：`tool-description` = 模型写的 description 在前、工具行在后（默认）；`tool` = 原来的工具名 + 碰了什么；`description` = 只显示 description，没写就只留工具名（**不回退**到派生的「碰了什么」）。只影响简洁档过程卡；其它档位有自己的摘要行。
 - **description 的安全处理**：只取工具 arguments 里的 `description`（`bash`/`subagent` 等有，读/写/编辑通常没有）；压成一行、截断 80 字、去掉反引号、`* _ ~ [ ] <>` 转义成实体，避免破坏卡片 markdown（与 narration 行同口径）。
 - **`/display` 卡按档位裁剪**：新增 `levelUsesSwitch()`——简洁档只保留「工具调用」开关，标准档保留「思考 + 工具调用」，详细/完全展开四个都在；被隐藏的开关**存储值不动**，切回高档位自动恢复；卡面有一行说明为什么少了几个。简洁档同时多出「工具行」三选一一段，其它档位不渲染这一段。
 - **文本路径**：`/display toolrow [tool|both|description]` 查询/设置；不带参数的 `/display` 列表也带上工具行当前值。

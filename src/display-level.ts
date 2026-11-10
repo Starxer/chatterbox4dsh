@@ -63,8 +63,13 @@ export type CompactToolRowStyle = 'tool' | 'tool-description' | 'description'
 /** The styles in the order the settings UIs list them. */
 export const COMPACT_TOOL_ROW_STYLES: readonly CompactToolRowStyle[] = ['tool', 'tool-description', 'description']
 
-/** The default style: the pre-existing compact row. */
-export const DEFAULT_COMPACT_TOOL_ROW: CompactToolRowStyle = 'tool'
+/**
+ * The default style: the model's one-line description FIRST, then the tool row
+ * (the operator's choice, 2026-11-11 — it reads as "what and where" in one row).
+ * A call that wrote no description keeps the plain tool row, since style 2 only
+ * prepends one when it exists.
+ */
+export const DEFAULT_COMPACT_TOOL_ROW: CompactToolRowStyle = 'tool-description'
 
 /** Read one stored row style; anything unknown is the default. */
 export function parseCompactToolRow(value: unknown): CompactToolRowStyle {
