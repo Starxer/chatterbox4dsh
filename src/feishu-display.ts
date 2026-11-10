@@ -95,22 +95,61 @@ function isLevel(value: unknown): value is TranscriptView {
 }
 
 /**
- * Render the display card: the four levels on top, the four switches below.
+ * Lay short choice buttons out in ONE card row.
  *
- * The levels are buttons like the switches, and for the same reason: this card
- * invites several taps in a row and every tap repaints the SAME card, so
- * a payload carrying the target value is idempotent under a duplicated click.
+ * The same shape `feishu-onboarding.ts` / `feishu-deliver.ts` use for their
+ * control rows: `width: 'auto'` columns hug the button, and `flex_mode:
+ * 'stretch'` makes Feishu stack the row vertically on a narrow (mobile) screen
+ * instead of clipping the labels. One `column_set` is one element, so a row of
+ * four choices costs one element instead of four — the card used to be one
+ * full-width button per choice, which made it unnecessarily tall (关键坑 58/63).
+ */
+function buttonColumns(buttons: readonly object[]): object {
+  return {
+    tag: 'column_set',
+    flex_mode: 'stretch',
+    horizontal_spacing: 'small',
+    columns: buttons.map(button => ({
+      tag: 'column',
+      width: 'auto',
+      vertical_align: 'top',
+      elements: [button],
+    })),
+  }
+}
+
+/** Split choice buttons into rows of at most `size`, one element per row. */
+function buttonRows(buttons: readonly object[], size = 2): object[] {
+  const rows: object[] = []
+  for (let index = 0; index < buttons.length; index += size) {
+    rows.push(buttonColumns(buttons.slice(index, index + size)))
+  }
+  return rows
+}
+
+/**
+ * Render the display card: the work-detail level, then (only at `compact`) the
+ * tool-row style, then the switches the active level can still use, then the
+ * elapsed-clock interval.
+ *
+ * Every choice is a button carrying the TARGET value (never a "toggle"), and
+ * every tap repaints the SAME card, so a payload is idempotent under a
+ * duplicated click. Choices are laid out in rows (`buttonColumns`) instead of
+ * one full-width button per line, which is what makes the card fit a phone
+ * without a long scroll.
  */
 export function renderDisplayCard(state: DisplayCardState, t: Translations): object {
   const elements: object[] = [
-    { tag: 'markdown', content: t.displayCardLevelTitle },
-    // One line saying what the active level means — the same words the WebUI
-    // settings page uses, so the two pages can be read side by side.
-    { tag: 'markdown', content: t.displayLevelHint(state.level), text_size: 'notation' },
+    // One element for the title AND the explanation of the active level: they
+    // are one thought, and each markdown element pays its own spacing.
+    {
+      tag: 'markdown',
+      content: `${t.displayCardLevelTitle}\n${t.displayLevelHint(state.level)}`,
+    },
   ]
-  for (const level of TRANSCRIPT_VIEWS) {
+  elements.push(...buttonRows(TRANSCRIPT_VIEWS.map(level => {
     const active = level === state.level
-    elements.push({
+    return {
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayLevelName(level), active) },
       // The ACTIVE level is primary AND disabled: it is the state, not an
@@ -118,29 +157,29 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       type: active ? 'primary' : 'default',
       ...(active ? { disabled: true } : {}),
       behaviors: [{ type: 'callback', value: { p: 'display', level, value: !active } }],
-    })
-  }
+    }
+  })))
   // The tool-row style only exists at `compact` (the other levels render their
   // own summary line per call), so the section is shown exactly when it applies.
   if (state.level === 'compact') {
     elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: t.displayCardToolRowTitle })
-    elements.push({ tag: 'markdown', content: t.displayCardToolRowHint, text_size: 'notation' })
-    for (const style of COMPACT_TOOL_ROW_STYLES) {
+    elements.push({ tag: 'markdown', content: `${t.displayCardToolRowTitle}\n${t.displayCardToolRowHint}` })
+    elements.push(buttonColumns(COMPACT_TOOL_ROW_STYLES.map(style => {
       const active = style === state.toolRow
-      elements.push({
+      return {
         tag: 'button',
         text: { tag: 'plain_text', content: t.displayCardToolRowButton(t.displayToolRowName(style), active) },
         type: active ? 'primary' : 'default',
         ...(active ? { disabled: true } : {}),
         behaviors: [{ type: 'callback', value: { p: 'display', toolRow: style } }],
-      })
-    }
+      }
+    })))
   }
   elements.push({ tag: 'hr' })
   elements.push({ tag: 'markdown', content: t.displayCardHint })
   const switches = state.switches
   let hiddenByLevel = false
+  const switchButtons: object[] = []
   for (const key of DISPLAY_KEYS) {
     // A switch the active level cannot use is not offered at all: a toggle that
     // changes nothing reads as a broken card (`compact` forces reasoning off,
@@ -156,7 +195,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
     // and the switches come back with tool display.
     if (!switches.tools && (key === 'args' || key === 'results')) continue
     const enabled = switches[key]
-    elements.push({
+    switchButtons.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel(key), enabled) },
       // Primary = on, default (grey) = off, so the state reads at a glance.
@@ -172,27 +211,29 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       behaviors: [{ type: 'callback', value: { p: 'display', key, value: !enabled } }],
     })
   }
-  // Say why switches are missing, so the card does not just look broken.
-  if (!switches.tools) {
-    elements.push({ tag: 'markdown', content: t.displayCardHiddenByTools, text_size: 'notation' })
-  }
-  if (hiddenByLevel) {
-    elements.push({ tag: 'markdown', content: t.displayCardSwitchesHiddenByLevel, text_size: 'notation' })
+  elements.push(...buttonRows(switchButtons))
+  // Say why switches are missing, so the card does not just look broken. Both
+  // reasons can apply at once; they share one element.
+  const missingNotes = [
+    ...(switches.tools ? [] : [t.displayCardHiddenByTools]),
+    ...(hiddenByLevel ? [t.displayCardSwitchesHiddenByLevel] : []),
+  ]
+  if (missingNotes.length > 0) {
+    elements.push({ tag: 'markdown', content: missingNotes.join('\n'), text_size: 'notation' })
   }
   elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: t.displayCardTickTitle })
-  elements.push({ tag: 'markdown', content: t.displayCardTickHint, text_size: 'notation' })
+  elements.push({ tag: 'markdown', content: `${t.displayCardTickTitle}\n${t.displayCardTickHint}` })
   const currentTick = parseElapsedRefreshSeconds(state.elapsedRefreshSeconds)
-  for (const seconds of ELAPSED_REFRESH_SECONDS) {
+  elements.push(buttonColumns(ELAPSED_REFRESH_SECONDS.map(seconds => {
     const active = seconds === currentTick
-    elements.push({
+    return {
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardTickButton(seconds, active) },
       type: active ? 'primary' : 'default',
       ...(active ? { disabled: true } : {}),
       behaviors: [{ type: 'callback', value: { p: 'display', tick: seconds } }],
-    })
-  }
+    }
+  })))
   elements.push({ tag: 'markdown', content: t.displayCardNote, text_size: 'notation' })
   return {
     schema: '2.0',

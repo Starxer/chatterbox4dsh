@@ -701,9 +701,14 @@ export function renderProgressCard(
 
   const elements: object[] = []
   if (hidden.length > 0) {
-    // The count is honest even when the body itself is capped: the folded panel
-    // may carry at most PROGRESS_MAX_FOLDED lines (its JSON still ships with the
-    // card, and a whole turn of rows is not worth a 30KB rejection).
+    // The panel header counts STEPS, not rows (the user's request, 2026-11-11):
+    // the visible window is counted in whole steps too (`PROGRESS_MAX_STEPS`),
+    // so "how much is hidden" reads in the same unit the window uses. A row
+    // count was misleading — ten rows can be one step or ten.
+    const hiddenSteps = new Set(hidden.map(line => line.step)).size
+    // The body itself is capped: the folded panel may carry at most
+    // PROGRESS_MAX_FOLDED lines (its JSON still ships with the card, and a whole
+    // turn of rows is not worth a 30KB rejection).
     const body = hidden.slice(Math.max(0, hidden.length - PROGRESS_MAX_FOLDED))
     const truncated = body.length < hidden.length
     // One element per step HERE TOO — not one element for the whole body. A
@@ -713,7 +718,7 @@ export function renderProgressCard(
     if (truncated && folded.length > 0) {
       folded[0] = { step: folded[0]!.step, content: `…\n${folded[0]!.content}` }
     }
-    elements.push(foldedPanel(t, t.turnCardOlderRows(hidden.length), folded.map(group => ({ tag: 'markdown', content: group.content }))))
+    elements.push(foldedPanel(t, t.turnCardOlderSteps(hiddenSteps), folded.map(group => ({ tag: 'markdown', content: group.content }))))
   }
   // One element per STEP, not one per row (2026-10-11).
   //

@@ -7,8 +7,32 @@ import { translationsFor } from '../src/i18n.ts'
 const t = translationsFor('zh')
 const tEn = translationsFor('en')
 
+/** Every button at any depth (choices are laid out inside `column_set` rows). */
 function buttonsOf(card: any): any[] {
-  return card.body.elements.filter((el: any) => el.tag === 'button')
+  const out: any[] = []
+  const walk = (elements: any[] | undefined): void => {
+    for (const el of elements ?? []) {
+      if (el.tag === 'button') out.push(el)
+      if (Array.isArray(el.elements)) walk(el.elements)
+      if (Array.isArray(el.columns)) for (const column of el.columns) walk(column.elements)
+    }
+  }
+  walk(card.body.elements)
+  return out
+}
+
+/** Every markdown string at any depth. */
+function markdownsOf(card: any): string[] {
+  const out: string[] = []
+  const walk = (elements: any[] | undefined): void => {
+    for (const el of elements ?? []) {
+      if (el.tag === 'markdown' && typeof el.content === 'string') out.push(el.content)
+      if (Array.isArray(el.elements)) walk(el.elements)
+      if (Array.isArray(el.columns)) for (const column of el.columns) walk(column.elements)
+    }
+  }
+  walk(card.body.elements)
+  return out
 }
 
 /** Only the four SWITCH buttons (the card also carries four level buttons). */
@@ -131,10 +155,7 @@ describe('renderDisplayCard', () => {
   })
 
   it('hides the switches the active level cannot use, and says so', () => {
-    const md = (card: any): string => card.body.elements
-      .filter((el: any) => el.tag === 'markdown')
-      .map((el: any) => el.content)
-      .join('\n')
+    const md = (card: any): string => markdownsOf(card).join('\n')
     // compact: reasoning is forced off, and there are no argument/result payloads.
     const compact = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
     expect(switchesOf(compact).map((b: any) => b.behaviors[0].value.key)).toEqual(['tools'])
@@ -149,7 +170,7 @@ describe('renderDisplayCard', () => {
 
   it('leaves out the hidden-by-level note when every switch is usable', () => {
     const detailed = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
-    const text = detailed.body.elements.filter((el: any) => el.tag === 'markdown').map((el: any) => el.content).join('\n')
+    const text = markdownsOf(detailed).join('\n')
     expect(text).not.toContain('不起作用')
   })
 
@@ -159,10 +180,7 @@ describe('renderDisplayCard', () => {
     expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
     expect(buttonFor(card, 'tools').text.content).toBe('⬜ 工具调用：关')
     // The card says why two switches are missing instead of just looking broken.
-    const markdown = card.body.elements
-      .filter((el: any) => el.tag === 'markdown')
-      .map((el: any) => el.content)
-      .join('\n')
+    const markdown = markdownsOf(card).join('\n')
     expect(markdown).toContain('随「工具调用」一起隐藏')
   })
 
@@ -241,8 +259,7 @@ describe('startFeishuDisplay', () => {
     const { control, toolRowSpy } = makeDisplay(ALL_ON, 'compact')
     const handle = startFeishuDisplay({ channel, display: control, logger: { warn: vi.fn(), error: vi.fn() }, getTranslations: () => t })
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    const target = sentCard(0).body.elements
-      .filter((el: any) => el.tag === 'button')
+    const target = toolRowsOf(sentCard(0))
       .find((b: any) => b.behaviors[0].value.toolRow === 'description')
     await click({ messageId: 'om_1', action: { value: target.behaviors[0].value } })
     expect(toolRowSpy).toHaveBeenCalledWith('description')

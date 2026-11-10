@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 改进：`/display` 卡压成按钮行、折叠区标题改数「步」（`src/feishu-display.ts` / `src/feishu-progress.ts` / `src/i18n.ts`，2026-11-11）
+
+- **控制卡布局压缩**：档位四选一改成 2×2 两行（`column_set` 一行两枚按钮，沿用工作区浏览器/交付卡验证过的 `flex_mode: stretch` + `width: auto` 形状，窄屏飞书会自动摊成竖排而不是截字），工具行三选一排成一行，开关两枚一行，耗时刷新四枚一行；标题与说明合并进同一个 markdown 元素。顶层元素：简洁档 24 → **14**，详细档 20 → **11**。
+- **折叠区标题改数「步」**：简洁过程卡的折叠面板原来写「更早的 N 行」，与「可见窗口按步计数」不一致；现在写「**更早的 N 步**」（`turnCardOlderSteps`），一个超长步骤即便折叠了几十行也只算 1 步。
+- **测试**：控制卡测试改为递归收集按钮/markdown（按钮现在嵌在 `column_set` 里）；新增「折叠区按步计数」用例；全量 **1482 测试 / 75 文件**、`typecheck`、`build` 全绿。
+
+**English**: The `/display` card is now compact: the four levels sit in a 2×2 button grid (`column_set` rows with the same `flex_mode: stretch` + `width: auto` shape the workspace browser and the delivery card already use, which Feishu stacks vertically on narrow screens instead of clipping), the tool-row choice is one row of three, switches two per row and the refresh intervals one row of four; titles and their explanations share one markdown element. Top-level elements: 24 → 14 at `compact`, 20 → 11 at `detailed`. The compact progress card's folded panel now says "N earlier **steps**" (matching the step-counted visible window) instead of "N earlier rows", and a single oversized step counts as one. Tests updated (recursive button/markdown collection, new step-count case); 1482 tests / 75 files, typecheck and build pass.
+
 ### 改进：简洁档的工具行可选 description，`/display` 卡按档位裁剪（`src/display-level.ts` / `src/feishu-progress.ts` / `src/feishu-display.ts` / `src/commands.ts` / `src/config.ts` / `src/i18n.ts`，2026-11-11）
 
 起因：`compact` 的过程卡工具行只显示「碰了什么」（裸文件名 / 程序名），而标准及以上档位的步骤卡会显示模型写的 `description`；`/display` 卡上却只有四个布尔开关——其中参数/结果在简洁与标准档本来就不渲染、思考在简洁档被强制关闭，等于摆了几个按了没反应的按钮，也没有地方选工具行的内容。

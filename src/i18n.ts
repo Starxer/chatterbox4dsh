@@ -286,8 +286,8 @@ export interface Translations {
   turnCardToolDone: (label: string, elapsed: string) => string
   /** One tool call that returned an error. */
   turnCardToolFailed: (label: string, elapsed: string) => string
-  /** Header of the folded panel holding the rows that no longer fit. */
-  turnCardOlderRows: (rows: number) => string
+  /** Header of the folded panel: how many older STEPS (not rows) no longer fit. */
+  turnCardOlderSteps: (steps: number) => string
   /**
    * The live light on the step that is still running: what the model is doing
    * RIGHT NOW, as the step header's suffix (`▸ **第 2 步** · 🧠 思考中 · 4.8s…`).
@@ -1032,7 +1032,7 @@ export const zh = {
   turnCardRunningLabel: '执行中',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
   turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
-  turnCardOlderRows: rows => `**更早的 ${rows} 行**`,
+  turnCardOlderSteps: steps => `**更早的 ${steps} 步**`,
   turnCardPhaseAwaiting: '📡 等待输出',
   turnCardPhaseThinking: '🧠 思考中',
   turnCardPhaseReplying: '✍️ 回复中',
@@ -1638,7 +1638,7 @@ export const en: Translations = {
   turnCardRunningLabel: 'running',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
   turnCardToolFailed: (label, elapsed) => `❌ ${label} · ${elapsed}`,
-  turnCardOlderRows: rows => `**${rows} earlier ${rows === 1 ? 'row' : 'rows'}**`,
+  turnCardOlderSteps: steps => `**${steps} earlier ${steps === 1 ? 'step' : 'steps'}**`,
   turnCardPhaseAwaiting: '📡 awaiting output',
   turnCardPhaseThinking: '🧠 thinking',
   turnCardPhaseReplying: '✍️ replying',

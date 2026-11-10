@@ -272,12 +272,25 @@ describe('renderProgressCard', () => {
     expect(panel).toBeDefined()
     expect(panel.expanded).toBe(false)
     // Whole steps stay together, so 21 newest lines stay visible and the other
-    // 42 (two complete steps) fold away — and the panel says so honestly.
-    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(42)))
+    // 42 (two complete steps) fold away — and the panel counts STEPS, not rows.
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderSteps(2)))
     // The visible part never starts mid-step: the first line is a section header.
     const visible = visibleLines(card)
     expect(visible.length).toBeLessThanOrEqual(PROGRESS_MAX_ROWS)
     expect(visible[0]).toBe(t.turnCardStep(3, '100ms'))
+  })
+
+  it('counts folded STEPS, not rows', () => {
+    // One oversized step: the visible window keeps its header plus the newest
+    // rows, so the hidden remainder is still ONE step — the header must say 1.
+    const tools = Array.from({ length: PROGRESS_MAX_ROWS + 5 }, (_, i) => ({ name: `t${i}`, startedAt: 0, elapsed: 10 }))
+    const card: any = renderProgressCard(t, {
+      steps: [{ step: 1, startedAt: 0, endedAt: 100, tools }],
+      calls: tools.length, failed: 0, turnStart: 0, now: 200, failedTurn: false,
+    })
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    expect(panel).toBeDefined()
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderSteps(1)))
   })
 
   it('caps the folded body so a huge turn cannot blow the card size', () => {
@@ -426,8 +439,9 @@ describe('renderProgressCard', () => {
     const card: any = renderProgressCard(t, { steps, calls: total * 2, failed: 0, turnStart: 0, now: 200, failedTurn: false })
     const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
     const dropped = total - PROGRESS_MAX_STEPS
-    // A dropped step takes its header and both rows with it.
-    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderRows(dropped * 3)))
+    // A dropped step takes its header and both rows with it; the header counts
+    // those steps.
+    expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderSteps(dropped)))
     const visible = visibleLines(card)
     const first = total - PROGRESS_MAX_STEPS + 1
     expect(visible[0]).toBe(t.turnCardStep(first, '100ms'))
