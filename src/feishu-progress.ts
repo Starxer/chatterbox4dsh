@@ -46,6 +46,7 @@
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { interleaveHits, type CardInterleave, type InterleaveTarget } from './card-interleave.ts'
+import { DEFAULT_COMPACT_TOOL_ROW, type CompactToolRowStyle } from './display-level.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
 import { truncateInline } from './text-chunk.ts'
@@ -112,6 +113,17 @@ export const PROGRESS_SUBTOOL_DETAIL_MAX = 40
  */
 export const PROGRESS_ELEMENT_SPACING = '4px'
 
+/**
+ * What a COMPACT tool row carries, chosen by the operator (`/display`):
+ *
+ * - `tool` — the tool row as it always was: the tool name plus the short "what"
+ *   this turn touched (a bare file name / the programs a shell command ran);
+ * - `tool-description` — the model's own one-line description FIRST, then the
+ *   tool row (name + what);
+ * - `description` — the model's description ONLY. A call that wrote none keeps
+ *   just its tool name: the row does not fall back to the derived "what".
+ */
+
 /** One tool call as the card renders it. */
 export interface ProgressTool {
   name: string
@@ -130,6 +142,13 @@ export interface ProgressTool {
    * ran. Absent when the call has nothing short and useful to name.
    */
   detail?: readonly string[] | undefined
+  /**
+   * The model's own one-line description of this call (the `description`
+   * argument most tools accept), already condensed by the streaming layer.
+   * Rendered by the row styles that show it (see {@link CompactToolRowStyle});
+   * absent for a call that did not write one.
+   */
+  description?: string | undefined
   /**
    * The calls THIS call made on its own, i.e. the tools a PTC `run_code`
    * program dispatched (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`).
@@ -345,9 +364,20 @@ function toolLine(
   count: number,
   now: number,
   details: readonly string[],
+  description: string | undefined,
+  style: CompactToolRowStyle,
 ): string {
   const what = details.length === 0 ? '' : ` · ${details.join(' / ')}`
-  const label = `\`${name}\`${count > 1 ? ` ×${count}` : ''}${what}`
+  const tool = `\`${name}\`${count > 1 ? ` ×${count}` : ''}`
+  const description_ = description === undefined ? '' : progressRowText(description, PROGRESS_NOTE_MAX)
+  // The style decides what comes before the clock: the tool row, the
+  // description before it, or the description alone (with no fallback — a call
+  // that wrote none keeps just its name so the row still says something ran).
+  const label = style === 'description'
+    ? (description_ === '' ? tool : description_)
+    : style === 'tool-description'
+      ? (description_ === '' ? `${tool}${what}` : `${description_} · ${tool}${what}`)
+      : `${tool}${what}`
   const ms = status === 'running' ? Math.max(0, now - elapsed) : elapsed
   if (status !== 'running') {
     return status === 'error' ? t.turnCardToolFailed(label, formatProgressMs(ms)) : t.turnCardToolDone(label, formatProgressMs(ms))
@@ -432,6 +462,8 @@ interface ToolRun {
   count: number
   /** The run's "what": at most {@link PROGRESS_MAX_DETAILS} distinct names. */
   details: string[]
+  /** First non-empty description across the run's calls (row styles 2 and 3). */
+  description?: string
   /** The sub-calls of every call in the run, in call order. */
   subCalls: ProgressTool[]
 }
@@ -451,6 +483,7 @@ function mergeRuns(tools: readonly ProgressTool[]): ToolRun[] {
     const status = statusOf(first)
     const run: ToolRun = {
       name: first.name, status, first, elapsed: first.elapsed ?? 0, count: 1, details: [], subCalls: [],
+      ...(first.description === undefined || first.description === '' ? {} : { description: first.description }),
     }
     // At most PROGRESS_MAX_DETAILS NAMES on the row, first come first served:
     // a run of three commands that each ran two programs reads `npm / tail /
@@ -468,6 +501,9 @@ function mergeRuns(tools: readonly ProgressTool[]): ToolRun[] {
       if (next.name !== run.name || statusOf(next) !== status) break
       run.elapsed += next.elapsed ?? 0
       run.count += 1
+      if (run.description === undefined && next.description !== undefined && next.description !== '') {
+        run.description = next.description
+      }
       addDetails(next.detail)
       run.subCalls.push(...next.children ?? [])
     }
@@ -477,14 +513,28 @@ function mergeRuns(tools: readonly ProgressTool[]): ToolRun[] {
   return runs
 }
 
+/**
+ * Condense a model-written row fragment so it cannot break the card markdown:
+ * one line, whitespace collapsed, backticks dropped, and the characters the card
+ * would interpret as inline markup escaped. Same rule as the streaming layer's
+ * `rowText`, re-stated here because this module cannot import it (it imports
+ * this one).
+ */
+function progressRowText(text: string, maxLen: number): string {
+  const first = text.split('\n')[0] ?? ''
+  const plain = first.replace(/\s+/gu, ' ').trim().replace(/`/gu, '')
+  const cut = plain.length > maxLen ? truncateInline(plain, maxLen) : plain
+  return cut.replace(/[*_~[\]<>]/gu, char => `&#${char.codePointAt(0)!};`)
+}
+
 /** One rendered row for a merged run (`✅ \`read\` ×2 · a.ts / b.ts · 40ms`). */
-function toolRow(t: Translations, run: ToolRun, now: number): string {
+function toolRow(t: Translations, run: ToolRun, now: number, style: CompactToolRowStyle): string {
   const clock = run.status === 'running' ? run.first.startedAt : run.elapsed
-  return toolLine(t, run.name, run.status, clock, run.count, now, run.details)
+  return toolLine(t, run.name, run.status, clock, run.count, now, run.details, run.description, style)
 }
 
 /** Flatten the facts into ordered lines. */
-function buildLines(t: Translations, facts: ProgressFacts): Line[] {
+function buildLines(t: Translations, facts: ProgressFacts, style: CompactToolRowStyle): Line[] {
   const lines: Line[] = []
   for (const step of facts.steps) {
     const end = step.endedAt ?? facts.now
@@ -517,7 +567,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
     // run is one row, not ten (see `mergeRuns` for the clock and the "what").
     for (const run of mergeRuns(step.tools)) {
       lines.push({
-        text: `${PROGRESS_QUOTE_MARKER}${toolRow(t, run, facts.now)}`,
+        text: `${PROGRESS_QUOTE_MARKER}${toolRow(t, run, facts.now, style)}`,
         header: false,
         step: step.step,
       })
@@ -527,7 +577,7 @@ function buildLines(t: Translations, facts: ProgressFacts): Line[] {
       // program that read twelve files stays one row.
       for (const sub of mergeRuns(run.subCalls)) {
         lines.push({
-          text: `${PROGRESS_QUOTE_MARKER}${PROGRESS_CHILD_PREFIX}${toolRow(t, sub, facts.now)}`,
+          text: `${PROGRESS_QUOTE_MARKER}${PROGRESS_CHILD_PREFIX}${toolRow(t, sub, facts.now, style)}`,
           header: false,
           step: step.step,
         })
@@ -596,7 +646,11 @@ function groupByStep(lines: readonly Line[]): Array<{ step: number; content: str
  * @param facts - the turn's steps, counters and clock.
  * @returns the full card JSON.
  */
-export function renderProgressCard(t: Translations, facts: ProgressFacts): object {
+export function renderProgressCard(
+  t: Translations,
+  facts: ProgressFacts,
+  style: CompactToolRowStyle = DEFAULT_COMPACT_TOOL_ROW,
+): object {
   const running = facts.endedAt === undefined
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
@@ -614,7 +668,7 @@ export function renderProgressCard(t: Translations, facts: ProgressFacts): objec
 
   // This card owns the turn from `segmentFrom` on: an earlier card — one that is
   // now above a card some other module posted — carries everything before it.
-  const lines = buildLines(t, { ...facts, steps: facts.steps.slice(facts.segmentFrom ?? 0) })
+  const lines = buildLines(t, { ...facts, steps: facts.steps.slice(facts.segmentFrom ?? 0) }, style)
   // Keep the NEWEST rows: a live process card is about what is happening now.
   // Rows are grouped into whole STEP blocks, because a section's rows without
   // their header read as belonging to the section above them.
@@ -793,8 +847,17 @@ export interface ProgressCardsHandle {
    * `tool/call`: append a running row (and open the card on the first one).
    * @param detail - the row's short "what" (`progressToolDetail`); omit when the
    *                 call has nothing short and useful to name.
+   * @param description - the model's own one-line description of the call, when
+   *                 it wrote one; rendered by the row styles that show it.
    */
-  toolStarted(sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void
+  toolStarted(
+    sessionId: string,
+    toolName: string,
+    callId: string,
+    at: number,
+    detail?: readonly string[],
+    description?: string,
+  ): void
   /** `tool/result`: settle the row with that call id (fallback: oldest running). */
   toolFinished(sessionId: string, callId: string, elapsed: number, isError: boolean, at: number): void
   /**
@@ -837,6 +900,12 @@ export interface ProgressCardsDeps {
   /** Read on every re-arm; a live settings write needs no channel restart. */
   elapsedRefreshSeconds?: (() => number) | undefined
   /**
+   * What one tool row carries (`compactToolRow`), read per render so a settings
+   * write applies to the next card without a remount. Omitted = the pre-existing
+   * row (tool name + what it touched).
+   */
+  toolRow?: (() => CompactToolRowStyle) | undefined
+  /**
    * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
    * new one below the interruption.
@@ -856,6 +925,8 @@ export interface ProgressCardsDeps {
  */
 export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandle {
   const { channel, logger, getTranslations } = deps
+  /** The live row style (`compactToolRow`); a settings write applies to the next render. */
+  const rowStyle = (): CompactToolRowStyle => deps.toolRow?.() ?? DEFAULT_COMPACT_TOOL_ROW
   const cards = new Map<string, CardEntry>()
   /**
    * Cards whose segment an interrupting card closed. They never grow again but
@@ -880,7 +951,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
    */
   const sendTextFallback = (entry: CardEntry): void => {
     const t = getTranslations()
-    const lines = buildLines(t, entry.facts).map(line => line.text)
+    const lines = buildLines(t, entry.facts, rowStyle()).map(line => line.text)
     void channel.send(entry.chat.chatId, { text: [renderTitle(t, entry.facts), ...lines].join('\n') }, topicOpts(entry.chat))
       .catch((error: unknown) => {
         logger.warn(`dsh-feishu: progress card notice failed: ${errorText(error, 'unknown error')}`)
@@ -931,7 +1002,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     entry.lastWriteOk = false
     entry.chain = entry.chain.then(async () => {
       if (entry.dead) return
-      const card = entry.answer ?? renderProgressCard(getTranslations(), entry.facts)
+      const card = entry.answer ?? renderProgressCard(getTranslations(), entry.facts, rowStyle())
       const cardId = await entry.cardId
       const messageId = await entry.messageId
       // CardKit instance first: its update API has no edit cap, unlike
@@ -1184,7 +1255,14 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     return undefined
   }
 
-  const toolStarted = (sessionId: string, toolName: string, callId: string, at: number, detail?: readonly string[]): void => {
+  const toolStarted = (
+    sessionId: string,
+    toolName: string,
+    callId: string,
+    at: number,
+    detail?: readonly string[],
+    description?: string,
+  ): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
     if (turn === undefined) return
@@ -1196,7 +1274,13 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       current = { step: facts.steps.length + 1, startedAt: at, tools: [] }
       facts.steps.push(current)
     }
-    current.tools.push({ name: toolName, callId, startedAt: at, ...detail === undefined || detail.length === 0 ? {} : { detail } })
+    current.tools.push({
+      name: toolName,
+      callId,
+      startedAt: at,
+      ...detail === undefined || detail.length === 0 ? {} : { detail },
+      ...description === undefined || description === '' ? {} : { description },
+    })
     facts.calls += 1
     facts.now = at
     const entry = cards.get(sessionId)

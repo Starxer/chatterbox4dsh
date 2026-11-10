@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY, parseTranscriptView, resolveDisplayPolicy, TRANSCRIPT_VIEWS,
+  COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY,
+  isCompactToolRowStyle, levelUsesSwitch, parseCompactToolRow, parseTranscriptView,
+  resolveDisplayPolicy, TRANSCRIPT_VIEWS,
 } from '../src/display-level.ts'
 
 describe('parseTranscriptView', () => {
@@ -93,5 +95,37 @@ describe('resolveDisplayPolicy', () => {
 
   it('reads an unreadable stored level the way the WebUI would', () => {
     expect(resolveDisplayPolicy({ transcriptView: 'expanded' }).reasoning).toBe('head')
+  })
+})
+
+describe('compact tool-row style', () => {
+  it('accepts exactly the three styles and defaults anything else', () => {
+    expect(COMPACT_TOOL_ROW_STYLES).toEqual(['tool', 'tool-description', 'description'])
+    for (const style of COMPACT_TOOL_ROW_STYLES) {
+      expect(parseCompactToolRow(style)).toBe(style)
+      expect(isCompactToolRowStyle(style)).toBe(true)
+    }
+    expect(DEFAULT_COMPACT_TOOL_ROW).toBe('tool')
+    for (const raw of ['nope', '', undefined, null, 1, {}]) {
+      expect(parseCompactToolRow(raw)).toBe('tool')
+      expect(isCompactToolRowStyle(raw)).toBe(false)
+    }
+  })
+
+  it('knows which switches the active level can still use', () => {
+    // compact forces reasoning off and renders no payloads.
+    expect(levelUsesSwitch('compact', 'reasoning')).toBe(false)
+    expect(levelUsesSwitch('compact', 'tools')).toBe(true)
+    expect(levelUsesSwitch('compact', 'args')).toBe(false)
+    expect(levelUsesSwitch('compact', 'results')).toBe(false)
+    // standard has reasoning + tools but still no payloads.
+    expect(levelUsesSwitch('standard', 'reasoning')).toBe(true)
+    expect(levelUsesSwitch('standard', 'args')).toBe(false)
+    // detailed / verbose render everything the four switches control.
+    for (const level of ['detailed', 'verbose'] as const) {
+      for (const key of ['reasoning', 'tools', 'args', 'results'] as const) {
+        expect(levelUsesSwitch(level, key)).toBe(true)
+      }
+    }
   })
 })

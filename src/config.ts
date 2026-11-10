@@ -1,7 +1,10 @@
 import z from '@deepseek-ai/schemastery'
 import type { Volatile } from '@deepseek-ai/cordis'
 import type { PluginLocale } from './i18n.ts'
-import { DEFAULT_TRANSCRIPT_VIEW, TRANSCRIPT_VIEWS, parseTranscriptView, type TranscriptView } from './display-level.ts'
+import {
+  COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, TRANSCRIPT_VIEWS,
+  parseCompactToolRow, parseTranscriptView, type CompactToolRowStyle, type TranscriptView,
+} from './display-level.ts'
 
 export type DomainName = 'feishu' | 'lark'
 export type DirectMessageMode = 'open' | 'allowlist' | 'disabled'
@@ -60,6 +63,12 @@ export interface Config {
    * ever show LESS, never more (see {@link ../display-level.ts}).
    */
   transcriptView?: TranscriptView
+  /**
+   * What one tool row of the COMPACT turn card carries: the tool name plus what
+   * it touched (default), the model's one-line description first and then the
+   * tool row, or the description alone. Only `compact` has these rows.
+   */
+  compactToolRow?: CompactToolRowStyle
   /** Seconds between elapsed-time refreshes on running cards (3/5/10/30). */
   elapsedRefreshSeconds?: number
   /** Characters of the detailed level's reasoning head (see {@link PREVIEW_CHARS}). */
@@ -277,6 +286,12 @@ export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
   'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
   'showToolArgs' | 'showToolResults' | 'transcriptView'>> {
+  /**
+   * Compact tool-row style. Optional in the type (like `elapsedRefreshSeconds`)
+   * because callers may pass a partial config; {@link resolveSettingsConfig}
+   * always fills it, so a live read never sees `undefined`.
+   */
+  compactToolRow?: CompactToolRowStyle
   /** Optional for partial callers; resolveSettingsConfig always fills the interval. */
   elapsedRefreshSeconds?: number
   /** Preview caps; optional in the type, always filled by resolveSettingsConfig. */
@@ -353,6 +368,7 @@ export const ConfigSchema = z.object({
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
   transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact counts tool calls only, standard adds one summary line per call, detailed (default) adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
+  compactToolRow: z.union([...COMPACT_TOOL_ROW_STYLES]).default(DEFAULT_COMPACT_TOOL_ROW).volatile().description('What one tool row of the compact turn card carries: "tool" (default) shows the tool name plus the file/programs it touched, "tool-description" puts the model-written description first and then the tool row, "description" shows the description alone and never falls back when a call has none. Compact only; the other levels keep their own summary line.'),
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
   reasoningPreviewChars: z.number().min(PREVIEW_CHARS.reasoningHead.min).max(PREVIEW_CHARS.reasoningHead.max).default(PREVIEW_CHARS.reasoningHead.default).volatile().description('Characters of the reasoning head shown (collapsed) at the detailed level. The verbose level shows the whole chain. Range 80-4000, default 200; keep it modest because every preview byte counts toward the card\'s ~30 KB budget.'),
   resultPreviewChars: z.number().min(PREVIEW_CHARS.result.min).max(PREVIEW_CHARS.result.max).default(PREVIEW_CHARS.result.default).volatile().description('Characters of one tool result preview on a step card. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 1500.'),
@@ -395,6 +411,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
     transcriptView: parseTranscriptView(readField(config.transcriptView)),
+    compactToolRow: parseCompactToolRow(readField(config.compactToolRow)),
     elapsedRefreshSeconds: parseElapsedRefreshSeconds(readField(config.elapsedRefreshSeconds)),
     reasoningPreviewChars: clampPreviewChars('reasoningHead', readField(config.reasoningPreviewChars)),
     resultPreviewChars: clampPreviewChars('result', readField(config.resultPreviewChars)),

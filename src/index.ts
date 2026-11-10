@@ -17,6 +17,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk'
 import { createLarkChannel, defaultHttpInstance } from '@larksuiteoapi/node-sdk'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
 import { CARD_MEDIA_LIMIT, CARD_MEDIA_MAX_MB, ConfigSchema, DEFAULT_ELAPSED_REFRESH_SECONDS, DEFAULT_PRODUCE_CARD, DELIVER_DOC_MAX_MB, LARK_SETTINGS_NAMESPACE, PREVIEW_CHARS, resolveSettingsConfig } from './config.ts'
+import { DEFAULT_COMPACT_TOOL_ROW } from './display-level.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -1087,6 +1088,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
       transcriptView: () => currentSettings().transcriptView,
+      compactToolRow: () => currentSettings().compactToolRow ?? DEFAULT_COMPACT_TOOL_ROW,
       elapsedRefreshSeconds: () => currentSettings().elapsedRefreshSeconds ?? DEFAULT_ELAPSED_REFRESH_SECONDS,
       // Live preview caps: a settings write applies to the next card without a
       // remount (same contract as transcriptView).
@@ -1335,6 +1337,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       }
     },
     getLevel: () => currentSettings().transcriptView,
+    getToolRow: () => currentSettings().compactToolRow ?? DEFAULT_COMPACT_TOOL_ROW,
     getElapsedRefreshSeconds: () => currentSettings().elapsedRefreshSeconds ?? DEFAULT_ELAPSED_REFRESH_SECONDS,
     setElapsedRefreshSeconds: seconds => settings.mutate(namespace,
       [{ op: 'set', path: ['elapsedRefreshSeconds'], value: seconds }], currentRevision()).then(() => undefined),
@@ -1342,6 +1345,13 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       const write = settings.mutate(namespace, [{ op: 'set', path: ['transcriptView'], value: level }], currentRevision())
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display level write failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return write
+    },
+    setToolRow: (style) => {
+      const write = settings.mutate(namespace, [{ op: 'set', path: ['compactToolRow'], value: style }], currentRevision())
+      write.catch((error: unknown) => {
+        console.log(`dsh-feishu: /display tool-row write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },

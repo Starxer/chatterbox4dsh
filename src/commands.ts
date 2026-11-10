@@ -5,7 +5,7 @@ import type { LlmProviderInfo, LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
-import { type TranscriptView } from './display-level.ts'
+import { type CompactToolRowStyle, type TranscriptView } from './display-level.ts'
 import { zh } from './i18n.ts'
 import { isElapsedRefreshSeconds, parseElapsedRefreshSeconds, type ElapsedRefreshSeconds } from './config.ts'
 
@@ -76,6 +76,10 @@ export interface DisplayControl {
   /** Shared clock refresh interval for compact progress and step placeholders. */
   getElapsedRefreshSeconds: () => number
   setElapsedRefreshSeconds: (seconds: ElapsedRefreshSeconds) => void | Promise<void>
+  /** What one tool row of the compact turn card carries (`compactToolRow`). */
+  getToolRow: () => CompactToolRowStyle
+  /** Persist the row style. Asynchronous for the same reason as {@link setLevel}. */
+  setToolRow: (style: CompactToolRowStyle) => void | Promise<void>
 }
 
 export interface CommandTranslations {
@@ -180,6 +184,12 @@ export interface CommandTranslations {
   readonly displayTickCurrent: (seconds: number) => string
   readonly displayTickSet: (seconds: number) => string
   readonly displayTickUsage: string
+  /** Label of the compact tool-row style in `/display` listings. */
+  readonly displayToolRowLabel: string
+  /** One row style's short name (`工具` / `描述 + 工具` / `仅描述`). */
+  readonly displayToolRowName: (style: CompactToolRowStyle) => string
+  readonly displayToolRowSet: (name: string) => string
+  readonly displayToolRowUsage: string
 }
 
 /**
@@ -626,6 +636,18 @@ function parseDisplayValue(value: string | undefined): boolean | undefined {
 
 const DISPLAY_KEYS: readonly DisplayToggleKey[] = ['reasoning', 'tools', 'args', 'results']
 
+/** Accepted spellings for each compact tool-row style. */
+const DISPLAY_TOOL_ROW_ALIASES: Record<string, CompactToolRowStyle> = {
+  tool: 'tool',
+  tools: 'tool',
+  both: 'tool-description',
+  'tool-description': 'tool-description',
+  'tool+description': 'tool-description',
+  description: 'description',
+  desc: 'description',
+  only: 'description',
+}
+
 /** Accepted level spellings, including the WebUI's two legacy ones. */
 const DISPLAY_LEVEL_ALIASES: Record<string, TranscriptView> = {
   compact: 'compact',
@@ -640,8 +662,9 @@ const DISPLAY_LEVEL_ALIASES: Record<string, TranscriptView> = {
 }
 
 /**
- * Handle `/display [reasoning|tools|args|results] [on|off]` and
- * `/display <level>` / `/display tick [3|5|10|30]`.
+ * Handle `/display [reasoning|tools|args|results] [on|off]`,
+ * `/display <level>`, `/display tick [3|5|10|30]` and
+ * `/display toolrow tool|both|description`.
  *
  * With no argument it reports the level plus all four switches; with a switch
  * and a value it flips that one; with a bare level name it switches the level.
@@ -667,12 +690,27 @@ export async function handleDisplayCommand(
     const level = display.getLevel()
     const lines = [
       `${t.displayLevelLabel}: ${t.displayLevelName(level)}`,
+      `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
       t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
       ...DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key])),
     ]
     return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
   }
   const [rawKey, rawValue, extra] = raw.split(/\s+/u)
+  if (rawKey === 'toolrow' || rawKey === 'tool-row') {
+    if (rawValue === undefined) {
+      return {
+        kind: 'success',
+        text: `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}\n${t.displayToolRowUsage}`,
+      }
+    }
+    const style = DISPLAY_TOOL_ROW_ALIASES[rawValue]
+    if (extra !== undefined || style === undefined) {
+      return { kind: 'error', text: t.displayToolRowUsage }
+    }
+    await display.setToolRow(style)
+    return { kind: 'success', text: t.displayToolRowSet(t.displayToolRowName(style)) }
+  }
   if (rawKey === 'tick') {
     if (rawValue === undefined) {
       return { kind: 'success', text: `${t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds()))}\n${t.displayTickUsage}` }

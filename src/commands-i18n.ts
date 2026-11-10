@@ -146,6 +146,14 @@ export const zhCommandTranslations: CommandTranslations = {
   displayTickCurrent: seconds => `• 耗时刷新：每 ${seconds} 秒`,
   displayTickSet: seconds => `📇 耗时刷新已设为每 ${seconds} 秒。跨重启持久化。`,
   displayTickUsage: '用法：/display tick [3|5|10|30]（秒；不带数值查看当前设置）。',
+  displayToolRowLabel: '工具行',
+  displayToolRowName: style => ({
+    tool: '仅工具',
+    'tool-description': '描述 + 工具',
+    description: '仅描述',
+  })[style],
+  displayToolRowSet: name => `✅ 工具行已切换为「${name}」。`,
+  displayToolRowUsage: '用法：/display toolrow tool|both|description（仅「简洁」档生效）。',
 }
 
 /** English implementation of `CommandTranslations`. */
@@ -278,6 +286,14 @@ export const enCommandTranslations: CommandTranslations = {
   displayTickCurrent: seconds => `• Elapsed refresh: every ${seconds}s`,
   displayTickSet: seconds => `📇 Elapsed refresh set to every ${seconds}s. Persisted across restarts.`,
   displayTickUsage: 'Usage: /display tick [3|5|10|30] (seconds; omit the value to show the current setting).',
+  displayToolRowLabel: 'Tool row',
+  displayToolRowName: style => ({
+    tool: 'Tool only',
+    'tool-description': 'Description + tool',
+    description: 'Description only',
+  })[style],
+  displayToolRowSet: name => `✅ Tool row set to "${name}".`,
+  displayToolRowUsage: 'Usage: /display toolrow tool|both|description (compact level only).',
 }
 
 /**

@@ -23,7 +23,7 @@
  * @module @starxer/chatterbox4dsh/i18n
  */
 
-import type { TranscriptView } from './display-level.ts'
+import type { CompactToolRowStyle, TranscriptView } from './display-level.ts'
 
 /** Locale identifiers the plugin ships. */
 export const LOCALE_IDS = ['zh', 'en'] as const
@@ -502,6 +502,18 @@ export interface Translations {
   displayCardTickTitle: string
   displayCardTickHint: string
   displayCardTickButton: (seconds: number, active: boolean) => string
+  /** Compact-only "tool row" section of the display card. */
+  displayCardToolRowTitle: string
+  displayCardToolRowHint: string
+  /** One row style's short name (`仅工具` / `描述 + 工具` / `仅描述`). */
+  displayToolRowName: (style: CompactToolRowStyle) => string
+  displayCardToolRowButton: (name: string, active: boolean) => string
+  /** Notation under the switches when the active level ignores some of them. */
+  displayCardSwitchesHiddenByLevel: string
+  /** `/display toolrow ...` text-path strings (also the `/display` listing). */
+  displayToolRowLabel: string
+  displayToolRowSet: (name: string) => string
+  displayToolRowUsage: string
   pendingAttachmentsNotice: (images: number, files: number) => string
   pendingAttachmentsDiscarded: string
   /** Section heading for the four detail levels on the card. */
@@ -1156,6 +1168,18 @@ export const zh = {
   displayCardTickTitle: '**耗时刷新**',
   displayCardTickHint: '简洁过程卡与其他档位的等待卡共用；只影响计时刷新，不延迟新事件。',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds} 秒`,
+  displayCardToolRowTitle: '**工具行**（仅「简洁」档）',
+  displayCardToolRowHint: '_简洁模式过程卡里，每个工具调用那一行显示什么。描述 = 模型自己写的一句 description，并非每个工具都会写。_',
+  displayToolRowName: style => ({
+    tool: '仅工具',
+    'tool-description': '描述 + 工具',
+    description: '仅描述',
+  })[style],
+  displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
+  displayCardSwitchesHiddenByLevel: '_当前档位下不起作用的开关已隐藏：参数/结果只在「详细」「完全展开」生效，思考内容在「简洁」下不显示。_',
+  displayToolRowLabel: '工具行',
+  displayToolRowSet: name => `✅ 工具行已切换为「${name}」。`,
+  displayToolRowUsage: '用法：`/display toolrow tool|both|description`',
   pendingAttachmentsNotice: (images, files) => `📥 已暂存 ${[images > 0 ? `${images} 张图片` : '', files > 0 ? `${files} 个文件` : ''].filter(Boolean).join('、')}，等待你的文字说明；发送文字后会一起交给 Agent。`,
   pendingAttachmentsDiscarded: '已清除上一会话暂存的附件。',
   displayCardLevelTitle: '**工作步骤展示**（四档）',
@@ -1752,6 +1776,18 @@ export const en: Translations = {
   displayCardTickTitle: '**Elapsed-time refresh**',
   displayCardTickHint: 'Shared by compact progress and other levels’ waiting cards; new events are not delayed.',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds}s`,
+  displayCardToolRowTitle: '**Tool row** (compact only)',
+  displayCardToolRowHint: '_What one tool row of the compact progress card carries. "Description" is the model-written one-liner, which not every tool takes._',
+  displayToolRowName: style => ({
+    tool: 'Tool only',
+    'tool-description': 'Description + tool',
+    description: 'Description only',
+  })[style],
+  displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
+  displayCardSwitchesHiddenByLevel: '_Switches the active level cannot use are hidden: arguments/results apply to detailed and verbose only, reasoning is never shown in compact._',
+  displayToolRowLabel: 'Tool row',
+  displayToolRowSet: name => `✅ Tool row set to "${name}".`,
+  displayToolRowUsage: 'Usage: `/display toolrow tool|both|description`',
   pendingAttachmentsNotice: (images, files) => `📥 Saved ${[images > 0 ? `${images} image${images === 1 ? '' : 's'}` : '', files > 0 ? `${files} file${files === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')}, waiting for your text instructions; your next text message will send them to the Agent together.`,
   pendingAttachmentsDiscarded: 'Cleared the attachments saved for the previous session.',
   displayCardLevelTitle: '**Work details** (the Web UI\'s four levels)',

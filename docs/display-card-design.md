@@ -175,3 +175,13 @@ export function startFeishuDisplay(deps: {
 ## 十一、耗时刷新间隔（2026-10-29）
 
 控制卡在显示开关下增加「⏱ 耗时刷新」：3／5／10／30 秒，默认 5 秒；当前项标记选中并禁用，点击其它项等待 `settings.mutate` 持久化后原地重绘。文本命令 `/display tick` 查询，`/display tick 5` 设置。字段 `elapsedRefreshSeconds` 为 volatile，不进入连接指纹；compact 行时钟与非 compact 占位时钟共用它。已排定的 timeout 保留，下次排程读取最新配置；工具开始／结束等事件不受刷新间隔延迟。慢写期间只合并最新一版，结束／停用清理定时器。
+
+## 十二、适配「简洁」档：工具行三选一 + 用不到的开关不再出现（2026-11-11）
+
+起因：`compact` 的过程卡工具行只显示「碰了什么」（裸文件名 / 程序名），而标准及以上档位的步骤卡会显示模型写的 description；控制卡却只有四个布尔开关，其中参数/结果在简洁与标准档本来就不渲染，思考在简洁档被强制关闭——一张卡上出现了**按了没反应**的按钮，也没有地方选工具行的内容。
+
+- **工具行三选一（仅简洁档）**：`compactToolRow` = `tool`（默认，工具名 + 碰了什么）/ `tool-description`（描述在前、工具行在后）/ `description`（只显示描述，没写就不回退，只留工具名）。控制卡在简洁档多一段三按钮，选中项主色 + 置灰；其它档位不渲染这一段（那些档位有自己的摘要行）。文本路径 `/display toolrow tool|both|description`。
+- **按档位裁剪开关**：`levelUsesSwitch()`（`display-level.ts`）决定某个开关在当前档位是否还有意义——简洁档只留「工具调用」，标准档留「思考 + 工具调用」，详细/完全展开四个都在；被隐藏的开关**存储值不动**，切回高档位自动回来。卡面用一行 notation 说明「当前档位下用不到的开关已隐藏」。
+- **渲染逐帧读取**：过程卡每个工具行的内容由 `toolRow()` 在写入时读取（与 `transcriptView` 同样 volatile），所以点一下按钮，下一张卡就变，不必重挂。
+- **description 的来源与安全**：只取工具调用 arguments 里的 `description`（`bash`、`subagent` 等有，读/写/编辑这类通常没有）；渲染前压成一行、截断 80 字、去掉反引号并把 `* _ ~ [ ] <>` 转义成实体，避免破坏卡片 markdown（与 narration 行同一口径）。
+- **验证**：`tests/feishu-progress.spec.ts`（三种行文 + 无回退 + 转义 + 合并行取首个描述）、`tests/feishu-display.spec.ts`（简洁档出现工具行段、其它档不出现、按档位裁剪开关与说明、点击后原地重绘且选中项置灰）、`tests/commands.spec.ts`（`/display toolrow` 查询/设置/非法值）、`tests/display-level.spec.ts`（解析与 `levelUsesSwitch`）；全量 1481 测试 / 75 文件、typecheck、build 全绿。

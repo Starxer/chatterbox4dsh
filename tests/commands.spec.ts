@@ -94,6 +94,10 @@ const translations: CommandTranslations = {
   displayTickCurrent: seconds => `refresh: ${seconds}s`,
   displayTickSet: seconds => `refresh set to ${seconds}s`,
   displayTickUsage: 'Usage: /display tick [3|5|10|30]',
+  displayToolRowLabel: 'Tool row',
+  displayToolRowName: style => `row:${style}`,
+  displayToolRowSet: name => `row set:${name}`,
+  displayToolRowUsage: 'Usage: /display toolrow tool|both|description',
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -114,6 +118,8 @@ const stubDisplay: DisplayControl = {
   setLevel: vi.fn(),
   getElapsedRefreshSeconds: () => 5,
   setElapsedRefreshSeconds: vi.fn(),
+  getToolRow: () => 'tool',
+  setToolRow: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -257,7 +263,13 @@ describe('registerLarkCommands', () => {
 
 describe('/display command', () => {
   const invocation = (rawInput: string) => ({ name: 'display', rawInput } as never)
-  const control = (): DisplayControl => ({ ...stubDisplay, set: vi.fn(), setLevel: vi.fn(), setElapsedRefreshSeconds: vi.fn() })
+  const control = (): DisplayControl => ({
+    ...stubDisplay,
+    set: vi.fn(),
+    setLevel: vi.fn(),
+    setElapsedRefreshSeconds: vi.fn(),
+    setToolRow: vi.fn(),
+  })
 
   it('reports level, elapsed refresh and all switches without arguments', async () => {
     const display = { ...control(), get: () => ({ reasoning: true, tools: false, args: true, results: false }) }
@@ -304,6 +316,29 @@ describe('/display command', () => {
       expect((await handleDisplayCommand(invocation(`tick ${raw}`), translations, display)).kind).toBe('error')
     }
     expect(display.setElapsedRefreshSeconds).toHaveBeenCalledTimes(4)
+  })
+
+  it('reports and switches the compact tool-row style', async () => {
+    const display = control()
+    const listed = await handleDisplayCommand(invocation('toolrow'), translations, display)
+    expect(listed.text).toContain('Tool row: row:tool')
+    expect(listed.text).toContain('Usage: /display toolrow')
+    for (const [raw, style] of [
+      ['tool', 'tool'],
+      ['both', 'tool-description'],
+      ['tool-description', 'tool-description'],
+      ['description', 'description'],
+      ['desc', 'description'],
+    ] as const) {
+      const result = await handleDisplayCommand(invocation(`toolrow ${raw}`), translations, display)
+      expect(result.kind).toBe('success')
+      expect(display.setToolRow).toHaveBeenLastCalledWith(style)
+      expect(result.text).toContain(`row set:row:${style}`)
+    }
+    for (const raw of ['nope', 'both extra', 'all']) {
+      expect((await handleDisplayCommand(invocation(`toolrow ${raw}`), translations, display)).kind).toBe('error')
+    }
+    expect(display.setToolRow).toHaveBeenCalledTimes(5)
   })
 
   it('waits for persistence before reporting success and propagates write failures', async () => {

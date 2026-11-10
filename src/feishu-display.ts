@@ -27,7 +27,10 @@
  */
 
 import type { DisplayControl, DisplayToggleKey } from './commands.ts'
-import { TRANSCRIPT_VIEWS, type TranscriptView } from './display-level.ts'
+import {
+  COMPACT_TOOL_ROW_STYLES, isCompactToolRowStyle, levelUsesSwitch, TRANSCRIPT_VIEWS,
+  type CompactToolRowStyle, type TranscriptView,
+} from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { decodeCardValue } from './card-action.ts'
@@ -80,6 +83,8 @@ export interface DisplayCardState {
   level: TranscriptView
   /** The four card-display switches. */
   switches: Record<DisplayToggleKey, boolean>
+  /** What a compact turn card's tool row carries (compact-only section). */
+  toolRow: CompactToolRowStyle
   /** Missing on older callers; rendered as the default five seconds. */
   elapsedRefreshSeconds?: number
 }
@@ -115,10 +120,36 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       behaviors: [{ type: 'callback', value: { p: 'display', level, value: !active } }],
     })
   }
+  // The tool-row style only exists at `compact` (the other levels render their
+  // own summary line per call), so the section is shown exactly when it applies.
+  if (state.level === 'compact') {
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: t.displayCardToolRowTitle })
+    elements.push({ tag: 'markdown', content: t.displayCardToolRowHint, text_size: 'notation' })
+    for (const style of COMPACT_TOOL_ROW_STYLES) {
+      const active = style === state.toolRow
+      elements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardToolRowButton(t.displayToolRowName(style), active) },
+        type: active ? 'primary' : 'default',
+        ...(active ? { disabled: true } : {}),
+        behaviors: [{ type: 'callback', value: { p: 'display', toolRow: style } }],
+      })
+    }
+  }
   elements.push({ tag: 'hr' })
   elements.push({ tag: 'markdown', content: t.displayCardHint })
   const switches = state.switches
+  let hiddenByLevel = false
   for (const key of DISPLAY_KEYS) {
+    // A switch the active level cannot use is not offered at all: a toggle that
+    // changes nothing reads as a broken card (`compact` forces reasoning off,
+    // and only detailed/verbose render argument/result payloads). The stored
+    // values are untouched, so switching the level brings the switch back.
+    if (!levelUsesSwitch(state.level, key)) {
+      hiddenByLevel = true
+      continue
+    }
     // Arguments and results only describe tool calls, so with tool display off
     // they have nothing to act on. Hide their switches rather than offer a
     // toggle that cannot change anything; the stored values are left untouched
@@ -141,9 +172,12 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       behaviors: [{ type: 'callback', value: { p: 'display', key, value: !enabled } }],
     })
   }
-  // Say why two switches are missing, so the card does not just look broken.
+  // Say why switches are missing, so the card does not just look broken.
   if (!switches.tools) {
     elements.push({ tag: 'markdown', content: t.displayCardHiddenByTools, text_size: 'notation' })
+  }
+  if (hiddenByLevel) {
+    elements.push({ tag: 'markdown', content: t.displayCardSwitchesHiddenByLevel, text_size: 'notation' })
   }
   elements.push({ tag: 'hr' })
   elements.push({ tag: 'markdown', content: t.displayCardTickTitle })
@@ -190,7 +224,12 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
 
   /** The card as the CURRENT settings read right now. */
   const currentCard = (): object =>
-    renderDisplayCard({ level: display.getLevel(), switches: display.get(), elapsedRefreshSeconds: display.getElapsedRefreshSeconds() }, getTranslations())
+    renderDisplayCard({
+      level: display.getLevel(),
+      switches: display.get(),
+      toolRow: display.getToolRow(),
+      elapsedRefreshSeconds: display.getElapsedRefreshSeconds(),
+    }, getTranslations())
 
   /**
    * Repaint the clicked card from the persisted settings — in place, the way
@@ -231,6 +270,18 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
         logger.warn(`dsh-feishu: display refresh interval write failed: ${msg}`)
       }
       await repaint(messageId)
+      return
+    }
+    const toolRow = parsed.toolRow
+    if (isCompactToolRowStyle(toolRow)) {
+      try {
+        await display.setToolRow(toolRow)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display tool-row write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] toolRow=${toolRow} card=${messageId}`)
       return
     }
     const level = parsed.level

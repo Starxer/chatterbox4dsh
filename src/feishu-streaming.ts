@@ -29,7 +29,7 @@ import { errorText } from './error-text.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import {
   DETAILED_POLICY, REASONING_HEAD_CAP, REASONING_PREVIEW_CAP,
-  resolveDisplayPolicy, type DisplayPolicy, type TranscriptView,
+  resolveDisplayPolicy, type CompactToolRowStyle, type DisplayPolicy, type TranscriptView,
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
 import { pendingProducedCall, producedArtifacts, settleProducedCall, type ProducedPath } from './produced-files.ts'
@@ -158,6 +158,12 @@ export interface FeishuStreamingDeps {
    * only take detail away.
    */
   transcriptView?: () => TranscriptView
+  /**
+   * What one tool row of the compact turn card carries (`compactToolRow`), read
+   * live so a settings write applies to the next render. Omitted keeps the
+   * pre-existing row (tool name + what it touched).
+   */
+  compactToolRow?: () => CompactToolRowStyle
   /** Shared live elapsed-clock refresh interval, in seconds (default five). */
   elapsedRefreshSeconds?: () => number
   /**
@@ -558,6 +564,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     channel,
     logger,
     elapsedRefreshSeconds: deps.elapsedRefreshSeconds,
+    toolRow: deps.compactToolRow,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
     ...(interleave === undefined ? {} : { interleave }),
   })
@@ -1809,6 +1816,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             // The row's "what" (file / shell programs) is derived HERE because
             // this is where the arguments are; the card module only renders it.
             progressToolDetails(toolName, typeof args === 'string' ? args : JSON.stringify(args ?? '')),
+            // The model's own one-liner, when the tool took one (`bash` does).
+            // The card's row style decides whether and where it is rendered.
+            toolCallDescription(args),
           )
         }
 
@@ -3056,6 +3066,27 @@ function urlHost(url: string): string | undefined {
  * @param argsRaw - the call's raw arguments JSON.
  * @returns the names, or undefined when there is nothing short and useful.
  */
+/**
+ * The model's own one-line `description` of a tool call, when the tool's schema
+ * has one (`bash` requires it; `subagent` and a few others take it).
+ *
+ * Only the description ARGUMENT counts. A call that has none returns
+ * `undefined`, which the compact row styles treat as "nothing to show" — the
+ * `description`-only style deliberately does not fall back to the derived
+ * "what" (the user's choice, 2026-11-11).
+ *
+ * @param args - the call's raw `arguments` (as the session event carries it).
+ * @returns the first line, trimmed; `undefined` when absent or blank.
+ */
+function toolCallDescription(args: unknown): string | undefined {
+  const parsed = typeof args === 'string' ? parseToolArgs(args) : args
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const value = (parsed as Record<string, unknown>).description
+  if (typeof value !== 'string') return undefined
+  const text = firstLine(value).trim()
+  return text === '' ? undefined : text
+}
+
 export function progressToolDetails(toolName: string, argsRaw: string): string[] | undefined {
   const parsed = parseToolArgs(argsRaw)
   if (typeof parsed !== 'object' || parsed === null) return undefined

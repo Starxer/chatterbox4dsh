@@ -46,6 +46,39 @@ export const TRANSCRIPT_VIEWS: readonly TranscriptView[] = ['compact', 'standard
 export const DEFAULT_TRANSCRIPT_VIEW: TranscriptView = 'detailed'
 
 /**
+ * What one tool row of the COMPACT turn card carries:
+ *
+ * - `tool` — the pre-existing row: the tool name plus the short "what" it
+ *   touched (a bare file name / the programs a shell command ran);
+ * - `tool-description` — the model's own one-line `description` FIRST, then the
+ *   tool row;
+ * - `description` — the description only. A call that wrote none keeps just its
+ *   tool name: there is deliberately no fallback to the derived "what".
+ *
+ * Only `compact` has these rows; the step cards at the other levels show their
+ * own summary line (see `deriveToolSummary` in `src/feishu-streaming.ts`).
+ */
+export type CompactToolRowStyle = 'tool' | 'tool-description' | 'description'
+
+/** The styles in the order the settings UIs list them. */
+export const COMPACT_TOOL_ROW_STYLES: readonly CompactToolRowStyle[] = ['tool', 'tool-description', 'description']
+
+/** The default style: the pre-existing compact row. */
+export const DEFAULT_COMPACT_TOOL_ROW: CompactToolRowStyle = 'tool'
+
+/** Read one stored row style; anything unknown is the default. */
+export function parseCompactToolRow(value: unknown): CompactToolRowStyle {
+  return typeof value === 'string' && (COMPACT_TOOL_ROW_STYLES as readonly string[]).includes(value)
+    ? value as CompactToolRowStyle
+    : DEFAULT_COMPACT_TOOL_ROW
+}
+
+/** True when `value` is a valid row style (card payload validation). */
+export function isCompactToolRowStyle(value: unknown): value is CompactToolRowStyle {
+  return typeof value === 'string' && (COMPACT_TOOL_ROW_STYLES as readonly string[]).includes(value)
+}
+
+/**
  * How much of a step's reasoning the card carries.
  *
  * - `off`     — no reasoning section, and reasoning alone does not make a step visible;
@@ -178,6 +211,33 @@ export function resolveDisplayPolicy(input: {
     // it off, because a user who asked for no tool display at all must not get
     // a card that lists every tool.
     turnCard: level.turnCard && input.showToolCalls !== false,
+  }
+}
+
+/**
+ * Whether one of the four switches can still change anything at this level.
+ *
+ * The `/display` card hides the ones it cannot: offering a toggle that does
+ * nothing is what made the card feel unsuited to `compact` (its reasoning is
+ * forced off, and `standard`/`compact` carry no argument/result payloads at
+ * all). Stored values are left untouched, so a switch comes back when the level
+ * changes — the same rule the card already used when tool calls were off.
+ *
+ * @param level - the active level.
+ * @param key - one of the four switch keys.
+ * @returns whether the switch is functional at that level.
+ */
+export function levelUsesSwitch(
+  level: TranscriptView,
+  key: 'reasoning' | 'tools' | 'args' | 'results',
+): boolean {
+  switch (key) {
+    case 'reasoning': return level !== 'compact'
+    // Tool display is always meaningful: at `compact` it removes the progress
+    // card's tool rows, at the step levels it removes the tool section.
+    case 'tools': return true
+    case 'args':
+    case 'results': return LEVELS[level].toolArgs
   }
 }
 

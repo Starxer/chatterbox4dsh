@@ -22,8 +22,17 @@ function levelsOf(card: any): any[] {
 }
 
 /** The switch-card input for one set of switches at the default level. */
-function cardFor(switches: Record<DisplayToggleKey, boolean>, level = 'detailed' as const): any {
-  return { level, switches }
+function cardFor(
+  switches: Record<DisplayToggleKey, boolean>,
+  level: TranscriptView = 'detailed',
+  toolRow: 'tool' | 'tool-description' | 'description' = 'tool',
+): any {
+  return { level, switches, toolRow }
+}
+
+/** Only the compact tool-row style buttons. */
+function toolRowsOf(card: any): any[] {
+  return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.toolRow !== undefined)
 }
 
 /**
@@ -108,6 +117,42 @@ describe('renderDisplayCard', () => {
     expect(behaviorsOf(card, 'results')).toHaveLength(1)
   })
 
+  it('offers the compact tool-row styles only at the compact level', () => {
+    const compact = renderDisplayCard(cardFor(ALL_ON, 'compact', 'tool-description'), t) as any
+    const rows = toolRowsOf(compact)
+    expect(rows.map((b: any) => b.behaviors[0].value.toolRow)).toEqual(['tool', 'tool-description', 'description'])
+    // The active style is the state: primary AND disabled, like the level buttons.
+    expect(rows.find((b: any) => b.behaviors[0].value.toolRow === 'tool-description')).toMatchObject({ disabled: true, type: 'primary' })
+    // Every other level renders its own summary line per call, so the control
+    // would have nothing to change.
+    for (const level of ['standard', 'detailed', 'verbose'] as const) {
+      expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, level), t))).toHaveLength(0)
+    }
+  })
+
+  it('hides the switches the active level cannot use, and says so', () => {
+    const md = (card: any): string => card.body.elements
+      .filter((el: any) => el.tag === 'markdown')
+      .map((el: any) => el.content)
+      .join('\n')
+    // compact: reasoning is forced off, and there are no argument/result payloads.
+    const compact = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
+    expect(switchesOf(compact).map((b: any) => b.behaviors[0].value.key)).toEqual(['tools'])
+    expect(md(compact)).toContain('参数/结果只在「详细」「完全展开」生效')
+    // standard: reasoning and tools are real, payloads are not.
+    const standard = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
+    expect(switchesOf(standard).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
+    // detailed / verbose keep all four.
+    expect(switchesOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(4)
+    expect(switchesOf(renderDisplayCard(cardFor(ALL_ON, 'verbose'), t))).toHaveLength(4)
+  })
+
+  it('leaves out the hidden-by-level note when every switch is usable', () => {
+    const detailed = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
+    const text = detailed.body.elements.filter((el: any) => el.tag === 'markdown').map((el: any) => el.content).join('\n')
+    expect(text).not.toContain('不起作用')
+  })
+
   it('hides the argument and result switches while tool display is off', () => {
     const card = renderDisplayCard(cardFor({ ...ALL_ON, tools: false }), t) as any
     // Only the two switches that still do something remain.
@@ -136,16 +181,27 @@ describe('renderDisplayCard', () => {
  * repaint after a write sees the new value — exactly like the volatile config
  * references in production).
  */
-function makeDisplay(state: Record<DisplayToggleKey, boolean>, level: TranscriptView = 'detailed') {
+function makeDisplay(
+  state: Record<DisplayToggleKey, boolean>,
+  level: TranscriptView = 'detailed',
+  toolRow: 'tool' | 'tool-description' | 'description' = 'tool',
+) {
   const spy = vi.fn()
   const levelSpy = vi.fn()
   const tickSpy = vi.fn()
+  const toolRowSpy = vi.fn()
   let seconds = 5
   return {
     spy,
     levelSpy,
     tickSpy,
+    toolRowSpy,
     control: {
+      getToolRow: () => toolRow,
+      setToolRow: (next: 'tool' | 'tool-description' | 'description'): void => {
+        toolRowSpy(next)
+        toolRow = next
+      },
       getElapsedRefreshSeconds: () => seconds,
       setElapsedRefreshSeconds: (next: number): void | Promise<void> => { tickSpy(next); seconds = next },
       get: () => state,
@@ -180,6 +236,22 @@ function makeChannel() {
 }
 
 describe('startFeishuDisplay', () => {
+  it('persists a tool-row style tap then repaints the SAME card', async () => {
+    const { channel, click, sentCard, repainted } = makeChannel()
+    const { control, toolRowSpy } = makeDisplay(ALL_ON, 'compact')
+    const handle = startFeishuDisplay({ channel, display: control, logger: { warn: vi.fn(), error: vi.fn() }, getTranslations: () => t })
+    await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
+    const target = sentCard(0).body.elements
+      .filter((el: any) => el.tag === 'button')
+      .find((b: any) => b.behaviors[0].value.toolRow === 'description')
+    await click({ messageId: 'om_1', action: { value: target.behaviors[0].value } })
+    expect(toolRowSpy).toHaveBeenCalledWith('description')
+    // In place: the same message is repainted, and the new style is the state.
+    expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
+    expect(toolRowsOf(repainted(0)).find((b: any) => b.behaviors[0].value.toolRow === 'description')).toMatchObject({ disabled: true, type: 'primary' })
+    handle.stop()
+  })
+
   it('persists a refresh tap then repaints the SAME card, ignoring invalid intervals', async () => {
     const { channel, click, repainted } = makeChannel()
     const { control, tickSpy } = makeDisplay({ ...ALL_ON })
@@ -282,6 +354,8 @@ describe('startFeishuDisplay', () => {
         setLevel: () => undefined,
         getElapsedRefreshSeconds: () => 5,
         setElapsedRefreshSeconds: () => undefined,
+        getToolRow: () => 'tool' as const,
+        setToolRow: () => undefined,
         // Persisting is asynchronous: the readable snapshot only changes at the
         // end, exactly like `settings.mutate` / `settingsScope.get()`.
         set: (key: DisplayToggleKey, value: boolean) => persisted.then(() => { state[key] = value }),

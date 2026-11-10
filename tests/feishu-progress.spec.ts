@@ -784,6 +784,61 @@ describe('createProgressCards', () => {
     vi.useRealTimers()
   })
 
+  it('renders the three compact tool-row styles from the same facts', () => {
+    // The three styles are a pure render decision, so they are checked on the
+    // renderer directly (the controller wiring is covered elsewhere).
+    const facts = {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 900,
+        tools: [
+          { name: 'bash', callId: 'c1', startedAt: 10, elapsed: 400, detail: ['ls', 'git'], description: '查看仓库状态和工作区文件' },
+          { name: 'read', callId: 'c2', startedAt: 600, elapsed: 100, detail: ['channel.ts'] },
+        ],
+      }],
+      calls: 2, failed: 0, turnStart: 0, endedAt: 900, now: 900, failedTurn: false,
+    }
+    const md = (style: 'tool' | 'tool-description' | 'description'): string =>
+      String(mdOf(renderProgressCard(t, facts, style)))
+    // 1. tool only — the pre-existing row.
+    expect(md('tool')).toContain('`bash` · ls / git · 400ms')
+    expect(md('tool')).toContain('`read` · channel.ts · 100ms')
+    // 2. description first, then the tool row; a call without one is unchanged.
+    expect(md('tool-description')).toContain('查看仓库状态和工作区文件 · `bash` · ls / git · 400ms')
+    expect(md('tool-description')).toContain('`read` · channel.ts · 100ms')
+    // 3. description only — and NO fallback for the call that has none.
+    expect(md('description')).toContain('查看仓库状态和工作区文件 · 400ms')
+    expect(md('description')).not.toContain('channel.ts')
+    expect(md('description')).toContain('`read` · 100ms')
+  })
+
+  it('neutralizes a description that would break the card markdown', () => {
+    const card: any = renderProgressCard(t, {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 500,
+        tools: [{ name: 'bash', callId: 'c1', startedAt: 0, elapsed: 100, description: '看 **未闭合** `和` [链接](x)' }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 500, now: 500, failedTurn: false,
+    }, 'description')
+    const text = String(mdOf(card))
+    expect(text).toContain('看 &#42;&#42;未闭合')
+    expect(text).not.toContain('`和`')
+    expect(text).not.toContain('[链接](x)')
+  })
+
+  it('takes the first non-empty description of a merged run', () => {
+    const card: any = renderProgressCard(t, {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 500,
+        tools: [
+          { name: 'read', callId: 'c1', startedAt: 0, elapsed: 100 },
+          { name: 'read', callId: 'c2', startedAt: 200, elapsed: 100, description: '第二个文件的说明' },
+        ],
+      }],
+      calls: 2, failed: 0, turnStart: 0, endedAt: 500, now: 500, failedTurn: false,
+    }, 'tool-description')
+    expect(String(mdOf(card))).toContain('第二个文件的说明 · `read` ×2 · 200ms')
+  })
+
   it('opens at step/start, then carries a step narration on that same card', async () => {
     vi.useFakeTimers()
     const { channel, cards } = harness()
