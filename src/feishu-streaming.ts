@@ -1677,7 +1677,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (state.turnStats !== undefined) {
           const ts = state.turnStats
           ts.stepCount++
-          ts.toolCallCount += state.toolCalls.length
+          // `ts.toolCallCount` is counted where the call is appended
+          // (`tool/call`), not here: an `assistant/message` arrives BEFORE its
+          // step's calls exist and after `resetStep` cleared the previous
+          // step's, so the old `+= state.toolCalls.length` here always added 0
+          // (found 2026-11-11 — it also made every tool turn look like a pure
+          // answer, see `pureAnswer` below).
           if (state.usage !== undefined) {
             ts.totalInputTokens += state.usage.inputTokens
             ts.totalOutputTokens += state.usage.outputTokens
@@ -1802,6 +1807,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // event; callView stays undefined and renderStepCard falls back to
         // the tool name and arguments.
         state.toolCalls.push(toolCall)
+        // The TURN's tool count, incremented here because this is the only
+        // event that proves a call exists. `pureAnswer` and the turn summary
+        // both read it; a turn that ran tools must never be mistaken for a
+        // pure-answer turn.
+        if (state.turnStats !== undefined) state.turnStats.toolCallCount += 1
         // Mirror the call onto the turn progress card (`compact` only). The
         // card opens on this first call and is updated in place from here on.
         if (displayPolicy().turnCard) {

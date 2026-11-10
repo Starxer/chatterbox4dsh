@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：工具回合的收尾把过程卡吞掉（`src/feishu-streaming.ts`，2026-11-11）
+
+起因：`compact` 下跑过工具的回合，收尾时**前面那张过程卡（步骤 + 工具行）被重画成答案**，看起来像「最后回复把步骤卡吞了」。
+
+根因：`turnStats.toolCallCount` 一直在 `assistant/message` 里累加 `state.toolCalls.length`——而 `resetStep` 在 `step/start` 就把那个列表清空了，所以这个数**永远是 0**；纯回答判定 `toolCallCount === 0` 于是对**所有**回合都成立，`turn/end` 把过程卡当成「纯回答卡」重画成答案。
+
+修法：工具计数改在 `tool/call` 里 +1（唯一能证明调用存在的事件），删掉 `assistant/message` 里那行无效累加；纯回答判定与回合摘要都读这个计数。回归测试钉住「有工具的回合：过程卡保留工具行、答案另发卡」，纯回答回合的单卡行为不变。全量 **1483 测试 / 75 文件**、`typecheck`、`build` 全绿。
+
+**English**: On `compact`, a turn that ran tools had its process card (steps + tool rows) repainted as the answer at `turn/end`, so the final reply appeared to swallow the step cards. The turn-level tool counter was incremented on `assistant/message` from a per-step list that `resetStep` had already cleared, so it stayed 0 and every turn looked like a "pure answer"; the counter now advances on `tool/call` (the only event that proves a call exists) and both the pure-answer decision and the summary read it. A regression test pins "a tool turn keeps its process card and posts a separate answer card". 1483 tests / 75 files, typecheck and build pass.
+
 ### 改进：`/display` 卡压成按钮行、折叠区标题改数「步」（`src/feishu-display.ts` / `src/feishu-progress.ts` / `src/i18n.ts`，2026-11-11）
 
 - **控制卡布局压缩**：档位四选一改成 2×2 两行（`column_set` 一行两枚按钮，沿用工作区浏览器/交付卡验证过的 `flex_mode: stretch` + `width: auto` 形状，窄屏飞书会自动摊成竖排而不是截字），工具行三选一排成一行，开关两枚一行，耗时刷新四枚一行；标题与说明合并进同一个 markdown 元素。顶层元素：简洁档 24 → **14**，详细档 20 → **11**。

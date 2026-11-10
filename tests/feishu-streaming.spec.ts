@@ -2765,6 +2765,36 @@ describe('turn progress card wiring', () => {
     streaming.stop()
   })
 
+  it('keeps the process card when the turn called tools (never a "pure answer")', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls","description":"列出文件"}' })
+    emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    emit('step/end', {})
+    emit('step/start', { turn: 1, step: 2 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+
+    await vi.waitFor(() => { expect(progressRenders(ch).at(-1)?.header.template).toBe('green') })
+    const processCard = progressRenders(ch).at(-1)!
+    // The process card keeps its tool history: a turn that ran tools must NOT be
+    // repainted as the answer (the 2026-11-11 report — the final reply swallowed
+    // the step cards because the turn-level tool counter never advanced).
+    expect(mdOf(processCard)).toContain('列出文件 · `bash`')
+    expect(mdOf(processCard)).not.toContain('the answer')
+    expect(isTurnCardTitle(String(processCard.header.title.content))).toBe(true)
+    // The answer still gets its own card.
+    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    const answer = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
+      .find(card => !isTurnCardTitle(String(card.header.title.content)))
+    expect(mdOf(answer)).toContain('the answer')
+    streaming.stop()
+  })
+
   it('folds the turn summary into the compact answer card instead of a Turn Complete card', async () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
