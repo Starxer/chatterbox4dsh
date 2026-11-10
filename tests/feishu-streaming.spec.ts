@@ -2326,14 +2326,13 @@ describe('level + injection wiring through session events', () => {
     const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: 'private chain' } })
-    // A compact step opens its card on TEXT, not at `step/start`: the step cards
-    // carry the answer, and reasoning alone is invisible at this level.
-    expect(ch.createCardInstance).not.toHaveBeenCalled()
+    // The compact turn card opens at `step/start` so the wait has feedback, but
+    // the reasoning itself is never rendered at this level.
+    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 1 } })
-    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
-    await tick(250)
-    expect(mdOf(lastCard(ch))).toContain('the answer')
+    h.emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => { expect(mdOf(lastCard(ch))).toContain('the answer') })
     expect(mdOf(lastCard(ch))).not.toContain('private chain')
     h.streaming.stop()
   })
@@ -2356,7 +2355,9 @@ describe('level + injection wiring through session events', () => {
       usage: { inputTokens: 1, outputTokens: 1 },
     })
     h.emit('tool/call', { callId: 'c1', name: 'read', arguments: '{"path":"a.ts"}' })
-    await tick(300)
+    await vi.waitFor(() => {
+      expect(mdOf(lastCard(ch))).toContain(t.turnCardStepNote('我先看一下那段代码'))
+    })
     // ONE card only: the turn progress card, whose step section carries the
     // narration as a row. No step card was posted for the narration.
     expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
@@ -2435,8 +2436,10 @@ describe('level + injection wiring through session events', () => {
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
-    await tick(250)
+    // A text-only turn paints its answer onto the turn card it opened at
+    // `step/start` (one card for the whole turn).
+    h.emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => { expect(mdOf(lastCard(ch))).toContain('the answer') })
     const card = lastCard(ch)
     const elements = card.body.elements as any[]
     // No `📝 消息` label (the card has one section), and both footer lines share
@@ -2465,10 +2468,11 @@ describe('level + injection wiring through session events', () => {
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalledTimes(2) })
     const fresh = (ch.createCardInstance as any).mock.calls[1]![0]
-    // The new card carries only what arrived after the interruption; the part
-    // already on the retired card stays there.
+    // The retired turn card never carried text (a pure-answer turn only paints
+    // the answer at `turn/end`), so the fallback answer card carries the WHOLE
+    // answer; nothing is duplicated on screen.
+    expect(mdOf(fresh)).toContain('part one')
     expect(mdOf(fresh)).toContain('part two')
-    expect(mdOf(fresh)).not.toContain('part one')
     h.streaming.stop()
   })
 
@@ -2724,13 +2728,18 @@ describe('turn progress card wiring', () => {
     // card at this level (the whole point of the merge).
     expect(titles(ch).some(isTurnCardTitle)).toBe(true)
     expect(titles(ch).filter(title => !isTurnCardTitle(title))).toEqual([])
+    // The card opened at `step/start` (feedback while the model thinks); the
+    // tool row it then ran lands on it as an in-place update.
+    await vi.waitFor(() => {
+      expect(progressRenders(ch).some(card => mdOf(card).includes('⏳ `bash`'))).toBe(true)
+    })
     const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
       .find(card => isTurnCardTitle(String(card.header.title.content)))
-    expect(mdOf(opened)).toContain('⏳ `bash`')
-    // The elapsed time is read from the clock, so pinning it to `0ms` made this
-    // assertion fail whenever the render crossed a millisecond boundary
-    // (observed flaky 2026-10-14). Assert the row's shape instead.
-    expect(mdOf(opened)).toMatch(/▸ \*\*第 1 步\*\* · 🔧 工具调用中 · \d+ms…/)
+    expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…'))
+    // The elapsed time is read from the clock, so asserting the title pinned to
+    // `0ms` was flaky (observed 2026-10-14); assert the row's shape instead.
+    expect(mdOf(progressRenders(ch).find(card => mdOf(card).includes('⏳ `bash`'))!))
+      .toMatch(/▸ \*\*第 1 步\*\* · 🔧 工具调用中 · \d+ms…/)
 
     emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
     // The answer opens a step card of its own — carrying the text and NOTHING
@@ -2764,7 +2773,10 @@ describe('turn progress card wiring', () => {
     emit('request/header', { header: { config: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' } } })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     emit('assistant/message', { usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } })
-    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    // A text-only turn paints its answer onto the turn card at `turn/end`
+    // (one card for the whole turn), so nothing is written before it. The tick
+    // gives the turn a non-zero duration (the title carries the clock).
+    await tick(20)
     emit('turn/end', { reason: { kind: 'completed' } })
 
     // The summary is written INTO the answer card: an update, not a new card.
@@ -2792,8 +2804,8 @@ describe('turn progress card wiring', () => {
     expect(tags).toEqual(['markdown', 'hr', 'markdown'])
     expect(md).not.toContain('⏱')
     // Nothing opened a second card for the summary: the level has no Turn
-    // Complete card.
-    expect(titles(ch).filter(title => !isTurnCardTitle(title))).toHaveLength(1)
+    // Complete card, and the answer reused the turn card.
+    expect(titles(ch).filter(title => !isTurnCardTitle(title))).toHaveLength(0)
     streaming.stop()
   })
 
@@ -2807,7 +2819,10 @@ describe('turn progress card wiring', () => {
     // something (a single continuation card is just the tail of the answer).
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: ['x', 'y', 'z'].map(c => c.repeat(3000)).join('\n\n') } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    // The first segment paints the turn card; the overflow cards are sent by the
+    // `turn/end` flush. The tick gives the turn a non-zero duration (the last
+    // card's title carries the clock).
+    await tick(20)
     emit('turn/end', { reason: { kind: 'completed' } })
 
     // The "continued" cards are sent, and the summary rides the LAST one — the
@@ -2835,7 +2850,7 @@ describe('turn progress card wiring', () => {
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: '正文\n\n'.repeat(200) + 'x'.repeat(3500) } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await vi.waitFor(() => { expect(titles(ch).some(title => !isTurnCardTitle(title))).toBe(true) })
+    await tick(20)
     emit('turn/end', { reason: { kind: 'completed' } })
 
     await vi.waitFor(() => { expect(ch.send.mock.calls.length).toBeGreaterThan(0) })
@@ -2865,7 +2880,7 @@ describe('turn progress card wiring', () => {
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     emit('assistant/message', { usage: { inputTokens: 100, outputTokens: 20 } })
-    await vi.waitFor(() => { expect(answerCards().length).toBeGreaterThan(0) })
+    // A text-only turn renders its answer onto the turn card at `turn/end`.
     // `getSessionMeta` reads the session log, so its answer lands a tick later —
     // and it is captured at `turn/start`, seconds before the turn ends in
     // production.
@@ -2900,7 +2915,6 @@ describe('turn progress card wiring', () => {
     emit('request/header', { header: { config: { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'xhigh' } } })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     emit('assistant/message', { usage: { inputTokens: 100, outputTokens: 20 } })
-    await vi.waitFor(() => { expect(answerCards().length).toBeGreaterThan(0) })
     await tick(20)
     emit('turn/end', { reason: { kind: 'completed' } })
 
@@ -2938,7 +2952,7 @@ describe('turn progress card wiring', () => {
     streaming.stop()
   })
 
-  it('sends no progress card for a turn that calls no tool', async () => {
+  it('uses ONE card for a turn that calls no tool: the turn card becomes the answer', async () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
     emit('turn/start')
@@ -2947,8 +2961,53 @@ describe('turn progress card wiring', () => {
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
     emit('step/end', {})
     emit('turn/end', { reason: { kind: 'completed' } })
-    await tick(200)
-    expect(titles(ch).some(isTurnCardTitle)).toBe(false)
+    const last = (): any => {
+      const updates = ch.updateCardInstance!.mock.calls
+      return updates.length > 0 ? updates.at(-1)![1] : ch.createCardInstance!.mock.calls.at(-1)![0]
+    }
+    // The card that opened with the thinking phase is repainted as the answer:
+    // one message for the whole turn, and no second card carrying the answer.
+    await vi.waitFor(() => { expect(mdOf(last())).toContain('no tools here') })
+    expect(titles(ch).some(isTurnCardTitle)).toBe(true)
+    expect(titles(ch).filter(title => !isTurnCardTitle(title))).toHaveLength(0)
+    streaming.stop()
+  })
+
+  it('counts the pure-answer card as the turn\'s delivery (no duplicate reply card)', async () => {
+    const ch = channel()
+    const { streaming, emit, bridge } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => {
+      expect(mdOf((ch.updateCardInstance!.mock.calls.at(-1) as any)[1])).toContain('the answer')
+    })
+    // The answer card IS the delivery, so channel.ts must not post a reply card.
+    expect(bridge.markIntermediateSent).toHaveBeenCalledWith('s-1')
+    await expect(streaming.flushed('s-1')).resolves.toBeDefined()
+    expect(bridge.clearIntermediateSent).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
+  it('withdraws the note when the answer card write is refused (fallback reply still goes out)', async () => {
+    const ch = channel()
+    ch.updateCardInstance = vi.fn(async () => { throw new Error('edit refused') })
+    const { streaming, emit, bridge } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await tick(150)
+    // The write never landed: `flushed()` withdraws the optimistic note so the
+    // channel posts the real reply instead of leaving the chat with a card that
+    // still says "thinking".
+    await streaming.flushed('s-1')
+    expect(bridge.clearIntermediateSent).toHaveBeenCalledWith('s-1')
     streaming.stop()
   })
 
@@ -3094,8 +3153,12 @@ describe('turn ownership across a plugin re-mount', () => {
     emit('step/start', { turn: 2, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'mine' } })
     emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('turn/end', { reason: { kind: 'completed' } })
     await vi.waitFor(() => expect(ch.createCardInstance).toHaveBeenCalledTimes(1))
-    expect(mdOf((ch.createCardInstance!.mock.calls[0] as any)[0])).toContain('mine')
+    await vi.waitFor(() => {
+      const writes: any[] = (ch.updateCardInstance as any).mock.calls.map((call: any[]) => call[1])
+      expect(writes.some((card: any) => mdOf(card).includes('mine'))).toBe(true)
+    })
     streaming.stop()
   })
 

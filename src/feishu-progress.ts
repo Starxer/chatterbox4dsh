@@ -719,6 +719,20 @@ interface CardEntry {
    * already in flight may land; nothing new is scheduled.
    */
   superseded: boolean
+  /**
+   * `compact` answer mode: this turn turned out to be a pure answer (no tool
+   * call), so the card that has been showing the thinking phase is repainted
+   * as the ANSWER at `turn/end` — one card for the whole turn instead of a
+   * process card plus a separate answer card. Set only through
+   * `finish(..., answerCard)`; once set it wins over the process render.
+   */
+  answer?: object
+  /**
+   * Whether the LAST write reached Feishu. `writeNow` clears it in flight and
+   * sets it on success/failure; `finish` reports it so the caller can withdraw
+   * its optimistic "the answer is on screen" note when the write was refused.
+   */
+  lastWriteOk: boolean
   facts: ProgressFacts
 }
 
@@ -770,6 +784,12 @@ export interface ProgressCardsHandle {
   /** Whether this turn has a card on screen (used to decide who shows injections). */
   hasCard(sessionId: string): boolean
   /**
+   * Whether that card is still usable (a failed send marks it dead). The
+   * streaming layer only repaints a pure answer onto a live card and otherwise
+   * falls back to its own step card.
+   */
+  isOpen(sessionId: string): boolean
+  /**
    * `tool/call`: append a running row (and open the card on the first one).
    * @param detail - the row's short "what" (`progressToolDetail`); omit when the
    *                 call has nothing short and useful to name.
@@ -795,8 +815,16 @@ export interface ProgressCardsHandle {
   subtoolFinished(sessionId: string, parentCallId: string, subCallId: string, at: number, isError: boolean): void
   /** `step/end`: close the current section's clock. */
   stepEnded(sessionId: string, at: number): void
-  /** `turn/end`: final render (green, or red when the turn failed). */
-  finish(sessionId: string, at: number, failedTurn: boolean): Promise<void>
+  /**
+   * `turn/end`: final render (green, or red when the turn failed).
+   *
+   * @param answerCard - a pure-answer turn renders THIS card instead of the
+   *                     process view: the card on screen becomes the answer.
+   *                     The caller has already hydrated it.
+   * @returns whether the last write reached Feishu (false withdraws the caller's
+   *          optimistic delivery note, so the fallback reply still goes out).
+   */
+  finish(sessionId: string, at: number, failedTurn: boolean, answerCard?: object): Promise<boolean>
   /** Dispose: no late event may re-open a card. */
   stop(): void
 }
@@ -900,9 +928,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   /** Render one write, serialized behind the card's previous write. */
   const writeNow = (entry: CardEntry): void => {
     entry.writing = true
+    entry.lastWriteOk = false
     entry.chain = entry.chain.then(async () => {
       if (entry.dead) return
-      const card = renderProgressCard(getTranslations(), entry.facts)
+      const card = entry.answer ?? renderProgressCard(getTranslations(), entry.facts)
       const cardId = await entry.cardId
       const messageId = await entry.messageId
       // CardKit instance first: its update API has no edit cap, unlike
@@ -910,10 +939,12 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       if (cardId !== undefined && cardId !== '' && channel.updateCardInstance !== undefined) {
         entry.sequence += 1
         await channel.updateCardInstance(cardId, card, entry.sequence)
+        entry.lastWriteOk = true
         return
       }
       if (messageId !== undefined && channel.updateCard !== undefined) {
         await channel.updateCard(messageId, card)
+        entry.lastWriteOk = true
         return
       }
       // Neither an instance nor a message id: nothing can ever be updated.
@@ -991,6 +1022,47 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     if (turn === undefined) return
     turn.facts.steps.push({ step, startedAt: at, tools: [] })
     turn.facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry === undefined) {
+      // Open the card with the step the model just started: `step/start` is
+      // appended BEFORE the request is sent, so this is the earliest moment a
+      // "what is happening now" card can be honest — and it is what removed the
+      // silent wait that used to last until the first tool call.
+      openTurnCard(sessionId, turn.chat, turn.facts)
+      return
+    }
+    entry.facts = turn.facts
+    schedule(entry)
+  }
+
+  /**
+   * Open this turn's card from the facts it already has, and arm its clock.
+   *
+   * Used from `stepStarted` (the normal path) and `toolStarted` (a tool call
+   * whose `step/start` frame was lost).
+   */
+  const openTurnCard = (sessionId: string, chat: ConversationMessage, facts: ProgressFacts): CardEntry => {
+    const entry: CardEntry = {
+      sessionId,
+      chat,
+      cardId: Promise.resolve(undefined),
+      messageId: Promise.resolve(undefined),
+      sequence: 0,
+      chain: Promise.resolve(),
+      writing: false,
+      dirty: false,
+      timer: undefined,
+      runningTick: undefined,
+      dead: false,
+      superseded: false,
+      lastWriteOk: false,
+      facts,
+    }
+    open(entry)
+    // The card that was just opened already shows the step as running, so the
+    // elapsed-time tick has to start with it (not with the NEXT call).
+    armRunningTick(entry)
+    return entry
   }
 
   /**
@@ -1129,25 +1201,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     facts.now = at
     const entry = cards.get(sessionId)
     if (entry === undefined) {
-      const opened: CardEntry = {
-        sessionId,
-        chat: turn.chat,
-        cardId: Promise.resolve(undefined),
-        messageId: Promise.resolve(undefined),
-        sequence: 0,
-        chain: Promise.resolve(),
-        writing: false,
-        dirty: false,
-        timer: undefined,
-        runningTick: undefined,
-        dead: false,
-        superseded: false,
-        facts,
-      }
-      open(opened)
-      // The card that was just opened already shows this call as running, so the
-      // elapsed-time tick has to start with it (not with the NEXT call).
-      armRunningTick(opened)
+      openTurnCard(sessionId, turn.chat, facts)
       return
     }
     entry.facts = facts
@@ -1267,15 +1321,15 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }
   }
 
-  const finish = async (sessionId: string, at: number, failedTurn: boolean): Promise<void> => {
-    if (stopped) return
+  const finish = async (sessionId: string, at: number, failedTurn: boolean, answerCard?: object): Promise<boolean> => {
+    if (stopped) return false
     const turn = turns.get(sessionId)
     turns.delete(sessionId)
     const entry = cards.get(sessionId)
     cards.delete(sessionId)
     const closed = closedSegments.get(sessionId) ?? []
     closedSegments.delete(sessionId)
-    if (turn === undefined) return
+    if (turn === undefined) return false
     const facts = turn.facts
     facts.now = at
     facts.endedAt = at
@@ -1304,7 +1358,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       // Nothing is on screen for the newest segment: the closed card above the
       // interruption already carries this turn's outcome.
       await Promise.all(closed.map(frozen => frozen.chain))
-      return
+      return false
     }
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer)
@@ -1315,6 +1369,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       entry.runningTick = undefined
     }
     entry.facts = facts
+    // `compact` pure-answer turn: the card becomes the answer instead of the
+    // process record. The render below then writes `entry.answer`.
+    if (answerCard !== undefined) entry.answer = answerCard
     // The final render bypasses the throttle: a card that stays grey after the
     // turn ended is a lie, and one extra write is affordable here. Nothing is
     // dirty any more — this render already carries the final facts.
@@ -1322,6 +1379,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     writeNow(entry)
     await Promise.all([...closed.map(frozen => frozen.chain), entry.chain])
     if (entry.dead) sendTextFallback(entry)
+    return entry.lastWriteOk
   }
 
   /**
@@ -1353,6 +1411,12 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
 
   /** Whether this turn already has a card on screen. */
   const hasCard = (sessionId: string): boolean => cards.has(sessionId)
+
+  /** Whether the on-screen card can still be written (see the handle doc). */
+  const isOpen = (sessionId: string): boolean => {
+    const entry = cards.get(sessionId)
+    return entry !== undefined && !entry.dead && !entry.superseded
+  }
 
   /**
    * Another message was posted into this chat: close this segment. What is on
@@ -1422,7 +1486,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   }
 
   return {
-    beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard,
+    beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard, isOpen,
     toolStarted, toolFinished, subtoolStarted, subtoolFinished, stepEnded, finish, stop,
   }
 }

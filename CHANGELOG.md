@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 改进：`compact` 从 `step/start` 就发过程卡，纯回答的回合把同一张卡改成答案卡（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-11）
+
+起因：`compact` 下过程卡原先要等**第一次工具调用**才建，模型思考久、首个工具来得慢时聊天里会有 10–25 秒完全没反馈（实测 15:41:34 那条消息 +23.8s 才出现第一张卡），等到的又只是答案卡。
+
+- **开卡提前到 `step/start`**：`step/start` 在请求发出之前 append，所以这是最早能诚实地画「现在在做什么」的时刻。卡一出现就带当前步骤、live 阶段（📡 已发出请求 / 🧠 思考中 / 🔧 工具调用中）与每 N 秒刷新的耗时；后续首个工具调用、narration、注入提示都在这张卡上就地更新，**不新开一张**。
+- **纯回合同一张卡收尾**：一个回合若**一次工具调用都没有**，`assistant/message` 里的文本就是答案，`turn/end` 时把这张卡重画成答案卡（绿色标题 `✅ 完成 · 耗时`、`compact` 摘要 footer 都在），**一个回合一张卡**，不再另发答案卡。
+- **有工具的回合不变**：过程记在过程卡上（`compact` 的既有语义），答案仍由步骤卡承载。
+- **不重复答复**：答案写进过程卡时按步骤卡同一套交付记账处理（乐观 `markIntermediateSent` + `stampTextCard` → 确认写成功才 `noteTextDelivered`）；写被拒时撤回标记，channel 照旧补发 fallback 回复卡，不会让答案只停在「思考中」的卡上。
+- **顺手修两处**：`state.chat` 现在在 `step/start` 就记下（原先只有步骤卡发送时才记，纯回答回合的 overflow 卡会因此丢坐标）；`progress.finish()` 返回「最后一次写是否落地」，让上面那个撤回有据可依。
+- **测试**：按新契约更新过程卡/流式卡 20 余例（开卡时机、纯回答回合一张卡、交付记账与写被拒的撤回、overflow 顺序）；新增 2 例；全量 **1471 测试 / 75 文件**、`typecheck`、`build` 全绿。
+
+**English**: Under `compact`, the turn-progress card used to open only on the FIRST tool call, so a model that thought for 10–25 seconds left the chat silent until the answer card appeared. The card now opens at `step/start` (the last event before the request is sent) with the live phase and a ticking clock, and the first tool call / narration / injection notices update that same card. A turn that makes NO tool call repaints that card as the answer at `turn/end` — green completion title, compact summary footer, one card for the whole turn — while a turn with tool activity keeps the process card and a separate answer card as before. The answer paint uses the step-card delivery bookkeeping (optimistic note, confirmed write before recording delivery), so a refused write withdraws the note and the channel still posts its fallback reply. Also: `state.chat` is recorded at `step/start` (the old code only recorded it when a step card was sent, which lost the coordinates of a pure-answer turn's overflow cards), and `progress.finish()` now reports whether its last write landed. Tests updated to the new contract plus 2 new cases; 1471 tests / 75 files, typecheck and build pass.
+
 ### 新增：被重载/重启打断的那一轮会自动重发（`src/harness.ts` / `src/channel.ts` / `src/feishu-startup-notice.ts` / `src/i18n.ts`，2026-11-06）
 
 起因：插件热重载会在进程内把正在跑的一轮拆掉，会话写句柄被关闭，在飞的回复撞上 `session "…": flush on a closed handle`。过去的结果是**用户收到一行内部错误、那条消息静默丢失、只能手动重发**。现在新实例会自己把它补上。

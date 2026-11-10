@@ -17,7 +17,7 @@
 
 ## 当前行为速查 / Current behavior
 
-- **显示档位**：`compact` 是答案卡 + 按需创建的回合过程卡；`standard` / `detailed` / `verbose` 使用步骤卡。默认 `detailed`。四个 `show*` 开关只能减少档位允许的内容；这是插件的展示配置，不是改写 DSH Web 聊天的展示配置。
+- **显示档位**：`compact` 在 `step/start` 就发出一张「回合过程卡」（立刻能看见思考中 + 已耗时，不再等首个工具调用），纯回答的回合直接把这张卡改成答案卡（一个回合只有一张卡），有工具活动的回合仍把过程记在这张卡上、答案另发答案卡；`standard` / `detailed` / `verbose` 使用步骤卡。默认 `detailed`。四个 `show*` 开关只能减少档位允许的内容；这是插件的展示配置，不是改写 DSH Web 聊天的展示配置。
 - **简洁过程卡**：可见窗口最多最新 5 步、40 行；更早的内容最多保留 60 行并折叠。可见区与折叠区均按步分组，标题在引用块外；行内标记未闭合的叙述行会单独成元素。别的卡片插入聊天后，下一件实际活动另起分段，不保证整轮只有一条消息。回合失败时，死在其中的那一步标 `❌ 失败`，并列出它流式生成过、但没真正执行的工具调用（`⚠️ \`edit\` · 未执行`，不计入工具数）。回合结束时收尾卡的标题变成 `✅ 完成 · 总时长`（绿头，无轮/步坐标），正文与 footer 之间一道分隔线，footer 只留 `📦 回合 tokens · ♻️ 命中率`。
 - **压缩摘要**：使用 `22,000` UTF-8 字节的正文预算，超出时写明截断，不再是旧的 200 字上限。折叠不减少卡片 JSON 字节数。
 - **问答**：单选点选即记录，可通过回执返回重答；全部答完后需最终确认才提交给模型。多选通过每选项一个 `checker` 一次提交。
@@ -29,7 +29,7 @@
 
 **English:** Four online-document tools read and write Feishu docx files (wiki links resolved); reads return Markdown, the revision and image blocks (optionally downloaded locally), writes accept a `.md` file, embed local images and share created documents, `append`/`replace` require the revision and `replace` refuses blocks Markdown cannot reproduce, comments support whole-document creation only (replying is rejected by Feishu), and rate-limited writes retry. `/permission` renders the host's `permissionPresets.catalog()`, so the experimental Auto review preset appears only while its integration is live (red like Full access, with a confirmation step), and a team board card follows when the experimental Agent Teams plugin forms a team; both are no-ops when those plugins are absent.
 
-**English:** `compact` separates the answer from a lazily created, segmented turn-progress card; the other levels use step cards. `detailed` is the default, and the plugin's four `show*` switches only subtract detail. Progress keeps at most five recent steps / 40 visible rows and 60 folded rows. Compaction summaries have a 22,000-byte UTF-8 budget. Single-select answers are recorded on tap but the batch is submitted only after final confirmation; multi-select uses one checkbox per option. Deliverables are routed by type. Full integration is verified on Linux x64 only.
+**English:** `compact` opens one turn-progress card at `step/start` (the thinking phase and its clock are visible immediately, no longer waiting for the first tool call); a pure-answer turn repaints that same card as the answer (one card per turn), while a turn with tool activity keeps its process record there and posts a separate answer card. The other levels use step cards. `detailed` is the default, and the plugin's four `show*` switches only subtract detail. Progress keeps at most five recent steps / 40 visible rows and 60 folded rows. Compaction summaries have a 22,000-byte UTF-8 budget. Single-select answers are recorded on tap but the batch is submitted only after final confirmation; multi-select uses one checkbox per option. Deliverables are routed by type. Full integration is verified on Linux x64 only.
 
 ## 设计决策记录 / Design records
 

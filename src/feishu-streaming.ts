@@ -497,6 +497,14 @@ interface SessionStepState {
    * the session's own log holds the authoritative list anyway).
    */
   everPresentedPaths: Set<string>
+  /**
+   * `compact` only: the turn's answer is being rendered onto the turn card that
+   * has shown the thinking phase since `step/start` (a pure-answer turn uses
+   * one card instead of a process card plus an answer card). Set when the
+   * answer-bearing `assistant/message` arrives with zero tool calls in the
+   * turn; consumed at `turn/end`.
+   */
+  answerOnProgressCard: boolean
   // --- Turn-level aggregation ---
   turnStats: TurnStats | undefined
 }
@@ -588,6 +596,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         requestRoute: undefined,
         requestEffort: undefined,
         turnSeen: false,
+        answerOnProgressCard: false,
         sessionRoute: undefined,
         completionLines: undefined,
         completionTitle: undefined,
@@ -616,6 +625,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.supersededFrom = undefined
     state.pendingSend = undefined
     state.stepEnded = false
+    // A pure-answer turn declares itself on its answer message; the next step
+    // must not inherit that (a tool call after it means the turn was not a pure
+    // answer after all, and the normal step-card path takes over).
+    state.answerOnProgressCard = false
     // The summary belongs to the turn, and the step that just ended has already
     // been written with it; a later step must not inherit it.
     state.completionLines = undefined
@@ -1706,7 +1719,23 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (narration) {
           progressCards.stepNote(sessionId, state.stepNumber, state.text, state.messageTime)
         }
-        if (stepHasVisibleContent(state) && !narration) {
+        // `compact` pure-answer turn: no card has been posted for this turn yet
+        // (the turn card has been showing the thinking phase since `step/start`),
+        // so the answer is rendered ONTO that card at `turn/end` instead of
+        // opening a second one. A message that calls tools is process, and a
+        // turn that already ran tools keeps its own separate answer card.
+        const pureAnswer = displayPolicy().turnCard
+          && !narration
+          && messageCallsTools(event) === false
+          && state.text.trim() !== ''
+          && (state.turnStats?.toolCallCount ?? 0) === 0
+          && !state.stepCardSent
+          && progressCards.isOpen(sessionId)
+        if (pureAnswer) {
+          state.answerOnProgressCard = true
+          console.log('dsh-feishu: [message] pure answer → the compact turn card becomes the answer card')
+        }
+        if (stepHasVisibleContent(state) && !narration && !pureAnswer) {
           // Reuse this step's existing card when one is already on screen (a
           // tool call can open the card before the assembled message arrives,
           // and a step can emit more than one assistant/message). Sending a
@@ -1910,6 +1939,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         }
       } else if (event.type === 'step/start') {
         resetStep(state)
+        // Session-level coordinates, set here (not only by a step-card send) so
+        // paths that never send a step card still know where the chat is — the
+        // `turn/end` overflow cards of a pure-answer turn, for one.
+        state.chat = chat
         state.stepStartTime = event.time ?? Date.now()
         state.turnNumber = (event.data?.turn as number | undefined) ?? 0
         state.stepNumber = (event.data?.step as number | undefined) ?? 0
@@ -2149,14 +2182,20 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       } else if (event.type === 'turn/end') {
         const turnStats = state.turnStats
         const endTime = event.time ?? Date.now()
+        const failedTurn = event.data?.reason?.kind === 'error'
         if (turnStats !== undefined) {
           turnStats.totalTurnMs = endTime - turnStats.turnStartTime
           turnStatsMap.set(sessionId, turnStats)
         }
+        // A pure-answer `compact` turn repaints the turn card AS the answer in
+        // the flush below (summary included), so it must not be frozen to the
+        // process view here — that would cost a second final write and briefly
+        // show a process card that is not the answer.
+        const answerOnProgress = displayPolicy().turnCard && state.answerOnProgressCard && !state.stepCardSent
         // The `compact` progress card freezes here (green, or red when the turn
         // failed). A no-op when no card was opened, so a level change mid-turn
         // still closes whatever exists.
-        void progressCards.finish(sessionId, endTime, event.data?.reason?.kind === 'error')
+        if (!answerOnProgress) void progressCards.finish(sessionId, endTime, failedTurn)
 
         // Capture the answer's segments BEFORE anything else: a single
         // block-aware split drives both the step card (segment 0) and the
@@ -2237,6 +2276,22 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           ? undefined
           : buildStepCard(state)
         /**
+         * The pure-answer card is BUILT here, synchronously, for the same reason
+         * `summaryCard` is: the paint below runs in a microtask, and `resetStep`
+         * clears `state.text` before that microtask executes (a `buildStepCard`
+         * inside it rendered the empty "awaiting" form, 2026-11-11).
+         */
+        const progressAnswerCard = answerOnProgress ? buildStepCard(state) : undefined
+        const progressAnswerText = fullText
+        const progressAnswerStamp = answerOnProgress ? stampTextCard(sessionId) : 0
+        if (answerOnProgress) {
+          // Optimistic "the answer is on screen" note, exactly like the step-card
+          // path (`noteStepCardText`): `flushed()` withdraws it when the write
+          // never landed, and channel.ts then posts the fallback reply.
+          noteStepCardText(sessionId, state)
+          renderedCardText.set(sessionId, progressAnswerText)
+        }
+        /**
          * The LAST continuation card is the card that ends the turn, so it gets
          * the completion treatment — title, rule and summary — through the same
          * helper the fallback reply path uses.
@@ -2253,21 +2308,36 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             : cards
 
         flushPendingUpdate(state).then(async () => {
-          // The step card is now on screen with the first TEXT_STEP_CAP chars.
-          // Wait for its message before posting overflow, otherwise the
-          // "continued" cards are created first and appear above the step card
-          // (observed 2026-09-09). The barrier handles the real channel; this
-          // await also covers channels that do not register one.
-          if (lastStepSend !== undefined) await lastStepSend
-          // Fold the turn summary into the answer card. Not a text write: it
-          // must not touch the delivery record `flushed()` reads.
-          if (summaryRef !== undefined && summaryCard !== undefined) {
-            await trackUpdate(sessionId, () => scheduleCardWrite(summaryRef, {
-              card: summaryCard,
-              hasText: false,
-              text: '',
-              stamp: 0,
-            }).then(() => undefined))
+          if (answerOnProgress && progressAnswerCard !== undefined) {
+            // The one card of a pure-answer turn: it has been on screen since
+            // `step/start` (thinking phase, live clock) and becomes the answer
+            // here, summary included. The optimistic note above makes
+            // `flushed()`/channel.ts treat the answer as shown and not post a
+            // second reply card; only a CONFIRMED write keeps it.
+            const answerCard = await prepareCard(progressAnswerCard, sessionId)
+            const wrote = await progressCards.finish(sessionId, endTime, failedTurn, answerCard)
+            // Only a CONFIRMED write may keep the optimistic note: a refused one
+            // leaves `delivered` at 0, `flushed()` withdraws the note and
+            // channel.ts posts the fallback reply card (same contract as the
+            // step-card path, 关键坑 29/43).
+            if (wrote) noteTextDelivered(sessionId, progressAnswerStamp, progressAnswerText)
+          } else {
+            // The step card is now on screen with the first TEXT_STEP_CAP chars.
+            // Wait for its message before posting overflow, otherwise the
+            // "continued" cards are created first and appear above the step card
+            // (observed 2026-09-09). The barrier handles the real channel; this
+            // await also covers channels that do not register one.
+            if (lastStepSend !== undefined) await lastStepSend
+            // Fold the turn summary into the answer card. Not a text write: it
+            // must not touch the delivery record `flushed()` reads.
+            if (summaryRef !== undefined && summaryCard !== undefined) {
+              await trackUpdate(sessionId, () => scheduleCardWrite(summaryRef, {
+                card: summaryCard,
+                hasText: false,
+                text: '',
+                stamp: 0,
+              }).then(() => undefined))
+            }
           }
           // Send overflow text as follow-up "continued" cards so the full
           // reply is delivered without silent truncation.

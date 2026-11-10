@@ -784,19 +784,23 @@ describe('createProgressCards', () => {
     vi.useRealTimers()
   })
 
-  it('carries a step narration into the FIRST render of the card', async () => {
+  it('opens at step/start, then carries a step narration on that same card', async () => {
+    vi.useFakeTimers()
     const { channel, cards } = harness()
     cards.beginTurn(chat, 's1', 0)
     cards.stepStarted('s1', 1, 0)
-    // The narration precedes the tool call that opens the card, as it does in a
-    // real step (`assistant/message` → `tool/call`).
+    // The card exists before the model produced anything: that is what removed
+    // the silent wait that used to last until the first tool call.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.sendCardByReference).toHaveBeenCalledTimes(1)
+    // The narration precedes the tool call, as in a real step
+    // (`assistant/message` → `tool/call`); it lands as an update.
     cards.stepNote('s1', 1, '我先读一下 streaming 那段', 50)
-    await Promise.resolve()
-    expect(channel.createCardInstance).not.toHaveBeenCalled()
     cards.toolStarted('s1', 'read', 'c1', 100)
-    await vi.waitFor(() => expect(channel.sendCardByReference).toHaveBeenCalledTimes(1))
-    const card = (channel.createCardInstance.mock.calls[0] as any)[0]
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
     expect(mdOf(card)).toContain(t.turnCardStepNote('我先读一下 streaming 那段'))
+    expect(mdOf(card)).toContain('`read`')
   })
 
   it('updates the narration row in place and never repeats an unchanged one', async () => {
@@ -817,23 +821,22 @@ describe('createProgressCards', () => {
     expect(mdOf(card)).not.toContain('第一句')
   })
 
-  it('records the live phase before any card exists, and renders it into the first one', async () => {
+  it('renders the live phase the assistant stream reported onto the open card', async () => {
     vi.useFakeTimers()
     const { channel, cards } = harness()
     cards.beginTurn(chat, 's1', 0)
     cards.stepStarted('s1', 1, 0)
+    // The card is already on screen from the step itself; the phase arrives from
+    // the (transient) assistant stream and repaints it in place.
     cards.stepPhase('s1', 1, 'thinking', 20)
-    await vi.advanceTimersByTimeAsync(0)
-    // A phase is not a reason to open a card (it says nothing on its own).
-    expect(channel.createCardInstance).not.toHaveBeenCalled()
-    cards.toolStarted('s1', 'read', 'c1', 100)
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     // While the call runs the tool outranks the phase; once it settles, the
-    // phase recorded before the card existed is what the header shows.
+    // phase recorded here is what the header shows.
+    cards.toolStarted('s1', 'read', 'c1', 100)
     cards.toolFinished('s1', 'c1', 400, false, 500)
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
-    const card = (channel.updateCardInstance.mock.calls[0] as any)[1]
+    const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
     expect(mdOf(card)).toContain(t.turnCardStep(1, '500ms…', t.turnCardPhaseThinking))
   })
 
@@ -882,17 +885,18 @@ describe('createProgressCards', () => {
     expect(settled).toBeGreaterThan(before)
   })
 
-  it('opens the card lazily on the first tool call, not on step/start', async () => {
+  it('opens the card at step/start, and a later tool call updates that same card', async () => {
     const { channel, cards } = harness()
     cards.beginTurn(chat, 's1', 0)
     cards.stepStarted('s1', 1, 0)
-    await Promise.resolve()
-    expect(channel.createCardInstance).not.toHaveBeenCalled()
-    cards.toolStarted('s1', 'read', 'c1', 100)
     await vi.waitFor(() => expect(channel.sendCardByReference).toHaveBeenCalledTimes(1))
+    cards.toolStarted('s1', 'read', 'c1', 100)
+    await Promise.resolve()
+    // Still ONE card for the turn: the first tool call updates the card the
+    // step opened instead of opening a second one.
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const card = (channel.createCardInstance.mock.calls[0] as any)[0]
-    expect(card.header.title.content).toBe(t.turnCardTitleRunning('100ms'))
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('0ms'))
   })
 
   it('opens a NEW card for the next turn and never reuses the entity', async () => {
@@ -906,14 +910,15 @@ describe('createProgressCards', () => {
     await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(2))
   })
 
-  it('sends no card at all for a turn that calls no tool', async () => {
+  it('opens the card for a no-tool turn too, and `finish(answerCard)` repaints it as the answer', async () => {
     const { channel, cards } = harness()
     cards.beginTurn(chat, 's1', 0)
     cards.stepStarted('s1', 1, 0)
     cards.stepEnded('s1', 900)
-    await cards.finish('s1', 1_000, false)
-    expect(channel.send).not.toHaveBeenCalled()
-    expect(channel.createCardInstance).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    const answer = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '这就是答案' }] } }
+    await cards.finish('s1', 1_000, false, answer)
+    expect(channel.updateCardInstance).toHaveBeenLastCalledWith('card-1', answer, 1)
   })
 
   it('coalesces a burst of tool events into one in-place update', async () => {
@@ -1110,7 +1115,7 @@ describe('createProgressCards', () => {
       cards.beginTurn(chat, 's1', 0)
       cards.stepStarted('s1', 1, 0)
       cards.toolStarted('s1', 'run_code', 'c1', 10)
-      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
       const writes = channel.updateCardInstance.mock.calls.length
       // The parent id is unknown (a lost frame, a resumed session): a row with no
       // program above it would read as a call the model never made.
@@ -1198,13 +1203,14 @@ describe('createProgressCards', () => {
     cards.toolStarted('s1', 'bash', 'c2', 400)
     await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(2))
     const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
+    // The new segment card opens with the step it belongs to; the tool row it
+    // then runs lands as an in-place update on that SAME card.
     expect(mdOf(fresh)).not.toContain('`read`')
-    expect(String(mdOf(fresh))).toContain('`bash`')
-    // The first card was left exactly as it was.
-    expect(channel.updateCardInstance).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(channel.updateCardInstance).toHaveBeenCalled())
+    expect(String(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1]))).toContain('`bash`')
     // …and the turn's totals still count everything; the header keeps the same
-    // constant wording, and the running tool is named in the step light.
-    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning('400ms'))
+    // constant wording.
+    expect(fresh.header.title.content).toBe(t.turnCardTitleRunning('300ms'))
   })
 
   it('never cuts a topic\'s card because another topic of the same chat got a message', async () => {
@@ -1247,7 +1253,8 @@ describe('createProgressCards', () => {
     await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(2))
     const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
     expect(String(mdOf(fresh))).not.toContain('`read`')
-    expect(String(mdOf(fresh))).toContain('`bash`')
+    await vi.waitFor(() => expect(channel.updateCardInstance).toHaveBeenCalled())
+    expect(String(mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1]))).toContain('`bash`')
   })
 
   it('keeps a running step in the new segment so its later rows still show', async () => {
@@ -1369,9 +1376,13 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(0)
     // A frame for a step that never had a section must not invent one: the row
     // would name a step the turn never ran.
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const writes = channel.updateCardInstance.mock.calls.length
     cards.stepAttempt('s1', 7, ['edit'], 200)
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
-    expect(channel.updateCardInstance).not.toHaveBeenCalled()
-    expect(String(mdOf((channel.createCardInstance.mock.calls[0] as any)[0]))).not.toContain(t.turnCardCallUnrun('edit'))
+    expect(channel.updateCardInstance).toHaveBeenCalledTimes(writes)
+    const last = (channel.updateCardInstance.mock.calls.at(-1) as any[] | undefined)?.[1]
+      ?? (channel.createCardInstance.mock.calls[0] as any)[0]
+    expect(String(mdOf(last))).not.toContain(t.turnCardCallUnrun('edit'))
   })
 })
