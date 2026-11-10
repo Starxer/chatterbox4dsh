@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-11)
+
+> 自 `0.3.0`（2026-11-05）以来的累积改动：**全部是展示与可靠性改进，没有破坏性变更**，仍然要求 DSH `0.2.x`（peer `^0.2.0-rc.1`；在 `0.2.2-rc.1` 上构建与真机验证）。两处**默认行为**发生变化（都可在 `/display` 卡或配置里改回）：`compact` 回合在 `step/start` 就发过程卡、纯回答回合复用同一张卡做答案卡；`compactToolRow` 默认改为「描述 + 工具」。现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
+>
+> The accumulated changes since `0.3.0` (2026-11-05): **display and reliability work only, no breaking change**; still requires DSH `0.2.x` (peer `^0.2.0-rc.1`, built and Feishu-verified on `0.2.2-rc.1`). Two **default behaviours** changed (both switchable from the `/display` card or settings): under `compact` the turn card opens at `step/start` and a pure-answer turn reuses that same card as the answer; `compactToolRow` now defaults to "description + tool".
 
 ### 修复：工具回合的收尾把过程卡吞掉（`src/feishu-streaming.ts`，2026-11-11）
 
