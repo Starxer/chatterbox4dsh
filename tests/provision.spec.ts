@@ -51,6 +51,9 @@ describe('provisionApp', () => {
     expect(options.addons.scopes.tenant).toContain('docs:document.media:upload')
     expect(options.addons.scopes.tenant).toContain('docs:document.media:download')
     expect(options.addons.scopes.tenant).toContain('docs:permission.member:create')
+    // The image BYTES need a drive scope; `docs:document.media:download` alone
+    // only covers the temporary-URL list (99991672 otherwise, verified 2026-11-11).
+    expect(options.addons.scopes.tenant).toContain('drive:file:download')
     expect(options.addons.events.items.tenant).toContain('im.message.receive_v1')
     expect(states).toEqual([
       { phase: 'waiting', qrUrl: 'https://scan.example/verify', expireIn: 600 },

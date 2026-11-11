@@ -644,15 +644,17 @@ async function saveImageFiles(
   channel: LarkChannel,
   images: ReadImage[],
   documentId: string,
-): Promise<ReadImage[]> {
+): Promise<{ images: ReadImage[]; failures: number; scopeMissing: boolean }> {
   const candidates = images.filter(image => image.token !== '').slice(0, MAX_IMAGES_SAVED)
-  if (candidates.length === 0) return images
+  if (candidates.length === 0) return { images, failures: 0, scopeMissing: false }
   const dir = join(tmpdir(), 'dsh-feishu-doc-images', documentId)
   const saved = new Map<string, string>()
+  let failures = 0
+  let scopeMissing = false
   try {
     await mkdir(dir, { recursive: true })
   } catch {
-    return images
+    return { images, failures: candidates.length, scopeMissing: false }
   }
   for (const [index, image] of candidates.entries()) {
     try {
@@ -670,14 +672,23 @@ async function saveImageFiles(
       const path = join(dir, `${index + 1}-${image.token}.${IMAGE_EXTENSIONS[mime] ?? 'bin'}`)
       await writeFile(path, bytes)
       saved.set(image.block_id, path)
-    } catch {
-      // One unreachable image must not fail the read.
+    } catch (error: unknown) {
+      // One unreachable image must not fail the read, but the reason is worth
+      // reporting: the usual cause is a missing permission, and silently
+      // returning images without paths reads like the document has no pictures
+      // (2026-11-11 report: "没有下载权限" was invisible from the tool result).
+      failures += 1
+      if (/99991672|scope|No permission|no permission/iu.test(errorText(error, ''))) scopeMissing = true
     }
   }
-  return images.map(image => {
-    const path = saved.get(image.block_id)
-    return path === undefined ? image : { ...image, path }
-  })
+  return {
+    images: images.map(image => {
+      const path = saved.get(image.block_id)
+      return path === undefined ? image : { ...image, path }
+    }),
+    failures,
+    scopeMissing,
+  }
 }
 
 /** Normalize the SDK's media download response to a Buffer. */
@@ -1132,9 +1143,10 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         ...image,
         ...(urls.get(image.token) === undefined ? {} : { url: urls.get(image.token) as string }),
       }))
-      const images = args.download_images === true
+      const saved = args.download_images === true
         ? await saveImageFiles(channel, withUrls, resolved.documentId)
-        : withUrls
+        : undefined
+      const images = saved?.images ?? withUrls
       const slice = content.slice(offset, offset + maxChars)
       const truncated = offset + slice.length < content.length
       const url = resolved.url ?? await documentUrl(channel, resolved.documentId)
@@ -1153,6 +1165,12 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
         ...(truncated ? { next_offset: offset + slice.length } : {}),
         ...(revisionId === undefined ? {} : { revision_id: revisionId }),
         ...(images.length === 0 ? {} : { images }),
+        ...(saved === undefined || saved.failures === 0 ? {} : { images_download_failed: saved.failures }),
+        ...(saved === undefined || saved.failures === 0 ? {} : {
+          images_note: saved.scopeMissing
+            ? '图片下载失败：应用缺少 drive:file:download（或 drive:drive:readonly）权限。扫码建的应用请按 docs/feishu-setup.md 补齐后重启；也可能是该文档没有给应用下载权限。'
+            : '图片下载失败：应用对该文档没有下载权限，请把应用加为文档协作者并允许下载/导出。',
+        }),
       }
     },
   }))

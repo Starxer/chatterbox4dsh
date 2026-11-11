@@ -57,7 +57,17 @@ export const FEISHU_BOT_SCOPES = [
  *   image block (`drive.v1.media.uploadAll` with `parent_type: docx_image`).
  * - `docs:document.media:download` — temporary download URLs for the images a
  *   document already contains (`media.batchGetTmpDownloadUrl`), so a reader can
- *   actually see them.
+ *   actually see them. On its own it is NOT enough to fetch the bytes:
+ *   `drive.v1.media.download` also requires a DRIVE permission and otherwise
+ *   answers `99991672` (verified 2026-11-11).
+ * - `drive:file:download` — the actual image bytes
+ *   (`drive.v1.media.download`), which is what `feishu_doc_read`'s
+ *   `download_images` needs; `docs:document.media:download` only yields the
+ *   temporary URL list (which comes back EMPTY without drive access). This is
+ *   the narrowest of the scopes the error names (`drive:drive`,
+ *   `drive:drive:readonly`, `drive:file:readonly`, `drive:file`,
+ *   `drive:file:download`); grant `drive:drive:readonly` instead when the app
+ *   also has to reach documents it was not explicitly added to.
  * - `docs:permission.member:create` — share the created document with the user
  *   who asked for it (`drive.v1.permissionMember.create`). Without it a
  *   tenant-token document stays owned by the bot and the user cannot open it.
@@ -71,6 +81,11 @@ export const FEISHU_DOC_SCOPES = [
   'docs:document.content:read',
   'docs:document.media:upload',
   'docs:document.media:download',
+  // The bytes of a document's images come from `drive.v1.media.download`, which
+  // `docs:document.media:download` does NOT authorize (it only covers the
+  // temporary-URL list). Without a drive scope every image download fails with
+  // `99991672`/403 and `feishu_doc_read` can only name the image block.
+  'drive:file:download',
   'docs:permission.member:create',
 ]
 

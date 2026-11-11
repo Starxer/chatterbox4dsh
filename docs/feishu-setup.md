@@ -48,7 +48,8 @@
 | `docx:document:create` | 新建文档（`feishu_doc_write` 的 `create`） | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
 | `docs:document.content:read` | 以 **Markdown** 读取；未开通时退回纯文本 | 同上 |
 | `docs:document.media:upload` | 把 Markdown 里的本地图片上传并内嵌到文档 | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
-| `docs:document.media:download` | 下载文档里已有的图片到本地文件（`feishu_doc_read` 的 `download_images`） | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
+| `docs:document.media:download` | 取文档图片的**临时下载 URL**（`media.batchGetTmpDownloadUrl`）；**单靠它拿不到字节**，没有云盘权限时该接口返回空列表 | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
+| `drive:file:download` | **真正下载文档图片的字节**（`drive.v1.media.download`，`feishu_doc_read` 的 `download_images`）；缺它会 `99991672`/403。也可用更宽的 `drive:drive:readonly`（应用还要访问未显式协作的文档时） | 扫码流程自动申请（`FEISHU_DOC_SCOPES`） |
 | `docs:permission.member:create` | 把新建文档共享给发起请求的用户（应用身份建出的文档归机器人所有，不加协作者用户打不开） | 同上 |
 
 **已有应用怎么补**（不用重新扫码建应用）：
@@ -65,6 +66,8 @@
 - 它们只作用于应用自己创建/有权限的文档；应用代码里对应 `src/provision.ts` 的 `FEISHU_DOC_MAINTENANCE_SCOPES`。
 
 > 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
+
+> **下载图片还要求文档层面的权限**：应用只被加为**可阅读**时，正文读得到、图片字节仍会被拒（`drive.v1.media.download` 403、导出 `1069902`）。需要文档所有者把应用加为**可编辑**（或文档「分享 → 高级设置」允许下载/导出）。权限只加在应用上、文档没放开时，`feishu_doc_read` 现在会在结果里写明 `images_download_failed` / `images_note`，不再静默丢路径。
 
 > 评论与块级接口用的是平台模板自带的 `docs:document.comment:*`（读评论）与 docx 块权限，不额外申请。
 >

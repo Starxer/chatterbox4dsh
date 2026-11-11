@@ -264,6 +264,27 @@ describe('feishu_doc_read', () => {
     expect(client.drive.v1.media.download).toHaveBeenCalledWith({ path: { file_token: 'tok' } })
   })
 
+  it('reports why document images could not be downloaded', async () => {
+    const { channel, client } = fakeChannel({
+      docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'body' } })) } } },
+    })
+    client.docx.v1.documentBlock.list = vi.fn(async () => ({
+      data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: 'tok' } }], has_more: false },
+    }))
+    // The real failure shape when a drive scope is missing.
+    client.drive.v1.media.batchGetTmpDownloadUrl = vi.fn(async () => ({ data: { tmp_download_urls: [] } }))
+    client.drive.v1.media.download = vi.fn(async () => {
+      throw new Error('Access denied. One of the following scopes is required: [drive:file:download] (99991672)')
+    })
+    const tool = toolsOver(channel).read!
+    const value = await tool.execute({ target: 'doxcn12345678', download_images: true }, execCtx())
+    // The image is still listed (the model can name it), but the result now says
+    // WHY the file is missing instead of silently dropping the path.
+    expect(value.images?.[0]?.path).toBeUndefined()
+    expect(value.images_download_failed).toBe(1)
+    expect(value.images_note).toContain('drive:file:download')
+  })
+
   it('truncates long bodies and reports the next offset', async () => {
     const { channel } = fakeChannel({
       docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'abcdefghij' } })) } } },

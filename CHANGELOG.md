@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### 修复：文档图片下载——扫码建应用补上云盘下载权限，下载失败不再静默（`src/provision.ts` / `src/feishu-doc.ts` / `docs/feishu-setup.md`，2026-11-11）
+
+起因：用 `feishu_doc_read` 的 `download_images` 读一篇 wiki 文档，93 张图片全部没有落盘，工具结果里也看不出原因。
+
+- **权限**：`docs:document.media:download` 只覆盖临时下载 URL（`media.batchGetTmpDownloadUrl`），**真正下载字节**的 `drive.v1.media.download` 还需要云盘权限，否则 `99991672`/403。扫码建应用的 `FEISHU_DOC_SCOPES` 现在一并申请 **`drive:file:download`**（错误里列出的最小够用那档；需要访问未显式协作的文档时用更宽的 `drive:drive:readonly`）。文档层面仍有要求：应用被加为**可阅读**时正文能读、图片字节会被拒，需要所有者把应用改为**可编辑**或允许下载/导出。
+- **可诊断性**：图片下载失败不再静默丢 `path`——结果里给出 `images_download_failed` 计数与 `images_note`，区分「应用缺 drive 权限」和「该文档没给应用下载权限」。
+- **文档**：`docs/feishu-setup.md` 的权限表补上 `drive:file:download` 与「下载还要求文档权限」的说明；新增一段为什么 tmp URL 为空。
+- **测试**：扫码 scope 列表断言新增 drive scope；文档读取失败路径断言 `images_download_failed`/`images_note`。全量测试、`typecheck`、`build` 全绿。
+
+**English**: `feishu_doc_read` with `download_images` silently left every image without a local path. `docs:document.media:download` only covers the temporary-URL list; the bytes come from `drive.v1.media.download`, which needs a drive scope (`99991672`/403 otherwise). The scan-to-create app now requests `drive:file:download` (the narrowest scope the error names; `drive:drive:readonly` when the app must reach documents it is not a collaborator on), and the read result reports `images_download_failed` + `images_note` instead of dropping paths silently. Note the document-level requirement remains: a read-only collaborator can read the body but not the image bytes; the owner must grant edit (or allow download/export). Docs and tests updated.
+
 ## 0.4.0 (2026-11-11)
 
 > 自 `0.3.0`（2026-11-05）以来的累积改动：**全部是展示与可靠性改进，没有破坏性变更**，仍然要求 DSH `0.2.x`（peer `^0.2.0-rc.1`；在 `0.2.2-rc.1` 上构建与真机验证）。两处**默认行为**发生变化（都可在 `/display` 卡或配置里改回）：`compact` 回合在 `step/start` 就发过程卡、纯回答回合复用同一张卡做答案卡；`compactToolRow` 默认改为「描述 + 工具」。现行使用说明见 [项目首页](<./README.md>)，文档入口见 [文档导航](<./docs/README.md>)。
