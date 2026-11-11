@@ -49,6 +49,10 @@ const BINARY_EXTENSIONS = new Set([
 const PLACEHOLDER_USERS = new Set([
   'me', 'user', 'you', 'username', 'yourname', 'name', 'example', 'sample', 'demo', 'test',
   'alice', 'bob', 'jane', 'john', 'someone', 'nobody', 'foo', 'bar', 'someoneelse',
+  // CI runner accounts (GitHub Actions uses `runner`/`runneradmin`, and Windows
+  // passes its profile back as the 8.3 short name `RUNNER~1`); a build log or a
+  // note about one is not somebody's private machine.
+  'runner', 'runneradmin', 'runner~1',
 ])
 /** Documentation addresses (RFC 5737 is public IP space, not a real host). */
 const PLACEHOLDER_IPS = new Set([
@@ -82,7 +86,7 @@ const RULES = [
     pattern: /(?<![\w.])[A-Za-z]:\\Users\\[A-Za-z0-9._ -]+/g,
     mask: () => 'C:\\Users\\<redacted>',
     allow: (value) => {
-      const segment = (value.split('\\')[2] ?? '').trim()
+      const segment = (value.split('\\')[2] ?? '').trim().toLowerCase()
       // `C:\Users\...` is prose for "some user", not a leaked name.
       return PLACEHOLDER_USERS.has(segment) || /^\.{2,}$/u.test(segment)
     },
