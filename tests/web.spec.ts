@@ -40,6 +40,54 @@ describe('provision web route', () => {
     expect(api.provision).toHaveBeenCalledOnce()
   })
 
+  it('accepts a POST the DSH desktop shell forwarded (it strips Origin)', async () => {
+    // `apps/desktop/src/web-document.ts` deletes `origin`/`host`/`cookie`
+    // before forwarding to the Host, so the shell's own POST arrives with no
+    // Origin at all. Every browser sends one for POST, so treating "absent"
+    // as trusted is what the scan button needs on Windows.
+    const api = {
+      provisionStatus: vi.fn(),
+      provision: vi.fn(() => ({ phase: 'waiting', qrUrl: 'https://scan.example/verify' })),
+      runtimeStatus: vi.fn(() => ({ state: 'connecting' })),
+    }
+    const res = response()
+    await handleProvisionRequest({ method: 'POST', headers: { host: '127.0.0.1:3080' }, socket: { remoteAddress: '127.0.0.1' } } as any, res as any, api as any)
+    expect(res.statusCode).toBe(200)
+    expect(api.provision).toHaveBeenCalledOnce()
+  })
+
+  it('accepts the desktop application origin when a shell forwards it anyway', async () => {
+    const api = { provisionStatus: vi.fn(), provision: vi.fn(() => ({ phase: 'waiting' })), runtimeStatus: vi.fn(() => ({})) }
+    const res = response()
+    await handleProvisionRequest({
+      method: 'POST',
+      headers: { origin: 'dsh-app://app', host: '127.0.0.1:3080' },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any, res as any, api as any)
+    expect(res.statusCode).toBe(200)
+    expect(api.provision).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a POST with no Origin addressed through a foreign Host', async () => {
+    const api = { provisionStatus: vi.fn(), provision: vi.fn(), runtimeStatus: vi.fn() }
+    const res = response()
+    await handleProvisionRequest({ method: 'POST', headers: { host: 'attacker.example' }, socket: { remoteAddress: '127.0.0.1' } } as any, res as any, api as any)
+    expect(res.statusCode).toBe(403)
+    expect(api.provision).not.toHaveBeenCalled()
+  })
+
+  it('rejects a same-origin POST the browser marks cross-site', async () => {
+    const api = { provisionStatus: vi.fn(), provision: vi.fn(), runtimeStatus: vi.fn() }
+    const res = response()
+    await handleProvisionRequest({
+      method: 'POST',
+      headers: { origin: 'http://127.0.0.1:3080', host: '127.0.0.1:3080', 'sec-fetch-site': 'cross-site' },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as any, res as any, api as any)
+    expect(res.statusCode).toBe(403)
+    expect(api.provision).not.toHaveBeenCalled()
+  })
+
   it('rejects cross-origin provisioning', async () => {
     const api = { provisionStatus: vi.fn(), provision: vi.fn(), runtimeStatus: vi.fn() }
     const res = response()

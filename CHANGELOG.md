@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 (2026-11-11)
+
+> 自 `0.4.1` 以来的**修补版本**：无破坏性变更，仍要求 DSH `0.2.x`（peer `^0.2.0-rc.1`）。两处 Windows 修复（DSH 桌面版扫码报 `untrusted origin`、盘符路径被当成 URL），以及 Windows 单测腿从「信号」升级为**必过门**。
+>
+> Patch release since `0.4.1`: **no breaking change**; still requires DSH `0.2.x` (peer `^0.2.0-rc.1`). Two Windows fixes — the desktop shell's scan request was refused as `untrusted origin`, and drive paths were misread as URLs — plus the Windows unit-test leg is now a required check.
+
+### 修复：DSH 桌面版点「扫码配置」报 `untrusted origin`（`src/web.ts`，2026-11-11）
+
+- **现象**：Windows 上装了 `0.4.1`，点「扫码配置」后「连接与扫码」区块显示 `untrusted origin`（这是插件唯一自建路由 `POST /dsh-feishu/provision` 的 403 回执）。
+- **根因**：**DSH 桌面壳**把应用源（`dsh-app://app`）的请求转发给宿主时会**剥掉 `origin` / `host` / `cookie` / `sec-fetch-*`**（`apps/desktop/src/web-document.ts`），而我们的同源检查把「没有 Origin」直接判成不可信 ⇒ 桌面版必失败，浏览器版（127.0.0.1 正常同源）不受影响。
+- **修法**：`isSameOrigin` 现在接受三种**同机**形态——① 浏览器同源（`Origin` 与 `Host` 指向同一个 loopback 权威）；② **`Origin` 缺失**（桌面壳转发的 POST；浏览器对 POST 必带 Origin，所以「缺失」可识别为壳而不是网页）；③ 桌面应用源 `dsh-app://app`（防御将来不剥头的壳）。安全边界不变：socket 仍必须是 loopback；`Host` 必须仍是 loopback 权威（挡住 DNS-rebinding 形态）；浏览器 `Sec-Fetch-Site: cross-site` 一律拒绝。403 文案会回显 `origin=` / `host=`，下次出问题能直接报数值。
+- **测试**：`tests/web.spec.ts` 新增 4 例（无 Origin 放行、桌面源放行、无 Origin + 外部 Host 拒、same-origin + `Sec-Fetch-Site: cross-site` 拒）。
+
+**English**: With `0.4.1` on Windows, pressing **Scan to configure** made the connection section show `untrusted origin` — a 403 from the plugin's only self-owned route, `POST /dsh-feishu/provision`. The **DSH desktop shell** proxies the application origin's (`dsh-app://app`) requests to the Host and strips `origin`/`host`/`cookie`/`sec-fetch-*` (`apps/desktop/src/web-document.ts`), and the same-origin check treated a missing `Origin` as untrusted, so the desktop build always failed while the browser at `127.0.0.1` was fine. `isSameOrigin` now accepts three same-machine shapes: a browser same-origin request, an **absent `Origin`** (the forwarded shell request — browsers always send one for POST, so absence identifies the shell), and the desktop application origin `dsh-app://app` (defensive). The security boundary is unchanged: the socket must stay loopback, the `Host` must still be a loopback authority (a DNS-rebinding shape is refused), and a browser request marked `Sec-Fetch-Site: cross-site` is always rejected. The 403 body now echoes `origin=`/`host=` so a future report carries the values.
 
 ### 修复：Windows 盘符路径被当成 URL，卡片里的图和链接不内联、不变可读（`src/local-path.ts` / `src/card-images.ts` / `src/card-markdown.ts` / `src/feishu-doc.ts`，2026-11-11）
 
