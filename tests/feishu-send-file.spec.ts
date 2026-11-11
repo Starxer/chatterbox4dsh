@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { startFeishuSendFileTool } from '../src/feishu-send-file.ts'
 import { mp4Bytes, oggBytes } from './stubs/media-bytes.ts'
+import { tempDir } from './stubs/temp-dir.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { HarnessConversationService } from '../src/harness.ts'
@@ -40,7 +40,7 @@ function fakeBridge(): HarnessConversationService {
 }
 
 async function tempFile(contents: Buffer, name = 'f'): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-send-'))
+  const dir = await tempDir('dsh-send-')
   const p = join(dir, name)
   await writeFile(p, contents)
   return p

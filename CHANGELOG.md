@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### 测试/CI：Windows 信号腿的临时目录夹具改用真实路径（`tests/stubs/temp-dir.ts` 等，2026-11-11）
+
+`windows-latest` 腿（0.4.1 新增，非阻塞）首跑 **11 失败 / 1484 通过**：全是路径字符串对不上——Windows 的 `os.tmpdir()` 给的是 8.3 短名（`C:\Users\RUNNER~1\AppData\Local\Temp`），而源码用 `realpath` 得到长名（`C:\Users\runneradmin\...`），夹具却用短名拼期望值。修法：新增 `tests/stubs/temp-dir.ts` 的 `tempDir()`（`realpath(mkdtemp(...))`），`card-images` / `feishu-deliver` / `feishu-send-file` / `onboarding` 四个 spec 的 19 处临时目录改用它；行为代码零改动。Linux 上全量测试、`typecheck` 复跑绿。判读：这 11 条不是产品在 Windows 上坏，而是夹具没按平台归一化路径。
+
+**English**: The new (non-blocking) `windows-latest` leg failed 11 of 1495 tests on its first run, every one a path-string mismatch: Windows hands back `os.tmpdir()` as an 8.3 short name (`C:\Users\RUNNER~1\AppData\Local\Temp`) while the code under test resolves with `realpath` to the long name, and the fixtures built expectations from the short one. `tests/stubs/temp-dir.ts` now exposes `tempDir()` (`realpath(mkdtemp(...))`), used by 19 fixtures across the `card-images`, `feishu-deliver`, `feishu-send-file` and `onboarding` specs; no product code changed. The suite and type-check stay green on Linux. Read it as fixture normalisation, not as Windows behaviour being broken.
+
 ## 0.4.1 (2026-11-11)
 
 > 自 `0.4.0`（2026-11-11）以来的**修补版本**：无破坏性变更，仍要求 DSH `0.2.x`（peer `^0.2.0-rc.1`，在 `0.2.2-rc.1` 上构建）。四项：文档图片下载补齐云盘权限并让失败可诊断、Windows 路径兼容修复、扫码配置超时可诊断、仓库隐私门禁进 CI。

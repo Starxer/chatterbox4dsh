@@ -1,10 +1,10 @@
-import { mkdtemp, mkdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { collectImageTargets, startCardImages, type CardImageDeps } from '../src/card-images.ts'
 import { CARD_MEDIA_LIMIT } from '../src/config.ts'
 import { mp4Bytes, oggBytes } from './stubs/media-bytes.ts'
+import { tempDir } from './stubs/temp-dir.ts'
 
 const IMAGE_KEY = 'img_v3_0215q_0a59b5e6-4758-41de-95a5-a1b2c3d4'
 // Smallest real PNG signature — enough for the format sniff.
@@ -15,7 +15,7 @@ let workspace = ''
 let outside = ''
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'dsh-card-images-'))
+  root = await tempDir('dsh-card-images-')
   workspace = join(root, 'ws')
   outside = join(root, 'outside')
   await mkdir(join(workspace, 'runs'), { recursive: true })

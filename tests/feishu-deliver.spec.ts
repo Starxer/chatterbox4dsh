@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   DELIVER_CANCEL,
@@ -13,6 +12,7 @@ import {
   type DeliverPlanInput,
   type FeishuDeliverChannel,
 } from '../src/feishu-deliver.ts'
+import { tempDir } from './stubs/temp-dir.ts'
 import {
   classifyDeliverable,
   formatFileSize,
@@ -56,7 +56,7 @@ function fakeChannel() {
 
 /** One plan + a controller over a temp workspace. */
 async function harness(overrides: { docMaxMb?: number; sendFile?: any } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+  const root = await tempDir('dsh-deliver-')
   const channel = fakeChannel()
   const sendFile = overrides.sendFile ?? vi.fn(async () => ({ sentAs: 'file', messageId: 'file-1' }))
   const handle = startFeishuDeliverables({
@@ -196,7 +196,7 @@ describe('deliverable planning', () => {
 
   it('refuses a path outside the session workspace', async () => {
     const { root, handle, input } = await harness()
-    const outside = await mkdtemp(join(tmpdir(), 'dsh-deliver-outside-'))
+    const outside = await tempDir('dsh-deliver-outside-')
     try {
       await writeFile(join(outside, 'secret.pdf'), 'x')
       const plan = await handle.plan(input([{ path: join(outside, 'secret.pdf') }]))
@@ -238,7 +238,7 @@ describe('deliverable planning', () => {
   })
 
   it('evicts the oldest token once the registry is over its cap', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     const sendFile = vi.fn(async () => ({ sentAs: 'file', messageId: 'file-1' }))
     const handle = startFeishuDeliverables({
@@ -454,7 +454,7 @@ describe('tap → confirm → send', () => {
 
   it('re-checks containment on every tap: a symlink swapped in later is refused', async () => {
     const { root, channel, sendFile, handle, input } = await harness()
-    const outside = await mkdtemp(join(tmpdir(), 'dsh-deliver-target-'))
+    const outside = await tempDir('dsh-deliver-target-')
     try {
       await mkdir(join(root, 'out'))
       await writeFile(join(root, 'out', 'notes.md'), '# notes')
@@ -472,7 +472,7 @@ describe('tap → confirm → send', () => {
   })
 
   it('refuses an unknown or expired token without sending', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     const sendFile = vi.fn(async () => ({ sentAs: 'file', messageId: 'file-1' }))
     let clock = 1_000_000
@@ -503,7 +503,7 @@ describe('tap → confirm → send', () => {
   })
 
   it('uses the topic of the card that was tapped for the confirmation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     const sendFile = vi.fn(async () => ({ sentAs: 'file', messageId: 'file-1' }))
     const topicFor = vi.fn(() => ({ threadId: 'th_1', rootId: 'om_root' }))
@@ -531,7 +531,7 @@ describe('tap → confirm → send', () => {
   })
 
   it('prefers the topic recorded at plan time over the chat-level lookup', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     const sendFile = vi.fn(async () => ({ sentAs: 'file', messageId: 'file-1' }))
     // The registry lookup would land in the WRONG topic — the plan's own
@@ -565,7 +565,7 @@ describe('tap → confirm → send', () => {
   })
 
   it('sends once when Send is tapped twice before the first send lands', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     let release: (() => void) | undefined
     const sendFile = vi.fn(() => new Promise<{ sentAs: string; messageId: string }>((resolve) => {
@@ -601,7 +601,7 @@ describe('tap → confirm → send', () => {
   })
 
   it('answers a stale row tap in a message instead of editing the row card', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     const handle = startFeishuDeliverables({
       channel,
@@ -627,7 +627,7 @@ describe('tap → confirm → send', () => {
   })
 
   it('drops every token and stops listening on dispose', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-deliver-'))
+    const root = await tempDir('dsh-deliver-')
     const channel = fakeChannel()
     const sendFile = vi.fn(async () => ({ sentAs: 'file', messageId: 'file-1' }))
     const handle = startFeishuDeliverables({

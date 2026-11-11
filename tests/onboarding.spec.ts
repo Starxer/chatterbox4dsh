@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { startFeishuOnboarding, type FeishuOnboardingDeps } from '../src/feishu-onboarding.ts'
 import { translationsFor } from '../src/i18n.ts'
+import { tempDir } from './stubs/temp-dir.ts'
 
 const t = translationsFor('zh')
 
@@ -312,7 +312,7 @@ describe('feishu-onboarding', () => {
     // A real directory on this machine: the flow records it and moves on. It is
     // NOT registered here — that happens at the last step (O19), so cancelling
     // `/new` leaves no workspace behind.
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-'))
+    const root = await tempDir('dsh-feishu-o16-')
     try {
       await fire(handlers, {
         chatId: 'oc_1',
@@ -496,7 +496,7 @@ describe('feishu-onboarding', () => {
   })
 
   it('falls back to its own filesystem listing when directoryPicker is a native backend', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-browse-'))
+    const root = await tempDir('dsh-feishu-browse-')
     try {
       await mkdir(join(root, 'alpha'))
       await mkdir(join(root, 'beta'))
@@ -797,7 +797,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
   }
 
   it('asks before creating a path that does not exist, and never registers it on the way', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-ask-'))
+    const root = await tempDir('dsh-feishu-o16-ask-')
     await mkdir(join(root, 'existing-sibling'))
     const target = join(root, 'brand-new', 'nested')
     const { channel, handlers } = fakeChannel()
@@ -846,7 +846,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
   })
 
   it('lets a neighbour row replace the typo, and forgets the missing flag', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-neighbour-'))
+    const root = await tempDir('dsh-feishu-o16-neighbour-')
     await mkdir(join(root, 'alpha'))
     await mkdir(join(root, 'beta'))
     const { channel, handlers } = fakeChannel()
@@ -880,7 +880,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
   })
 
   it('refuses a relative path and a file with its own message (and logs it)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o16-relative-'))
+    const root = await tempDir('dsh-feishu-o16-relative-')
     const file = join(root, 'a-file')
     await writeFile(file, 'x')
     const { channel, handlers } = fakeChannel()
@@ -916,7 +916,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
     // The `native` backend has no createDirectory — that says something about the
     // CHOOSER, not about the filesystem: the plugin lists levels itself in this
     // case and creates the folder itself too, mirroring the backend's contract.
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o17-native-'))
+    const root = await tempDir('dsh-feishu-o17-native-')
     const { channel, handlers } = fakeChannel()
     const d = deps(channel, fakeBridge())
     d.getDirectoryPicker = () => ({ capability: () => ({ kind: 'native' }) })
@@ -956,7 +956,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
   })
 
   it('creates a folder in the browsed level and enters it, and reports a clash on the card', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-feishu-o17-'))
+    const root = await tempDir('dsh-feishu-o17-')
     const createDirectory = vi.fn(async (path: string, name: string) => {
       const target = join(path, name)
       await mkdir(target)
