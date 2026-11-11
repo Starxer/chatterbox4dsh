@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 文档：记录 Windows 桌面版真机验证状态（`README.md` / `docs/feishu-setup.md`，2026-11-12）
+
+- 使用者在 Windows 的 **DSH 桌面版**里安装 `0.4.2` 并实际使用，扫码授权、卡片、飞书收发均正常（2026-11-12 反馈「测试良好」）。`README.md` 的平台说明与 `TODO.md` 的 H5 据此更新：Windows 从「只有 CI 单测腿」升级为「**桌面版真机跑通**」，同时保留边界——依赖外部 `ffmpeg` / `ffprobe` 的转码与封面、以及 macOS，仍未单独验证。
+- `docs/feishu-setup.md` 补两条：在桌面版里扫码的说明（页面运行在 `dsh-app://app`，桌面壳转发请求会去掉 `Origin`；`0.4.1` 及更早会报 `untrusted origin`，**`0.4.2`+ 已修复**），以及常见问题表里的对应排查行。
+- 纯文档改动，无代码与产物变化。
+
+**English**: The operator installed `0.4.2` on Windows inside the **DSH desktop app** and used it normally — scan-to-configure, cards and Feishu send/receive all work (reported 2026-11-12). `README.md`'s platform section and `TODO.md`'s H5 now say "desktop app verified on a real machine" instead of "CI unit tests only", while keeping the boundary explicit: media transcoding/covers that need external `ffmpeg`/`ffprobe`, and macOS, are still unverified. `docs/feishu-setup.md` gained a note about scanning from the desktop shell (the app runs on `dsh-app://app` and its forwarded requests carry no `Origin`; `0.4.1` and earlier answered `untrusted origin`, fixed in `0.4.2`) plus a matching troubleshooting row. Documentation only — no code or artifact changes.
+
 ### 变更：工作步骤展示的默认档位从「详细」改为「简洁」（`src/display-level.ts` / `src/config.ts` / `/display` 文案，2026-11-12）
 
 - **为什么**：这个插件的卡片是聊天消息，不是可以往下滚的页面；WebUI 的 `detailed` 默认适合屏幕，但在飞书里会把一轮拆成多张步骤卡。插件侧默认改为 `compact`：**一轮一张过程卡**（工具调用计数与状态）+ 一张答案卡，展开细节仍是一步（`/display` 或 `level` 文本命令）。
