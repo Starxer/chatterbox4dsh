@@ -50,6 +50,7 @@
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.types.json && npm run build:client",
     "build:client": "tsdown --config tsdown.client.config.ts",
+    "privacy": "node scripts/privacy-scan.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

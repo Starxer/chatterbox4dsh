@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 仓库加固：隐私门禁进 CI，源码映射退出 git 跟踪（`scripts/privacy-scan.mjs` / `.github/workflows/ci.yml` / `package.json` / `.gitignore`，2026-11-11）
+
+起因：硬规则 1 的「提交前 grep 0 命中」全靠人记得跑，而且只扫手头那几个文件——**没人扫已发布面**（npm 包里有 gitignored 的 `lib/`）和**历史**（公开的是每一个曾推送的 commit）。
+
+- **新增 `scripts/privacy-scan.mjs`**：一次扫三个公开面——`git ls-files`（GitHub 渲染的内容）、`npm pack --dry-run --json` 给出的发布文件清单（含生成的 `lib/`）、以及 `--history` 时 `git log --all -p` 的全部 commit diff。规则覆盖本机绝对路径（`/home` `/Users` `/root`、`C:\Users`）、私网与运营商级 NAT IP、tailnet 主机名、私钥块、GitHub / npm / API key / Slack / AWS 令牌、飞书 `t-`/`u-` 令牌与 `oc_`/`ou_`/`on_`/`om_`/`cli_` 租户标识、赋值形态的密钥、真实邮箱。
+- **占位符默认放行、夹具走精确白名单**：`/home/me`、`/Users/you`、`example.com`、`xxxx…`、`noreply@`、RFC 5737 地址这些文档/测试占位不误报；真有「故意长成泄露形状」的夹具，只按**文件 + 值**精确加入 `FIXTURE_ALLOWLIST`（当前仅一条：`tests/outbound-safety.spec.ts` 里那个 `t-` 前缀的测试夹具）。
+- **门禁自身可证伪**：每次运行先跑内建 self-test——每条规则必须命中一条虚构样本、且不得误报对应占位样本，模式一失效就 `exit 2`，不会「静默变绿」；命中值**打码后**才打印（公开仓库的 CI 日志同样公开），绝不把抓到的内容再发一遍。本机可 `PRIVACY_HOSTNAME=$(hostname) npm run privacy` 额外纳入自己的主机名（CI 不可能知道它）。
+- **CI**：`verify` job 的 `locked` 支在 build 之后跑 `node scripts/privacy-scan.mjs --history`（checkout 改 `fetch-depth: 0` 才能扫历史），发布面因此包含刚构建出的 `lib/`；提交前本地跑 `npm run privacy`。
+- **`client/client.js.map` 退出 git 跟踪**（`git rm --cached`，工作树文件保留）：`.gitignore` 里早就写着「不 commit」，但它一直被跟踪、每次 build 都给 diff 添噪音。`package.json` 的 `files` 仍包含它 ⇒ `npm pack --dry-run` 复核确认**发布物照旧携带**，只是仓库不再跟踪。
+- **验证**：`npm run privacy`（354 个文件 = 200 跟踪 / 168 发布）与 `npm run privacy -- --history`（379 个 commit）全绿；人为植入本机路径、私网地址、GitHub 令牌形状、`app_secret=<真值>` 四类样本 → 4 条命中且全部打码，`PRIVACY_HOSTNAME=<样本>` 亦命中，还原后复绿。改动不碰 `src/`，全量测试与 `typecheck` 不受影响。
+
+**English**: Hard rule 1 ("grep must be clean before committing") depended on remembering to run it, and it only looked at the files at hand — nobody scanned the **published surface** (the npm tarball contains the gitignored `lib/`) or the **history** (every pushed commit is public). `scripts/privacy-scan.mjs` now checks three public surfaces in one run: `git ls-files`, the `npm pack --dry-run --json` file list, and — with `--history` — every `git log --all -p` diff, against rules for absolute local paths, private/CGNAT addresses, tailnet hostnames, private-key blocks, GitHub/npm/API/Slack/AWS tokens, Feishu `t-`/`u-` tokens and `oc_`/`ou_`/`on_`/`om_`/`cli_` tenant ids, assigned secret literals and real e-mail addresses. Documentation placeholders (`/home/me`, `example.com`, `xxxx…`, `noreply@`, RFC 5737 addresses) are allowed by value; a deliberate leak-shaped fixture needs an exact **file + value** entry in `FIXTURE_ALLOWLIST`. The gate proves itself: an embedded self-test asserts every rule still fires on a fabricated sample and stays quiet on the placeholder, exiting non-zero if a pattern breaks; matches are **redacted** before printing because CI logs of a public repository are public too. CI runs it in the `locked` leg after the build (checkout now uses `fetch-depth: 0`) and `npm run privacy` runs it locally. `client/client.js.map` is no longer tracked (`git rm --cached`, file kept): `.gitignore` always said not to commit it, but it was tracked and added build noise to every diff; `package.json`'s `files` still lists it, so the npm tarball keeps shipping it. Verified clean on 354 files (200 tracked / 168 published) and 379 commits, plus planted-leak negative tests that fired and redacted as intended.
+
 ### 修复：文档图片下载——扫码建应用补上云盘下载权限，下载失败不再静默（`src/provision.ts` / `src/feishu-doc.ts` / `docs/feishu-setup.md`，2026-11-11）
 
 起因：用 `feishu_doc_read` 的 `download_images` 读一篇 wiki 文档，93 张图片全部没有落盘，工具结果里也看不出原因。

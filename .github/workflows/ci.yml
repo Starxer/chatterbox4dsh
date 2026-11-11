@@ -23,6 +23,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          # The privacy scan walks every commit that was ever pushed, so the
+          # shallow default is not enough.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -59,3 +63,12 @@ jobs:
 
       - name: Inspect package contents
         run: npm pack --dry-run
+
+      # Hard rule 1 in AGENTS.md: this repository is public (GitHub + npm), so
+      # no local path, private address, credential value or real tenant id may
+      # reach the working tree, the published tarball or any pushed commit.
+      # Runs once (the `locked` leg) after the build, because the published
+      # surface includes the generated, untracked `lib/`.
+      - name: Scan for leaked private content
+        if: matrix.dependencies == 'locked'
+        run: node scripts/privacy-scan.mjs --history
