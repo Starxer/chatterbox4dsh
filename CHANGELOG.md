@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 (2026-11-11)
+
+> 自 `0.4.0`（2026-11-11）以来的**修补版本**：无破坏性变更，仍要求 DSH `0.2.x`（peer `^0.2.0-rc.1`，在 `0.2.2-rc.1` 上构建）。四项：文档图片下载补齐云盘权限并让失败可诊断、Windows 路径兼容修复、扫码配置超时可诊断、仓库隐私门禁进 CI。
+>
+> Patch release since `0.4.0` (2026-11-11): **no breaking change**; still requires DSH `0.2.x` (peer `^0.2.0-rc.1`, built on `0.2.2-rc.1`). Four things: the document-image download path now asks for the drive scope and reports failures, Windows path handling is fixed, the scan-to-configure flow times out with a real message instead of a blank panel, and CI gained a privacy gate.
 
 ### 修复：扫码配置拿不到二维码时静默空白（`src/provision-manager.ts` / `src/provision.ts` / `src/client/`，2026-11-11）
 
