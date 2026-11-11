@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：桌面版回合不再被标成「Web GUI」（`src/feishu-turn-origin.ts` / `src/feishu-external-turns.ts` / `src/i18n.ts` / `src/feishu-surface.ts`，2026-11-12）
+
+- **根因**：DSH 的 prompt 请求**没有客户端身份字段**（`SessionPromptRequest` 只有 `requestId` / `mode` / `content` / 可选 `clientTimeZone`），而桌面壳把请求转发给宿主时会把自己的 `origin` 改写成宿主 origin 并附上宿主的 cookie（`apps/desktop/src/web-document.ts`）⇒ 消息层面**浏览器与桌面窗口无法区分**。插件原先只凭「有没有 `clientTimeZone`」判断，而桌面版同样会带时区，于是两者都被标成「Web GUI」。
+- **修法**：改用**宿主级**信号——DSH 桌面启动宿主时注入 `DSH_CLIENT_VERSION`（`apps/desktop/src/main.ts`）。新增 `runsInDesktopHost()` 读进程环境：桌面宿主 ⇒ 外部回合标「**桌面版**」，否则标「Web GUI」；两者都没有 `clientTimeZone` ⇒「其它入口」。镜像消息前缀（`💬 桌面版：` / `💬 Desktop: `）与 Turn Complete 的来源行同步；系统提示词的 surface 声明也从 "not the Web GUI" 改为 "not the DSH GUI (the Web UI or the desktop app)"。
+- **边界**：这是**宿主级**判断，不是逐请求判断——若有人拿桌面宿主自己的认证 URL 用浏览器打开，会被标成桌面版（很少见）；要做到逐请求区分，需要 DSH 在 prompt 请求里加客户端标识，属于上游改动。
+- **测试**：`feishu-turn-origin.spec.ts` 新增 2 例（`DSH_CLIENT_VERSION` 存在 ⇒ `desktop`；为空 ⇒ `web`），`feishu-external-turns.spec.ts` 新增 1 例（三种来源前缀与桌面标签）。
+
+**English**: Turns started from the DSH desktop app were labelled "Web GUI". The prompt request carries no client identity (`SessionPromptRequest` has only `requestId`, `mode`, `content` and an optional `clientTimeZone`), and the desktop shell rewrites `origin` to the Host's own origin and attaches its cookie when forwarding, so a browser tab and the desktop window are indistinguishable message by message — while both send a time zone, which is all the old heuristic looked at. The label now comes from a HOST-level signal: the desktop shell spawns its Host with `DSH_CLIENT_VERSION`, so `runsInDesktopHost()` labels external turns "Desktop" when that marker is present and "Web GUI" otherwise (no time zone at all remains "another surface"). The mirrored-message prefix and the Turn Complete attribution follow the same label, and the surface prompt now says "not the DSH GUI (the Web UI or the desktop app)". This is a Host-level rather than per-request distinction: opening the desktop Host's authenticated URL in a browser would be labelled Desktop (rare); a per-request answer needs an upstream client-identity field. Covered by new turn-origin and external-turn tests.
+
 ### 变更：媒体能力统一预检，内联不了就按原文件发送（`src/media-binaries.ts` / `src/card-images.ts` / `src/index.ts`，2026-11-12）
 
 - **统一预检**：新增 `src/media-binaries.ts`，用一次 `ffmpeg -version` / `ffprobe -version` 探测工具是否在 `PATH`（成功结果进程内永久缓存，失败结果 5 分钟后重试，装好不必重启）。所有默认调用点（图片缩放、时长探测、MOV→MP4 重封装、非 Opus 转码、封面抽帧）都先过这道预检，**缺工具时只提示一次**，不再对每个文件 spawn 一次失败进程。

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   autoTurnTrigger,
   beginTurn,
@@ -14,6 +14,7 @@ import {
 const SESSION = 'lark-v2-test-session'
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   resetTurnOrigins()
 })
 
@@ -160,6 +161,31 @@ describe('trigger attribution over one turn', () => {
     beginTurn(SESSION)
     noteUserMessage(SESSION, { kind: 'user', rpcId: 'x' })
     expect(turnSurface(SESSION)).toBe('other')
+  })
+
+  it('names the desktop app when the Host was started by its shell', () => {
+    // The Host cannot see a client identity per request; the desktop shell marks
+    // the Host it spawns with `DSH_CLIENT_VERSION` instead.
+    vi.stubEnv('DSH_CLIENT_VERSION', '0.2.2')
+    try {
+      beginTurn(SESSION)
+      noteUserMessage(SESSION, { kind: 'user', rpcId: 'web-1', clientTimeZone: 'UTC' })
+      expect(turnOrigin(SESSION)).toBe('external')
+      expect(turnSurface(SESSION)).toBe('desktop')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('falls back to the browser label when no desktop marker is set', () => {
+    vi.stubEnv('DSH_CLIENT_VERSION', '')
+    try {
+      beginTurn(SESSION)
+      noteUserMessage(SESSION, { kind: 'user', rpcId: 'web-1', clientTimeZone: 'UTC' })
+      expect(turnSurface(SESSION)).toBe('web')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('starts the next turn with no attribution', () => {

@@ -37,7 +37,7 @@ import type { Translations } from './i18n.ts'
 import type { ProduceCardMode } from './config.ts'
 import { mergeProducedArtifacts, producedArtifacts } from './produced-files.ts'
 import { renderCompactCompletionCard, renderDeliveryCard } from './turn-summary.ts'
-import { beginTurn, noteUserMessage, turnOrigin, turnSurface, turnTrigger, type UserMessageOrigin } from './feishu-turn-origin.ts'
+import { beginTurn, noteUserMessage, turnOrigin, turnSurface, turnTrigger, type TurnSurface } from './feishu-turn-origin.ts'
 
 /** Minimal logger surface; matches ctx.logger's call style. */
 export interface ExternalTurnsLogger {
@@ -141,13 +141,13 @@ function topicOf(chat: ConversationMessage): { threadId?: string; rootId?: strin
  * where to look for it.
  *
  * @param parts - the message content parts.
- * @param origin - which surface sent it (`external-web` gets the browser label).
+ * @param surface - which non-Feishu surface sent it (browser or desktop app).
  * @param t - current translations.
  * @returns the notice text, or `''` when there is nothing to say.
  */
 export function describeExternalMessage(
   parts: readonly MessagePart[],
-  origin: UserMessageOrigin,
+  surface: TurnSurface,
   t: Translations,
 ): string {
   const text = parts
@@ -158,7 +158,9 @@ export function describeExternalMessage(
   const images = parts.filter(part => part.type === 'image').length
   const files = parts.filter(part => part.type !== 'text' && part.type !== 'image').length
   if (text === '' && images === 0 && files === 0) return ''
-  const prefix = origin === 'external-web' ? t.externalMessageFromWebGui : t.externalMessageFromOther
+  const prefix = surface === 'desktop'
+    ? t.externalMessageFromDesktop
+    : surface === 'web' ? t.externalMessageFromWebGui : t.externalMessageFromOther
   const clipped = text.length > ECHO_TEXT_CAP ? `${text.slice(0, ECHO_TEXT_CAP)}…` : text
   const attachmentNote = images + files > 0 ? t.externalMessageAttachments(images, files) : ''
   const head = clipped === '' ? prefix.trimEnd() : `${prefix}${clipped}`
@@ -177,10 +179,10 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
   const boundChat = (sessionId: string): ConversationMessage | undefined =>
     deps.bridgeHolder.current?.resolveChat(sessionId)
 
-  const echo = async (sessionId: string, parts: readonly MessagePart[], origin: UserMessageOrigin): Promise<void> => {
+  const echo = async (sessionId: string, parts: readonly MessagePart[], surface: TurnSurface): Promise<void> => {
     const chat = boundChat(sessionId)
     if (chat === undefined) return
-    const text = describeExternalMessage(parts, origin, deps.getTranslations())
+    const text = describeExternalMessage(parts, surface, deps.getTranslations())
     if (text === '') return
     await deps.channel.send(chat.chatId, { text }, replyOpts(chat))
   }
@@ -219,8 +221,9 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
     // automation DSH woke the agent with (the Web UI's own names — a settled
     // job, a schedule, a subagent, a team message, a webhook, a goal round, a
     // plugin). A turn with no message at all still gets the generic family.
+    const surface = turnSurface(sessionId)
     const source = turnOrigin(sessionId) === 'external'
-      ? (turnSurface(sessionId) === 'web' ? t.surfaceLabelWebGui : t.surfaceLabelOther)
+      ? (surface === 'desktop' ? t.surfaceLabelDesktop : surface === 'web' ? t.surfaceLabelWebGui : t.surfaceLabelOther)
       : t.autoTurnTriggerName(turnTrigger(sessionId) ?? 'request')
     const rows = plan?.rows ?? []
     const completion = {
@@ -293,7 +296,7 @@ export function startFeishuExternalTurns(deps: ExternalTurnsDeps): { stop: () =>
         )
         if (origin !== 'external-web' && origin !== 'external-other') return
         if (!deps.enabled()) return
-        void echo(sessionId, parts, origin).catch((error: unknown) => {
+        void echo(sessionId, parts, turnSurface(sessionId) ?? 'other').catch((error: unknown) => {
           deps.logger.warn(`dsh-feishu: could not mirror an external message: ${error instanceof Error ? error.message : String(error)}`)
         })
         return

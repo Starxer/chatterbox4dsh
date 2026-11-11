@@ -2,7 +2,8 @@
  * Which surface started the turn an event belongs to.
  *
  * This plugin is a Feishu surface, but a session bound to a Feishu chat can also
- * be driven by the Web GUI, by a background-job wake-up, or by a schedule. DSH
+ * be driven by the DSH GUI (browser or desktop app), by a background-job wake-up,
+ * or by a schedule. DSH
  * has no client-identity field on a prompt (`SessionPromptRequest` carries only
  * `requestId`, `mode`, `content` and an optional `clientTimeZone`), so the
  * origin is read from the native `user/message` source instead:
@@ -16,10 +17,11 @@
  *   dispatch is remembered per session and consumed by the next message that
  *   actually HAS an attachment — a plain-text message from another surface in
  *   between cannot eat the marker;
- * - anything else with `kind: 'user'` came from another client (in this
- *   deployment: the Web GUI). `source.clientTimeZone` is set by the browser
- *   client and never by this plugin, so it only LABELS the message; it never
- *   decides the origin, because a client that cannot resolve its zone omits it.
+ * - anything else with `kind: 'user'` came from another client — the browser or
+ *   the desktop app (see {@link runsInDesktopHost}). `source.clientTimeZone` is
+ *   set by both GUI clients and never by this plugin, so it only LABELS the
+ *   message; it never decides the origin, because a client that cannot resolve
+ *   its zone omits it.
  *
  * The origin is decided per TURN from that turn's first user message: a steering
  * message from the Web GUI must not relabel the Feishu turn that is already
@@ -29,11 +31,37 @@
  * @module @starxer/chatterbox4dsh/feishu-turn-origin
  */
 
+/**
+ * Whether this Host process was started by the DSH desktop app.
+ *
+ * Read per call (never cached) so a test can toggle the environment, and so a
+ * Host reused by another launcher is not sticky. The variable is set by the
+ * desktop shell when it spawns the Host (`apps/desktop/src/main.ts`).
+ *
+ * @returns `true` when `DSH_CLIENT_VERSION` is a non-empty string.
+ */
+export function runsInDesktopHost(): boolean {
+  const version = process.env.DSH_CLIENT_VERSION
+  return typeof version === 'string' && version.trim() !== ''
+}
+
 /** Where one user message came from, as far as this plugin can tell. */
 export type UserMessageOrigin = 'feishu' | 'external-web' | 'external-other' | 'host'
 
 /** Which surface opened the turn currently running in a session. */
 export type TurnOrigin = 'feishu' | 'external'
+
+/**
+ * Which non-Feishu surface a human message came from.
+ *
+ * `desktop` vs `web` is a HOST-level distinction, not a per-request one: DSH's
+ * desktop app launches its own Host with `DSH_CLIENT_VERSION` in the
+ * environment, while the shell's forwarder rewrites `origin` to the Host's own
+ * origin and adds its cookie, and `SessionPromptRequest` has no client identity
+ * field — so a browser tab and the desktop window look identical message by
+ * message. The label therefore names the shell that OWNS the Host.
+ */
+export type TurnSurface = 'desktop' | 'web' | 'other'
 
 /**
  * Families of NON-HUMAN messages DSH lets begin a Turn.
@@ -141,7 +169,7 @@ interface TurnFacts {
   /** Set by the turn's first human message. */
   origin?: TurnOrigin
   /** Which surface that message came from. */
-  surface?: 'web' | 'other'
+  surface?: TurnSurface
   /** Attribution folded from the turn's non-human messages. */
   trigger: TurnTriggerState
 }
@@ -241,7 +269,7 @@ export function noteUserMessage(
   const web = typeof source.clientTimeZone === 'string' && source.clientTimeZone !== ''
   if (facts.origin === undefined) {
     facts.origin = fromFeishu ? 'feishu' : 'external'
-    if (!fromFeishu) facts.surface = web ? 'web' : 'other'
+    if (!fromFeishu) facts.surface = web ? (runsInDesktopHost() ? 'desktop' : 'web') : 'other'
   }
   facts.trigger = foldTurnTrigger(facts.trigger, source)
   if (fromFeishu) return 'feishu'
@@ -261,9 +289,10 @@ export function turnOrigin(sessionId: string): TurnOrigin | undefined {
 /**
  * Which surface a human message came from, when the turn has one.
  * @param sessionId - session to read.
- * @returns `web` (the browser sets `clientTimeZone`) or `other`.
+ * @returns `desktop` / `web` (both set `clientTimeZone`; the Host's launcher
+ *   separates them) or `other` (no browser zone).
  */
-export function turnSurface(sessionId: string): 'web' | 'other' | undefined {
+export function turnSurface(sessionId: string): TurnSurface | undefined {
   return turnOrigins.get(sessionId)?.surface
 }
 

@@ -36,7 +36,7 @@ export const FEISHU_SURFACE_SECTION = 'channel:feishu-surface'
  * within which limits); this states WHERE the user is and what the other
  * delivery path reaches them with on this surface.
  */
-export const FEISHU_SURFACE_NOTICE = 'You are talking to the user in a Feishu chat, not the Web GUI: '
+export const FEISHU_SURFACE_NOTICE = 'You are talking to the user in a Feishu chat, not the DSH GUI (the Web UI or the desktop app): '
   + 'replies arrive there as Feishu cards and the user cannot open local paths. '
   + 'DSH\'s `present` tool surfaces on the Feishu delivery card at the end of every turn '
   + '(media inlined, whitelisted documents pushed as files, other files needing a tap). '

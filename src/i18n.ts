@@ -195,6 +195,8 @@ export interface Translations {
   autoTurnTriggerName: (kind: string) => string
   /** Label of the browser surface, used when a turn came from the Web GUI. */
   surfaceLabelWebGui: string
+  /** Label of the desktop app's surface. */
+  surfaceLabelDesktop: string
   /** Label of any other non-Feishu surface. */
   surfaceLabelOther: string
   /** One-line body of that placeholder, telling the reader it updates in place. */
@@ -378,6 +380,8 @@ export interface Translations {
   turnCompleteExternalTurn: (source: string) => string
   /** Prefix of a user message mirrored from the Web GUI. */
   externalMessageFromWebGui: string
+  /** Prefix of a user message mirrored from the desktop app. */
+  externalMessageFromDesktop: string
   /** Prefix of a user message mirrored from another non-Feishu surface. */
   externalMessageFromOther: string
   /** Attachment summary appended to a mirrored message (phase one does not upload them). */
@@ -1000,6 +1004,7 @@ export const zh = {
     }
   },
   surfaceLabelWebGui: 'Web GUI',
+  surfaceLabelDesktop: '桌面版',
   surfaceLabelOther: '其它入口',
   stepPlaceholderBody: '请求还没发出，模型尚未收到这一轮的内容',
   stepAwaitingTitle: '📡 已发出请求，等待输出…',
@@ -1079,6 +1084,7 @@ export const zh = {
   turnCompleteSteps: (steps, tokens, speed) => `${steps} 步 · ${tokens} · ${speed}`,
   turnCompleteExternalTurn: source => `💬 本回合的来源是**${source}**（不是飞书这边发的消息），过程与交付一并同步到这里`,
   externalMessageFromWebGui: '💬 Web GUI：',
+  externalMessageFromDesktop: '💬 桌面版：',
   externalMessageFromOther: '💬 其它入口：',
   externalMessageAttachments: (images, files) => {
     const parts: string[] = []
@@ -1602,6 +1608,7 @@ export const en: Translations = {
     }
   },
   surfaceLabelWebGui: 'Web GUI',
+  surfaceLabelDesktop: 'Desktop',
   surfaceLabelOther: 'another surface',
   stepPlaceholderBody: 'The request has not been sent — the model has nothing from this turn yet',
   stepAwaitingTitle: '📡 Request sent, awaiting output…',
@@ -1686,6 +1693,7 @@ export const en: Translations = {
   turnCompleteSteps: (steps, tokens, speed) => `${steps} steps · ${tokens} · ${speed}`,
   turnCompleteExternalTurn: source => `💬 This turn came from **${source}**, not from a Feishu message; its process and deliverables are mirrored here`,
   externalMessageFromWebGui: '💬 Web GUI: ',
+  externalMessageFromDesktop: '💬 Desktop: ',
   externalMessageFromOther: '💬 Another surface: ',
   externalMessageAttachments: (images, files) => {
     const parts: string[] = []

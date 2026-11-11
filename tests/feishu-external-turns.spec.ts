@@ -395,13 +395,22 @@ describe('completing a turn that did not start on Feishu', () => {
 
 describe('describeExternalMessage', () => {
   it('says nothing for an empty message', () => {
-    expect(describeExternalMessage([], 'external-web', t)).toBe('')
-    expect(describeExternalMessage([{ type: 'text', text: '   ' }], 'external-web', t)).toBe('')
+    expect(describeExternalMessage([], 'web', t)).toBe('')
+    expect(describeExternalMessage([{ type: 'text', text: '   ' }], 'web', t)).toBe('')
+  })
+
+  it('prefixes a desktop-app message with its own label', () => {
+    expect(describeExternalMessage([{ type: 'text', text: 'hi' }], 'desktop', t))
+      .toBe(`${t.externalMessageFromDesktop}hi`)
+    expect(describeExternalMessage([{ type: 'text', text: 'hi' }], 'web', t))
+      .toBe(`${t.externalMessageFromWebGui}hi`)
+    expect(describeExternalMessage([{ type: 'text', text: 'hi' }], 'other', t))
+      .toBe(`${t.externalMessageFromOther}hi`)
   })
 
   it('clips a very long message', () => {
     const long = 'x'.repeat(2500)
-    const out = describeExternalMessage([{ type: 'text', text: long }], 'external-other', t)
+    const out = describeExternalMessage([{ type: 'text', text: long }], 'other', t)
     expect(out.endsWith('…')).toBe(true)
     expect(out.length).toBeLessThan(2100)
   })
