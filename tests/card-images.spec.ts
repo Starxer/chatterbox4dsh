@@ -1,4 +1,4 @@
-import { mkdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, rm, symlink, truncate, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { collectImageTargets, startCardImages, type CardImageDeps } from '../src/card-images.ts'
@@ -681,5 +681,103 @@ describe('per-kind inline size ceilings', () => {
     caps = { imageMb: kb(1), videoMb: kb(1), audioMb: kb(1) }
     const third = await handle.hydrate(threeKinds(), { workspace }) as any
     expect(third.body.elements.filter((element: any) => element.tag === 'video')).toHaveLength(1)
+  })
+})
+
+describe('file delivery fallback', () => {
+  /** MB from KB, so the fixtures stay tiny (the real values are whole MB). */
+  const kb = (n: number): number => n / 1024
+
+  interface Delivery {
+    sessionId?: string
+    absolutePath: string
+    size: number
+    reason: string
+  }
+
+  function fallbackHarness(overrides: Partial<CardImageDeps> = {}) {
+    const deliveries: Delivery[] = []
+    const harness = hydrator({
+      deliverFile: async (input) => {
+        deliveries.push(input)
+        return true
+      },
+      ...overrides,
+    })
+    return { ...harness, deliveries }
+  }
+
+  it('delivers an over-ceiling image as a file instead of dropping it to text', async () => {
+    await writeFile(join(workspace, 'runs', 'big.png'), Buffer.concat([PNG, Buffer.alloc(3_000)]))
+    const { handle, deliveries } = fallbackHarness({
+      mediaCaps: () => ({ imageMb: kb(1), videoMb: kb(1), audioMb: kb(1) }),
+    })
+    const out = await handle.hydrate(card('![图](runs/big.png)'), { sessionId: 's1', workspace })
+
+    expect(deliveries).toHaveLength(1)
+    expect(deliveries[0]).toMatchObject({
+      sessionId: 's1',
+      absolutePath: join(workspace, 'runs', 'big.png'),
+      reason: 'too-large',
+    })
+    // The card keeps the readable reference; the file arrives as a message.
+    expect(contentOf(out)).toBe('![图](runs/big.png)')
+  })
+
+  it('delivers an unrecognised still referenced as an image', async () => {
+    const { handle, deliveries, warnings } = fallbackHarness()
+    await handle.hydrate(card('![扫描件](notes.txt)'), { sessionId: 's1', workspace })
+
+    expect(deliveries).toHaveLength(1)
+    expect(deliveries[0]?.reason).toBe('unsupported-format')
+    // Delivered, so the old "not a recognised image format" warning would be
+    // misleading and must not fire.
+    expect(warnings.join('\n')).not.toContain('not a recognised image format')
+  })
+
+  it('delivers the original when the inline upload fails', async () => {
+    const { handle, deliveries } = fallbackHarness({
+      upload: async () => { throw new Error('upload exploded') },
+    })
+    await handle.hydrate(card('![图](runs/a.png)'), { sessionId: 's1', workspace })
+
+    expect(deliveries).toHaveLength(1)
+    expect(deliveries[0]?.reason).toBe('inline-failed')
+    expect(deliveries[0]?.absolutePath).toBe(join(workspace, 'runs', 'a.png'))
+  })
+
+  it('does not deliver a plain link to a non-media file', async () => {
+    const { handle, deliveries } = fallbackHarness()
+    await handle.hydrate(card('[说明](notes.txt)'), { sessionId: 's1', workspace })
+    expect(deliveries).toHaveLength(0)
+  })
+
+  it('does not deliver a file over the 30 MB message ceiling', async () => {
+    const huge = join(workspace, 'runs', 'huge.png')
+    await writeFile(huge, PNG)
+    await truncate(huge, 31 * 1024 * 1024)
+    const { handle, deliveries, warnings } = fallbackHarness({
+      mediaCaps: () => ({ imageMb: kb(1), videoMb: kb(1), audioMb: kb(1) }),
+    })
+    await handle.hydrate(card('![巨图](runs/huge.png)'), { sessionId: 's1', workspace })
+
+    expect(deliveries).toHaveLength(0)
+    expect(warnings.join('\n')).toContain('left as text')
+  })
+
+  it('does not deliver in a warm-up pass (the real card write owns it)', async () => {
+    await writeFile(join(workspace, 'runs', 'big.png'), Buffer.concat([PNG, Buffer.alloc(3_000)]))
+    const { handle, deliveries } = fallbackHarness({
+      mediaCaps: () => ({ imageMb: kb(1), videoMb: kb(1), audioMb: kb(1) }),
+    })
+    handle.warm(card('![图](runs/big.png)'), { sessionId: 's1', workspace })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(deliveries).toHaveLength(0)
+  })
+
+  it('does not deliver when the image mode is text-only', async () => {
+    const { handle, deliveries } = fallbackHarness({ mode: () => 'text' })
+    await handle.hydrate(card('![图](runs/a.png)'), { sessionId: 's1', workspace })
+    expect(deliveries).toHaveLength(0)
   })
 })

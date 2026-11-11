@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 变更：媒体能力统一预检，内联不了就按原文件发送（`src/media-binaries.ts` / `src/card-images.ts` / `src/index.ts`，2026-11-12）
+
+- **统一预检**：新增 `src/media-binaries.ts`，用一次 `ffmpeg -version` / `ffprobe -version` 探测工具是否在 `PATH`（成功结果进程内永久缓存，失败结果 5 分钟后重试，装好不必重启）。所有默认调用点（图片缩放、时长探测、MOV→MP4 重封装、非 Opus 转码、封面抽帧）都先过这道预检，**缺工具时只提示一次**，不再对每个文件 spawn 一次失败进程。
+- **按文件降级**：卡片媒体无法内联时，把**原文件**当原生文件消息发出去，而不是只留路径文字——
+  - 超出内联大小上限（`cardImageMaxMb` / `cardVideoMaxMb` / `cardAudioMaxMb`）；
+  - 格式内联不了（MOV 没有 ffmpeg、非 Opus 音频、识别不了的静图）；
+  - 内联上传失败（分辨率超飞书图片上限、链路抖动等）。
+  - 超过飞书 **30 MB** 文件上限的只能留路径；`cardImages = text`（从不上传）时完全不发。
+  - 去重与 `present` / `feishu_send_file` 共用同一张 10 分钟「已发文件」表：同一文件不会再发一次，卡片重绘也不会重复触发；流式预热（`warm`）不发送，等真正的卡片写入决定。
+- **测试**：`tests/media-binaries.spec.ts`（缓存、重试窗口、一次性提示、两个二进制独立）、`tests/card-images.spec.ts` 新增 7 例（超限发文件、未知静图发文件、上传失败发文件、纯链接不发、超 30MB 不发、预热不发、text 模式不发）、`tests/media-gating.spec.ts`（缺 ffmpeg 时图片缩放直接跳过、已合适的图不探测）。
+
+**English**: Media tooling is now probed once and degraded explicitly. A new `src/media-binaries.ts` caches whether `ffmpeg`/`ffprobe` exist (a positive answer for the process lifetime, a negative one retried after five minutes, so installing them needs no restart), and every default call site — image downscaling, duration probe, MOV→MP4 remux, non-Opus transcode, cover frame — asks first instead of spawning a failing process per file; the notice is logged once. When card media cannot be inlined (over the size ceiling, a format the card cannot render such as MOV without ffmpeg or non-Opus audio, or an inline upload failure) the **original is now sent as a native file message** instead of leaving only a path; files over Feishu's 30 MB ceiling still stay text, and the text-only media mode sends nothing. Delivery shares the ten-minute delivered-file registry with `present`/`feishu_send_file`, so neither a repainted card nor the model can duplicate it, and warm-up passes never send. Covered by new `media-binaries` and `media-gating` suites plus seven card-media fallback cases.
+
 ### 文档：记录 Windows 桌面版真机验证状态（`README.md` / `docs/feishu-setup.md`，2026-11-12）
 
 - 使用者在 Windows 的 **DSH 桌面版**里安装 `0.4.2` 并实际使用，扫码授权、卡片、飞书收发均正常（2026-11-12 反馈「测试良好」）。`README.md` 的平台说明与 `TODO.md` 的 H5 据此更新：Windows 从「只有 CI 单测腿」升级为「**桌面版真机跑通**」，同时保留边界——依赖外部 `ffmpeg` / `ffprobe` 的转码与封面、以及 macOS，仍未单独验证。

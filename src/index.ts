@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
@@ -40,6 +40,7 @@ import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
 import { sendStartupNoticeOnce } from './feishu-startup-notice.ts'
+import { noteDeliveredFile, wasDeliveredFile } from './deliver-files.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { dshHomeFile } from './dsh-home.ts'
@@ -410,6 +411,40 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     uploadVideo: (absolutePath, container) => mediaUploader.video(absolutePath, container),
     uploadAudio: (absolutePath, format) => mediaUploader.audio(absolutePath, format),
+    /**
+     * Last resort for media the card cannot inline (too large, MOV without
+     * ffmpeg, non-Opus audio, an unrecognised still): send the ORIGINAL as a
+     * native file message in the session's chat, into the topic when there is
+     * one. `wasDeliveredFile` is shared with `present`/`feishu_send_file`, so a
+     * file the model already pushed is not sent twice — and a repainted card
+     * cannot duplicate it either.
+     */
+    deliverFile: async ({ sessionId, absolutePath, reason }) => {
+      const channel = channelHolder.current
+      const bridge = bridgeHolder.current
+      if (channel === undefined || bridge === undefined || sessionId === undefined) return false
+      const chat = bridge.resolveChat(sessionId)
+      if (chat === undefined) return false
+      const real = await realpath(absolutePath).catch(() => absolutePath)
+      if (wasDeliveredFile(sessionId, real)) return true
+      try {
+        await sendWorkspaceFile({
+          channel,
+          chatId: chat.chatId,
+          path: real,
+          ...(chat.threadId === undefined
+            ? {}
+            : { opts: { replyInThread: true, ...(chat.rootId === undefined ? {} : { replyTo: chat.rootId }) } }),
+          logger: ctx.logger('dsh-feishu'),
+        })
+        noteDeliveredFile(sessionId, real)
+        return true
+      } catch (error: unknown) {
+        const why = error instanceof Error ? error.message : String(error)
+        ctx.logger('dsh-feishu').warn(`dsh-feishu: card media ${real} could not be delivered as a file (${reason}: ${why}); left as text`)
+        return false
+      }
+    },
     logger: ctx.logger('dsh-feishu'),
   })
   /**

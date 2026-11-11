@@ -28,6 +28,7 @@ import { readFile, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import { hasMediaBinary } from './media-binaries.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,6 +66,8 @@ export interface ImageFitInput {
   dimensions?: ImageDimensions | undefined
   /** Resize seam; defaults to `ffmpeg`. */
   resize?: ImageResizer | undefined
+  /** Optional sink for the one-time "ffmpeg not found" notice. */
+  logger?: { warn(message: string): unknown } | undefined
 }
 
 export interface ImageFitResult {
@@ -242,6 +245,21 @@ const resizeWithFfmpeg: ImageResizer = async ({ data, mediaType, width, height }
  *   when the size cannot be known or the resize failed — the caller then hands
  *   the original bytes over and lets the store report its own reason.
  */
+/**
+ * The default resize, gated on ffmpeg actually existing.
+ *
+ * Without the binary the resize is skipped (the caller falls back to the
+ * original bytes and, one level up, the card sends the file instead of a
+ * shrunken inline copy) — and no failing process is spawned per oversized
+ * image. `hasMediaBinary` caches the answer and logs the notice once.
+ *
+ * @param logger - optional sink for that notice.
+ */
+async function ffmpegResizer(logger?: { warn(message: string): unknown }): Promise<ImageResizer> {
+  if (!(await hasMediaBinary('ffmpeg', logger))) return async () => undefined
+  return resizeWithFfmpeg
+}
+
 export async function fitImageToLimits(input: ImageFitInput): Promise<ImageFitResult | undefined> {
   const original = input.dimensions ?? readImageDimensions(input.data)
   if (original === undefined) return undefined
@@ -249,7 +267,7 @@ export async function fitImageToLimits(input: ImageFitInput): Promise<ImageFitRe
   if (target === undefined) {
     return { data: input.data, mediaType: input.mediaType, width: original.width, height: original.height, original, scaled: false }
   }
-  const resized = await (input.resize ?? resizeWithFfmpeg)({
+  const resized = await (input.resize ?? await ffmpegResizer(input.logger))({
     data: input.data,
     mediaType: input.mediaType,
     width: target.width,

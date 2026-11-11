@@ -31,6 +31,7 @@ import { promisify } from 'node:util'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { AudioFormatId } from './media-sniff.ts'
 import { withLinkTimeout } from './outbound-timeout.ts'
+import { hasMediaBinary } from './media-binaries.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -160,10 +161,26 @@ async function extractCoverWithFfmpeg(path: string): Promise<Buffer | undefined>
  * @param deps - channel accessor, logger and optional test seams.
  */
 export function createMediaUploader(deps: MediaUploaderDeps): MediaUploader {
-  const probe = deps.probeDurationMs ?? probeDurationWithFfprobe
-  const remux = deps.remuxToMp4 ?? ((path: string) => convertWithFfmpeg(path, '.mp4', ['-c', 'copy', '-movflags', '+faststart']))
-  const transcode = deps.transcodeToOpus ?? ((path: string) => convertWithFfmpeg(path, '.opus', ['-vn', '-c:a', 'libopus', '-b:a', '96k']))
-  const cover = deps.extractCoverFrame ?? extractCoverWithFfmpeg
+  // Every default path starts with the cached availability check: without it a
+  // deployment without the tools would spawn a failing process (and log) for
+  // each file. A missing tool makes the specific capability unavailable and the
+  // caller degrades — the card media fallback then sends the original file.
+  const probe = deps.probeDurationMs ?? (async (path: string) => {
+    if (!(await hasMediaBinary('ffprobe', deps.logger))) return undefined
+    return probeDurationWithFfprobe(path)
+  })
+  const remux = deps.remuxToMp4 ?? (async (path: string) => {
+    if (!(await hasMediaBinary('ffmpeg', deps.logger))) return undefined
+    return convertWithFfmpeg(path, '.mp4', ['-c', 'copy', '-movflags', '+faststart'])
+  })
+  const transcode = deps.transcodeToOpus ?? (async (path: string) => {
+    if (!(await hasMediaBinary('ffmpeg', deps.logger))) return undefined
+    return convertWithFfmpeg(path, '.opus', ['-vn', '-c:a', 'libopus', '-b:a', '96k'])
+  })
+  const cover = deps.extractCoverFrame ?? (async (path: string) => {
+    if (!(await hasMediaBinary('ffmpeg', deps.logger))) return undefined
+    return extractCoverWithFfmpeg(path)
+  })
 
   const warn = (message: string): void => {
     deps.logger.warn(`dsh-feishu: ${message}`)

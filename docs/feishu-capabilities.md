@@ -56,8 +56,8 @@ channel.send(chatId, { shareChat: { chatId } })    // 分享群聊
 | Markdown | `markdown` | 表格/标题/内联代码/链接/粗体/斜体 | ✅ 主要使用 |
 | Lark Markdown | `lark_md` | 文本对象格式（标签、控件文本等） | ✅ 如 checker 标签；Card 2.0 不使用旧 note 容器 |
 | 图片 | `img` | 图片组件（`img_key` 必须是上传得到的 `img_v3_…`） | ✅ 正文图片内联（`src/card-images.ts`）+ 面板卡 |
-| **视频** | `video` | 内嵌 MP4 播放（**仅 MP4**、≤30MB、客户端 ≥V7.56；含视频的卡片**必须** `config.enable_forward: false`，否则发送失败） | ✅ 2026-09-24 起：正文里 `[片段](runs/a.mp4)` 自动内联（QuickTime 先转封装、ffmpeg 抽封面） |
-| **音频** | `audio`（或富文本里 `<audio file_key='…'>`） | 内嵌音频播放（**仅 Opus**、≥V7.49；同样要求 `enable_forward: false`，且不能配合"仅特定人可见"发送） | ✅ 2026-09-24 起：正文里 `[语音](runs/a.opus)` 自动内联（其他音频格式有 ffmpeg 时转 Opus） |
+| **视频** | `video` | 内嵌 MP4 播放（**仅 MP4**、≤30MB、客户端 ≥V7.56；含视频的卡片**必须** `config.enable_forward: false`，否则发送失败） | ✅ 2026-09-24 起：正文里 `[片段](runs/a.mp4)` 自动内联（QuickTime 先转封装、ffmpeg 抽封面）；**内联不了就按原文件发**（2026-11-12） |
+| **音频** | `audio`（或富文本里 `<audio file_key='…'>`） | 内嵌音频播放（**仅 Opus**、≥V7.49；同样要求 `enable_forward: false`，且不能配合"仅特定人可见"发送） | ✅ 2026-09-24 起：正文里 `[语音](runs/a.opus)` 自动内联（其他音频格式有 ffmpeg 时转 Opus）；**内联不了就按原文件发**（2026-11-12） |
 | 表格 | `table` | 结构化表格 | ✅ 后台任务 / 子智能体面板卡 |
 | 图表 | `chart` | 柱状图/折线图/饼图等 | 未使用 |
 | 多列布局 | `column_set` + `column` | 多列并排 | ✅ 按钮行 / 目录浏览器布局（`flex_mode: 'stretch'`） |

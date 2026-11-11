@@ -50,6 +50,7 @@ import { isWindowsAbsolutePath } from './local-path.ts'
 import type { CardImageMode } from './config.ts'
 import { classifyMedia, sniffAudioFormat, sniffImageMime, sniffVideoContainer, type AudioFormatId } from './media-sniff.ts'
 import { isFeishuImageKey, mapCardMarkdownReferences } from './card-markdown.ts'
+import { FEISHU_MAX_FILE_BYTES } from './deliver-files.ts'
 import { withLinkTimeout } from './outbound-timeout.ts'
 
 /** Bytes in one megabyte — the size settings are all expressed in MB. */
@@ -139,7 +140,10 @@ type Inspected =
  * ceiling" is a SETTING and must be re-judged on the next card — otherwise
  * raising the limit would not take effect until the entry was evicted.
  */
-type Inspection = Inspected | { refused: 'size' } | undefined
+type Inspection =
+  | Inspected
+  | { refused: 'size'; kind: string; size: number; cap: number }
+  | undefined
 
 /** A target resolved onto a real file inside the workspace. */
 interface Located {
@@ -185,6 +189,20 @@ export interface CardImageDeps {
    * restart). Defaults to `workspace`.
    */
   mode?: () => CardImageMode | undefined
+  /**
+   * Last resort for a recognised media file that cannot be INLINED: deliver the
+   * original as a native file message instead of leaving only a path in the
+   * card. Covers a file over the inline ceiling, a format the card cannot
+   * render (MOV, non-Opus audio, an unrecognised still) and an inline upload
+   * that failed (for example when `ffmpeg` is absent). The callback owns the
+   * once-per-file dedupe; `true` means a message went out (or already had).
+   */
+  deliverFile?: (input: {
+    sessionId?: string
+    absolutePath: string
+    size: number
+    reason: 'too-large' | 'unsupported-format' | 'inline-failed'
+  }) => Promise<boolean>
   /** Wall-clock budget for one `hydrate` call's images. */
   budgetMs?: number
   /** Wall-clock budget for one `hydrate` call's video/audio. */
@@ -213,6 +231,12 @@ export interface CardImageHydrateOptions {
   budgetMs?: number
   /** Wall-clock budget for this call's video/audio (default: the instance's). */
   mediaBudgetMs?: number
+  /**
+   * Whether a media file that cannot be inlined may be sent as a native file
+   * message (default `true`). Warm-up passes `false`: it runs while the text is
+   * still streaming, and the real card write owns the delivery decision.
+   */
+  deliverFiles?: boolean
 }
 
 /**
@@ -420,12 +444,12 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
     }
   }
 
-  /** Warn and refuse: the reference then stays readable text. */
-  const overCap = (absolutePath: string, size: number, cap: number, kind: string): Inspection => {
-    deps.logger.warn(`dsh-feishu: card ${kind} ${absolutePath} is ${size} bytes `
-      + `(limit ${(cap / MB).toFixed(2)} MB); left as text`)
-    return { refused: 'size' }
-  }
+  /**
+   * Refuse an over-ceiling file. The caller decides what the user sees: the
+   * original goes out as a native file when that is possible, and only a
+   * refusal with no delivery path left is reported as "left as text".
+   */
+  const overCap = (size: number, cap: number, kind: string): Inspection => ({ refused: 'size', kind, size, cap })
 
   /**
    * Work out what a file is, and whether it is small enough to inline.
@@ -445,30 +469,30 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
     const head = await readHead(absolutePath)
     if (head === undefined) return undefined
     if (sniffImageMime(head) !== undefined) {
-      if (size > caps.image) return overCap(absolutePath, size, caps.image, 'image')
+      if (size > caps.image) return overCap(size, caps.image, 'image')
       return { kind: 'image' }
     }
     const audioHead = sniffAudioFormat(head)
     if (audioHead !== undefined && audioHead !== 'm4a') {
       // Non-ISO-BMFF audio used to skip the byte check entirely (only the
       // ISO-BMFF branch had one), so a 100 MB WAV was transcoded and uploaded.
-      if (size > caps.audio) return overCap(absolutePath, size, caps.audio, 'audio')
+      if (size > caps.audio) return overCap(size, caps.audio, 'audio')
       return { kind: 'audio', format: audioHead }
     }
     if (!isIsoBmffHead(head)) return undefined
     if (size > Math.max(caps.video, caps.audio)) {
-      return overCap(absolutePath, size, Math.max(caps.video, caps.audio), 'media')
+      return overCap(size, Math.max(caps.video, caps.audio), 'media')
     }
     const bytes = await readFile(absolutePath).catch(() => undefined)
     if (bytes === undefined) return undefined
     const video = sniffVideoContainer(bytes)
     if (video !== undefined) {
-      if (size > caps.video) return overCap(absolutePath, size, caps.video, 'video')
+      if (size > caps.video) return overCap(size, caps.video, 'video')
       return { kind: 'video', container: video.container }
     }
     const classification = classifyMedia(bytes)
     if (classification?.kind === 'audio') {
-      if (size > caps.audio) return overCap(absolutePath, size, caps.audio, 'audio')
+      if (size > caps.audio) return overCap(size, caps.audio, 'audio')
       return { kind: 'audio', format: classification.audio ?? 'opus' }
     }
     return undefined
@@ -553,6 +577,31 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
       const imageDeadline = now + (options.budgetMs ?? budgetMs)
       const mediaDeadline = now + (options.mediaBudgetMs ?? mediaBudgetMs)
       const allowOutside = mode() === 'any'
+      const deliverAsFile = options.deliverFiles === false ? undefined : deps.deliverFile
+      /**
+       * Send the ORIGINAL as a native file message when it cannot be inlined.
+       * Closing the loop here is what keeps an oversized or unrenderable file
+       * out of the "path text only" dead end: the file still arrives, and the
+       * callback dedupes so a repainted card cannot send it twice.
+       */
+      const tryDeliver = async (
+        located: Located,
+        reason: 'too-large' | 'unsupported-format' | 'inline-failed',
+      ): Promise<boolean> => {
+        if (deliverAsFile === undefined || located.size > FEISHU_MAX_FILE_BYTES) return false
+        try {
+          return await deliverAsFile({
+            ...(scope.sessionId === undefined ? {} : { sessionId: scope.sessionId }),
+            absolutePath: located.path,
+            size: located.size,
+            reason,
+          })
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error)
+          deps.logger.warn(`dsh-feishu: delivering ${located.path} as a file failed: ${message}`)
+          return false
+        }
+      }
       const resolved = new Map<string, ResolvedMedia>()
       /**
        * Classified files whose slot is already reserved, in card order. The slot
@@ -599,19 +648,29 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
           continue
         }
         const kind = await inspect(located.path, located.size)
-        if (kind === undefined || 'refused' in kind) {
-          // Only "not media at all" is remembered. An over-ceiling file is not:
-          // the ceiling is a live setting, so it has to be judged again on the
-          // next card (and it costs one 64-byte head read, not an upload).
-          if (kind === undefined) {
-            // Quiet for a plain link (most links point at source files, and
-            // warning about each one would drown the journal); an explicit
-            // image reference that is not an image is worth a line.
-            if (entry.image) {
+        if (kind === undefined) {
+          // Not media we recognise. An explicit image reference still reaches
+          // the chat as a native file instead of dying as path text (an unknown
+          // still format is exactly the "format unsupported" case); a plain
+          // link to a non-media file keeps the old quiet text behaviour.
+          if (entry.image) {
+            const delivered = await tryDeliver(located, 'unsupported-format')
+            if (!delivered) {
               deps.logger.warn(`dsh-feishu: card image ${entry.target} is not a recognised image format; left as text`)
             }
-            entries.set(located.path, { stamp: located.stamp })
-            bound(entries)
+          }
+          entries.set(located.path, { stamp: located.stamp })
+          bound(entries)
+          continue
+        }
+        if ('refused' in kind) {
+          // Over the live inline ceiling: deliver the original as a file rather
+          // than leaving a path. The ceiling is a setting, so nothing is cached
+          // here — raising it must apply to the next card.
+          const delivered = await tryDeliver(located, 'too-large')
+          if (!delivered) {
+            deps.logger.warn(`dsh-feishu: card ${kind.kind} ${located.path} is ${kind.size} bytes `
+              + `(limit ${(kind.cap / MB).toFixed(2)} MB); left as text`)
           }
           continue
         }
@@ -626,8 +685,11 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
         if (remaining() <= 0) return
         const inlined = await uploadOnce(job.kind, job.located, remaining)
         if (inlined === undefined) {
-          // Classification succeeded but the upload did not: do NOT cache a
-          // negative (the file is fine, the transport was not), retry later.
+          // Classification succeeded but the upload did not (a container the
+          // card cannot render, a transcoder that is not installed, a transport
+          // failure): deliver the original as a file rather than dropping it.
+          // Do NOT cache a negative — the transport may recover.
+          await tryDeliver(job.located, 'inline-failed')
           if (recordFailure) {
             failed.set(job.requestKey, Date.now())
             bound(failed)
@@ -654,7 +716,7 @@ export function startCardImages(deps: CardImageDeps): CardImagesHandle {
       // in-flight promise the real write can await) while the model is still
       // typing. `recordFailure: false` is the one difference — a path may name a
       // file the running tool has not written yet (key pitfall 44).
-      void hydrate(card, scope, { recordFailure: false }).catch(() => undefined)
+      void hydrate(card, scope, { recordFailure: false, deliverFiles: false }).catch(() => undefined)
     },
     dispose(): void {
       entries.clear()

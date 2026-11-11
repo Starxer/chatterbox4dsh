@@ -141,6 +141,7 @@ async function admitImagesForMessage(
   attachments: AttachmentLike,
   signal: AbortSignal,
   previous: ImageBudget = EMPTY_IMAGE_BUDGET,
+  logger?: PluginLogger,
 ): Promise<{ blocks: readonly ImageAttachmentRef[]; notes: readonly string[]; files: readonly FileAdmission[]; budget: ImageBudget }> {
   const resources = (message.resources ?? []).filter(resource => resource.type === 'image')
   const budget: ImageBudget = { count: resources.length, bytes: 0, maxSingleBytes: 0 }
@@ -183,7 +184,7 @@ async function admitImagesForMessage(
     // fit it rather than bounce the message, and keep the untouched original as
     // a FILE next to it so the agent can crop detail out of the full-resolution
     // copy (the scaled preview alone cannot answer "read panel 4").
-    const fitted = await fitImageToLimits({ data: originalBytes, mediaType, limits })
+    const fitted = await fitImageToLimits({ data: originalBytes, mediaType, limits, logger })
     inputs.push({
       data: fitted?.scaled === true ? fitted.data : originalBytes,
       mediaType: fitted?.scaled === true ? (fitted.mediaType as ImageMediaTypeId) : mediaType,
@@ -666,7 +667,7 @@ export async function startChannel(
             return
           }
           try {
-            const admission = await admitImagesForMessage(channel, message, attachments, new AbortController().signal, pending.budget(message))
+            const admission = await admitImagesForMessage(channel, message, attachments, new AbortController().signal, pending.budget(message), logger)
             imageBudget = admission.budget
             inboundMessage = {
               ...inboundMessage,

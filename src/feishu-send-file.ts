@@ -47,6 +47,7 @@ import { errorText } from './error-text.ts'
 import { sniffAudioContainer, sniffImageMime, sniffVideoContainer } from './media-sniff.ts'
 import { withLinkTimeout } from './outbound-timeout.ts'
 import { FEISHU_MAX_FILE_BYTES, FEISHU_MAX_IMAGE_BYTES, noteDeliveredFile } from './deliver-files.ts'
+import { hasMediaBinary } from './media-binaries.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -82,7 +83,11 @@ export type CoverFrameExtractor = (path: string) => Promise<Buffer | undefined>
  * first frame for clips shorter than the 1s mark. Returns `undefined` when
  * ffmpeg is absent (`ENOENT`) or produced nothing.
  */
-async function extractCoverFrameWithFfmpeg(filePath: string): Promise<Buffer | undefined> {
+async function extractCoverFrameWithFfmpeg(
+  filePath: string,
+  logger?: { warn(message: string): unknown },
+): Promise<Buffer | undefined> {
+  if (!(await hasMediaBinary('ffmpeg', logger))) return undefined
   const out = join(tmpdir(), `dsh-feishu-cover-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`)
   try {
     for (const args of [
@@ -207,7 +212,7 @@ export interface SendWorkspaceFileResult {
  */
 export async function sendWorkspaceFile(deps: SendWorkspaceFileDeps): Promise<SendWorkspaceFileResult> {
   const { channel, chatId, logger } = deps
-  const extractCoverFrame = deps.extractCoverFrame ?? extractCoverFrameWithFfmpeg
+  const extractCoverFrame = deps.extractCoverFrame ?? ((path: string) => extractCoverFrameWithFfmpeg(path, logger))
   const timeoutMs = deps.timeoutMs ?? FILE_SEND_TIMEOUT_MS
   const send = (input: SendInput) =>
     withLinkTimeout(channel.send(chatId, input, deps.opts), 'send file', timeoutMs)
