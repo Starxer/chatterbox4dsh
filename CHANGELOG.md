@@ -16,7 +16,7 @@
 
 `card-images` 的「是不是本地候选」先认盘符路径再判 URL scheme；`card-markdown` 的「飞书可打开」判定对盘符路径返回 false；`feishu-doc` 的图片引用判定改用同一个 helper（删掉它自己的本地副本）。
 
-测试：新增 `tests/local-path.spec.ts`（3 例：盘符/UNC/长路径前缀、盘符相对与 URL 反例、两平台并集），`card-markdown.spec.ts` 增加「盘符路径按本地路径降级」的两条断言；`card-images` 的绝对路径 hydrate 由 Windows CI 腿覆盖真实文件。
+测试：新增 `tests/local-path.spec.ts`（3 例：盘符/UNC/长路径前缀、盘符相对与 URL 反例、两平台并集），`card-markdown.spec.ts` 增加「盘符路径按本地路径降级」的两条断言；`card-images` 的绝对路径 hydrate 由 Windows CI 腿覆盖真实文件。**该腿在同日第三跑 78 文件 / 1500 测试全绿，`continue-on-error` 已去掉——Windows 单测从「信号」升级为必过门。**
 
 **English**: Beyond the fixture problems, the first `windows-latest` run also exposed a real defect: `C:\shots\a.png` matches the URI-scheme shape (`^[A-Za-z][A-Za-z0-9+.-]*:`), so the card media collector treated it as a URL and never inlined an image/video/audio referenced by drive path, and the card markdown neutralizer kept it as a dead "openable" link instead of downgrading it to readable path text like any other local path. The new `src/local-path.ts` owns the rule: `isWindowsAbsolutePath()` accepts drive paths (`C:\`, `C:/`) and UNC shares (including `\\?\`), deliberately not `C:foo` (matching `path.win32.isAbsolute`), and `isLocalAbsolutePath()` is the platform `isAbsolute` union. `card-images` checks it before the URL-scheme rule, `card-markdown` returns "not openable" for it, and `feishu-doc` now shares the helper instead of keeping a copy. Covered by `tests/local-path.spec.ts` and two new card-markdown assertions; real drive-path hydration is exercised by the Windows CI leg.
 

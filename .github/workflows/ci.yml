@@ -73,16 +73,16 @@ jobs:
         if: matrix.dependencies == 'locked'
         run: node scripts/privacy-scan.mjs --history
 
-  # Non-blocking signal until the first run has been observed: Windows has no
-  # end-to-end verification yet (README says Linux x64 only). This leg installs,
-  # type-checks and runs the unit suite on a native runner — no Feishu
-  # credentials and no DSH host needed — so "compatible by construction" gets
-  # measured instead of assumed. Drop `continue-on-error` once it has been green
-  # at least once.
+  # Windows: installs, type-checks and runs the unit suite on a native runner —
+  # no Feishu credentials and no DSH host needed — so "compatible by
+  # construction" is measured instead of assumed. Blocking since 2026-11-11,
+  # when the 1496-test suite first went green here (the initial run found 11
+  # fixture path mismatches plus three real drive-path misclassifications).
+  # Still NOT an end-to-end claim: cards, live Feishu traffic and media
+  # transcoding need a real DSH run on Windows, which the README says.
   windows:
-    name: Windows signal
+    name: Windows
     runs-on: windows-latest
-    continue-on-error: true
 
     steps:
       - name: Check out repository
