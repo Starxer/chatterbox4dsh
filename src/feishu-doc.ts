@@ -35,6 +35,7 @@ import type { HarnessConversationService } from './harness.ts'
 import { createDocRegistry, type DocRegistry } from './doc-registry.ts'
 import { applyFormulas, extractFormulas } from './doc-formula.ts'
 import { resolveDshHome } from './dsh-home.ts'
+import { isLocalAbsolutePath } from './local-path.ts'
 
 /** Budget for one document API call (reads a whole body, so not the 20s send budget). */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
@@ -342,23 +343,7 @@ interface ImageRef {
   skipReason?: string
 }
 
-/**
- * Whether a Markdown image target names an absolute local path.
- *
- * `isAbsolute` answers for the host it runs on, but the Markdown being
- * converted is not platform-bound: on Windows a `C:\shots\a.png` is absolute
- * (and `isAbsolute` already says so), while on Linux the same text used to be
- * mistaken for a relative path — so a Windows operator lost every inline image
- * reference. A drive path or a UNC share is absolute everywhere; whether the
- * file exists is decided later by the read itself.
- *
- * @param target - the destination of one Markdown image reference.
- */
-export function isLocalAbsolutePath(target: string): boolean {
-  if (isAbsolute(target)) return true
-  if (/^[A-Za-z]:[\\/]/u.test(target)) return true
-  return /^\\\\[^\\]/u.test(target)
-}
+export { isLocalAbsolutePath } from './local-path.ts'
 
 /**
  * Find every image reference in the Markdown, in order.

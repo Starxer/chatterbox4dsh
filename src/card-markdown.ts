@@ -37,6 +37,7 @@
  */
 
 import { normalizeCardEmphasis } from './card-emphasis.ts'
+import { isWindowsAbsolutePath } from './local-path.ts'
 
 /** An uploaded-image key, e.g. `img_v3_0215q_0a59b5e6-4758-41de-95a5-…`. */
 const IMAGE_KEY_PATTERN = /^img_[A-Za-z0-9]+_[A-Za-z0-9_-]+$/
@@ -95,6 +96,9 @@ function isOpenableTarget(target: string): boolean {
   if (value === '' || value.startsWith('#')) return false
   // Protocol-relative (`//host/path`) is a real URL in a browser context.
   if (value.startsWith('//')) return true
+  // `C:\shot.png` matches the URI-scheme shape but is a local path; Feishu
+  // cannot open it, so it is downgraded like any other path.
+  if (isWindowsAbsolutePath(value)) return false
   return URI_SCHEME_PATTERN.test(value)
 }
 

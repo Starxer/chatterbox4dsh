@@ -45,6 +45,13 @@ describe('neutralizeCardMarkdown', () => {
       .toBe('🖼 a · `https://example.com/a.png`')
   })
 
+  it('treats a Windows drive path as a local path, not as a URL', () => {
+    // Regression: `C:\shots\a.png` matches the URI-scheme shape, so the card
+    // used to keep it as a dead link instead of downgrading it like any path.
+    expect(neutralizeCardMarkdown('![a](C:\\shots\\a.png)')).toBe('🖼 a · `C:\\shots\\a.png`')
+    expect(neutralizeCardMarkdown('[图](C:\\shots\\a.png)')).toBe('图 · `C:\\shots\\a.png`')
+  })
+
   it('drops a duplicate label, and handles an empty alt', () => {
     expect(neutralizeCardMarkdown('![](runs/a.png)')).toBe('🖼 `runs/a.png`')
     expect(neutralizeCardMarkdown('![runs/a.png](runs/a.png)')).toBe('🖼 `runs/a.png`')

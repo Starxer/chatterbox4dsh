@@ -2,9 +2,27 @@
 
 ## Unreleased
 
+### 修复：Windows 盘符路径被当成 URL，卡片里的图和链接不内联、不变可读（`src/local-path.ts` / `src/card-images.ts` / `src/card-markdown.ts` / `src/feishu-doc.ts`，2026-11-11）
+
+来源：Windows CI 腿的首跑（`0.4.1` 引入）除夹具问题外，还暴露了一个**真实产品问题**——`C:\shots\a.png` 命中 `^[A-Za-z][A-Za-z0-9+.-]*:` 这种「URL scheme」形态：
+
+1. 卡片媒体收集器（`card-images.ts`）把它当 URL 跳过 ⇒ 卡片正文里用绝对盘符路径引用的图片 / 视频 / 音频**永远不会内联**，只剩路径文字；
+2. 卡片 markdown 中和器（`card-markdown.ts`）把它当「飞书能打开的链接」⇒ 保留一条**点不动的死链**，而不是像其它本地路径那样降级成可读的路径文字。
+
+修法：新增 `src/local-path.ts`：
+
+- `isWindowsAbsolutePath()`——认盘符（`C:\` / `C:/`）、UNC 共享（`\\server\share\…`，含 `\\?\` 长路径前缀）；`C:foo` 与 `path.win32.isAbsolute` 一致视为相对，不误判；
+- `isLocalAbsolutePath()`——平台 `isAbsolute` ∪ 上面那条，给「Markdown 里的本地绝对路径」一个唯一口径。
+
+`card-images` 的「是不是本地候选」先认盘符路径再判 URL scheme；`card-markdown` 的「飞书可打开」判定对盘符路径返回 false；`feishu-doc` 的图片引用判定改用同一个 helper（删掉它自己的本地副本）。
+
+测试：新增 `tests/local-path.spec.ts`（3 例：盘符/UNC/长路径前缀、盘符相对与 URL 反例、两平台并集），`card-markdown.spec.ts` 增加「盘符路径按本地路径降级」的两条断言；`card-images` 的绝对路径 hydrate 由 Windows CI 腿覆盖真实文件。
+
+**English**: Beyond the fixture problems, the first `windows-latest` run also exposed a real defect: `C:\shots\a.png` matches the URI-scheme shape (`^[A-Za-z][A-Za-z0-9+.-]*:`), so the card media collector treated it as a URL and never inlined an image/video/audio referenced by drive path, and the card markdown neutralizer kept it as a dead "openable" link instead of downgrading it to readable path text like any other local path. The new `src/local-path.ts` owns the rule: `isWindowsAbsolutePath()` accepts drive paths (`C:\`, `C:/`) and UNC shares (including `\\?\`), deliberately not `C:foo` (matching `path.win32.isAbsolute`), and `isLocalAbsolutePath()` is the platform `isAbsolute` union. `card-images` checks it before the URL-scheme rule, `card-markdown` returns "not openable" for it, and `feishu-doc` now shares the helper instead of keeping a copy. Covered by `tests/local-path.spec.ts` and two new card-markdown assertions; real drive-path hydration is exercised by the Windows CI leg.
+
 ### 测试/CI：Windows 信号腿的临时目录夹具改用真实路径（`tests/stubs/temp-dir.ts` 等，2026-11-11）
 
-`windows-latest` 腿（0.4.1 新增，非阻塞）首跑 **11 失败 / 1484 通过**：全是路径字符串对不上——Windows 的 `os.tmpdir()` 给的是 8.3 短名（`C:\Users\RUNNER~1\AppData\Local\Temp`），而源码用 `realpath` 得到长名（`C:\Users\runneradmin\...`），夹具却用短名拼期望值。修法：新增 `tests/stubs/temp-dir.ts` 的 `tempDir()`（`realpath(mkdtemp(...))`），`card-images` / `feishu-deliver` / `feishu-send-file` / `onboarding` 四个 spec 的 19 处临时目录改用它；行为代码零改动。Linux 上全量测试、`typecheck` 复跑绿。判读：这 11 条不是产品在 Windows 上坏，而是夹具没按平台归一化路径。
+`windows-latest` 腿（0.4.1 新增，非阻塞）首跑 **11 失败 / 1484 通过**：全是路径字符串对不上——Windows 的 `os.tmpdir()` 给的是 8.3 短名（`C:\Users\RUNNER~1\AppData\Local\Temp`），而源码用 `realpath` 得到长名（`C:\Users\runneradmin\...`），夹具却用短名拼期望值。修法：新增 `tests/stubs/temp-dir.ts` 的 `tempDir()`（`realpath(mkdtemp(...))`），`card-images` / `feishu-deliver` / `feishu-send-file` / `onboarding` 四个 spec 的 19 处临时目录改用它；这一批只动夹具（同一条 CI 腿暴露的产品问题见上一节）。Linux 上全量测试、`typecheck` 复跑绿。判读：这 11 条不是产品在 Windows 上坏，而是夹具没按平台归一化路径。
 
 **English**: The new (non-blocking) `windows-latest` leg failed 11 of 1495 tests on its first run, every one a path-string mismatch: Windows hands back `os.tmpdir()` as an 8.3 short name (`C:\Users\RUNNER~1\AppData\Local\Temp`) while the code under test resolves with `realpath` to the long name, and the fixtures built expectations from the short one. `tests/stubs/temp-dir.ts` now exposes `tempDir()` (`realpath(mkdtemp(...))`), used by 19 fixtures across the `card-images`, `feishu-deliver`, `feishu-send-file` and `onboarding` specs; no product code changed. The suite and type-check stay green on Linux. Read it as fixture normalisation, not as Windows behaviour being broken.
 

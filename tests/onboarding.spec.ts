@@ -5,6 +5,20 @@ import { startFeishuOnboarding, type FeishuOnboardingDeps } from '../src/feishu-
 import { translationsFor } from '../src/i18n.ts'
 import { tempDir } from './stubs/temp-dir.ts'
 
+/**
+ * What a string looks like INSIDE `JSON.stringify(card)`.
+ *
+ * Assertions that search the serialized card for a filesystem path must escape
+ * it first: on Windows the path contains backslashes, and JSON doubles them, so
+ * a raw `C:\…` substring never appears in `{"content":"C:\\…"}`. Linux paths
+ * have no backslash, which is why this only ever failed on the Windows runner.
+ *
+ * @param value - the text as it would be rendered on the card.
+ */
+function jsonText(value: string): string {
+  return JSON.stringify(value).slice(1, -1)
+}
+
 const t = translationsFor('zh')
 
 interface FakeChannel {
@@ -837,7 +851,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
       // The "create this missing path?" card records the confirmation as its
       // own settlement card, with the will-create line.
       const settled = JSON.stringify((channel.updateCardInstance.mock.calls.at(-1)! as [string, any, number])[1])
-      expect(settled).toContain(t.newSessionSettledWorkspace(target))
+      expect(settled).toContain(jsonText(t.newSessionSettledWorkspace(target)))
       expect(settled).toContain(t.newSessionSettledWillCreate)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -939,7 +953,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
         raw: { action: { form_value: { new_folder: 'made-by-plugin' } } },
       })
       expect((await stat(join(root, 'made-by-plugin'))).isDirectory()).toBe(true)
-      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain(join(root, 'made-by-plugin'))
+      expect(JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])).toContain(jsonText(join(root, 'made-by-plugin')))
 
       // A separator is refused before anything touches the disk.
       await fire(handlers, {
@@ -979,7 +993,7 @@ describe('feishu-onboarding: workspace creation (O16 / O17 / O19)', () => {
       expect(createDirectory).toHaveBeenCalledWith(root, 'draft')
       // The browser follows the new folder, so it is immediately usable.
       const entered = JSON.stringify(channel.createCardInstance.mock.calls.at(-1)![0])
-      expect(entered).toContain(join(root, 'draft'))
+      expect(entered).toContain(jsonText(join(root, 'draft')))
 
       // Back up one level, then create the SAME name again: that is the clash,
       // reported as one line on the browser the operator is looking at.

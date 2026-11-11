@@ -46,6 +46,7 @@
 
 import { open, readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve, sep } from 'node:path'
+import { isWindowsAbsolutePath } from './local-path.ts'
 import type { CardImageMode } from './config.ts'
 import { classifyMedia, sniffAudioFormat, sniffImageMime, sniffVideoContainer, type AudioFormatId } from './media-sniff.ts'
 import { isFeishuImageKey, mapCardMarkdownReferences } from './card-markdown.ts'
@@ -266,6 +267,9 @@ function isLocalCandidate(target: string): boolean {
   if (value === '' || isFeishuImageKey(value)) return false
   if (value.startsWith('#')) return false
   if (value.startsWith('//')) return false
+  // A Windows drive path (`C:\shots\a.png`) matches the URL-scheme shape
+  // below; it is a local file, not a protocol, so it must stay inlinable.
+  if (isWindowsAbsolutePath(value)) return true
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false
   return true
 }
