@@ -59,7 +59,8 @@ export interface Config {
   /**
    * How much work detail a step card carries, mirroring the WebUI's
    * `ui-chat.transcriptView` (`compact` / `standard` / `detailed` / `verbose`,
-   * default `detailed`). The four switches above still apply: a level can only
+   * plugin default `compact` — shorter chat cards; the WebUI's own default is
+   * still `detailed`). The four switches above still apply: a level can only
    * ever show LESS, never more (see {@link ../display-level.ts}).
    */
   transcriptView?: TranscriptView
@@ -367,7 +368,7 @@ export const ConfigSchema = z.object({
   showToolCalls: z.boolean().default(true).volatile().description('Show tool calls on step cards; when false a tool-only step sends no card'),
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
-  transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact counts tool calls only, standard adds one summary line per call, detailed (default) adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
+  transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact (default, shorter chat cards) counts tool calls only, standard adds one summary line per call, detailed adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
   compactToolRow: z.union([...COMPACT_TOOL_ROW_STYLES]).default(DEFAULT_COMPACT_TOOL_ROW).volatile().description('What one tool row of the compact turn card carries: "tool-description" (default) puts the model-written description first and then the tool row, "tool" shows the tool name plus the file/programs it touched, "description" shows the description alone and never falls back when a call has none. Compact only; the other levels keep their own summary line.'),
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
   reasoningPreviewChars: z.number().min(PREVIEW_CHARS.reasoningHead.min).max(PREVIEW_CHARS.reasoningHead.max).default(PREVIEW_CHARS.reasoningHead.default).volatile().description('Characters of the reasoning head shown (collapsed) at the detailed level. The verbose level shows the whole chain. Range 80-4000, default 200; keep it modest because every preview byte counts toward the card\'s ~30 KB budget.'),

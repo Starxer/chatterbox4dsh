@@ -468,7 +468,7 @@ function stepHarness(
     showToolCalls?: () => boolean
     showToolArgs?: () => boolean
     showToolResults?: () => boolean
-    /** Work-detail level; omitted means the `detailed` default. */
+    /** Work-detail level; omitted means this harness's `detailed` baseline. */
     transcriptView?: () => TranscriptView
     elapsedRefreshSeconds?: () => number
   } = {},
@@ -518,6 +518,11 @@ function stepHarness(
     bridgeHolder: { current: bridge as any },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     getTranslations: () => t,
+    // The plugin's own default became `compact` on 2026-11-12. These tests
+    // exercise the per-step renderer, so the harness keeps the `detailed`
+    // baseline unless a case asks for another level; the default itself is
+    // covered by `display-level.spec.ts` and `feishu-progress.spec.ts`.
+    transcriptView: () => 'detailed' as TranscriptView,
     ...display,
     ...extra,
   })

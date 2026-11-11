@@ -22,14 +22,14 @@ describe('resolveSettingsConfig', () => {
   })
 
   it('defaults the work-detail level to `detailed` and reads legacy values', () => {
-    expect(resolveSettingsConfig({ appId: 'id' }).transcriptView).toBe('detailed')
+    expect(resolveSettingsConfig({ appId: 'id' }).transcriptView).toBe('compact')
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'compact' }).transcriptView).toBe('compact')
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'verbose' }).transcriptView).toBe('verbose')
     // 0.2.0 reads the two WebUI legacy spellings as `detailed` (a hand-edited
     // settings.yaml can still hold one) and anything unreadable as the default.
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'normal' as any }).transcriptView).toBe('detailed')
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'expanded' as any }).transcriptView).toBe('detailed')
-    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'nope' as any }).transcriptView).toBe('detailed')
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'nope' as any }).transcriptView).toBe('compact')
   })
 
   it('defaults elapsed refresh to five seconds and validates the four supported intervals', () => {

@@ -1186,9 +1186,9 @@ export const zh = {
   displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayLevelHint: level => ({
-    compact: '只报工具调用计数与状态，不显示推理内容',
+    compact: '只报工具调用计数与状态，不显示推理内容（默认）',
     standard: '每个工具一行摘要，推理只给首行；无参数、无结果',
-    detailed: '推理可展开，工具带参数与结果（默认）',
+    detailed: '推理可展开，工具带参数与结果',
     verbose: '推理给出全文，参数与结果不截断',
   })[level],
   displayLevelCustom: '当前四个开关的组合不等于任何一档',
@@ -1794,9 +1794,9 @@ export const en: Translations = {
   displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayLevelHint: level => ({
-    compact: 'Tool-call counts and status only; no reasoning text',
+    compact: 'Tool-call counts and status only; no reasoning text (default)',
     standard: 'One summary line per call, reasoning first line only; no arguments or results',
-    detailed: 'Reasoning expandable, tools with arguments and results (default)',
+    detailed: 'Reasoning expandable, tools with arguments and results',
     verbose: 'Full reasoning, arguments and results untruncated',
   })[level],
   displayLevelCustom: 'The four switches below no longer add up to any single level',

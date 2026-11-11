@@ -39,11 +39,19 @@ export type TranscriptView = 'compact' | 'standard' | 'detailed' | 'verbose'
 export const TRANSCRIPT_VIEWS: readonly TranscriptView[] = ['compact', 'standard', 'detailed', 'verbose']
 
 /**
- * The default level. `detailed` is deliberately the level that reproduces the
- * pre-level behavior exactly (all four switches default to on), so adding this
- * setting changes nobody's cards.
+ * The default level: `compact`.
+ *
+ * This is a deliberate divergence from the DSH WebUI's own default
+ * (`detailed`). The WebUI is a screen with room to scroll; this channel is a
+ * chat bubble, and the user asked (2026-11-12) for the short form by default —
+ * one turn card that counts tool calls, with the answer card beside it, instead
+ * of a step card per call. Anything more detailed stays one tap away on
+ * `/display` (and an explicit stored level always wins over this default).
+ *
+ * `detailed` remains the level that reproduces the pre-level behavior exactly
+ * (all four switches on), so a user who wants the old cards can pick it.
  */
-export const DEFAULT_TRANSCRIPT_VIEW: TranscriptView = 'detailed'
+export const DEFAULT_TRANSCRIPT_VIEW: TranscriptView = 'compact'
 
 /**
  * What one tool row of the COMPACT turn card carries:
@@ -164,8 +172,8 @@ export const DEFAULT_SWITCHES = {
   showToolResults: true,
 } as const
 
-/** The policy of the default level with every switch on (the pre-level behavior). */
-export const DETAILED_POLICY: DisplayPolicy = resolveDisplayPolicyCompat()
+/** The policy of the `detailed` level with every switch on (the pre-level behavior). */
+export const DETAILED_POLICY: DisplayPolicy = resolveDisplayPolicy({ transcriptView: 'detailed', ...DEFAULT_SWITCHES })
 
 /**
  * Read one stored level, tolerating the WebUI's two legacy spellings.
@@ -247,6 +255,3 @@ export function levelUsesSwitch(
 }
 
 /** {@link resolveDisplayPolicy} with every switch on and the default level. */
-function resolveDisplayPolicyCompat(): DisplayPolicy {
-  return resolveDisplayPolicy({ transcriptView: DEFAULT_TRANSCRIPT_VIEW, ...DEFAULT_SWITCHES })
-}

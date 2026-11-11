@@ -40,10 +40,19 @@ describe('resolveDisplayPolicy', () => {
     })
   })
 
-  it('is behavior-identical to the pre-level defaults at `detailed`', () => {
-    // The point of the default: every switch on, at `detailed`, must be exactly
-    // what the plugin did before a level existed.
-    expect(resolveDisplayPolicy({})).toEqual(DETAILED_POLICY)
+  it('defaults to the compact level', () => {
+    // 2026-11-12: the chat surface defaults to the short form (one turn card
+    // counting tool calls) instead of the WebUI's `detailed`.
+    expect(DEFAULT_TRANSCRIPT_VIEW).toBe('compact')
+    expect(resolveDisplayPolicy({})).toEqual({
+      reasoning: 'off', tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+    })
+  })
+
+  it('keeps `detailed` as the level that reproduces the pre-level behavior', () => {
+    // Anyone who wants the old cards picks `detailed` explicitly; nothing about
+    // that level changed.
+    expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(DETAILED_POLICY).toEqual({
       reasoning: 'head', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
     })

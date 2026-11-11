@@ -329,7 +329,7 @@ step/end(59)@331 · agent/inbox/spliced@332 · step/start(60)@333
 
 三条设计选择（**提案**，最终实现见 §3.4）：
 
-1. **档位是权威，布尔降为「自定义」档**：新增 `transcriptView: 'compact' | 'standard' | 'detailed' | 'verbose' | 'custom'`（默认 `detailed`）。选具体档位时按上表派生 4 个布尔（**不覆写存储**，切回来还在）；选 `custom` 时 4 个布尔直接生效。`/display` 卡改成「档位四选一 + 自定义时才出现的 4 个开关」。
+1. **档位是权威，布尔降为「自定义」档**：新增 `transcriptView: 'compact' | 'standard' | 'detailed' | 'verbose' | 'custom'`（设计时默认 `detailed`；**插件侧 2026-11-12 起默认 `compact`**，见 CHANGELOG——聊天面优先短卡，显式设置的档位不受影响）。选具体档位时按上表派生 4 个布尔（**不覆写存储**，切回来还在）；选 `custom` 时 4 个布尔直接生效。`/display` 卡改成「档位四选一 + 自定义时才出现的 4 个开关」。
 2. **默认 `detailed` 与现状等价**：现有部署 4 个布尔都是 schema 默认 `true`，正好等于上表的「详细」，所以默认值不会改变任何人的观感。
 3. **命名与文案直接沿用 WebUI**（`简洁 / 标准 / 详细 / 完全展开`，字段名 `transcriptView`），这样两边的设置页能对着看；插件自己的 settings 命名空间是 `lark-channel`，与 `ui-chat` 不冲突。
 

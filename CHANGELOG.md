@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### 变更：工作步骤展示的默认档位从「详细」改为「简洁」（`src/display-level.ts` / `src/config.ts` / `/display` 文案，2026-11-12）
+
+- **为什么**：这个插件的卡片是聊天消息，不是可以往下滚的页面；WebUI 的 `detailed` 默认适合屏幕，但在飞书里会把一轮拆成多张步骤卡。插件侧默认改为 `compact`：**一轮一张过程卡**（工具调用计数与状态）+ 一张答案卡，展开细节仍是一步（`/display` 或 `level` 文本命令）。
+- **影响面**：只改**未显式设置**档位的部署——升级后卡片变短；`settings.yaml` / `/display` 里明确选过的档位照旧。`detailed` 仍是「开关全开、行为与加档位之前逐字一致」的那一档，老用户想要旧观感显式选它即可。
+- **文案同步**：`/display` 卡的「默认」标记移到「简洁」，Web Settings 的四档标签同样；config schema 的 `transcriptView` 描述改为 `compact (default, shorter chat cards)`。`DETAILED_POLICY` 常量之前借默认值算出，已改为显式 `detailed`，避免默认一改它跟着变。
+- **测试**：`display-level.spec.ts` 断言新默认并为 `DETAILED_POLICY` 加独立用例；`config.spec.ts` 的默认值与「未知值回落」改为 `compact`；`feishu-streaming.spec.ts` 的 harness 显式钉 `detailed`（它测逐 step 渲染，不是默认值），默认档位由 `display-level` / `feishu-progress` 覆盖。全量 78 文件 / 1505 测试、typecheck、build 全绿。
+- **本机部署**不受影响：profile patch 早就显式写了 `transcriptView: compact`。
+
+**English**: The step-card detail level now defaults to `compact` instead of `detailed`. These cards are chat messages, not a scrollable page: one turn card (tool counts and status) plus one answer card is the shape that reads well in Feishu, even though `detailed` is the right default on the Web UI's screen. Only deployments that never set a level are affected — an explicit `settings.yaml` value or `/display` choice wins. `detailed` stays the level that reproduces the pre-level behaviour exactly for anyone who wants the old cards. The "default" markers moved to Compact in both the `/display` card and the Web Settings copy, and the config description says so; `DETAILED_POLICY` used to be derived from the default and is now pinned to `detailed` explicitly. Tests updated accordingly (default-value cases moved to `compact`, the streaming harness keeps an explicit `detailed` baseline because it exercises the per-step renderer). 1505 tests, typecheck and build pass; the local deployment is unaffected because its profile patch already pins `compact`.
+
 ## 0.4.2 (2026-11-11)
 
 > 自 `0.4.1` 以来的**修补版本**：无破坏性变更，仍要求 DSH `0.2.x`（peer `^0.2.0-rc.1`）。两处 Windows 修复（DSH 桌面版扫码报 `untrusted origin`、盘符路径被当成 URL），以及 Windows 单测腿从「信号」升级为**必过门**。
