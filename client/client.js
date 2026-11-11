@@ -2566,6 +2566,10 @@ function LarkChannelSectionBody(props) {
 					})
 				]
 			}) : null,
+			provision.phase === "waiting" && provision.qrUrl === void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dsh-feishu-detail",
+				children: t("provisionPreparing")
+			}) : null,
 			provision.phase === "configuring" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 				className: "dsh-feishu-detail",
 				children: t("provisioning")
@@ -2576,7 +2580,7 @@ function LarkChannelSectionBody(props) {
 			}) : null,
 			provision.phase === "error" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
 				className: "dsh-feishu-detail dsh-feishu-error",
-				children: [t("provisionFailed"), provision.message !== void 0 ? `: ${provision.message}` : ""]
+				children: [t("provisionFailed"), provision.errorCode === "start-timeout" ? `: ${t("provisionTimeout")}` : provision.message !== void 0 ? `: ${provision.message}` : ""]
 			}) : null,
 			state.runtime.message !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 				className: "dsh-feishu-detail",
@@ -2748,9 +2752,11 @@ const dictionaries = {
 		readOnly: "由配置或启动环境提供，只读",
 		scanToConfigure: "扫码配置",
 		provisionStarting: "正在生成二维码……",
+		provisionPreparing: "正在向飞书申请二维码……（需要这台机器能访问 open.feishu.cn）",
 		scanHint: "请用飞书 App 扫描二维码完成授权",
 		provisioning: "正在配置应用……",
 		provisionFailed: "配置失败",
+		provisionTimeout: "没有从飞书授权服务拿到二维码：请确认这台机器能访问 open.feishu.cn（代理 / VPN / 防火墙），然后重试",
 		access: "访问策略",
 		requireMention: "群聊中必须 @机器人",
 		requireMentionHint: "关闭后群聊里任何消息都会触发",
@@ -2850,9 +2856,11 @@ const dictionaries = {
 		readOnly: "Provided by config or launch environment; read-only",
 		scanToConfigure: "Scan to configure",
 		provisionStarting: "Generating QR code...",
+		provisionPreparing: "Requesting a QR code from Feishu... (this machine must be able to reach open.feishu.cn)",
 		scanHint: "Scan the QR code with the Feishu app to authorize",
 		provisioning: "Configuring app...",
 		provisionFailed: "Configuration failed",
+		provisionTimeout: "No QR code from the Feishu authorization service: check that this machine can reach open.feishu.cn (proxy / VPN / firewall), then retry",
 		access: "Access policy",
 		requireMention: "Require @mention in group chats",
 		requireMentionHint: "When off, any group message triggers the bot",

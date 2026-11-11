@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 修复：扫码配置拿不到二维码时静默空白（`src/provision-manager.ts` / `src/provision.ts` / `src/client/`，2026-11-11）
+
+起因：使用者在 **Windows** 上装 `0.3.0`，点「扫码配置」后**二维码窗口出不来**。核查结论：从 `0.3.0` 到现在，扫码流程的代码只变过 scope 列表（`git diff 0.3.0..HEAD -- src/provision.ts src/provision-manager.ts src/web.ts src/client` 只有权限数组 +16 行），所以这是行为问题而不是版本回归——而且这条链路里确实存在一处**完全静默的失败**。
+
+- **根因**：`registerApp` 的第一步是在 `open.feishu.cn` 上取授权链接（`begin`）。那个请求**不带超时**，也不吃我们传入的 `AbortSignal`（信号只接到轮询半边），所以这台机器到 `open.feishu.cn` 不通（代理 / VPN / 防火墙 / 半开连接）时 promise 永不 settle：状态停在 `waiting` 且没有 `qrUrl`，而面板只在「有 `qrUrl`」时画二维码、别的分支什么都不画 ⇒ 没有二维码、没有转圈、没有报错，看起来就是「窗口打不开」。
+- **修复**：① `ProvisionManager` 增加 **30 秒启动截止**（`PROVISION_START_TIMEOUT_MS`）：超时即 abort、置 `error` + **`errorCode: 'start-timeout'`**，并作废该次尝试（SDK 迟到 settle 时不会把状态改回 `done`、也不会写凭据）；二维码一到立即撤销计时。② 面板在 `waiting` 但还没有 `qrUrl` 时显示「**正在向飞书申请二维码……（需要这台机器能访问 open.feishu.cn）**」——把「静默空白」变成「有进度 + 有方向」。③ 失败文案按 `errorCode` **本地化**（中/英），不再把英文诊断原文贴到中文界面；`message` 仍保留给日志与 API 消费者做诊断。
+- **测试**：新增 `tests/provision-manager.spec.ts` 4 例（超时报错并 abort、二维码到达撤销截止、超时后迟到的 settle 被忽略、dispose 撤销截止）；`tests/client.spec.ts` 2 例（等待中的提示、超时错误本地化）。全量测试 / `typecheck` / `build` 全绿。
+- **边界（重要）**：这两条改动把「坏成静默」变成「坏得可诊断」，**不等于**已证明 Windows 扫码可用。真机上的下一步判据：30 秒后出现超时提示 ⇒ 基本可断定是该机器到 `open.feishu.cn` 的网络问题；若面板依旧**完全无反应**（连「正在申请」都不出现），则问题在 DSH Web UI 侧（插件 bundle 未加载 / 详情页槽位未渲染），需要另查。另：扫码开始时宿主的 journal 里本来就有一份 **ASCII 二维码 + 授权链接**（`renderTerminalQr`），面板不可用时可以直接用它。
+
+**English**: The user could not get the scan-to-configure QR code to appear on Windows with `0.3.0`. Diffing `0.3.0..HEAD` for the provisioning path shows only the scope array changed, so this is behaviour, not a regression — and the flow contains one fully silent failure. `registerApp`'s first request (`begin`) fetches the authorization URL from `open.feishu.cn` with **no timeout and no abort support** (our signal only reaches the polling half), so on a machine that cannot reach that host (proxy, VPN, firewall, half-open link) the promise never settles: the state stays `waiting` without a `qrUrl`, and the panel only draws anything when a `qrUrl` exists — no QR, no spinner, no error, which reads exactly like "the scan window won't open". `ProvisionManager` now enforces a 30 s start deadline that aborts, reports `error` with `errorCode: 'start-timeout'`, and retires that attempt (a late SDK settle cannot flip the state to `done` or write credentials); the deadline is cancelled as soon as the QR URL arrives. The panel shows "requesting a QR code from Feishu… (needs access to open.feishu.cn)" while the request is pending, and the failure line is localized from `errorCode` instead of pasting the English diagnostic into a Chinese UI. New `tests/provision-manager.spec.ts` (4 cases) and two client cases cover it; tests, typecheck and build pass. This makes the failure diagnosable — it does not prove Windows scanning works: a timeout notice after 30 s points at network access to `open.feishu.cn`, while a panel that stays completely blank points at the DSH Web UI side. The Host's journal also carries an ASCII QR code plus the authorization link (`renderTerminalQr`) as a fallback.
+
 ### 跨平台复核：修掉四个 Windows 才会暴露的问题（`src/dsh-home.ts` / `src/feishu-doc.ts` / `src/index.ts` / `src/channel.ts`，2026-11-11）
 
 起因：使用者问「插件对 Windows 兼容吗」。2026-10-05 做过一次只读审计（结论：构造上跨平台、只有 Linux 端到端验证过）；此后插件长了几千行新代码（文档工具、交付、媒体、发布登记），这次按同一口径**重扫一遍并修掉新增的真问题**。

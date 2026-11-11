@@ -144,10 +144,18 @@ function LarkChannelSectionBody(props: LarkDetailProps): JSX.Element {
         <code className="dsh-feishu-qr-link">{provision.qrUrl}</code>
       </div>
     ) : null}
+    {/* The service answering `begin` is an HTTPS round trip to open.feishu.cn;
+        while it is pending there is no QR to draw. Before this line existed the
+        section rendered nothing at all, which looks like a dead button. */}
+    {provision.phase === 'waiting' && provision.qrUrl === undefined
+      ? <p className="dsh-feishu-detail">{t('provisionPreparing')}</p>
+      : null}
     {provision.phase === 'configuring' ? <p className="dsh-feishu-detail">{t('provisioning')}</p> : null}
     {provision.phase === 'done' ? <p className="dsh-feishu-detail">{t('provisionDone')}</p> : null}
     {provision.phase === 'error'
-      ? <p className="dsh-feishu-detail dsh-feishu-error">{t('provisionFailed')}{provision.message !== undefined ? `: ${provision.message}` : ''}</p>
+      ? <p className="dsh-feishu-detail dsh-feishu-error">{t('provisionFailed')}{provision.errorCode === 'start-timeout'
+        ? `: ${t('provisionTimeout')}`
+        : provision.message !== undefined ? `: ${provision.message}` : ''}</p>
       : null}
     {state.runtime.message !== undefined ? <p className="dsh-feishu-detail">{state.runtime.message}</p> : null}
     {detail !== undefined

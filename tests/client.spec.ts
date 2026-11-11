@@ -750,6 +750,29 @@ describe('Lark plugin detail entries', () => {
     expect(screen.getByText('scanHint')).toBeTruthy()
   })
 
+  it('shows a preparing hint while the QR request is still pending', async () => {
+    // Regression: `waiting` without a `qrUrl` used to render NOTHING, so a
+    // blocked request to open.feishu.cn looked like a dead button.
+    stubStatus({ state: 'unconfigured' }, { phase: 'waiting' })
+    const harness = mount(createForm())
+    const mounted = renderDetail(harness, 'plugins.detail.section', BUNDLE)
+
+    await waitFor(() => { expect(mounted.container.textContent).toContain('provisionPreparing') })
+  })
+
+  it('localizes a start timeout instead of dumping the raw diagnostic', async () => {
+    stubStatus({ state: 'unconfigured' }, {
+      phase: 'error',
+      errorCode: 'start-timeout',
+      message: 'no QR code from the Feishu authorization service within 30s',
+    })
+    const harness = mount(createForm())
+    const mounted = renderDetail(harness, 'plugins.detail.section', BUNDLE)
+
+    await waitFor(() => { expect(mounted.container.textContent).toContain('provisionTimeout') })
+    expect(mounted.container.textContent).not.toContain('no QR code from')
+  })
+
   it('keeps a second start control out of the section', async () => {
     stubStatus({ state: 'connecting' }, { phase: 'waiting', qrUrl: 'https://scan.example/verify' })
     const harness = mount(createForm())

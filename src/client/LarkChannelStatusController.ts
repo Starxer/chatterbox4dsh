@@ -94,6 +94,8 @@ export interface ProvisionState {
   qrUrl?: string
   expireIn?: number
   message?: string
+  /** A failure class the page translates itself instead of showing `message`. */
+  errorCode?: 'start-timeout'
 }
 
 /** One channel status payload from the plugin's bounded HTTP route. */

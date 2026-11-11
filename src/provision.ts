@@ -11,7 +11,18 @@ export interface ProvisionState {
   /** Seconds until the verification URL expires. */
   expireIn?: number
   message?: string
+  /**
+   * Machine-readable failure class, when the caller should phrase it itself.
+   * The renderer localizes these instead of showing `message`.
+   */
+  errorCode?: ProvisionErrorCode
 }
+
+/** Failure classes a caller can translate; `message` stays the diagnostic. */
+export type ProvisionErrorCode =
+  /** `registerApp` did not hand back a QR URL in time (usually no route to
+   *  `open.feishu.cn`: proxy, VPN, firewall). */
+  | 'start-timeout'
 
 export interface ProvisionResult {
   appId: string
