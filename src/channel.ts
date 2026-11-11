@@ -1,3 +1,4 @@
+import { basename } from 'node:path'
 import { Readable } from 'node:stream'
 import { Domain, LoggerLevel, createLarkChannel } from '@larksuiteoapi/node-sdk'
 import type { LarkChannel, LarkChannelOptions, NormalizedMessage, ResourceDescriptor } from '@larksuiteoapi/node-sdk'
@@ -1479,8 +1480,10 @@ export function renderFooterCard(
   // Metadata section — simplified (short names only)
   const metaParts: string[] = []
   if (meta?.workspace !== undefined && meta.workspace !== '') {
-    // Show only the last directory name, not the full path.
-    const short = meta.workspace.includes('/') ? meta.workspace.split('/').pop()! : meta.workspace
+    // Show only the last directory name, not the full path. `basename` handles
+    // both separators, so a Windows workspace shows the folder instead of the
+    // whole `C:\Users\<user>` line the old `/`-only split fell back to.
+    const short = basename(meta.workspace) || meta.workspace
     metaParts.push(`📂 ${short}`)
   }
   if (meta?.model !== undefined && meta.model !== '') {

@@ -81,7 +81,11 @@ const RULES = [
     why: 'absolute local path names a real user on Windows',
     pattern: /(?<![\w.])[A-Za-z]:\\Users\\[A-Za-z0-9._ -]+/g,
     mask: () => 'C:\\Users\\<redacted>',
-    allow: (value) => PLACEHOLDER_USERS.has(value.split('\\')[2] ?? ''),
+    allow: (value) => {
+      const segment = (value.split('\\')[2] ?? '').trim()
+      // `C:\Users\...` is prose for "some user", not a leaked name.
+      return PLACEHOLDER_USERS.has(segment) || /^\.{2,}$/u.test(segment)
+    },
   },
   {
     id: 'private-ip',

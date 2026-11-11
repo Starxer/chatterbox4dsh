@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### 跨平台复核：修掉四个 Windows 才会暴露的问题（`src/dsh-home.ts` / `src/feishu-doc.ts` / `src/index.ts` / `src/channel.ts`，2026-11-11）
+
+起因：使用者问「插件对 Windows 兼容吗」。2026-10-05 做过一次只读审计（结论：构造上跨平台、只有 Linux 端到端验证过）；此后插件长了几千行新代码（文档工具、交付、媒体、发布登记），这次按同一口径**重扫一遍并修掉新增的真问题**。
+
+- **会话绑定表的家目录改问宿主**（`src/dsh-home.ts` 新增，`src/index.ts` 改用它）：原来是 `` `${homedir()}/.dsh` `` 手拼、文件名也用 `/` 拼，Windows 上会得到混斜杠路径；更要紧的是上游一旦改口径就会**静默分叉**（关键坑 51）。现在走 `ctx.get('dshHomePath')`（宿主 `app-boot` 的正式来源）+ `node:path` 拼接，`DSH_HOME` / `~/.dsh` 只作兜底，`feishu_doc_write` 的发布登记与它共用同一个函数。**收口 TODO O23**。
+- **文档内联图片的「绝对路径」判定**（`src/feishu-doc.ts`）：原来只认 `startsWith('/')`，Windows 的 `C:\shots\a.png` 会被当成相对路径拒掉（内联 Markdown 没有 base 目录时直接丢弃），表现为「Windows 上 inline 写文档，图片全丢」。新增 `isLocalAbsolutePath()`：平台 `isAbsolute` + 盘符路径 + UNC 共享，三个任一命中即本地绝对路径（文件在不在由后续读取决定）。
+- **Markdown 图片引用支持尖括号目标**（同一文件）：旧正则 `[^)\s]+` 在第一个空格处截断，而尖括号 `(<…>)` 恰恰是 **CommonMark 唯一允许空格的写法**——Windows 用户目录（`C:\Users\<user>\…`）必带空格。截断不只是漏一张图：`imageRefsIn` 的条目与转换后的 image block 是**按顺序对齐**的，少一条会让后面每张图的 keep 标记整体错位。现在带空格目标能正确解析。
+- **卡片元信息里的工作区短名**（`src/channel.ts`）：原来用 `split('/').pop()` 取末级目录，Windows 的 `C:\Users\me\proj` 没有 `/` ⇒ 卡片上直接显示整条绝对路径。改用 `basename()`（同时认两种分隔符），空值回退原文。
+- **CI 增加 Windows 信号腿**（`.github/workflows/ci.yml`）：`windows-latest` 上跑 `npm ci` + `typecheck` + 单元测试（纯 Node，不需要飞书凭据，也不需要 DSH 宿主），把「装得上、测得过」从推断变成可观测；首次全绿前标 `continue-on-error`，避免一条尚未验证的腿卡住发布。
+- **测试**：`imageRefsIn` 新增两条回归（Windows 盘符 / UNC / 盘符相对路径的判定；尖括号 + 空格目标），`doc-registry.spec.ts` 里对 `list()` 返回路径的断言改成 `resolve()` 生成（`/tmp/...` 在 Windows runner 上会解析到当前盘符，原断言会假红）。
+- **复核结论（未变的部分）**：`src/` 仍无 `process.platform` 分支、无 POSIX-only 调用（`chmod` / `/proc` / `systemctl` 等 0 处）、无硬编码平台路径字面量；`ffmpeg` / `ffprobe` 一律 `execFile` 裸名 + `windowsHide`，缺失自动降级（无封面、不转码）；所有临时文件都用 `tmpdir()` + `pid/日期/随机` 命名，不构造带用户输入的非法文件名；浏览器端 `qrcode.react` 不受平台影响。**仍未验证**：卡片渲染、真实飞书收发、媒体转码在 Windows/macOS 上的真机表现——README 的「已知限制」据此更新，不写成「三平台已支持」。
+
+**English**: Prompted by "does this plugin work on Windows", the 2026-10-05 read-only audit was repeated against the code that has grown since (doc tools, delivery, media, publish registry), and the real gaps it found are fixed. The chat→session state file no longer hand-builds `` `${homedir()}/.dsh` ``: a new `src/dsh-home.ts` asks the Host for `dshHomePath` (the `app-boot` source of truth), joins with `node:path`, and keeps `DSH_HOME`/`~/.dsh` only as fallbacks — `feishu_doc_write`'s publish registry shares it (closes TODO O23 and the silent-divergence risk of key pitfall 51). Inline document images now classify absolute paths as POSIX absolute **or** a Windows drive path **or** a UNC share (`isLocalAbsolutePath`), instead of `startsWith('/')` which silently dropped `C:\shots\a.png` whenever the Markdown had no base directory. Markdown image references now accept angle-wrapped targets, the only spec spelling that allows spaces — every Windows profile path has them — and the old capture stopped at the first space, which also shifted every later image's keep flag out of step with the converted blocks. The card footer's workspace short name uses `basename()` instead of splitting on `/`, so Windows shows the folder rather than the whole `C:\Users\<user>` path. CI gained a `windows-latest` leg (npm ci + type-check + unit tests, no Feishu credentials and no DSH host) marked `continue-on-error` until its first green run; tests gained two regressions for the Windows path rules and the registry spec now builds its expected keys with `resolve()` so a Windows runner does not fail spuriously. The rest of the audit is unchanged: no `process.platform` branches, no POSIX-only calls, no hardcoded platform paths, ffmpeg/ffprobe optional with quiet degradation, temp files always via `tmpdir()` with generated names. Still unverified and documented as such: card rendering, live Feishu traffic and media transcoding on Windows/macOS.
+
 ### 仓库加固：隐私门禁进 CI，源码映射退出 git 跟踪（`scripts/privacy-scan.mjs` / `.github/workflows/ci.yml` / `package.json` / `.gitignore`，2026-11-11）
 
 起因：硬规则 1 的「提交前 grep 0 命中」全靠人记得跑，而且只扫手头那几个文件——**没人扫已发布面**（npm 包里有 gitignored 的 `lib/`）和**历史**（公开的是每一个曾推送的 commit）。

@@ -23,7 +23,7 @@
  */
 
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
@@ -34,6 +34,7 @@ import { sniffImageMime } from './media-sniff.ts'
 import type { HarnessConversationService } from './harness.ts'
 import { createDocRegistry, type DocRegistry } from './doc-registry.ts'
 import { applyFormulas, extractFormulas } from './doc-formula.ts'
+import { resolveDshHome } from './dsh-home.ts'
 
 /** Budget for one document API call (reads a whole body, so not the 20s send budget). */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
@@ -56,8 +57,14 @@ const MEDIA_UPLOAD_TIMEOUT_MS = 60_000
 const IMAGE_SAVE_TIMEOUT_MS = 20_000
 /** Most images one read will save; beyond this the URLs are still returned. */
 const MAX_IMAGES_SAVED = 20
-/** `![alt](target "title")` — the target is what decides local vs remote. */
-const IMAGE_REF_PATTERN = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/gu
+/**
+ * `![alt](target "title")` — the target is what decides local vs remote.
+ *
+ * A target is either bare (`/a/b.png`) or wrapped in angle brackets
+ * (`</a/my picture.png>`). The wrapped form is the only Markdown spelling that
+ * allows spaces, and every Windows profile path has them, so both must parse.
+ */
+const IMAGE_REF_PATTERN = /!\[[^\]]*\]\(\s*(?:<([^<>\n]+)>|([^)\s]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/gu
 
 /** How a target string was interpreted. */
 export interface FeishuDocTarget {
@@ -336,12 +343,31 @@ interface ImageRef {
 }
 
 /**
+ * Whether a Markdown image target names an absolute local path.
+ *
+ * `isAbsolute` answers for the host it runs on, but the Markdown being
+ * converted is not platform-bound: on Windows a `C:\shots\a.png` is absolute
+ * (and `isAbsolute` already says so), while on Linux the same text used to be
+ * mistaken for a relative path — so a Windows operator lost every inline image
+ * reference. A drive path or a UNC share is absolute everywhere; whether the
+ * file exists is decided later by the read itself.
+ *
+ * @param target - the destination of one Markdown image reference.
+ */
+export function isLocalAbsolutePath(target: string): boolean {
+  if (isAbsolute(target)) return true
+  if (/^[A-Za-z]:[\\/]/u.test(target)) return true
+  return /^\\\\[^\\]/u.test(target)
+}
+
+/**
  * Find every image reference in the Markdown, in order.
  *
  * Only absolute local paths can be uploaded: remote URLs would mean fetching
  * arbitrary URLs from the host (and silently pulling outside content into the
  * tenant's documents), and a relative path has no unambiguous base because the
- * Markdown arrives as text, not as a file on disk.
+ * Markdown arrives as text, not as a file on disk. "Absolute" includes Windows
+ * drive and UNC paths — see {@link isLocalAbsolutePath}.
  *
  * @param markdown - the body about to be converted.
  * @returns one entry per reference, including the ones that will be skipped.
@@ -349,13 +375,13 @@ interface ImageRef {
 export function imageRefsIn(markdown: string, baseDir?: string): ImageRef[] {
   const refs: ImageRef[] = []
   for (const match of markdown.matchAll(IMAGE_REF_PATTERN)) {
-    const target = match[1]
+    const target = match[1] ?? match[2]
     if (target === undefined || target === '') continue
     if (/^https?:\/\//iu.test(target) || /^data:/iu.test(target)) {
       refs.push({ target, skipReason: 'remote image, not fetched' })
       continue
     }
-    if (target.startsWith('/')) {
+    if (isLocalAbsolutePath(target)) {
       refs.push({ target, local: target })
       continue
     }
@@ -939,29 +965,6 @@ export function deriveTitleAndBody(
     return { title, markdown: markdown.replace(/^#\s+.+\r?\n?/mu, '') }
   }
   return { title, markdown }
-}
-
-/**
- * Resolve where durable plugin state belongs.
- *
- * The host provides `dshHomePath` through context; asking it keeps the registry
- * beside the host's own state file if the resolution rule ever changes (关键坑
- * 51). The env-var + `~/.dsh` fallback mirrors what `src/index.ts` does for the
- * session map, for hosts that do not expose the helper.
- */
-export function resolveDshHome(ctx: Context): string {
-  try {
-    const provided = (ctx as unknown as { get?: (name: string) => unknown }).get?.('dshHomePath')
-    if (typeof provided === 'function') {
-      const home = (provided as (...segments: string[]) => string)()
-      if (typeof home === 'string' && home !== '') return home
-    }
-  } catch {
-    // fall through to the env/home fallback
-  }
-  const env = process.env.DSH_HOME
-  if (env !== undefined && env !== '') return env
-  return join(homedir(), '.dsh')
 }
 
 /** Create an empty docx document (owned by the app when no folder is given). */

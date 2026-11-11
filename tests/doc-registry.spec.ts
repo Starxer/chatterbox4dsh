@@ -8,6 +8,13 @@ async function tempHome(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'dsh-doc-reg-'))
 }
 
+/** Registry keys are resolved paths; build the expected key the same way so the
+ *  spec is separator-agnostic (a Windows runner resolves `/tmp/a.md` under the
+ *  current drive). */
+function key(path: string): string {
+  return resolve(path)
+}
+
 function entry(documentId: string, updatedAt = Date.now()) {
   return { documentId, updatedAt }
 }
@@ -67,7 +74,7 @@ describe('createDocRegistry', () => {
     }), 'utf8')
     const registry = await createDocRegistry({ home })
     expect(registry.list()).toHaveLength(1)
-    expect(registry.list()[0]).toMatchObject({ path: '/tmp/good.md', doc: { documentId: 'doxcnG', revision: 3 } })
+    expect(registry.list()[0]).toMatchObject({ path: key('/tmp/good.md'), doc: { documentId: 'doxcnG', revision: 3 } })
   })
 
   it('caps the file at MAX_REGISTRY_ENTRIES, keeping the newest', async () => {
@@ -79,9 +86,9 @@ describe('createDocRegistry', () => {
     const kept = registry.list()
     expect(kept).toHaveLength(MAX_REGISTRY_ENTRIES)
     // The newest five pushed the oldest five out.
-    expect(kept[0]?.path).toBe(`/tmp/${MAX_REGISTRY_ENTRIES + 4}.md`)
-    expect(kept.some(item => item.path === '/tmp/0.md')).toBe(false)
-    expect(kept.some(item => item.path === '/tmp/5.md')).toBe(true)
+    expect(kept[0]?.path).toBe(key(`/tmp/${MAX_REGISTRY_ENTRIES + 4}.md`))
+    expect(kept.some(item => item.path === key('/tmp/0.md'))).toBe(false)
+    expect(kept.some(item => item.path === key('/tmp/5.md'))).toBe(true)
     const reopened = await createDocRegistry({ home })
     expect(reopened.list()).toHaveLength(MAX_REGISTRY_ENTRIES)
   })

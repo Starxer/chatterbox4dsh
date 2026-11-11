@@ -3,8 +3,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
-  deriveTitleAndBody, htmlTablesToMarkdown, imageRefsIn, parseDocTarget, prepareBlocks,
-  splitInsertBatches, startFeishuDocTools,
+  deriveTitleAndBody, htmlTablesToMarkdown, imageRefsIn, isLocalAbsolutePath, parseDocTarget,
+  prepareBlocks, splitInsertBatches, startFeishuDocTools,
 } from '../src/feishu-doc.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
@@ -179,6 +179,27 @@ describe('imageRefsIn', () => {
     expect(refs.map(ref => ref.local !== undefined)).toEqual([true, false, false])
     expect(refs[1]?.skipReason).toMatch(/remote/i)
     expect(refs[2]?.skipReason).toMatch(/relative/i)
+  })
+
+  it('accepts a Windows drive path as an absolute local path on every platform', () => {
+    // Regression: `startsWith('/')` used to drop these as "relative", so a
+    // Windows operator lost every inline image reference.
+    const refs = imageRefsIn('![a](C:\\shots\\pic.png)')
+    expect(refs[0]?.local).toBe('C:\\shots\\pic.png')
+    expect(refs[0]?.skipReason).toBeUndefined()
+    expect(isLocalAbsolutePath('C:/shots/pic.png')).toBe(true)
+    expect(isLocalAbsolutePath('\\\\server\\share\\pic.png')).toBe(true)
+    expect(isLocalAbsolutePath('shots/pic.png')).toBe(false)
+    expect(isLocalAbsolutePath('C:shots\\pic.png')).toBe(false)
+  })
+
+  it('parses angle-wrapped targets, the only Markdown spelling that allows spaces', () => {
+    // Regression: the old `[^)\\s]+` capture stopped at the first space, so a
+    // path under a Windows profile ("C:\\Users\\John Doe\\...") produced a
+    // reference whose target did not exist — and every later image flag slid
+    // one block out of step with the converted document.
+    const refs = imageRefsIn('![a](</tmp/my pictures/a.png>) ![b](<C:\\my pictures\\b.png> "title")')
+    expect(refs.map(ref => ref.local)).toEqual(['/tmp/my pictures/a.png', 'C:\\my pictures\\b.png'])
   })
 })
 

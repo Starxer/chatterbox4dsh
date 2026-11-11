@@ -1,6 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { mkdir } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
@@ -43,6 +42,7 @@ import { startFeishuExternalTurns } from './feishu-external-turns.ts'
 import { sendStartupNoticeOnce } from './feishu-startup-notice.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
+import { dshHomeFile } from './dsh-home.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
 import { dispatchCardAction } from './card-dispatch.ts'
 import { createCardSendBarrier } from './card-send-barrier.ts'
@@ -694,8 +694,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     settings: currentSettings,
     resolveSecret: async ref => (await credentials.resolve(credentialRef(ref)))?.value,
     start: async config => {
-      const dshHome = process.env.DSH_HOME || `${homedir()}/.dsh`
-      const statePath = `${dshHome}/lark-session-map.json`
+      // The host owns this path (`dshHomePath`) and joins it with `node:path`:
+      // hand-building `~/.dsh/<file>` forks the state on Windows (mixed
+      // separators) and if upstream ever changes the rule (关键坑 51).
+      const statePath = dshHomeFile(ctx, 'lark-session-map.json')
       // Read optional: listing sessions prefers the host's maintained
       // projection state over replaying the live log (`snapshotEvents` is
       // deprecated for new callers). `ctx.get` keeps this out of `inject`, so a

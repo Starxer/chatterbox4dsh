@@ -68,7 +68,8 @@ npx @deepseek-ai/dsh web
 
 ## 已知限制
 
-- 完整链路只在 **Linux x64** 上验证过；macOS / Windows 未做端到端验证。
+- 完整链路（飞书收发、卡片、媒体、重启）只在 **Linux x64** 上做过端到端验证。
+- **Windows**：代码与测试已按跨平台口径收敛（2026-11-11 复核：路径一律走 `node:path`、状态目录问宿主、盘符 / UNC / 带空格路径按绝对路径处理、`ffmpeg` / `ffprobe` 缺失自动降级），CI 另在 `windows-latest` 上跑 `typecheck` + 单元测试；但**卡片渲染、真实飞书收发与媒体转码仍需在 Windows 上跑一次真实 DSH**，在那之前不写成「已支持」。macOS 同样未做端到端验证。
 - 部分飞书客户端不重绘就地更新后的卡片标题颜色（服务端数据本身是对的）。
 - 「完全展开」档仍受平台字节上限约束；折叠与压缩不等于删除本地历史。
 
@@ -82,6 +83,8 @@ npx @deepseek-ai/dsh web
 ```
 
 Requires DSH `0.2.x` (peer range `^0.2.0-rc.1`; built and verified on `0.2.2-rc.1`) and Node.js 24.9+.
+
+Platform: the full path (Feishu send/receive, cards, media, restarts) is verified on **Linux x64** only. Windows is now covered by a `windows-latest` CI leg (type-check + unit tests) and the 2026-11-11 cross-platform pass (all paths through `node:path`, the state directory asked from the Host, drive/UNC/space-containing paths treated as absolute, missing `ffmpeg`/`ffprobe` degrading quietly), but a real DSH run on Windows — cards, live Feishu traffic, media transcoding — is still required before calling it supported. macOS is equally unverified end to end.
 
 Open the Web page, go to **Plugins → Feishu & Lark** and choose **scan to configure**, or follow the [setup guide](<./docs/feishu-setup.md>).
 

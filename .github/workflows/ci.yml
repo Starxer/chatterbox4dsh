@@ -72,3 +72,33 @@ jobs:
       - name: Scan for leaked private content
         if: matrix.dependencies == 'locked'
         run: node scripts/privacy-scan.mjs --history
+
+  # Non-blocking signal until the first run has been observed: Windows has no
+  # end-to-end verification yet (README says Linux x64 only). This leg installs,
+  # type-checks and runs the unit suite on a native runner — no Feishu
+  # credentials and no DSH host needed — so "compatible by construction" gets
+  # measured instead of assumed. Drop `continue-on-error` once it has been green
+  # at least once.
+  windows:
+    name: Windows signal
+    runs-on: windows-latest
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
