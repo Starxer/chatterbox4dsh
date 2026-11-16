@@ -116,6 +116,42 @@ function responseReasonOf(error: unknown): string {
   return typeof message === 'string' ? message.trim() : ''
 }
 
+
+/** Network failure codes worth one bounded retry; everything else is final. */
+const TRANSIENT_NETWORK_CODES: ReadonlySet<string> = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED',
+  'ECONNABORTED', 'EPROTO', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN', 'ERR_NETWORK',
+])
+
+/** The same failures as they appear when only the message text survives. */
+const TRANSIENT_NETWORK_PATTERN = /getaddrinfo|EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPROTO|EHOSTUNREACH|ENETUNREACH|ENETDOWN|socket hang up|network error|net::ERR_|TLS handshake|Client network socket disconnected/i
+
+/**
+ * Whether an error is a transient NETWORK failure (worth a short retry).
+ *
+ * The SDK wraps these in several layers, so this walks the `cause` chain and
+ * only reads `code` / `message` (never `config` / `request`, which carry the app
+ * secret — key pitfall 40). `ENOTFOUND` is included although it can be
+ * permanent: in this deployment it is almost always a DNS hiccup (VPN, proxy,
+ * resolver restart) and the retry costs at most two seconds.
+ *
+ * @param error - the thrown value.
+ * @returns `true` for DNS/socket/TLS-style failures only.
+ */
+export function isTransientNetworkError(error: unknown): boolean {
+  if (typeof error === 'string') return TRANSIENT_NETWORK_PATTERN.test(error)
+  let current: unknown = error
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth += 1) {
+    if (typeof current === 'string') return TRANSIENT_NETWORK_PATTERN.test(current)
+    if (typeof current !== 'object') return false
+    const record = current as { code?: unknown; message?: unknown; cause?: unknown }
+    if (typeof record.code === 'string' && TRANSIENT_NETWORK_CODES.has(record.code.toUpperCase())) return true
+    if (typeof record.message === 'string' && TRANSIENT_NETWORK_PATTERN.test(record.message)) return true
+    current = record.cause
+  }
+  return false
+}
+
 /**
  * Render a caught error as a short single-line reason for user display.
  *

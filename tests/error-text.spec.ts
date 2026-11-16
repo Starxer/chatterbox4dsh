@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ERROR_TEXT_CAP, errorText } from '../src/error-text.ts'
+import { ERROR_TEXT_CAP, errorText, isTransientNetworkError } from '../src/error-text.ts'
 
 describe('errorText', () => {
   it('returns the Error message verbatim', () => {
@@ -124,5 +124,32 @@ describe('errorText', () => {
       response: { data: { msg: 'bad request' } },
     })
     expect(errorText(err, 'fallback')).not.toContain('should-never-appear')
+  })
+})
+
+describe('isTransientNetworkError', () => {
+  it('recognises DNS, socket and TLS failures by code', () => {
+    for (const code of ['ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPROTO']) {
+      expect(isTransientNetworkError(Object.assign(new Error('boom'), { code }))).toBe(true)
+    }
+  })
+
+  it('recognises them by message when no code survives', () => {
+    expect(isTransientNetworkError(new Error('getaddrinfo ENOTFOUND open.feishu.cn'))).toBe(true)
+    expect(isTransientNetworkError(new Error('socket hang up'))).toBe(true)
+    expect(isTransientNetworkError('net::ERR_CONNECTION_RESET')).toBe(true)
+  })
+
+  it('walks the cause chain, because the SDK wraps the real failure', () => {
+    const inner = Object.assign(new Error('connect failed'), { code: 'ENOTFOUND' })
+    const outer = Object.assign(new Error('Request failed with status code 500'), { cause: inner })
+    expect(isTransientNetworkError(outer)).toBe(true)
+  })
+
+  it('does not retry business rejections or unrelated errors', () => {
+    expect(isTransientNetworkError(Object.assign(new Error('Request failed with status code 400'), { code: 'ERR_BAD_REQUEST' }))).toBe(false)
+    expect(isTransientNetworkError(new Error('file is too large'))).toBe(false)
+    expect(isTransientNetworkError(undefined)).toBe(false)
+    expect(isTransientNetworkError(230021)).toBe(false)
   })
 })

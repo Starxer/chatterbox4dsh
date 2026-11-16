@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### 修复：入站图片/文件下载遇瞬时网络错误会重试，并明确告知「本条没有进入 agent」（`src/feishu-resource.ts` / `src/error-text.ts` / `src/channel.ts`，2026-11-16）
+
+- **背景**：`getaddrinfo ENOTFOUND open.feishu.cn`（本机 DNS / 代理 / VPN 抖动）被包成一句「图片处理出错」，既看不出是网络问题，也没说这条消息被丢弃了。这不是并发问题——每张图在**自己那条消息**的 admission 里下载，转成 durable ref 后不会再下载；快速连发时飞书 SDK 会批处理（资源取并集、message id 用最后一条），额外的 owner 查找只是放大了对不稳定网络的暴露。
+- **A（重试）**：`downloadInboundResource` 对**网络类**瞬时错误（`ENOTFOUND` / `EAI_AGAIN` / `ETIMEDOUT` / `ECONNRESET` / `ECONNREFUSED` / `ECONNABORTED` / `EPROTO` / `EHOSTUNREACH` / `ENETUNREACH` / `ENETDOWN` / `ERR_NETWORK`，同时匹配 `cause` 链与 message）最多重试 **2 次**（500ms、1.5s，计时器 `unref`，不拖住进程）；234003 的 owner 查找与 `im.v1.file.get` 兜底仍在**每一次尝试内**；业务错误（400 / 权限 / 大小）不重试，直接报可行动的错。每次重试打一行 `warn`。
+- **B（文案）**：新增 `isTransientNetworkError()` 与 `admissionFailureText()`：
+  - 网络类 → 「**图片下载失败**：这台机器暂时解析不了或连不上 `open.feishu.cn`（网络 / DNS / 代理问题）。
+**本条消息没有进入 agent**；请检查网络后重新发送。
+诊断：…」；
+  - 其它失败保留「图片处理出错：…」并追加「本条消息没有进入 agent。」；
+  - **文件**消息走同一套文案。
+- **测试**：`feishu-resource.spec.ts` 新增 3 例（瞬时错误重试后成功、重试耗尽后抛原错、业务错误不重试），`error-text.spec.ts` 新增 4 例分类（code / message / cause 链 / 非网络错误），新增 `inbound-admission.spec.ts` 3 例文案；`plugin.spec.ts` 的旧断言同步。全量 81 文件 / 1523 测试、typecheck、build 全绿。
+
+**English**: `getaddrinfo ENOTFOUND open.feishu.cn` (a host DNS/proxy/VPN hiccup) used to surface as one opaque "image processing failed" line that neither named the network cause nor said the message was dropped. This is not a concurrency bug — each image is downloaded inside its own message's admission and then becomes a durable ref that is never downloaded again; when messages arrive in a burst the Feishu SDK batches them (union of resources, last message's id), and the extra owner lookup only widens the exposure to an unstable network. Inbound downloads now retry network-class failures (`ENOTFOUND`/`EAI_AGAIN`/`ETIMEDOUT`/`ECONNRESET`/`ECONNREFUSED`/`ECONNABORTED`/`EPROTO`/`EHOSTUNREACH`/`ENETUNREACH`/`ENETDOWN`/`ERR_NETWORK`, matched on code, message and the `cause` chain) at most twice (500 ms then 1.5 s, timers `unref`ed), with the 234003 owner recovery and the file fallback still inside every attempt; business rejections are not retried. The failure text now distinguishes the network case ("image download failed: this machine cannot resolve/reach open.feishu.cn — check the network/DNS/proxy; **this message did not reach the agent**; resend after fixing it", with the diagnostic appended) from other admission failures (same no-dispatch note), for files as well as images. Covered by new retry, classifier and message tests.
+
 ### 修复：桌面版回合不再被标成「Web GUI」（`src/feishu-turn-origin.ts` / `src/feishu-external-turns.ts` / `src/i18n.ts` / `src/feishu-surface.ts`，2026-11-12）
 
 - **根因**：DSH 的 prompt 请求**没有客户端身份字段**（`SessionPromptRequest` 只有 `requestId` / `mode` / `content` / 可选 `clientTimeZone`），而桌面壳把请求转发给宿主时会把自己的 `origin` 改写成宿主 origin 并附上宿主的 cookie（`apps/desktop/src/web-document.ts`）⇒ 消息层面**浏览器与桌面窗口无法区分**。插件原先只凭「有没有 `clientTimeZone`」判断，而桌面版同样会带时区，于是两者都被标成「Web GUI」。

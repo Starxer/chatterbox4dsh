@@ -9,7 +9,7 @@ import type { BusyMode } from './harness.ts'
 import { translationsFor, type Translations } from './i18n.ts'
 import { TurnDroppedError } from './harness.ts'
 import type { TurnStats } from './feishu-streaming.ts'
-import { errorText } from './error-text.ts'
+import { errorText, isTransientNetworkError } from './error-text.ts'
 import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn-failure.ts'
 import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
@@ -163,7 +163,7 @@ async function admitImagesForMessage(
     // key — and a BATCHED dispatch hands us the LAST message's id with the
     // union of every resource, so the pair can be wrong; `downloadInboundResource`
     // recovers the owning message before giving up (see its module doc).
-    const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'image')
+    const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'image', { logger })
     if (signal.aborted) throw new Error('dsh-feishu: image admission aborted')
     const bytes = await readDownloadStream(raw)
     budget.bytes += bytes.byteLength
@@ -214,6 +214,29 @@ async function admitImagesForMessage(
   return { blocks: refs, notes, files, budget }
 }
 
+/**
+ * User-facing text for a failed inbound attachment admission.
+ *
+ * Two very different failures used to share one line ("图片处理出错：<reason>"):
+ * the plugin's own limits/store errors, and a host that cannot reach
+ * `open.feishu.cn` at all. The second is a network/DNS problem the operator can
+ * fix, so it says what to check; both say the message did NOT reach the agent,
+ * because the admission failure returns before dispatch.
+ *
+ * @param label - `图片` or `文件`, for the first word of the sentence.
+ * @param error - the thrown value.
+ * @param fallback - the configured apology used when no reason can be read.
+ * @returns the text message to post back into the chat.
+ */
+export function admissionFailureText(label: '图片' | '文件', error: unknown, fallback: string): string {
+  if (isTransientNetworkError(error)) {
+    return `${label}下载失败：这台机器暂时解析不了或连不上 open.feishu.cn（网络 / DNS / 代理问题）。\n`
+      + '本条消息没有进入 agent；请检查网络后重新发送。\n'
+      + `诊断：${errorText(error, fallback)}`
+  }
+  return `${label}处理出错：${errorText(error, fallback)}\n本条消息没有进入 agent。`
+}
+
 /** The chat/thread coordinates the owner lookup needs on the failure path. */
 function scopeOf(message: NormalizedMessage): ResourceScope {
   return {
@@ -254,13 +277,14 @@ async function admitFilesForMessage(
   message: NormalizedMessage,
   signal: AbortSignal,
   attachments: AttachmentLike,
+  logger?: PluginLogger,
 ): Promise<readonly FileAdmission[]> {
   const resources = (message.resources ?? []).filter(resource => ADMITTED_RESOURCE_TYPES.has(resource.type))
   if (resources.length === 0) return []
   const results: FileAdmission[] = []
   for (const resource of resources) {
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
-    const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'file')
+    const raw = await downloadInboundResource(channel, scopeOf(message), resource.fileKey, 'file', { logger })
     if (signal.aborted) throw new Error('dsh-feishu: file admission aborted')
     const rawName = resource.fileName ?? resource.fileKey
     // A video/audio resource sometimes arrives without a file_name; keep a
@@ -691,7 +715,7 @@ export async function startChannel(
             for (const note of admission.notes) logger.info(`dsh-feishu: ${note}`)
           } catch (error: unknown) {
             logError(`dsh-feishu: image admission failed: ${error instanceof Error ? error.message : String(error)}`)
-            await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
+            await sendOutbound(message.chatId, { text: admissionFailureText('图片', error, config.errorMessage) }, {
               replyTo: replyToId,
               replyInThread,
             }).catch(() => undefined)
@@ -709,7 +733,7 @@ export async function startChannel(
             return
           }
           try {
-            const files = await admitFilesForMessage(channel, message, new AbortController().signal, attachments)
+            const files = await admitFilesForMessage(channel, message, new AbortController().signal, attachments, logger)
             if (files.length > 0) {
               inboundMessage = {
                 ...inboundMessage,
@@ -723,7 +747,7 @@ export async function startChannel(
             }
           } catch (error: unknown) {
             logError(`dsh-feishu: file admission failed: ${error instanceof Error ? error.message : String(error)}`)
-            await sendOutbound(message.chatId, { text: `文件处理出错：${errorText(error, config.errorMessage)}` }, {
+            await sendOutbound(message.chatId, { text: admissionFailureText('文件', error, config.errorMessage) }, {
               replyTo: replyToId, replyInThread,
             }).catch(() => undefined)
             return
@@ -740,7 +764,7 @@ export async function startChannel(
           try {
             checkDraftBudget()
           } catch (error: unknown) {
-            await sendOutbound(message.chatId, { text: `图片处理出错：${errorText(error, config.errorMessage)}` }, {
+            await sendOutbound(message.chatId, { text: admissionFailureText('图片', error, config.errorMessage) }, {
               replyTo: replyToId, replyInThread,
             }).catch(() => undefined)
             return

@@ -974,7 +974,9 @@ describe('startChannel', () => {
     })
     expect(terminal.error).toHaveBeenCalledWith('dsh-feishu: image admission failed: storage full')
     expect(bridge.reply).not.toHaveBeenCalled()
-    expect(channel.send).toHaveBeenCalledWith('oc_4', { text: '图片处理出错：storage full' }, { replyTo: 'om_4', replyInThread: false })
+    expect(channel.send).toHaveBeenCalledWith('oc_4', {
+      text: '图片处理出错：storage full\n本条消息没有进入 agent。',
+    }, { replyTo: 'om_4', replyInThread: false })
   })
 
   it('streams files into the native attachment store and attaches durable file blocks', async () => {

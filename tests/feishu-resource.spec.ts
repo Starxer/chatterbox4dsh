@@ -120,9 +120,46 @@ describe('downloadInboundResource', () => {
 
   it('does not look up the owner for a non-400 failure', async () => {
     const { channel, calls } = fakeChannel({ download: async () => { throw new Error('getaddrinfo ENOTFOUND') } })
-    await expect(downloadInboundResource(channel, { messageId: 'om_1', chatId: 'oc_1' }, 'img_1', 'image'))
-      .rejects.toThrow('ENOTFOUND')
+    await expect(downloadInboundResource(channel, { messageId: 'om_1', chatId: 'oc_1' }, 'img_1', 'image', {
+      retryDelaysMs: [],
+    })).rejects.toThrow('ENOTFOUND')
     expect(calls.list).not.toHaveBeenCalled()
+  })
+
+  it('retries a transient network failure and succeeds on the next attempt', async () => {
+    let attempts = 0
+    const { channel, calls } = fakeChannel({
+      download: async () => {
+        attempts += 1
+        if (attempts < 3) throw new Error('getaddrinfo ENOTFOUND open.feishu.cn')
+        return 'RAW'
+      },
+    })
+    const warn = vi.fn()
+    await expect(downloadInboundResource(channel, { messageId: 'om_1', chatId: 'oc_1' }, 'img_1', 'image', {
+      retryDelaysMs: [0, 0],
+      logger: { warn },
+    })).resolves.toBe('RAW')
+    expect(calls.get).toHaveBeenCalledTimes(3)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls[0]?.[0]).toContain('transient network error')
+  })
+
+  it('gives up after the configured retries and rethrows the network error', async () => {
+    const { channel, calls } = fakeChannel({ download: async () => { throw new Error('getaddrinfo ENOTFOUND open.feishu.cn') } })
+    await expect(downloadInboundResource(channel, { messageId: 'om_1', chatId: 'oc_1' }, 'img_1', 'image', {
+      retryDelaysMs: [0, 0],
+    })).rejects.toThrow('ENOTFOUND')
+    expect(calls.get).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not retry a business rejection', async () => {
+    const { channel, calls } = fakeChannel({ download: async () => { throw rejection() } })
+    await expect(downloadInboundResource(channel, { messageId: 'om_last', chatId: 'oc_1' }, 'img_1', 'image', {
+      retryDelaysMs: [0, 0],
+    })).rejects.toThrow('Request failed with status code 400')
+    // One initial attempt; the owner lookup found nothing, so no second fetch.
+    expect(calls.get).toHaveBeenCalledTimes(1)
   })
 
   it('falls back to im.v1.file.get for file resources when the owner is unknown', async () => {

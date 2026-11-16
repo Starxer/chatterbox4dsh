@@ -35,6 +35,7 @@
  */
 
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
+import { errorText, isTransientNetworkError } from './error-text.ts'
 
 /** The two resource kinds `im.v1.messageResource.get` accepts. */
 export type MessageResourceType = 'image' | 'file'
@@ -134,6 +135,30 @@ function fetchScoped(
 }
 
 /**
+ * Backoff before re-trying a transient network failure of one inbound download.
+ * Two short retries: DNS hiccups (VPN flap, resolver restart) usually clear
+ * within a second, while a genuinely dead link fails fast enough not to stall
+ * the message for long.
+ */
+export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [500, 1_500]
+
+/** Optional knobs for {@link downloadInboundResource}. */
+export interface DownloadInboundOptions {
+  /** Retry backoff; tests pass `[]` to fail immediately. */
+  retryDelaysMs?: readonly number[] | undefined
+  /** Where one line per retry goes (usually the plugin logger). */
+  logger?: { warn(message: string): unknown } | undefined
+}
+
+/** Wait without keeping a timer that can hold the process open. */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref?.()
+  })
+}
+
+/**
  * Download one inbound resource, resolving the message that actually OWNS the
  * file key when a batched dispatch handed us a different message's id.
  *
@@ -143,12 +168,42 @@ function fetchScoped(
  * not addressable as `file` at all). The original error is rethrown when
  * nothing works, because it is the most informative one.
  *
+ * A transient network failure (DNS/socket/TLS) is retried twice with a short
+ * backoff; every other rejection is final, because retrying a 234003,
+ * permission or size error would only delay the actionable message.
+ *
  * @param channel - the live Lark channel.
  * @param scope - the message the resource arrived on, plus its chat/thread.
  * @param fileKey - the `image_key`/`file_key` to download.
  * @param type - which endpoint dialect to use.
+ * @param options - retry backoff and the retry notice sink.
  */
 export async function downloadInboundResource(
+  channel: LarkChannel,
+  scope: ResourceScope,
+  fileKey: string,
+  type: MessageResourceType,
+  options: DownloadInboundOptions = {},
+): Promise<unknown> {
+  const delays = options.retryDelaysMs ?? TRANSIENT_RETRY_DELAYS_MS
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await downloadInboundResourceOnce(channel, scope, fileKey, type)
+    } catch (error: unknown) {
+      // Only network-class failures are retried: a 234003 / permission / size
+      // rejection will fail identically, and retrying it would only delay the
+      // actionable error the user needs to see.
+      if (attempt >= delays.length || !isTransientNetworkError(error)) throw error
+      const wait = delays[attempt] ?? 0
+      options.logger?.warn(`dsh-feishu: inbound ${type} download hit a transient network error (${errorText(error, 'unknown network error')}); `
+        + `retrying in ${wait}ms (${attempt + 1}/${delays.length})`)
+      await sleep(wait)
+    }
+  }
+}
+
+/** One attempt: message-scoped fetch, owner recovery for 234003, file fallback. */
+async function downloadInboundResourceOnce(
   channel: LarkChannel,
   scope: ResourceScope,
   fileKey: string,
@@ -192,6 +247,7 @@ export async function downloadMessageResource(
   channel: LarkChannel,
   messageId: string,
   fileKey: string,
+  options: DownloadInboundOptions = {},
 ): Promise<unknown> {
-  return downloadInboundResource(channel, { messageId }, fileKey, 'file')
+  return downloadInboundResource(channel, { messageId }, fileKey, 'file', options)
 }
