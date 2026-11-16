@@ -1110,6 +1110,42 @@ describe('produced files (a turn wrote but never presented)', () => {
     streaming.stop()
   })
 
+  it('records files written by a PTC program\'s sub-dispatches', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'run_code', arguments: JSON.stringify({ code: '...', description: 'x' }) })
+    emit('tool/ptc-dispatch', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'write',
+      arguments: { file_path: 'shots/grid.png', content: 'x' },
+      isError: false, content: [{ type: 'text', text: 'ok' }],
+    })
+    emit('tool/ptc-dispatch', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:2', name: 'edit',
+      arguments: { file_path: 'report.pdf', old_string: 'a', new_string: 'b' },
+      isError: false, content: [{ type: 'text', text: 'ok' }],
+    })
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.produced).toEqual([
+      { path: 'shots/grid.png', kind: 'image' },
+      { path: 'report.pdf', kind: 'document' },
+    ])
+    streaming.stop()
+  })
+
+  it('records nothing for a failed PTC sub-call write', async () => {
+    const { streaming, emit } = stepHarness({ ...channel })
+    emit('turn/start')
+    emit('tool/call', { callId: 'c1', name: 'run_code', arguments: JSON.stringify({ code: '...', description: 'x' }) })
+    emit('tool/ptc-dispatch', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'write',
+      arguments: { file_path: 'shots/grid.png', content: 'x' },
+      isError: true, content: [{ type: 'text', text: 'boom' }],
+    })
+    emit('turn/end')
+    expect((await streaming.flushed('s-1'))?.produced).toEqual([])
+    streaming.stop()
+  })
+
   it('drops the previous turn\'s produced list', async () => {
     const { streaming, emit } = stepHarness({ ...channel })
     emit('turn/start')
@@ -1665,6 +1701,32 @@ describe('thinking placeholder', () => {
     expect(noteDetachedJob).toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'bash',
       resultText: 'started background job bash-9',
+      sessionId: 's-1',
+    }))
+    h.streaming.stop()
+  })
+
+  it('forwards a PTC sub-call result to the background-job mirror', () => {
+    // Under PTC the program dispatches `bash` itself; its result only reaches the
+    // session as `tool/ptc-dispatch`, so the outer `run_code` result can never
+    // carry the job announcement (audit 2026-11-17).
+    const noteDetachedJob = vi.fn()
+    const channel = plainChannel()
+    const h = stepHarness(channel, {}, { noteDetachedJob })
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('tool/call', {
+      callId: 'c1',
+      name: 'run_code',
+      arguments: '{"code":"await tools.bash({command:\"sleep 9\",run_in_background:true})","description":"后台跑"}',
+    })
+    h.emit('tool/ptc-dispatch', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'bash',
+      arguments: { command: 'sleep 9', run_in_background: true },
+      isError: false, content: [{ type: 'text', text: 'started background job bash-abc123' }],
+    })
+    expect(noteDetachedJob).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'bash',
+      resultText: 'started background job bash-abc123',
       sessionId: 's-1',
     }))
     h.streaming.stop()

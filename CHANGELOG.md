@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 修复：PTC 模式下的后台任务面板与产出文件（`src/feishu-streaming.ts` / `src/harness.ts`，2026-11-17）
+
+全面审计了插件对工具事件的依赖（记录在新增的 [docs/ptc-mode.md](docs/ptc-mode.md)）：PTC 只让模型看到 `run_code`，所有内层工具变成 `tool/ptc-dispatch-start` / `tool/ptc-dispatch` 事件。凡是只从 `tool/call` / `tool/result` 推导的事实，在 PTC 下都会丢失。本次修掉两处：
+
+- **后台任务面板**：`tool/ptc-dispatch` 结算时把 `content` 文本按**内层工具名**交给 `noteDetachedJob`，复用 job 镜像已有的 registry 核对、owner 校验与去重。PTC 程序里 `bash run_in_background`（以及前台超时转后台的 `[still running …]` 通知）产生的 job 现在会出现在面板里。
+- **产出文件**：同一个结算点用内层的 `name` + `arguments` + `isError` 走 `pendingProducedCall()` → `settleProducedCall()`，把结果推入 `turnStats.produced`。Turn Complete 的「本轮产出」、`produceCard = delivery` 的自动交付、外部（WebUI/桌面）回合同步随之恢复。
+- **`/status` 工具次数**：`harness.deriveSessionStats()` 把 `tool/ptc-dispatch` 也计为一次工具调用；此前一个跑了 20 个内层工具的 PTC 回合会显示成 1～2 次。
+- **文档**：新增 [docs/ptc-mode.md](docs/ptc-mode.md)，列出事实源对照、已适配项、本次修复、以及仍待设计的两个缺口（非 compact 档的步骤卡、PTC 内层结果文本的展示）；`docs/README.md` 增加索引行。
+- **测试**：PTC 子调用触发 job 通知、PTC 内层写文件计入 produced（成功 / 失败两例）、`getSessionMeta` 统计内层调用。
+
+**English**: An audit of every plugin fact derived from tool events (recorded in the new `docs/ptc-mode.md`) found that PTC exposes only `run_code` to the model and turns all inner tool calls into `tool/ptc-dispatch-start` / `tool/ptc-dispatch` events, so anything derived from `tool/call` / `tool/result` alone is lost under PTC. This change fixes two such losses: the background-job panel now receives each settled PTC sub-call's `content` under the INNER tool name (so `bash run_in_background` jobs started inside a program — including foreground-to-background promotions — appear again, reusing the job mirror's registry check, owner validation and dedupe), and produced files are collected from the settled sub-call's `name` + `arguments` + `isError` via `pendingProducedCall()`/`settleProducedCall()`, restoring the Turn Complete produced count, `produceCard = delivery` auto-delivery and external-turn mirrors. `/status` now counts `tool/ptc-dispatch` as a tool call (a PTC turn with twenty inner calls used to report one or two). The new `docs/ptc-mode.md` documents the fact-source table, what is adapted, what this fixed and the two remaining design gaps (non-compact step cards and displaying inner result text); `docs/README.md` links it. Covered by new streaming and session-meta tests.
+
 ### 修复：入站图片/文件下载遇瞬时网络错误会重试，并明确告知「本条没有进入 agent」（`src/feishu-resource.ts` / `src/error-text.ts` / `src/channel.ts`，2026-11-16）
 
 - **背景**：`getaddrinfo ENOTFOUND open.feishu.cn`（本机 DNS / 代理 / VPN 抖动）被包成一句「图片处理出错」，既看不出是网络问题，也没说这条消息被丢弃了。这不是并发问题——每张图在**自己那条消息**的 admission 里下载，转成 durable ref 后不会再下载；快速连发时飞书 SDK 会批处理（资源取并集、message id 用最后一条），额外的 owner 查找只是放大了对不稳定网络的暴露。

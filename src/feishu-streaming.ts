@@ -1922,22 +1922,28 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // a `tool/call` fires for `run_code` alone (2026-10-28, the operator's
         // report that a PTC turn's compact card carried no summary at all).
         //
-        // They are forwarded straight to the turn card: it holds the parent row
-        // (by `parentCallId`) and drops a sub-call whose parent is not there. The
-        // parent's own `tool/result` closes whatever it leaves running.
-        if (displayPolicy().turnCard) {
-          const data = (event.data ?? {}) as {
-            parentCallId?: unknown
-            subCallId?: unknown
-            name?: unknown
-            arguments?: unknown
-          }
-          const parentCallId = typeof data.parentCallId === 'string' ? data.parentCallId : ''
-          const subCallId = typeof data.subCallId === 'string' ? data.subCallId : ''
-          const name = typeof data.name === 'string' ? data.name : ''
-          if (parentCallId !== '' && subCallId !== '' && name !== '') {
-            const at = event.time ?? Date.now()
-            if (event.type === 'tool/ptc-dispatch-start') {
+        // Two kinds of facts live here and BOTH must be read, not just the card
+        // rows (audit 2026-11-17):
+        // - the compact turn card's child rows (parent row by `parentCallId`);
+        // - the settled sub-call's `content` + `name` + `arguments` + `isError`,
+        //   which are the ONLY source of background-job announcements and of
+        //   files the program wrote — the outer `run_code` result carries neither
+        //   in a usable form, so both used to be lost under PTC.
+        const data = (event.data ?? {}) as {
+          parentCallId?: unknown
+          subCallId?: unknown
+          name?: unknown
+          arguments?: unknown
+          content?: unknown
+          isError?: unknown
+        }
+        const parentCallId = typeof data.parentCallId === 'string' ? data.parentCallId : ''
+        const subCallId = typeof data.subCallId === 'string' ? data.subCallId : ''
+        const name = typeof data.name === 'string' ? data.name : ''
+        if (parentCallId !== '' && subCallId !== '' && name !== '') {
+          const at = event.time ?? Date.now()
+          if (event.type === 'tool/ptc-dispatch-start') {
+            if (displayPolicy().turnCard) {
               progressCards.subtoolStarted(
                 sessionId,
                 parentCallId,
@@ -1946,15 +1952,33 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
                 at,
                 progressSubtoolDetails(name, JSON.stringify(data.arguments ?? {})),
               )
-            } else {
-              progressCards.subtoolFinished(
-                sessionId,
-                parentCallId,
-                subCallId,
-                at,
-                (event.data as { isError?: unknown } | undefined)?.isError === true,
-              )
             }
+          } else {
+            const isError = data.isError === true
+            if (displayPolicy().turnCard) {
+              progressCards.subtoolFinished(sessionId, parentCallId, subCallId, at, isError)
+            }
+            // A settled sub-call can hand the model a background job id exactly
+            // like a native result can; the job mirror owns the matching and the
+            // gate, so forward it with the INNER tool name (关键坑 37).
+            try {
+              noteDetachedJob?.({
+                toolName: name,
+                resultText: resultContentText(data.content),
+                chat,
+                sessionId,
+              })
+            } catch (error: unknown) {
+              console.log(`dsh-feishu: [ptc] job notification failed: ${describeError(error)}`)
+            }
+            // Same for produced files: `write`/`edit` dispatched inside the
+            // program never reach `tool/call`, and the settled sub-call carries
+            // the arguments AND the success flag, so no pairing is needed.
+            const argumentsJson = typeof data.arguments === 'string'
+              ? data.arguments
+              : JSON.stringify(data.arguments ?? {})
+            const produced = settleProducedCall(pendingProducedCall(name, argumentsJson), isError)
+            if (produced !== undefined) state.turnStats?.produced?.push(produced)
           }
         }
       } else if (event.type === 'step/start') {
@@ -3076,6 +3100,25 @@ function urlHost(url: string): string | undefined {
  * @param argsRaw - the call's raw arguments JSON.
  * @returns the names, or undefined when there is nothing short and useful.
  */
+/**
+ * The model-visible text of a tool result's `content` blocks (text blocks only).
+ *
+ * Shared by the native `tool/result` path and a PTC sub-call's `content`: both
+ * carry the same block vocabulary, and the background-job announcement lives in
+ * this text. Non-text blocks contribute nothing.
+ *
+ * @param content - the event's `content` (a block array, or a plain string).
+ * @returns the joined text, `''` when there is nothing readable.
+ */
+function resultContentText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((block: { type?: unknown; text?: unknown }) => block?.type === 'text' && typeof block.text === 'string' ? block.text : '')
+    .filter((text: string) => text !== '')
+    .join('\n')
+}
+
 /**
  * The model's own one-line `description` of a tool call, when the tool's schema
  * has one (`bash` requires it; `subagent` and a few others take it).

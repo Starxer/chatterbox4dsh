@@ -2027,6 +2027,12 @@ export class HarnessConversationService {
         toolCalls++
         const callId = event.data?.callId as string | undefined
         if (callId !== undefined) toolStarts.set(callId, t)
+      } else if (event.type === 'tool/ptc-dispatch') {
+        // PTC's only native call is `run_code`; every real tool call is a
+        // sub-dispatch, so counting only `tool/call` reported "1 tool call" for
+        // a PTC turn that ran twenty (audit 2026-11-17). One dispatch is one
+        // call; its duration is already inside the parent `run_code`'s.
+        toolCalls++
       } else if (event.type === 'tool/result') {
         const callId = event.data?.message?.source?.callId as string | undefined
         if (callId !== undefined) {

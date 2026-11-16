@@ -805,6 +805,30 @@ describe('HarnessConversationService', () => {
     expect(meta.agentPreset).toBe('标准模式')
   })
 
+  it('getSessionMeta counts a PTC program\'s sub-dispatches as tool calls', async () => {
+    // PTC's only native call is `run_code`; the real work is a stream of
+    // `tool/ptc-dispatch` events. Counting only `tool/call` reported 1 tool call
+    // for a turn that ran several (audit 2026-11-17).
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionPersistence.readFrom = vi.fn(async () => ({
+      meta: { cwd: '/w', agentPreset: 'ptc', createdAt: 1000 },
+      events: [
+        { seq: 0, type: 'session', data: {}, time: 1000 },
+        { seq: 1, type: 'turn/start', data: { turn: 1 }, time: 1000 },
+        { seq: 2, type: 'tool/call', data: { callId: 'c1', name: 'run_code', arguments: '{}' }, time: 1100 },
+        { seq: 3, type: 'tool/ptc-dispatch', data: { rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'read', arguments: {}, isError: false, content: [] }, time: 1200 },
+        { seq: 4, type: 'tool/ptc-dispatch', data: { rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:2', name: 'write', arguments: {}, isError: false, content: [] }, time: 1300 },
+        { seq: 5, type: 'tool/result', data: { message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'done' }] } }, time: 1400 },
+      ],
+    }))
+    deps.agentPresets.list = vi.fn(async () => [{ id: 'ptc', name: 'PTC 模式' }])
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const meta = await service.getSessionMeta({ chatId: 'a', chatType: 'p2p' })
+    // 1 outer `run_code` call + 2 sub-dispatches.
+    expect(meta.toolCalls).toBe(3)
+  })
+
   it('switchToSession refuses to redirect a chat to an archived session', async () => {
     const f = fixture()
     const deps = dependencies(f)

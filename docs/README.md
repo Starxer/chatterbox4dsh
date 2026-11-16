@@ -12,6 +12,7 @@
 | 判断媒体会传到哪里、自动上传的边界 / Media data flow and upload boundaries | [媒体与隐私 / Media & privacy](<./privacy.md>) |
 | 修改插件、理解模块和卡片生命周期 / Modules and card lifecycles | [架构 / Architecture](<./architecture.md>) |
 | 核查飞书组件、平台限制与实测证据 / Feishu components, limits, probe evidence | [飞书能力参考 / Feishu capability reference](<./feishu-capabilities.md>) |
+| 确认 PTC 模式下哪些卡片/统计仍然成立 / Which cards and stats still work in PTC mode | [PTC 模式适配 / PTC mode adaptation](<./ptc-mode.md>) |
 | 看剩余工作 / Remaining work | [待办 / TODO](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) |
 | 追溯改动与决策 / Change history | [变更记录 / Changelog](<../CHANGELOG.md>) |
 
