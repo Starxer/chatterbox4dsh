@@ -954,14 +954,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     logger: ctx.logger('dsh-feishu'),
     getTranslations: () => translationsFor(currentLocale().id),
   })
-  // Agent Teams board (experimental, optional plugin). Independent of the
-  // questions/approvals seams, and read-only towards the Host: it subscribes to
-  // `session/event` only as a TRIGGER and reads the lead session's `agentTeam`
-  // projection at flush time. A composition without the Agent Teams packages
-  // appends no team events, so this module posts nothing; without the
-  // projection it reads nothing and stays silent. Both services are read
-  // through `ctx.get` — never injected — so a Host without them still boots
-  // (关键坑 2).
+  // Agent Teams board. Independent of the questions/approvals seams, and
+  // read-only towards the Host: it subscribes to `session/event` only as a
+  // TRIGGER and reads the lead session's projections at flush time
+  // (`agentTeam` for selection + tasks; from DSH 0.2.2-rc.5 the member roster
+  // lives in the sibling `subagentCatalog` projection — see feishu-team.ts).
+  // A composition without the Agent Teams packages appends no team events, so
+  // this module posts nothing; without the projections it reads nothing and
+  // stays silent. Both services are read through `ctx.get` — never injected —
+  // so a Host without them still boots (关键坑 2).
   teamBoard = startFeishuTeam({
     ctx,
     channel: cardChannel,

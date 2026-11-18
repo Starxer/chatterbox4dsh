@@ -38,6 +38,40 @@ function projection(overrides: Record<string, unknown> = {}): Record<string, unk
   }
 }
 
+/**
+ * The `dsh-agent-team` wire view (DSH 0.2.2-rc.5): selection + tasks only, no
+ * `members` — the roster comes from the parent `subagentCatalog` projection.
+ */
+function projectionV2(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    enabled: true,
+    tasks: [
+      {
+        id: 'task-1',
+        revision: 1,
+        subject: 'Audit the parser',
+        description: 'read-only audit',
+        status: 'pending',
+        blockedBy: [],
+        writeScopes: [],
+        ready: true,
+        writeScopeWarnings: [],
+      },
+    ],
+    ...overrides,
+  }
+}
+
+/** The roster side of the 0.2.2-rc.5 shape: continuable children of the Lead. */
+function catalog(): unknown[] {
+  return [
+    { id: 'child-1', createdAt: 1, mode: 'continuable', label: 'alice label', name: 'alice' },
+    { id: 'child-2', createdAt: 2, mode: 'continuable', label: 'bob' },
+    { id: 'child-3', createdAt: 3, mode: 'one-shot' },
+    { id: 'child-4', createdAt: 4, mode: 'external' },
+  ]
+}
+
 /** All markdown text of one card, so assertions read like the rendered output. */
 function markdownOf(card: any): string {
   return card.body.elements
@@ -118,6 +152,63 @@ describe('parseTeamProjection', () => {
   it('carries the invalid-record failure to the card', () => {
     const board = parseTeamProjection(projection({ failure: 'team task "task-1" revision is not contiguous' }))!
     expect(board.failure).toContain('revision is not contiguous')
+  })
+})
+
+describe('parseTeamProjection — 0.2.2-rc.5 wire shape', () => {
+  // On 0.2.2-rc.5 the experimental view became `dsh-agent-team`: it publishes
+  // the selection and the task board only, the roster lives in the parent's
+  // `subagentCatalog` projection. Without this branch the board silently stops
+  // appearing on every chat after the upgrade (no error, just no card).
+  const roster = { sessionId: 'session-1', catalog: catalog() }
+
+  it('synthesizes the Lead and names continuable children as teammates', () => {
+    const board = parseTeamProjection(projectionV2(), undefined, roster)!
+    expect(board.members.map(member => [member.id, member.name, member.role])).toEqual([
+      ['session-1', 'lead', 'lead'],
+      ['child-1', 'alice', 'teammate'],
+      // No v3 `name` on the entry: the v0/v1 display label stands in.
+      ['child-2', 'bob', 'teammate'],
+    ])
+    // One-shot/external children are ordinary delegations, not teammates.
+    expect(board.members.map(member => member.id)).not.toContain('child-3')
+    expect(board.members.map(member => member.id)).not.toContain('child-4')
+    expect(board.tasks).toHaveLength(1)
+  })
+
+  it('gates the whole board on `enabled`', () => {
+    // The projection exists for EVERY session on rc.5, so its mere presence
+    // must not produce a board.
+    expect(parseTeamProjection(projectionV2({ enabled: false }), undefined, roster)).toBeUndefined()
+    expect(parseTeamProjection(projectionV2({ enabled: undefined }), undefined, roster)).toBeUndefined()
+    expect(parseTeamProjection(projectionV2(), undefined, roster)).toBeDefined()
+  })
+
+  it('falls back to the session id when the Lead identity is unknown', () => {
+    const board = parseTeamProjection(projectionV2(), undefined, { catalog: catalog() })!
+    expect(board.members[0]).toMatchObject({ id: 'lead', role: 'lead' })
+  })
+
+  it('overlays live activity and dedupes ids', () => {
+    const running = { get: (id: string) => (id === 'child-1' ? { status: 'running' } : undefined) }
+    const board = parseTeamProjection(projectionV2(), running, {
+      sessionId: 'session-1',
+      catalog: [...catalog(), { id: 'child-1', mode: 'continuable', name: 'alice again' }, 'not-an-entry'],
+    })!
+    expect(board.members.map(member => member.status)).toEqual(['running', 'running', 'inactive'])
+    expect(board.members.filter(member => member.id === 'child-1')).toHaveLength(1)
+  })
+
+  it('renders a task board with no teammate yet (the Lead alone is not a board)', () => {
+    const lone = parseTeamProjection(projectionV2(), undefined, { sessionId: 'session-1', catalog: [] })!
+    expect(lone.members).toHaveLength(1)
+    expect(lone.tasks).toHaveLength(1)
+  })
+
+  it('keeps reading the old shape when members are present (rollback to 0.2.2-rc.1)', () => {
+    // The old view never had `enabled`; a rollback must keep rendering.
+    const board = parseTeamProjection(projection(), undefined, roster)!
+    expect(board.members).toHaveLength(2)
   })
 })
 
@@ -221,6 +312,8 @@ describe('renderTeamBoardCard', () => {
 function buildHarness(options: {
   chats?: Record<string, ConversationMessage>
   state?: () => unknown
+  /** `subagentCatalog` value served beside `agentTeam` (0.2.2-rc.5 roster). */
+  catalogState?: () => unknown
   running?: Record<string, boolean>
   projections?: unknown
   debounceMs?: number
@@ -261,7 +354,12 @@ function buildHarness(options: {
     projections: options.projections === undefined
       ? {
           snapshot: (_session: unknown, keys?: readonly string[]) => ({
-            values: keys?.includes('agentTeam') === true ? { agentTeam: options.state?.() } : {},
+            values: keys?.includes('agentTeam') === true
+              ? {
+                  agentTeam: options.state?.(),
+                  ...options.catalogState === undefined ? {} : { subagentCatalog: options.catalogState() },
+                }
+              : {},
           }),
         } as never
       : options.projections as never,
@@ -417,6 +515,43 @@ describe('startFeishuTeam', () => {
       state: () => ({ members: [{ id: 'session-1', name: 'lead', role: 'lead', phase: 'active' }], tasks: [] }),
     })
     h.sessionEvent('session-1', { type: 'team/member' })
+    await settle()
+    expect(h.sent).toHaveLength(0)
+    h.handle.dispose()
+  })
+
+  it('renders the 0.2.2-rc.5 shape: selection + catalog roster on team/mode and subagent/catalog', async () => {
+    // The board must appear on the toggle (`team/mode`) — the old trigger
+    // `team/member` is a historical record on rc.5 — and gain a teammate when
+    // the catalog grows (the Lead session appends `subagent/catalog`).
+    let entries = catalog().slice(0, 1)
+    const h = buildHarness({
+      state: () => projectionV2(),
+      catalogState: () => entries,
+      running: { 'child-1': true },
+    })
+    h.sessionEvent('session-1', { type: 'team/mode' })
+    await settle()
+    expect(h.sent).toHaveLength(1)
+    const first = markdownOf(h.sent[0]!.card)
+    expect(first).toContain(zh.teamBoardSummary(1, 0, 2))
+    expect(first).toContain('👑 **lead**')
+    expect(first).toContain('🟢 **alice**')
+
+    entries = catalog()
+    h.sessionEvent('session-1', { type: 'subagent/catalog' })
+    await settle()
+    expect(h.sent).toHaveLength(2)
+    expect(markdownOf(h.sent[1]!.card)).toContain('**bob**')
+    h.handle.dispose()
+  })
+
+  it('posts nothing while the 0.2.2-rc.5 Team is not enabled', async () => {
+    const h = buildHarness({
+      state: () => projectionV2({ enabled: false }),
+      catalogState: () => catalog(),
+    })
+    h.sessionEvent('session-1', { type: 'team/task' })
     await settle()
     expect(h.sent).toHaveLength(0)
     h.handle.dispose()

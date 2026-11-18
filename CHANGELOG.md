@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 兼容：适配 DSH 0.2.2-rc.5（Agent Teams 名册迁移到 `subagentCatalog`）（`src/feishu-team.ts` / `package.json`，2026-11-19）
+
+- **背景**：本机 DSH 从 `0.2.2-rc.1` 升到 `0.2.2-rc.5`。rc.2 的 AgentTeam 改版把实验性的 `dsh-experimental-agent-team` 换成了 `dsh-agent-team`，并**把成员名册从 `agentTeam` 投影里移走**：新投影只有 `{ enabled, tasks, failure? }`，名册改由父会话的 `subagentCatalog` 投影提供（上游注释：current subagents are supplied separately by the existing `subagentCatalog` projection）。
+- **名册**：`parseTeamProjection()` 现在接受两种线形——带 `members` 的旧形状（回滚到 rc.1 仍可渲染）与不带 `members` 的新形状；新形状用被投影会话的 id 合成 Lead 行，队友取 `subagentCatalog` 里 `mode: 'continuable'` 的子项（v3 条目的 `name`，旧版本回退 `label`，再回退 id），活动状态仍读 live Agent registry。两步都从**同一个 snapshot** 读，看板不会混两个时刻的名册。
+- **门控**：rc.5 的 `agentTeam` 投影对**每个**会话都存在（`agent-team` 在 base bundle 里），所以新形状必须按 `enabled === true` 门控；否则每个飞书会话都会冒出一张空看板。
+- **触发**：新增 `team/mode`（rc.5 的团队开关事件）与 `subagent/catalog`（新队友出现；该事件追加在 Lead 会话上）；`team/member` 在 rc.5 已只作历史记录、不再追加，保留兼容。
+- **依赖**：`devDependencies` 的 19 个 `@deepseek-ai/dsh-*` 对齐 `^0.2.2-rc.5`（`peerDependencies` 保持 `^0.2.0-rc.1`，同时覆盖 rc.5 与回滚目标 rc.1；锁文件随之解析到 rc.5）。
+- **验证**：`npm run typecheck`、`npm test`（81 文件 / 1544 用例，新增 8 例覆盖新形状/门控/触发）、`npm run build`（`client/client.js` 逐字节未变）全绿；隔离 `DSH_HOME` 用 rc.5 构建 + 真实 profile 补丁（假 appId）冷启动：`apply() called` 1、`disabling profile plugin` 0、`patch: entry … not found` 0、未知配置键 0、`dsh web:` banner 在，唯一错误是预期内的 `reconcile failed: appSecret is required`。
+
+**English**: The local DSH moves from `0.2.2-rc.1` to `0.2.2-rc.5`. The rc.2 AgentTeam rework replaced the experimental `dsh-experimental-agent-team` with `dsh-agent-team` and **removed the member roster from the `agentTeam` projection**: the new view is `{ enabled, tasks, failure? }` only, and the roster is supplied by the parent session's `subagentCatalog` projection. `parseTeamProjection()` now accepts both wire shapes — the old one WITH `members` (so a rollback to rc.1 keeps rendering) and the new one without them, which synthesizes the Lead row from the projected session id and takes teammates from the catalog's `mode: 'continuable'` entries (v3 `name`, falling back to `label` and then the id), with live activity still read from the Agent registry; both values come from ONE snapshot so a board cannot mix two moments of the roster. The new shape is gated on `enabled === true` because the rc.5 projection exists for every session (the `agent-team` row sits in the base bundle) and would otherwise post an empty board everywhere. Triggers now include `team/mode` (the rc.5 toggle) and `subagent/catalog` (a newly spawned teammate; appended to the Lead session); `team/member` is a historical record on rc.5 and is kept for compatibility. The 19 `@deepseek-ai/dsh-*` devDependencies move to `^0.2.2-rc.5` while `peerDependencies` stay `^0.2.0-rc.1` (covering both rc.5 and the rc.1 rollback target). Verified by typecheck, 1544 tests (8 new for the new shape, gating and triggers), build (byte-identical `client/client.js`) and an isolated-`DSH_HOME` cold boot of the rc.5 build with the real profile patch (fake appId): 1 `apply() called`, 0 compat denials, 0 missing patch entries, 0 unknown config keys, the `dsh web:` banner, and only the expected `reconcile failed: appSecret is required`.
+
 ### 修复：PTC 模式下 compact 工具行把 `run_code` 描述印两遍（`src/feishu-progress.ts`，2026-11-18）
 
 - **现象**：PTC 回合的过程卡上，一个步骤行读成 `✅ 核对工作目录、项目状态及可用技能 · \`run_code\` · 核对工作目录、项目状态及可用技能 · 1.4s` —— 同一句话出现在工具名前后各一次。

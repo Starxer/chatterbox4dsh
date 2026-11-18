@@ -11,13 +11,24 @@
  * ## Where the facts come from
  *
  * Team activity is recorded as Session events on the LEAD session
- * (`team/member`, `team/task`) and the Host projects them into that session's
+ * (`team/mode`, `team/task`) and the Host projects them into that session's
  * `agentTeam` projection. This module subscribes to the global `session/event`
  * fan-out only as a TRIGGER, then reads the projection at flush time: the
  * projection already owns event versioning, the derived view (owner names,
  * readiness, write-scope warnings) and the invalid-record `failure`. So the
  * plugin needs no new peer dependency — the Agent Teams packages are
  * experimental and optional — and does not re-implement the Team state machine.
+ *
+ * The ROSTER moved between runtimes (DSH 0.2.2-rc.5, the AgentTeam migration):
+ * the experimental `dsh-experimental-agent-team` view used to publish `members`
+ * itself, while `dsh-agent-team` publishes only the saved selection (`enabled`)
+ * and the task board, and names the current subagents in the parent's
+ * `subagentCatalog` projection ("Current subagents are supplied separately by
+ * the existing `subagentCatalog` projection"). BOTH shapes are accepted: a
+ * payload WITH `members` is the old view (a rollback to 0.2.2-rc.1 must keep
+ * rendering), a payload WITHOUT it is the new one and is read together with the
+ * catalog from the SAME snapshot. The Lead row of the new shape is
+ * synthesized — the Lead is the chat-bound session itself.
  *
  * Member *activity* is not in the durable projection (a member row has a
  * durable phase only). It comes from the live Agent registry, read through an
@@ -31,6 +42,10 @@
  * A composition without the Agent Teams plugin appends no team events at all,
  * so this module never renders a board; without the projection it reads
  * nothing and stays silent (关键坑 2: no hard dependency, no boot failure).
+ * On 0.2.2-rc.5 the `agentTeam` projection exists for EVERY session (the
+ * `dsh-agent-team` row sits in the base bundle), which is why the new wire
+ * shape is gated on its `enabled` flag: an `enabled: false` payload means the
+ * session simply has not opted into a Team, not that it has an empty one.
  *
  * @module @starxer/chatterbox4dsh/feishu-team
  */
@@ -42,6 +57,14 @@ import type { Translations } from './i18n.ts'
 
 /** The Session projection key owned by `@deepseek-ai/dsh-experimental-agent-team`. */
 const TEAM_PROJECTION_KEY = 'agentTeam'
+
+/**
+ * The parent-owned subagent catalog. From DSH 0.2.2-rc.5 the `agentTeam` wire
+ * view no longer carries `members`; the roster is read from this projection
+ * instead (the upstream comment: "Current subagents are supplied separately by
+ * the existing `subagentCatalog` projection").
+ */
+const TEAM_CATALOG_KEY = 'subagentCatalog'
 
 /** How many chats may hold board state at once; the oldest is dropped. */
 const TEAM_CHAT_LIMIT = 32
@@ -104,6 +127,19 @@ export interface TeamAgentReader {
   get(id: string): { status?: string } | undefined
 }
 
+/**
+ * What the new (0.2.2-rc.5) roster needs besides the `agentTeam` payload: the
+ * Lead's session id (its row is synthesized) and the parent's
+ * `subagentCatalog` projection, read from the SAME snapshot so a board can
+ * never mix two moments of the roster.
+ */
+export interface TeamRosterContext {
+  /** Durable session id of the Lead, i.e. the session whose projections were read. */
+  sessionId?: string | undefined
+  /** Raw `snapshot.values.subagentCatalog` (an array of child descriptors). */
+  catalog?: unknown
+}
+
 /** Public deps for {@link startFeishuTeam}. */
 export interface FeishuTeamDeps {
   ctx: Context
@@ -158,44 +194,32 @@ function memberIsRunning(agents: TeamAgentReader | undefined, id: string): boole
  * Validate one `agentTeam` projection payload and project it onto the board's
  * row types. Unknown row shapes are dropped rather than rendered as garbage;
  * a payload that is not the projection at all yields `undefined` (no card).
+ *
+ * Two wire shapes are accepted (see the module doc): the experimental view
+ * carries `members`, the `dsh-agent-team` view carries `enabled` + `tasks` and
+ * takes the roster from {@link TeamRosterContext.catalog}. The new shape also
+ * gates the whole board on `enabled`: its projection exists for EVERY session,
+ * so rendering whenever it is present would post an empty board everywhere.
+ *
  * @param value - the raw projection value (`snapshot.values.agentTeam`).
  * @param agents - live Agent registry for member activity, optional.
+ * @param roster - Lead session id + `subagentCatalog` value, needed only by the new shape.
  * @returns the board view, or `undefined` when there is no usable Team state.
  */
-export function parseTeamProjection(value: unknown, agents?: TeamAgentReader): TeamBoardView | undefined {
+export function parseTeamProjection(
+  value: unknown,
+  agents?: TeamAgentReader,
+  roster?: TeamRosterContext,
+): TeamBoardView | undefined {
   const record = asRecord(value)
   if (record === undefined) return undefined
   const rawMembers = record['members']
   const rawTasks = record['tasks']
-  if (!Array.isArray(rawMembers) || !Array.isArray(rawTasks)) return undefined
-
-  const members: TeamBoardMember[] = []
-  for (const raw of rawMembers) {
-    const member = asRecord(raw)
-    if (member === undefined) continue
-    const id = typeof member['id'] === 'string' ? member['id'] : ''
-    if (id === '') continue
-    const role = member['role'] === 'lead' ? 'lead' : member['role'] === 'teammate' ? 'teammate' : undefined
-    if (role === undefined) continue
-    const name = typeof member['name'] === 'string' && member['name'] !== '' ? member['name'] : id
-    const phase = member['phase'] as TeamMemberPhase | undefined
-    // The Lead is the chat-bound session itself; its role is the useful fact,
-    // and its per-turn activity must not repost the board.
-    const status: TeamBoardMember['status'] = role === 'lead'
-      ? 'running'
-      : phase === 'provisioning'
-        ? 'provisioning'
-        : phase === 'failed'
-          ? 'failed'
-          : memberIsRunning(agents, id) ? 'running' : 'inactive'
-    members.push({
-      id,
-      name,
-      role,
-      status,
-      ...typeof member['error'] === 'string' && member['error'] !== '' ? { error: member['error'] } : {},
-    })
-  }
+  if (!Array.isArray(rawTasks)) return undefined
+  const members = Array.isArray(rawMembers)
+    ? legacyMembers(rawMembers, agents)
+    : catalogMembers(record, roster, agents)
+  if (members === undefined) return undefined
   if (members.length === 0) return undefined
 
   const tasks: TeamBoardTask[] = []
@@ -229,6 +253,104 @@ export function parseTeamProjection(value: unknown, agents?: TeamAgentReader): T
     tasks,
     ...typeof record['failure'] === 'string' && record['failure'] !== '' ? { failure: record['failure'] } : {},
   }
+}
+
+/**
+ * Rows of the experimental `agentTeam` view, which publishes the whole roster
+ * (Lead included) itself. `undefined` means the payload named no Lead at all —
+ * not a Team view — and is dropped instead of rendered as a headless board.
+ *
+ * @param rawMembers - the payload's `members` array.
+ * @param agents - live Agent registry for member activity, optional.
+ * @returns the roster rows, or `undefined` when the array named no Lead.
+ */
+function legacyMembers(
+  rawMembers: readonly unknown[],
+  agents?: TeamAgentReader,
+): TeamBoardMember[] | undefined {
+  const members: TeamBoardMember[] = []
+  for (const raw of rawMembers) {
+    const member = asRecord(raw)
+    if (member === undefined) continue
+    const id = typeof member['id'] === 'string' ? member['id'] : ''
+    if (id === '') continue
+    const role = member['role'] === 'lead' ? 'lead' : member['role'] === 'teammate' ? 'teammate' : undefined
+    if (role === undefined) continue
+    const name = typeof member['name'] === 'string' && member['name'] !== '' ? member['name'] : id
+    const phase = member['phase'] as TeamMemberPhase | undefined
+    // The Lead is the chat-bound session itself; its role is the useful fact,
+    // and its per-turn activity must not repost the board.
+    const status: TeamBoardMember['status'] = role === 'lead'
+      ? 'running'
+      : phase === 'provisioning'
+        ? 'provisioning'
+        : phase === 'failed'
+          ? 'failed'
+          : memberIsRunning(agents, id) ? 'running' : 'inactive'
+    members.push({
+      id,
+      name,
+      role,
+      status,
+      ...typeof member['error'] === 'string' && member['error'] !== '' ? { error: member['error'] } : {},
+    })
+  }
+  return members.some(member => member.role === 'lead') ? members : undefined
+}
+
+/** One child descriptor as the `subagentCatalog` projection publishes it. */
+interface CatalogEntryLike {
+  id?: unknown
+  mode?: unknown
+  name?: unknown
+  label?: unknown
+}
+
+/**
+ * Rows of the `dsh-agent-team` view: the payload carries the selection and the
+ * task board only, so the Lead is synthesized from the session identity and
+ * the teammates come from the parent's `subagentCatalog` projection.
+ *
+ * Only `mode: 'continuable'` children count — one-shot/external children are
+ * ordinary delegations, not teammates (the upstream Host documents continuable
+ * children of the Lead as the Team roster). Their live status comes from the
+ * Agent registry; provisioning/failed only ever appeared in historical records.
+ *
+ * @param record - the projection payload (its `enabled` gates the board).
+ * @param roster - Lead session id + catalog value.
+ * @param agents - live Agent registry for member activity, optional.
+ * @returns the roster rows, or `undefined` when the Team is not enabled.
+ */
+function catalogMembers(
+  record: Record<string, unknown>,
+  roster: TeamRosterContext | undefined,
+  agents?: TeamAgentReader,
+): TeamBoardMember[] | undefined {
+  if (record['enabled'] !== true) return undefined
+  const leadId = typeof roster?.sessionId === 'string' && roster.sessionId !== '' ? roster.sessionId : 'lead'
+  const members: TeamBoardMember[] = [{ id: leadId, name: 'lead', role: 'lead', status: 'running' }]
+  const catalog = Array.isArray(roster?.catalog) ? roster.catalog : []
+  const seen = new Set<string>()
+  for (const raw of catalog) {
+    const entry = asRecord(raw) as CatalogEntryLike | undefined
+    if (entry === undefined || entry.mode !== 'continuable') continue
+    const id = typeof entry.id === 'string' ? entry.id : ''
+    if (id === '' || id === leadId || seen.has(id)) continue
+    seen.add(id)
+    // v3 catalog entries carry the unique agent name; older versions only the
+    // display label. Falling back to the id keeps a row identifiable, never
+    // ambiguous: an unnamed teammate still names its session.
+    const name = typeof entry.name === 'string' && entry.name !== ''
+      ? entry.name
+      : typeof entry.label === 'string' && entry.label !== '' ? entry.label : id
+    members.push({
+      id,
+      name,
+      role: 'teammate',
+      status: memberIsRunning(agents, id) ? 'running' : 'inactive',
+    })
+  }
+  return members
 }
 
 /** Icon for one live member status. */
@@ -375,10 +497,17 @@ export function startFeishuTeam(deps: FeishuTeamDeps): FeishuTeamHandle {
       return undefined
     }
     try {
-      const snapshot = projections.snapshot(session, [TEAM_PROJECTION_KEY])
+      // The new roster lives in a second projection, so both are read in ONE
+      // snapshot: a board that mixed two reads could show a teammate the task
+      // table no longer knows about (or the reverse).
+      const snapshot = projections.snapshot(session, [TEAM_PROJECTION_KEY, TEAM_CATALOG_KEY])
       const raw = snapshot.values[TEAM_PROJECTION_KEY]
       if (raw === undefined) return undefined
-      return parseTeamProjection(raw, deps.agents)
+      const sessionId = (session as { id?: unknown } | undefined)?.id
+      return parseTeamProjection(raw, deps.agents, {
+        ...typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : {},
+        catalog: snapshot.values[TEAM_CATALOG_KEY],
+      })
     } catch (error: unknown) {
       logger.warn(`dsh-feishu: team projection read failed: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
@@ -438,7 +567,11 @@ export function startFeishuTeam(deps: FeishuTeamDeps): FeishuTeamHandle {
       if (typeof type !== 'string') return
       const sessionId = (session as { id?: unknown } | undefined)?.id
       if (typeof sessionId !== 'string' || sessionId === '') return
-      if (type === 'team/member' || type === 'team/task') {
+      // `team/mode` is the 0.2.2-rc.5 selection toggle (`team/member` is a
+      // historical record there); `subagent/catalog` is where a newly spawned
+      // teammate appears, and that event is appended to the LEAD session, so it
+      // reaches this listener with the board's own session id.
+      if (type === 'team/member' || type === 'team/task' || type === 'team/mode' || type === 'subagent/catalog') {
         noteTeamChange(sessionId, session)
         return
       }
