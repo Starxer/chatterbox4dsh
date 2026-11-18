@@ -21,6 +21,7 @@ import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './channel.ts'
+import { TURN_CONTINUE_ACTION } from './turn-failure.ts'
 import { LarkRuntime } from './runtime.ts'
 import { OutboundHealth, wrapHttpInstance } from './outbound-health.ts'
 import { observeOutboundWaits } from './outbound-timeout.ts'
@@ -279,6 +280,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let deliverHandle: FeishuDeliverHandle | undefined = undefined
   /** Card-action subscription that settles the `/new` confirmation card. */
   let stopNewSessionConfirmer: (() => void) | undefined = undefined
+  /** Card-action subscription behind a failed turn's "continue" button. */
+  let stopTurnContinue: (() => void) | undefined = undefined
   /**
    * The `/new` flow's final confirmation. Its model step no longer creates the
    * session directly: everything is collected into one summary card, and the
@@ -851,6 +854,11 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // A card that already renders this answer must not be duplicated by the
         // fallback reply card (2026-10-30: two identical "✅ 完成" cards).
         (sessionId, text) => answerOnCardRef.current(sessionId, text),
+        // A failed turn may carry a "continue" button (the Web UI's continue
+        // generation, 0.2.2). The eligibility read is the Host's own
+        // `conversationContinuation` projection, so the button appears exactly
+        // when the Host would accept the empty retry prompt.
+        { canContinue: sessionId => bridge.canContinue(sessionId) },
       )
     },
   })
@@ -1310,6 +1318,48 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       },
     })
 
+    // A failed turn's "continue" button (DSH 0.2.2 parity: the Web UI can
+    // continue an eligible failed turn with an EMPTY retry prompt). The value
+    // carries only the action kind and the session id; eligibility is re-checked
+    // here, so a turn that settled — or received new input — since the card was
+    // posted is refused with an explanation instead of queueing a surprise
+    // message. The failed-turn card is sent once and never edited, so the
+    // button keeps delivering callbacks (关键坑 11).
+    stopTurnContinue = cardChannel.onCardAction(async (evt: { chatId?: string; messageId?: string; action?: { value?: unknown } }): Promise<void> => {
+      const parsed = decodeCardValue(evt.action?.value)
+      if (parsed?.kind !== TURN_CONTINUE_ACTION) return
+      const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+      const chatId = evt.chatId
+      const bridge = bridgeHolder.current
+      if (sessionId === '' || chatId === undefined || bridge === undefined) return
+      const t = translationsFor(currentLocale().id)
+      // A card callback only names the chat and the clicked message; the TOPIC
+      // comes back through the message-id registry (关键坑 31).
+      const topic = resolveCardTopic({
+        cardTopics,
+        message: { chatId, ...(evt.messageId === undefined ? {} : { messageId: evt.messageId }) },
+        chatFallback: () => bridge.topicFor(chatId) ?? {},
+      })
+      const replyInThread = topic.threadId !== undefined && topic.rootId !== undefined
+      const opts = {
+        ...(topic.rootId === undefined ? {} : { replyTo: topic.rootId }),
+        replyInThread,
+      }
+      const say = async (text: string): Promise<void> => {
+        try {
+          await cardChannel.send(chatId, { text }, opts)
+        } catch (error: unknown) {
+          console.log(`dsh-feishu: continue notice failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      try {
+        const started = await bridge.continueTurn(sessionId)
+        await say(started ? t.turnContinueRequested : t.turnContinueUnavailable)
+      } catch (error: unknown) {
+        await say(t.turnContinueFailed(error instanceof Error ? error.message : String(error)))
+      }
+    })
+
     // The `/new` flow's last step: settle the final confirmation card.
     const stopNewSessionConfirm = cardChannel.onCardAction(async (evt: { chatId?: string; messageId?: string; action?: { value?: unknown } }): Promise<void> => {
       const parsed = decodeCardValue(evt.action?.value)
@@ -1471,6 +1521,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     forkHandle?.stop()
     deliverHandle?.dispose()
     stopNewSessionConfirmer?.()
+    stopTurnContinue?.()
   }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + external turns + surface prompt + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
 
   let lastPrintedQrUrl: string | undefined

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { startChannel } from '../src/channel.ts'
-import { TurnFailureError } from '../src/turn-failure.ts'
+import { TURN_CONTINUE_ACTION, TurnFailureError } from '../src/turn-failure.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { InterleaveTarget } from '../src/card-interleave.ts'
 import type { AttachmentId, FileAttachmentRef, ImageAttachmentRef, ImageMediaType, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
@@ -767,6 +767,42 @@ describe('startChannel', () => {
     await flushAsync()
     await flushAsync()
     expect((channel.send as any).mock.calls.at(-1)![1]).toEqual({ text: '本轮运行失败：boom [TRANSPORT]' })
+  })
+
+  it('offers a continue button on a failed turn the Host will accept continuing', async () => {
+    const channel = fakeChannel()
+    const bridge = { reply: vi.fn(async () => { throw new TurnFailureError({ message: 'boom', code: 'TRANSPORT' }) }), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    const config = { appId: 'id', appSecret: 'secret', domain: 'lark' as const, requireMention: true, dmMode: 'open' as const, groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP', showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed' as const }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    await startChannel(config, bridge, () => channel as any, logger, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { canContinue: (sessionId: string) => sessionId === 'test-session' })
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', content: 'hi' })
+    await flushAsync()
+    const payload = (channel.send as any).mock.calls.at(-1)![1] as any
+    expect(payload.card.body.elements.at(-1)).toEqual({
+      tag: 'button',
+      text: { tag: 'plain_text', content: translationsFor('zh').turnContinueButton },
+      type: 'primary',
+      behaviors: [{ type: 'callback', value: { kind: TURN_CONTINUE_ACTION, sessionId: 'test-session' } }],
+    })
+    expect(bridge.resolveSessionIdFor).toHaveBeenCalled()
+  })
+
+  it('hides the continue button when the Host says the turn cannot continue', async () => {
+    const channel = fakeChannel()
+    const bridge = { reply: vi.fn(async () => { throw new TurnFailureError({ message: 'boom', code: 'TRANSPORT' }) }), dispose: vi.fn(async () => undefined), consumeIntermediateSent: vi.fn(() => false), resolveSessionIdFor: vi.fn(() => 'test-session'), needsOnboarding: vi.fn(async () => false), noteTopic: vi.fn() }
+    const config = { appId: 'id', appSecret: 'secret', domain: 'lark' as const, requireMention: true, dmMode: 'open' as const, groupAllowlist: [], dmAllowlist: [], workspace: '/work', errorMessage: 'safe error', reactEmoji: 'THUMBSUP', showReasoning: true, showToolCalls: true, showToolArgs: true, showToolResults: true, transcriptView: 'detailed' as const }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    await startChannel(config, bridge, () => channel as any, logger, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { canContinue: () => false })
+    await channel.handlers.get('message')!({ messageId: 'om_1', chatId: 'oc_1', chatType: 'group', threadId: 'omt_1', content: 'hi' })
+    await flushAsync()
+    const payload = (channel.send as any).mock.calls.at(-1)![1] as any
+    expect(payload.card.body.elements.some((el: any) => el.tag === 'button')).toBe(false)
   })
 
   it('disposes conversation resources when channel disconnect fails', async () => {

@@ -42,8 +42,11 @@
  * (`ctx.get('subagents')`, read and NEVER injected — 关键坑 2). That catalog is
  * the authority on WHICH children exist and how they nest, while the in-process
  * roster is the only place run durations and settlement reasons live, so a row
- * is filled from both: id / label / mode / depth from the catalog, model /
- * duration / outcome from the roster, state from whichever knows it. A child
+ * is filled from both: id / name / path / label / mode / depth from the catalog
+ * (name, path and per-row activity when the Host states them — DSH 0.2.2-rc.5
+ * adds all three), model / duration / outcome from the roster, and the state
+ * from the catalog's own activity when it states one, else from whichever
+ * source knows it. A child
  * that existed before this process started (or whose catalog was the only
  * record left) therefore shows up in the manual panel too — with the duration
  * cell honestly blank, because a catalog records when a child was created, not
@@ -72,6 +75,20 @@ export interface SubagentPanelRow {
   mode: SubagentMode
   /** Creation label (the delegation description); `''` when the tool passed none. */
   label: string
+  /**
+   * Model-facing agent name, unique among its siblings (`reviewer`), when the
+   * Host's catalog states one (DSH 0.2.2-rc.5 catalog v3). It is the identity
+   * the card shows; absent on rc.1 rows and on rows only this process observed
+   * (the lifecycle edges carry no name).
+   */
+  name?: string
+  /**
+   * Slash-separated names from the requested root (`reviewer/checker`), when
+   * every name on the way is known (DSH 0.2.2-rc.5 descendants read). The card
+   * adds it only when it says more than the row's own name, so a direct child
+   * (`reviewer`) does not repeat itself.
+   */
+  path?: string
   /**
    * Model route the child's own session reported (`request/context`), or `''`
    * while unknown. The child's log is the only place this fact lives: neither
@@ -154,7 +171,8 @@ export interface FeishuSubagentsDeps {
   /**
    * The live Agent registry, read the same way the Host's own `list_agents`
    * tool reads it: a child is running iff `agents.get(id)?.status` is. Used
-   * only for rows the in-process roster never observed.
+   * only for a catalog row that states no activity of its own and that the
+   * in-process roster never observed.
    */
   agents?: { get(id: string): { status?: string } | undefined }
   /** Test seam: budget for one Host catalog read. Production omits it. */
@@ -218,6 +236,22 @@ export interface HostSubagentEntry {
   id: string
   mode: SubagentMode
   label: string
+  /**
+   * Model-facing agent name, unique among its siblings (`reviewer`); absent on
+   * historical (rc.1) entries and on diagnostic rows, which name no agent.
+   */
+  name?: string
+  /**
+   * Slash-separated names from the requested root (`reviewer/checker`); absent
+   * when this child or an ancestor below the root has no name.
+   */
+  path?: string
+  /**
+   * The Host's own running/inactive reading for this row (DSH 0.2.2-rc.5), or
+   * absent when the row states none — a rc.1 row, a diagnostic, or a malformed
+   * value, none of which this module will invent a state for.
+   */
+  activity?: SubagentState
   /** Parent session id for a nested row; `undefined` for a direct child. */
   parentId: string | undefined
   /** Edge distance from the requested root; direct children are `1`. */
@@ -282,19 +316,31 @@ function toMode(value: unknown): SubagentMode {
   return value === 'one-shot' || value === 'continuable' ? value : 'unknown'
 }
 
+/** One catalog text field, trimmed; `undefined` when absent or blank. */
+function toCatalogText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
 /**
  * Normalize one catalog read — children or descendants — into a single shape.
  *
- * Two deliberate differences from the Host's `list_agents` TOOL, which projects
- * the same service rows:
+ * Three deliberate differences from the Host's `list_agents` TOOL, which
+ * projects the same service rows:
  *
  * 1. **No mode filtering.** That tool drops one-shot children because
  *    `send_message` cannot continue them; a read-only panel has no such
  *    constraint, so the RAW rows are read and one-shot children are listed too.
- * 2. **`activity` is not trusted.** The tool recomputes status from the live
- *    Agent registry (`agents.get(id)?.status`), because a descendant row's
- *    `activity` is only "a resident Session was observed during the walk".
- *    {@link mergeSubagentPanelRows} does the same, from the registry.
+ * 2. **`activity` is used when the row states it.** DSH 0.2.2-rc.5 reports a
+ *    running/inactive reading per descendant row, taken while it walks the
+ *    catalogs; the panel follows that reading and only falls back to the live
+ *    Agent registry (the check `list_agents` always uses) for a row that states
+ *    none — a rc.1 row, a diagnostic, or a malformed value.
+ * 3. **`name` / `path` are kept.** rc.5 names each child uniquely among its
+ *    siblings and gives a descendants row its slash path from the requested
+ *    root; both are the row's identity on the card. `path` is dropped when
+ *    some link on the way has no name, exactly as the Host omits it.
  *
  * @param raw - whatever the Host's service resolved to.
  * @returns the usable rows, in the order the Host returned them.
@@ -311,12 +357,20 @@ export function parseHostSubagentEntries(raw: unknown): HostSubagentEntry[] {
       ? Math.floor(record.depth)
       : 1
     const diagnostic = record.kind === 'diagnostic' && typeof record.reason === 'string' ? record.reason : undefined
+    const name = toCatalogText(record.name)
+    const path = toCatalogText(record.path)
+    // Only the two values the Host defines. Anything else is a shape this
+    // module does not understand and must not turn into a made-up state.
+    const activity = record.activity === 'running' || record.activity === 'inactive' ? record.activity : undefined
     entries.push({
       id: record.id,
       // A diagnostic row describes a child the Host could not read, so its
       // mode is by definition not one it could name.
       mode: diagnostic === undefined ? toMode(record.mode) : 'unknown',
       label: typeof record.label === 'string' ? record.label : '',
+      ...name === undefined ? {} : { name },
+      ...path === undefined ? {} : { path },
+      ...activity === undefined ? {} : { activity },
       parentId: parent,
       depth,
       diagnostic,
@@ -341,15 +395,19 @@ function observationOf(row: SubagentPanelRow): Pick<SubagentPanelRow, 'model' | 
  * Merge the Host catalog with this process's roster into the rows one panel
  * card shows, keyed by child session id.
  *
- * One rule per fact, and no guessing: the catalog owns identity (id, label,
- * mode, depth, parent) because it is the only source that survives a restart;
- * the roster owns the run (model, duration, stop reason, state) because a
- * catalog records WHEN a child was created and never how long it ran. A row
- * only the catalog knows gets its state computed from the live Agent registry —
- * the same reading the Host's own tool uses — and is marked `catalogOnly` so
- * the card renders an honest `—` and "not running" instead of inventing a
- * duration. A row only the roster knows is kept verbatim, so the panel still
- * answers when the catalog service is absent or its read fails.
+ * One rule per fact, and no guessing: the catalog owns identity (id, name,
+ * path, label, mode, depth, parent) because it is the only source that survives
+ * a restart; the roster owns the run (model, duration, stop reason, state)
+ * because a catalog records WHEN a child was created and never how long it ran.
+ * For the state, a catalog-only row (one this process never saw run) uses the
+ * catalog's own `activity` when stated — the read that produced the row sampled
+ * it — else the live Agent registry (the reading the Host's own tool uses). A
+ * row this process DID observe keeps the roster's lifecycle edge: `activity` is
+ * only a residency reading, and a continuable child kept resident would read
+ * `running` while idle, so it must not override the precise run state. A catalog-only row
+ * is marked so the card renders an honest `—` and no claimed outcome instead of
+ * inventing a duration. A row only the roster knows is kept verbatim, so the
+ * panel still answers when the catalog service is absent or its read fails.
  *
  * @param host - normalized catalog rows (possibly empty).
  * @param roster - this chat's roster rows.
@@ -374,6 +432,8 @@ export function mergeSubagentPanelRows(
       createdAt: observed?.createdAt ?? 0,
       mode: entry.mode,
       label: entry.label,
+      ...entry.name === undefined ? {} : { name: entry.name },
+      ...entry.path === undefined ? {} : { path: entry.path },
       depth: entry.depth,
       parentId: entry.parentId,
       ...entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic },
@@ -382,17 +442,26 @@ export function mergeSubagentPanelRows(
       ? {
           ...identity,
           // No run was ever observed: no route, no duration, no outcome. The
-          // state comes from the registry; everything else stays empty so the
-          // card renders `—` rather than a fabricated number.
+          // state is the catalog's own when it states one, else the registry's;
+          // everything else stays empty so the card renders `—` rather than a
+          // fabricated number.
           model: '',
-          state: isRunning(entry.id) ? 'running' : 'inactive',
+          state: entry.activity ?? (isRunning(entry.id) ? 'running' : 'inactive'),
           epochStart: 0,
           epochMs: undefined,
           stopReason: undefined,
           settledAt: undefined,
           catalogOnly: true,
         }
-      : { ...identity, ...observationOf(observed) })
+      : {
+          ...identity,
+          // The roster's lifecycle edge is the PRECISE run state for a row this
+          // process observed; the catalog's `activity` is a residency reading
+          // taken during the walk (a continuable child kept resident can read
+          // `running` while idle), so it is deliberately NOT allowed to
+          // override an observed row. It is used for catalog-only rows above.
+          ...observationOf(observed),
+        })
   }
   for (const row of roster) {
     if (!listed.has(row.id)) merged.push(row)
@@ -497,7 +566,9 @@ export function treePrefixes(rows: readonly SubagentPanelRow[]): Map<string, str
  */
 export function subagentRosterSignature(rows: readonly SubagentPanelRow[]): string {
   return [...rows]
-    .map(row => [row.id, row.state, row.mode, row.label, row.model, String(row.depth), row.stopReason ?? ''].join('\u0001'))
+    // `name` / `path` are part of the agent cell, so a renamed or re-pathed row
+    // is a visible change and must earn a fresh card like any other.
+    .map(row => [row.id, row.state, row.mode, row.label, row.name ?? '', row.path ?? '', row.model, String(row.depth), row.stopReason ?? ''].join('\u0001'))
     .sort()
     .join('\u0002')
 }
@@ -543,13 +614,28 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
     // A catalog-only row has no run to measure: the catalog records when the
     // child was created, never how long an epoch took. `—` is the truth.
     const duration = row.catalogOnly === true ? '—' : formatDuration(elapsed)
-    const label = row.diagnostic !== undefined ? t.subagentDiagnostic(row.diagnostic) : row.label.trim()
+    // The Host's rc.5 identity is the agent NAME (unique among its siblings);
+    // the label is the delegation description and the only identity a rc.1 row
+    // — or a row this process alone observed — has. A diagnostic row names no
+    // agent, so its localized reason stays the label.
+    const named = row.name?.trim() ?? ''
+    const label = row.diagnostic !== undefined
+      ? t.subagentDiagnostic(row.diagnostic)
+      : named !== '' ? named : row.label.trim()
+    const text = label === '' ? t.subagentUntitled : label
+    // The tree's slash path (`reviewer/checker`) is what makes the hierarchy
+    // readable once the identity is the bare name. It is noise when it only
+    // repeats that name, which is exactly the direct-child case.
+    const path = row.path?.trim() ?? ''
+    const identity = path === '' || path === text
+      ? tableCell(text, { code: true, max: 40 })
+      : `${tableCell(text, { code: true, max: 40 })} ${tableCell(path, { code: true, max: 40 })}`
     return [
       `${status.icon} ${status.text}`,
       // The connector stays OUTSIDE the code span: `tableCell` collapses all
       // whitespace, which would flatten `│  ` (two spaces) to `│ ` and break
       // the tree's alignment.
-      `${prefix}${tableCell(label === '' ? t.subagentUntitled : label, { code: true, max: 40 })}`,
+      `${prefix}${identity}`,
       row.model === '' ? '—' : tableCell(row.model, { code: true, max: 32 }),
       tableCell(row.id, { code: true, max: 14 }),
       modePresentation(row.mode, t),
@@ -857,7 +943,11 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): SubagentPanelHa
     }
   }
 
-  /** Is this child working right now? Read the way the Host's tool reads it. */
+  /**
+   * Is this child working right now? The fallback reading, used when the catalog
+   * row states no activity of its own: read the live Agent registry, the way the
+   * Host's own `list_agents` tool does.
+   */
   const childIsRunning = (id: string): boolean => {
     try {
       return deps.agents?.get(id)?.status === 'running'
@@ -869,7 +959,8 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): SubagentPanelHa
   /**
    * Post this chat's panel on demand (`/subagents`).
    *
-   * Merges the Host catalog (authoritative on identity, and the only source
+   * Merges the Host catalog (authoritative on identity — including the rc.5
+   * agent name, slash path and the row's own activity — and the only source
    * for a child that started before this process did) with this process's
    * roster (the only source for a run's model, duration and outcome). Both
    * paths answer: an empty result is a one-line text, never an empty table

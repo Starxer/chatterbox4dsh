@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TurnFailureError, displayFailure, renderTurnFailureCard, turnFailureText } from '../src/turn-failure.ts'
+import { TURN_CONTINUE_ACTION, TurnFailureError, displayFailure, renderTurnFailureCard, turnFailureText } from '../src/turn-failure.ts'
 import { translationsFor } from '../src/i18n.ts'
 
 const zh = translationsFor('zh')
@@ -48,6 +48,33 @@ describe('renderTurnFailureCard', () => {
     expect(uk.body.elements[0]).toEqual({ tag: 'markdown', content: 'API key is invalid' })
   })
 
+  it('explains a content-safety refusal without replacing the provider facts', () => {
+    const card = renderTurnFailureCard(zh, { message: 'DeepSeek refused to answer under its content safety review', code: 'CONTENT_REFUSED' }) as any
+    expect(card.body.elements).toEqual([
+      { tag: 'markdown', content: 'DeepSeek refused to answer under its content safety review' },
+      { tag: 'markdown', content: '`CONTENT_REFUSED`' },
+      { tag: 'markdown', content: zh.failureRefusedHint },
+    ])
+    // The pre-rc.4 shape (still possible after a rollback to rc.1) reads the same.
+    const legacy = renderTurnFailureCard(zh, { message: 'DeepSeek Messages stream: unsupported stop reason refusal', code: 'MALFORMED_RESPONSE' }) as any
+    expect(legacy.body.elements.at(-1)).toEqual({ tag: 'markdown', content: zh.failureRefusedHint })
+    // Any other failure gains no hint — it stays exactly the Web UI's row.
+    const other = renderTurnFailureCard(zh, { message: 'boom', code: 'TRANSPORT' }) as any
+    expect(other.body.elements.some((el: any) => el.content === zh.failureRefusedHint)).toBe(false)
+  })
+
+  it('offers a continue button that names the session, and only when asked', () => {
+    const card = renderTurnFailureCard(zh, { message: 'boom', code: 'TRANSPORT' }, { continueSessionId: 'lark-v2-abc' }) as any
+    expect(card.body.elements.at(-1)).toEqual({
+      tag: 'button',
+      text: { tag: 'plain_text', content: zh.turnContinueButton },
+      type: 'primary',
+      behaviors: [{ type: 'callback', value: { kind: TURN_CONTINUE_ACTION, sessionId: 'lark-v2-abc' } }],
+    })
+    const plain = renderTurnFailureCard(zh, { message: 'boom', code: 'TRANSPORT' }) as any
+    expect(plain.body.elements.some((el: any) => el.tag === 'button')).toBe(false)
+  })
+
   it('never renders an empty body', () => {
     const card = renderTurnFailureCard(zh, { message: '' }) as any
     expect(card.body.elements).toEqual([{ tag: 'markdown', content: '本轮运行失败' }])
@@ -58,6 +85,11 @@ describe('renderTurnFailureCard', () => {
       .toBe('本轮运行失败：DeepSeek Messages request failed (413) [INVALID_REQUEST]')
     expect(turnFailureText(zh, { message: '', code: 'AUTH' })).toBe('本轮运行失败：API 密钥无效 [AUTH]')
     expect(turnFailureText(en, { message: 'boom' })).toBe('This turn failed：boom')
+  })
+
+  it('carries the refusal hint in the text fallback too', () => {
+    expect(turnFailureText(zh, { message: 'x', code: 'CONTENT_REFUSED' })).toContain(zh.failureRefusedHint)
+    expect(turnFailureText(zh, { message: 'x', code: 'TRANSPORT' })).not.toContain(zh.failureRefusedHint)
   })
 
   it('exposes the failure on the thrown error so the channel needs no re-derivation', () => {

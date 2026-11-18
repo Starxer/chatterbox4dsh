@@ -1259,4 +1259,60 @@ describe('HarnessConversationService', () => {
     expect(log.mock.calls.some(call => String(call[0]).includes('could not apply the /new model route'))).toBe(true)
     log.mockRestore()
   })
+
+  it('only offers a continuation when the Host projection allows it', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const snapshot = vi.fn<() => { values: Record<string, unknown> }>(() => ({ values: { conversationContinuation: 42 } }))
+    deps.sessionProjections = { snapshot }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const chat = { chatId: 'cont', chatType: 'p2p' as const }
+    const sessionId = service.resolveSessionIdFor(chat)
+    // No live Agent yet: the projection needs a Session object, so no button.
+    expect(service.canContinue(sessionId)).toBe(false)
+    await service.reply({ ...chat, content: 'hello' }, {})
+    expect(service.canContinue(sessionId)).toBe(true)
+    expect(snapshot).toHaveBeenCalledWith(expect.anything(), ['conversationContinuation'])
+    // The Host says the failure is no longer continuable (null wire value).
+    snapshot.mockReturnValue({ values: { conversationContinuation: null } })
+    expect(service.canContinue(sessionId)).toBe(false)
+    // A throwing read is "not continuable", never a crash.
+    snapshot.mockImplementation(() => { throw new Error('projection registry is disposing') })
+    expect(service.canContinue(sessionId)).toBe(false)
+  })
+
+  it('continues a failed turn through the native empty prompt', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const prompt = vi.fn(async () => ({ accepted: true }))
+    deps.sessionController = { prompt }
+    deps.sessionProjections = { snapshot: vi.fn(() => ({ values: { conversationContinuation: 7 } })) }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const chat = { chatId: 'cont2', chatType: 'p2p' as const }
+    const sessionId = service.resolveSessionIdFor(chat)
+    await service.reply({ ...chat, content: 'hello' }, {})
+    // The reply itself went through `prompt`; count from here.
+    prompt.mockClear()
+    await expect(service.continueTurn(sessionId)).resolves.toBe(true)
+    expect(prompt).toHaveBeenCalledTimes(1)
+    const [request, signal] = prompt.mock.calls[0] as unknown as [Record<string, unknown>, AbortSignal]
+    expect(request).toMatchObject({ sessionId, mode: 'queue', content: [] })
+    expect(typeof request.requestId).toBe('string')
+    expect(signal).toBeInstanceOf(AbortSignal)
+    // Not continuable any more: refuse instead of queueing a surprise message.
+    deps.sessionProjections.snapshot.mockReturnValue({ values: { conversationContinuation: null } })
+    await expect(service.continueTurn(sessionId)).resolves.toBe(false)
+    expect(prompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports "cannot continue" when the Host has no prompt entry', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    deps.sessionProjections = { snapshot: vi.fn(() => ({ values: { conversationContinuation: 7 } })) }
+    const service = new HarnessConversationService(deps, { domain: 'feishu' })
+    const chat = { chatId: 'cont3', chatType: 'p2p' as const }
+    const sessionId = service.resolveSessionIdFor(chat)
+    await service.reply({ ...chat, content: 'hello' }, {})
+    await expect(service.continueTurn(sessionId)).resolves.toBe(false)
+  })
 })

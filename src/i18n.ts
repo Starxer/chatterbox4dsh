@@ -407,6 +407,20 @@ export interface Translations {
   turnFailedTitle: string
   /** Body substituted for an `AUTH` failure whose message may echo a credential. */
   failureAuth: string
+  /**
+   * Hint appended to a `CONTENT_REFUSED` failure: the provider's own content
+   * safety review declined to answer. Says what it is NOT (network/plugin) and
+   * what usually helps (rephrase or start a new session).
+   */
+  failureRefusedHint: string
+  /** Button that continues an eligible failed turn with an empty retry prompt. */
+  turnContinueButton: string
+  /** Text acknowledging that the continuation request was accepted. */
+  turnContinueRequested: string
+  /** Text explaining that this failed turn can no longer be continued. */
+  turnContinueUnavailable: string
+  /** Text explaining why the continuation request itself failed. */
+  turnContinueFailed: (reason: string) => string
 
   // ---- Status (renderStatusCard in index.ts) ----
   statusRunWarning: string
@@ -1100,6 +1114,11 @@ export const zh = {
   pendingTurnAttachmentsNotice: '⚠️ 上一轮（含附件）被中断，附件无法自动重发，请手动重发。',
   turnFailedTitle: '本轮运行失败',
   failureAuth: 'API 密钥无效',
+  failureRefusedHint: '这是模型提供方的内容安全审查拒绝了这次回答，不是网络或插件问题。换个说法、或新开一个会话再试通常可以绕过；原始报错保留在上面。',
+  turnContinueButton: '🔁 继续生成',
+  turnContinueRequested: '🔁 已请求继续生成',
+  turnContinueUnavailable: '这个失败的回合已不可继续（只有速率限制/服务端/超时/网络/空响应这类可重试错误能续，且期间不能有新的输入）。',
+  turnContinueFailed: (reason) => `继续失败：${reason}`,
 
   statusRunWarning: '> ⚠️ 智能体正在运行中，以上信息可能并非最新。请在智能体运行结束后再次发送 `/status` 获取准确信息。',
   statusSessionLabel: '会话',
@@ -1709,6 +1728,11 @@ export const en: Translations = {
   pendingTurnAttachmentsNotice: '⚠️ The previous turn (with attachments) was interrupted; attachments cannot be resent automatically. Please send that message again.',
   turnFailedTitle: 'This turn failed',
   failureAuth: 'API key is invalid',
+  failureRefusedHint: "The model provider's content safety review refused this answer — this is neither a network problem nor a plugin bug. Rephrasing the request or starting a new session usually works; the original error is kept above.",
+  turnContinueButton: '🔁 Continue',
+  turnContinueRequested: '🔁 Continuation requested',
+  turnContinueUnavailable: 'This failed turn can no longer be continued (only retryable failures — rate limit, server, timeout, transport, empty response — can be continued, and no new input may have arrived since).',
+  turnContinueFailed: (reason) => `Continue failed: ${reason}`,
 
   statusRunWarning: '> ⚠️ The agent is running; this may be stale. Send `/status` again after it finishes.',
   statusSessionLabel: 'Session',

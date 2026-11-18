@@ -405,6 +405,15 @@ export async function startChannel(
    * Used only to avoid posting a second copy of an answer that is on screen.
    */
   answerOnCard?: (sessionId: string, text: string) => boolean,
+  /**
+   * Continuation affordance for a failed turn (DSH 0.2.2 Web UI parity: an
+   * eligible failed turn is continued by an EMPTY retry prompt). Optional:
+   * without it the failure card is exactly the Web UI's turn-error row.
+   */
+  turnActions?: {
+    /** Whether the Host would accept an empty continuation prompt right now. */
+    canContinue(sessionId: string): boolean
+  },
 ): Promise<{ stop: () => Promise<void>; channel: LarkChannel }> {
   const logError = (message: string) => {
     logger.error(message)
@@ -420,10 +429,11 @@ export async function startChannel(
    * slash command, media admission) and keeps the concrete `errorText()` reason.
    */
   const sendFailure = async (
-    chatId: string,
+    chat: import('./conversation.ts').ConversationMessage,
     error: unknown,
     opts: { replyTo: string; replyInThread: boolean },
   ): Promise<void> => {
+    const chatId = chat.chatId
     const deliver = async (payload: { text: string } | { card: object }): Promise<boolean> => {
       try {
         await sendOutbound(chatId, payload, opts)
@@ -435,7 +445,20 @@ export async function startChannel(
     }
     if (error instanceof TurnFailureError) {
       const t = getTranslations?.() ?? translationsFor('zh')
-      if (await deliver({ card: renderTurnFailureCard(t, error.failure) })) return
+      // Offer "continue" only when the Host says this failed turn is still
+      // continuable: the projection already accounts for the error class
+      // (only retryable failures) and for new input having arrived since.
+      let continueSessionId: string | undefined
+      if (turnActions !== undefined) {
+        try {
+          const sessionId = bridge.resolveSessionIdFor(chat)
+          if (sessionId !== '' && turnActions.canContinue(sessionId)) continueSessionId = sessionId
+        } catch {
+          // No resolvable binding (or a failing projection read): no button.
+        }
+      }
+      const card = renderTurnFailureCard(t, error.failure, continueSessionId === undefined ? {} : { continueSessionId })
+      if (await deliver({ card })) return
       // The card is the richer shape, not the only one: if Feishu rejects it,
       // fall back to plain text carrying the same reason and code.
       await deliver({ text: turnFailureText(t, error.failure) })
@@ -1049,14 +1072,14 @@ export async function startChannel(
             }
             settlePendingTurn()
             logError(`dsh-feishu: message handling failed: ${error instanceof Error ? error.message : String(error)}`)
-            void sendFailure(chatId, error, { replyTo: replyToId, replyInThread })
+            void sendFailure(message, error, { replyTo: replyToId, replyInThread })
           })
         } catch (error: unknown) {
           // Synchronous errors from bridge.reply() setup (rare)
           if (bindingStillCurrent()) suspended?.restore()
           else suspended?.accept()
           logError(`dsh-feishu: message dispatch failed: ${error instanceof Error ? error.message : String(error)}`)
-          await sendFailure(message.chatId, error, { replyTo: replyToId, replyInThread })
+          await sendFailure(message, error, { replyTo: replyToId, replyInThread })
         }
       } catch (error: unknown) {
         if (bindingStillCurrent()) suspended?.restore()

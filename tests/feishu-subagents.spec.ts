@@ -8,6 +8,7 @@ import {
   subagentRosterSignature,
   treeOrder,
   treePrefixes,
+  type HostSubagentEntry,
   type SubagentPanelRow,
 } from '../src/feishu-subagents.ts'
 import { PANEL_MAX_ROWS } from '../src/feishu-panel.ts'
@@ -46,9 +47,32 @@ function catalog(childId: string, overrides: Record<string, unknown> = {}) {
   return { type: 'subagent/catalog', data: { childId, childCreatedAt: 1_000, mode: 'one-shot', label: `task ${childId}`, ...overrides } }
 }
 
-/** One row of the Host's own catalog service, as `listChildren` resolves it. */
+/**
+ * One row of the Host's own catalog service, as `listChildren` resolves it.
+ * DSH 0.2.2-rc.5 rows may also carry `name`, `path` and `activity`; pass them
+ * through `overrides` (the parser is what decides which values are usable).
+ */
 function hostChild(id: string, overrides: Record<string, unknown> = {}) {
   return { id, createdAt: 1_000, mode: 'one-shot', label: `catalog ${id}`, ...overrides }
+}
+
+/** One row of the rc.5 descendants read: parent/depth/activity, optional name/path. */
+function hostDescendant(
+  id: string,
+  overrides: Partial<HostSubagentEntry & { kind: 'child'; hasChildren: boolean }> = {},
+): HostSubagentEntry & { kind: 'child'; hasChildren: boolean } {
+  return {
+    kind: 'child',
+    id,
+    mode: 'continuable',
+    label: `catalog ${id}`,
+    parentId: 'session-1',
+    depth: 1,
+    activity: 'inactive',
+    hasChildren: false,
+    diagnostic: undefined,
+    ...overrides,
+  }
 }
 
 /** A stub of the Host's subagent catalog service (`listChildren` is optional on rc.5). */
@@ -168,6 +192,19 @@ describe('renderSubagentPanelCard', () => {
     expect(text).toContain('3.0s')
   })
 
+  it('renders an rc.1-shaped row exactly as it did before the rc.5 fields', () => {
+    // No name / path / activity: the card must stay the pre-rc.5 rendering,
+    // cell for cell — a rollback to 0.2.2-rc.1 (or a row the catalog only knew
+    // as a label) regresses the panel just as this test regresses.
+    expect(markdownOf(renderSubagentPanelCard([row()], zh, 4_000) as any)).toBe([
+      `**${zh.subagentPanelSummary(1, 1)}**`,
+      '',
+      `| ${zh.subagentPanelColStatus} | ${zh.subagentPanelColAgent} | ${zh.subagentPanelColModel} | ${zh.subagentPanelColSession} | ${zh.subagentPanelColMode} | ${zh.subagentPanelColDuration} |`,
+      '| --- | --- | --- | --- | --- | --- |',
+      `| 🔄 ${zh.subagentStatusRunning} | \`audit the parser\` | — | \`child-1\` | ${zh.subagentModeOneShot} | 3.0s |`,
+    ].join('\n'))
+  })
+
   it('maps every terminal stop reason to its own state', () => {
     const cases = [
       ['completed', en.subagentStatusCompleted],
@@ -219,6 +256,37 @@ describe('renderSubagentPanelCard', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b))
   })
 
+  it('shows the rc.5 agent name instead of the creation label', () => {
+    const text = markdownOf(renderSubagentPanelCard([row({ name: 'reviewer' })], en, 4_000) as any)
+    // The name is the Host's model-facing identity (unique among siblings); the
+    // label it was created with is no longer what the agent cell shows.
+    expect(text).toContain('`reviewer`')
+    expect(text).not.toContain('`audit the parser`')
+  })
+
+  it('adds the rc.5 slash path to a nested row, but never repeats the name', () => {
+    const rows = [
+      row({ id: 'reviewer-1', name: 'reviewer', path: 'reviewer', label: 'review the diff' }),
+      row({ id: 'checker-1', name: 'checker', path: 'reviewer/checker', label: 'check the fix', createdAt: 2_000, depth: 2, parentId: 'reviewer-1' }),
+    ]
+    const text = markdownOf(renderSubagentPanelCard(rows, en, 9_000) as any)
+    expect(text).toContain('| `reviewer` |')
+    // The path makes the hierarchy readable even if the connectors are cut.
+    expect(text).toContain('└─ `checker` `reviewer/checker`')
+    // A direct child's path IS its name, so showing both would be noise.
+    expect(text).not.toContain('`reviewer` `reviewer`')
+  })
+
+  it('keeps the localized diagnostic reason as the label and still places it in the tree', () => {
+    const text = markdownOf(renderSubagentPanelCard([
+      row({ id: 'reviewer-1', name: 'reviewer', path: 'reviewer' }),
+      row({ id: 'broken-1', diagnostic: 'corrupt', label: '', name: 'checker', path: 'reviewer/checker', depth: 2, parentId: 'reviewer-1' }),
+    ], en, 2_000) as any)
+    // A diagnostic row names no readable agent, so the reason wins over `name`.
+    expect(text).toContain('└─ `corrupt catalog` `reviewer/checker`')
+    expect(text).not.toContain('`checker`')
+  })
+
   it('treats a row whose parent left the roster as a root', () => {
     const text = markdownOf(renderSubagentPanelCard([
       row({ id: 'kid-a', label: 'orphan', depth: 2, parentId: 'gone' }),
@@ -254,6 +322,9 @@ describe('subagentRosterSignature', () => {
     expect(subagentRosterSignature([row()])).toBe(subagentRosterSignature([row({ epochStart: 9_999 })]))
     expect(subagentRosterSignature([row()])).not.toBe(subagentRosterSignature([row({ state: 'inactive' })]))
     expect(subagentRosterSignature([row()])).not.toBe(subagentRosterSignature([row({ label: 'other' })]))
+    // The rc.5 identity is part of the agent cell, so it is part of the fingerprint.
+    expect(subagentRosterSignature([row()])).not.toBe(subagentRosterSignature([row({ name: 'reviewer' })]))
+    expect(subagentRosterSignature([row()])).not.toBe(subagentRosterSignature([row({ path: 'reviewer/checker' })]))
   })
 })
 
@@ -498,6 +569,50 @@ describe('parseHostSubagentEntries', () => {
     ])
   })
 
+  it('keeps the rc.5 agent name, slash path and row activity', () => {
+    expect(parseHostSubagentEntries([
+      hostDescendant('checker-1', { name: 'checker', path: 'reviewer/checker', activity: 'running', label: 'check the fix', depth: 2, parentId: 'reviewer-1' }),
+    ])).toEqual([{
+      id: 'checker-1',
+      mode: 'continuable',
+      label: 'check the fix',
+      name: 'checker',
+      path: 'reviewer/checker',
+      activity: 'running',
+      parentId: 'reviewer-1',
+      depth: 2,
+      diagnostic: undefined,
+    }])
+  })
+
+  it('drops a blank name/path and any activity that is not one of the Host values', () => {
+    const [blank] = parseHostSubagentEntries([hostChild('kid', { name: '', path: '   ', activity: 'busy' })])
+    expect(blank).not.toHaveProperty('name')
+    expect(blank).not.toHaveProperty('path')
+    // Only the two values the Host defines are states; anything else is a shape
+    // this module does not understand and must not render as a made-up state.
+    expect(blank).not.toHaveProperty('activity')
+    for (const activity of [true, 'RUNNING', 'inactive ', null, 1]) {
+      expect(parseHostSubagentEntries([hostChild('kid', { activity })])[0]).not.toHaveProperty('activity')
+    }
+    expect(parseHostSubagentEntries([hostChild('kid', { activity: 'inactive' })])[0]!.activity).toBe('inactive')
+    expect(parseHostSubagentEntries([hostChild('kid', { activity: 'running' })])[0]!.activity).toBe('running')
+  })
+
+  it('keeps the path a diagnostic row carries, so an unreadable branch stays placed', () => {
+    expect(parseHostSubagentEntries([
+      { kind: 'diagnostic', id: 'broken', reason: 'unavailable', parentId: 'reviewer-1', depth: 2, path: 'reviewer/broken' },
+    ])).toEqual([{
+      id: 'broken',
+      mode: 'unknown',
+      label: '',
+      path: 'reviewer/broken',
+      parentId: 'reviewer-1',
+      depth: 2,
+      diagnostic: 'unavailable',
+    }])
+  })
+
   it('drops anything unusable instead of throwing', () => {
     expect(parseHostSubagentEntries(undefined)).toEqual([])
     expect(parseHostSubagentEntries([null, 'x', {}, { id: '' }, { id: 7 }])).toEqual([])
@@ -543,6 +658,65 @@ describe('mergeSubagentPanelRows', () => {
       ['idle-1', 'inactive', true],
       ['busy-1', 'running', true],
     ])
+  })
+
+  it('prefers the catalog activity over the live registry when the row states it', () => {
+    // rc.5 states each descendant row's activity itself; the registry is only
+    // the fallback for rows that state none, so a contradiction resolves to the
+    // catalog in BOTH directions.
+    const merged = mergeSubagentPanelRows(
+      [
+        { id: 'idle-1', mode: 'continuable', label: 'idle', activity: 'inactive', parentId: undefined, depth: 1, diagnostic: undefined },
+        { id: 'busy-1', mode: 'continuable', label: 'busy', activity: 'running', parentId: undefined, depth: 1, diagnostic: undefined },
+      ],
+      [],
+      id => id === 'idle-1',
+    )
+    expect(merged.map(entry => [entry.id, entry.state])).toEqual([['idle-1', 'inactive'], ['busy-1', 'running']])
+    // Nothing was observed run here, so the duration stays honestly unknown.
+    expect(merged.every(entry => entry.catalogOnly === true)).toBe(true)
+  })
+
+  it('keeps the roster\'s lifecycle edge for rows this process observed', () => {
+    // The catalog's `activity` is a residency reading taken during the walk; the
+    // lifecycle edges this process observed are the precise run state, so they
+    // win for an observed row (activity only fills catalog-only rows).
+    const merged = mergeSubagentPanelRows(
+      [
+        { id: 'settled-1', mode: 'continuable', label: 'settled', activity: 'inactive', parentId: undefined, depth: 1, diagnostic: undefined },
+        { id: 'fresh-1', mode: 'continuable', label: 'fresh', activity: 'running', parentId: undefined, depth: 1, diagnostic: undefined },
+      ],
+      [
+        rosterRow({ id: 'settled-1', state: 'running' }),
+        rosterRow({ id: 'fresh-1', state: 'inactive', stopReason: 'completed', epochMs: 5_000 }),
+      ],
+      () => false,
+    )
+    expect(merged.map(entry => entry.state)).toEqual(['running', 'inactive'])
+    expect(merged[1]!.stopReason).toBe('completed')
+    expect(merged[1]!.epochMs).toBe(5_000)
+  })
+
+  it('falls back to the live registry when a row states no usable activity', () => {
+    // A malformed activity is dropped by the parser, so the row behaves exactly
+    // like a rc.1 row: the registry answers.
+    const rows = parseHostSubagentEntries([
+      hostChild('busy-1', { activity: 'busy' }),
+      hostChild('idle-1'),
+    ])
+    expect(rows.map(entry => entry.activity)).toEqual([undefined, undefined])
+    expect(mergeSubagentPanelRows(rows, [], id => id === 'busy-1').map(entry => entry.state))
+      .toEqual(['running', 'inactive'])
+  })
+
+  it('carries the rc.5 name and path onto the merged row', () => {
+    const merged = mergeSubagentPanelRows(
+      [hostDescendant('checker-1', { name: 'checker', path: 'reviewer/checker', depth: 2, parentId: 'reviewer-1' })],
+      [],
+      () => false,
+    )
+    expect(merged[0]!.name).toBe('checker')
+    expect(merged[0]!.path).toBe('reviewer/checker')
   })
 })
 
@@ -616,6 +790,46 @@ describe('/subagents — the manual panel', () => {
     expect(text).toContain('| `first kid` |')
     // A drawn connector, not an indent: the Host's parent/depth drive the tree.
     expect(text).toContain('└─ `nested kid`')
+    h.stop()
+  })
+
+  it('shows the rc.5 agent names and tree paths for `tree`', async () => {
+    const h = buildHarness({
+      subagents: catalogService({
+        omitChildren: true,
+        listDescendants: async () => [
+          hostDescendant('reviewer-1', { name: 'reviewer', path: 'reviewer', label: 'review the diff', hasChildren: true }),
+          hostDescendant('checker-1', { name: 'checker', path: 'reviewer/checker', label: 'check the fix', depth: 2, parentId: 'reviewer-1' }),
+        ],
+      }),
+    })
+    await expect(h.open('tree')).resolves.toMatchObject({ kind: 'card' })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    // The identity is the rc.5 name, not the creation label…
+    expect(text).toContain('| `reviewer` |')
+    expect(text).not.toContain('review the diff')
+    // …and the path makes the nesting unambiguous even without the connector.
+    expect(text).toContain('└─ `checker` `reviewer/checker`')
+    h.stop()
+  })
+
+  it('takes each row\'s state from the catalog activity when nothing else knows it', async () => {
+    const h = buildHarness({
+      subagents: catalogService({
+        omitChildren: true,
+        listDescendants: async () => [
+          hostDescendant('running-1', { name: 'worker', path: 'worker', activity: 'running' }),
+          hostDescendant('idle-1', { name: 'reviewer', path: 'reviewer', activity: 'inactive' }),
+        ],
+      }),
+    })
+    // No roster row and no live Agent: only the catalog states the state, so a
+    // row it calls `running` must not be rendered as "not running".
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain(`🔄 ${zh.subagentStatusRunning}`)
+    expect(text).toContain(`⏹️ ${zh.subagentStatusNotRunning}`)
+    expect(text).toContain(zh.subagentPanelSummary(1, 2))
     h.stop()
   })
 

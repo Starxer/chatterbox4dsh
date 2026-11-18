@@ -19,6 +19,11 @@ import { noteDirectFeishuDispatch, noteFeishuPrompt } from './feishu-turn-origin
  *  of a multi-megabyte history. */
 const PRESET_SCAN_EVENTS = 64
 
+/** The Host projection that says whether a failed turn can be continued
+ *  (DSH 0.2.2 session-controller: `conversationContinuation`). Its wire value
+ *  is the continuable failed `turn/end` seq, or `null`. */
+const CONTINUATION_PROJECTION_KEY = 'conversationContinuation'
+
 /** Minimum surface of {@link Agent} the conversation service depends on. */
 interface AgentLike {
   session: { id: unknown; seq: number; events?: readonly { seq: number; type: string; data: any }[] }
@@ -982,6 +987,69 @@ export class HarnessConversationService {
     noteFeishuPrompt(String(agent.session.id), requestId)
     await this.deps.sessionController.prompt(
       { sessionId: agent.session.id, requestId, mode, content },
+      controller.signal,
+    )
+    return true
+  }
+
+  /**
+   * Whether the Host will let this session's last failed turn be continued with
+   * an EMPTY retry prompt — the Web UI's "continue generation" affordance
+   * (DSH 0.2.2). The Host publishes that decision as the
+   * `conversationContinuation` projection: its wire value is the seq of the
+   * continuable failed `turn/end`, or `null` when the turn is not continuable
+   * (including "new input already arrived").
+   *
+   * Everything is optional: no projections, no live Agent or a failing read all
+   * mean "not continuable", which hides the button instead of offering one that
+   * would be rejected.
+   *
+   * @param sessionId - durable session id the failed turn belongs to.
+   * @returns true when the Host would accept an empty continuation prompt now.
+   */
+  canContinue(sessionId: string): boolean {
+    const projections = this.deps.sessionProjections
+    if (projections === undefined) return false
+    let agent: Agent | undefined
+    try {
+      // The projection reader needs the live Session object, so a session the
+      // process does not hold (an archived chat, a cold id) is simply not
+      // continuable from here.
+      agent = this.deps.agents.get(sessionId as ReturnType<typeof toSessionId>)
+    } catch {
+      return false
+    }
+    const session = agent?.session
+    if (session === undefined) return false
+    try {
+      const ending = projections.snapshot(session, [CONTINUATION_PROJECTION_KEY]).values[CONTINUATION_PROJECTION_KEY]
+      return ending !== undefined && ending !== null
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Continue this session's failed turn through DSH's native empty-prompt path
+   * (`sessionController.prompt` with no content), exactly like the Web UI's
+   * "continue generation" button. Re-checks eligibility first, so a turn that
+   * settled or received new input since the card was posted is refused with
+   * `false` instead of queueing a surprise message.
+   *
+   * @param sessionId - durable session id whose failed turn should continue.
+   * @returns true when the continuation was accepted by the Host.
+   */
+  async continueTurn(sessionId: string): Promise<boolean> {
+    const sessionController = this.deps.sessionController
+    if (sessionController?.prompt === undefined) return false
+    if (!this.canContinue(sessionId)) return false
+    const controller = new AbortController()
+    const requestId = randomUUID()
+    // Same reason as `dispatchPrompt`: the id is how turn-origin recognises a
+    // message this plugin dispatched on Feishu's behalf.
+    noteFeishuPrompt(sessionId, requestId)
+    await sessionController.prompt(
+      { sessionId, requestId, mode: 'queue', content: [] },
       controller.signal,
     )
     return true

@@ -81,20 +81,76 @@ export class TurnFailureError extends Error {
 }
 
 /**
+ * Card action kind carried by the "continue" button a failed-turn card may
+ * show. The value also carries the session id, so the click handler never has
+ * to guess which session a topic belongs to.
+ */
+export const TURN_CONTINUE_ACTION = 'turn-continue'
+
+/** Extra affordances one failed-turn card may carry. */
+export interface TurnFailureCardOptions {
+  /**
+   * Session id the continue button targets. Absent (or empty) hides the
+   * button — e.g. when the Host will not let this failed turn be continued.
+   */
+  readonly continueSessionId?: string | undefined
+}
+
+/**
+ * Whether this failure is the provider refusing on content-safety grounds.
+ *
+ * DSH 0.2.2-rc.4 maps the Anthropic `refusal` stop reason onto the
+ * `CONTENT_REFUSED` code; the older runtime reported the same event as
+ * `MALFORMED_RESPONSE` with the message `… unsupported stop reason refusal`,
+ * which is why the message is matched too (a rollback must keep explaining it).
+ *
+ * @param failure structured facts from {@link displayFailure}
+ * @returns true when the provider's own review declined the answer
+ */
+export function isContentRefusal(failure: TurnFailure): boolean {
+  if (failure.code === 'CONTENT_REFUSED') return true
+  return failure.code === 'MALFORMED_RESPONSE' && /unsupported stop reason refusal/iu.test(failure.message)
+}
+
+/**
  * Render the failure as a Feishu card shaped like the Web UI's turn-error row:
  * red header carrying `message.turnError`, the provider message as the body,
  * and the machine code as an inline-code line.
  *
+ * On top of the Web UI shape it may add two things the chat format needs:
+ * a localized explanation for a content-safety refusal (the Web UI has no
+ * such row), and a "continue" button when the Host says the failed turn is
+ * continuable.
+ *
  * @param t active translations (the same ones the Web UI's locale provides)
  * @param failure structured facts from {@link displayFailure}
+ * @param options continue affordance (see {@link TurnFailureCardOptions})
  * @returns a Card JSON 2.0 payload
  */
-export function renderTurnFailureCard(t: Translations, failure: TurnFailure): object {
+export function renderTurnFailureCard(
+  t: Translations,
+  failure: TurnFailure,
+  options: TurnFailureCardOptions = {},
+): object {
   // Mirrors `failureMessage()`: only AUTH replaces the provider text.
   const message = failure.code === 'AUTH' ? t.failureAuth : failure.message
   const elements: object[] = []
   if (message.trim() !== '') elements.push({ tag: 'markdown', content: message })
   if (failure.code !== undefined) elements.push({ tag: 'markdown', content: `\`${failure.code}\`` })
+  // Not a fallback sentence: the fact stays the provider's message and code
+  // above; this line only explains a code the reader cannot be expected to
+  // know, and says what usually helps.
+  if (isContentRefusal(failure)) elements.push({ tag: 'markdown', content: t.failureRefusedHint })
+  if (options.continueSessionId !== undefined && options.continueSessionId !== '') {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.turnContinueButton },
+      type: 'primary',
+      // Card 2.0 only honours `behaviors` (关键坑 4). The card is sent once and
+      // never updated, so the button keeps delivering callbacks (关键坑 11).
+      behaviors: [{ type: 'callback', value: { kind: TURN_CONTINUE_ACTION, sessionId: options.continueSessionId } }],
+    })
+  }
   if (elements.length === 0) elements.push({ tag: 'markdown', content: t.turnFailedTitle })
   return {
     schema: '2.0',
@@ -119,5 +175,6 @@ export function renderTurnFailureCard(t: Translations, failure: TurnFailure): ob
 export function turnFailureText(t: Translations, failure: TurnFailure): string {
   const message = failure.code === 'AUTH' ? t.failureAuth : failure.message
   const parts = [message.trim(), failure.code === undefined ? '' : `[${failure.code}]`].filter(part => part !== '')
-  return `${t.turnFailedTitle}：${parts.join(' ')}`
+  const text = `${t.turnFailedTitle}：${parts.join(' ')}`
+  return isContentRefusal(failure) ? `${text}\n${t.failureRefusedHint}` : text
 }
