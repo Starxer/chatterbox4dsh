@@ -196,13 +196,20 @@ export interface SubagentPanelHandle {
 }
 
 /**
- * The Host's subagent catalog service, reduced to the two reads this module
- * makes. The payload stays `unknown`: the rows are normalized by
+ * The Host's subagent catalog service, reduced to the reads this module makes.
+ * The payload stays `unknown`: the rows are normalized by
  * {@link parseHostSubagentEntries}, which is also where the shapes of the two
  * scopes are folded together.
+ *
+ * `listChildren` is OPTIONAL because DSH 0.2.2-rc.5 removed it from the
+ * service (`listDescendants` is the surviving read face; the children helper
+ * remains only as a module function). The children scope then falls back to a
+ * depth-1 filter over the descendants listing, which returns the same rows
+ * plus their edge distance — so one code path serves both runtimes and a
+ * rollback to 0.2.2-rc.1 keeps the direct read.
  */
 interface SubagentsServiceLike {
-  listChildren(sessionId: string, signal?: AbortSignal): Promise<unknown>
+  listChildren?(sessionId: string, signal?: AbortSignal): Promise<unknown>
   listDescendants(sessionId: string, signal?: AbortSignal): Promise<unknown>
 }
 
@@ -833,10 +840,16 @@ export function startFeishuSubagents(deps: FeishuSubagentsDeps): SubagentPanelHa
     // inside the Host rather than walking catalogs nobody is waiting for.
     const controller = new AbortController()
     try {
-      const pending = scope === 'tree'
-        ? service.listDescendants(sessionId, controller.signal)
-        : service.listChildren(sessionId, controller.signal)
-      return parseHostSubagentEntries(await withTimeout(pending, `subagent ${scope} catalog read`, budget))
+      // The children scope keeps the direct read when the runtime offers it
+      // (DSH <= 0.2.2-rc.1); 0.2.2-rc.5 removed it from the service, so the
+      // same scope is a depth-1 filter over the descendants listing. Depth 1
+      // IS the direct-children edge, so both runtimes yield the same rows.
+      const listChildren = scope === 'tree' ? undefined : service.listChildren
+      const pending = listChildren !== undefined
+        ? listChildren.call(service, sessionId, controller.signal)
+        : service.listDescendants(sessionId, controller.signal)
+      const entries = parseHostSubagentEntries(await withTimeout(pending, `subagent ${scope} catalog read`, budget))
+      return scope === 'tree' || listChildren !== undefined ? entries : entries.filter(entry => entry.depth <= 1)
     } catch (error: unknown) {
       controller.abort()
       warn(`subagent ${scope} catalog read failed`, error)

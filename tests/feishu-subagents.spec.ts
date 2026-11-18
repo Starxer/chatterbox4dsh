@@ -51,12 +51,17 @@ function hostChild(id: string, overrides: Record<string, unknown> = {}) {
   return { id, createdAt: 1_000, mode: 'one-shot', label: `catalog ${id}`, ...overrides }
 }
 
-/** A stub of the Host's subagent catalog service. */
-function catalogService(overrides: { listChildren?: unknown; listDescendants?: unknown } = {}) {
-  return {
-    listChildren: overrides.listChildren ?? (async () => []),
+/** A stub of the Host's subagent catalog service (`listChildren` is optional on rc.5). */
+function catalogService(
+  overrides: { listChildren?: unknown; listDescendants?: unknown; omitChildren?: boolean } = {},
+) {
+  const service: Record<string, unknown> = {
     listDescendants: overrides.listDescendants ?? (async () => []),
   }
+  // DSH 0.2.2-rc.5 dropped `listChildren` from the service; `omitChildren`
+  // models that runtime so the depth-1 fallback is exercised.
+  if (overrides.omitChildren !== true) service.listChildren = overrides.listChildren ?? (async () => [])
+  return service
 }
 
 function buildHarness(options: { chats?: Record<string, ConversationMessage>; debounceMs?: number; refreshMs?: number; routes?: Record<string, { provider?: string; model?: string }>; subagents?: unknown; running?: Record<string, boolean>; catalogTimeoutMs?: number } = {}) {
@@ -622,6 +627,27 @@ describe('/subagents — the manual panel', () => {
     const text = markdownOf(h.sent.at(-1)!.card)
     expect(text).toContain(zh.subagentDiagnostic('corrupt'))
     expect(text).toContain(zh.subagentModeUnknown)
+    h.stop()
+  })
+
+  it('lists direct children from the descendants read when the runtime dropped listChildren', async () => {
+    // DSH 0.2.2-rc.5 removed `listChildren` from the service. The children
+    // scope must still work: depth 1 of the descendants listing IS the old
+    // direct-children edge, so the nested row stays out of the default scope.
+    const h = buildHarness({
+      subagents: catalogService({
+        omitChildren: true,
+        listDescendants: async () => [
+          { kind: 'child', id: 'kid-1', mode: 'continuable', label: 'direct kid', parentId: 'session-1', depth: 1, activity: 'inactive', hasChildren: true },
+          { kind: 'child', id: 'grand-1', mode: 'continuable', label: 'nested kid', parentId: 'kid-1', depth: 2, activity: 'inactive', hasChildren: false },
+        ],
+      }),
+    })
+    await expect(h.open()).resolves.toMatchObject({ kind: 'card' })
+    const text = markdownOf(h.sent.at(-1)!.card)
+    expect(text).toContain('`direct kid`')
+    expect(text).not.toContain('`nested kid`')
+    expect(h.warns).toHaveLength(0)
     h.stop()
   })
 
