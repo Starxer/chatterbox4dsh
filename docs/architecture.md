@@ -61,8 +61,8 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [显示控制](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-display.ts>) / [Todo](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-todos.ts>) | 展示配置卡与进度清单 |
 | [权限卡](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-permission.ts>) / [繁忙模式](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-busy.ts>) | 权限卡渲染宿主 `permissionPresets.catalog()`（配置预设 + auto-review 集成 live 时才有的 `auto`）；Auto 与完全权限同为红色 danger，切换前先出风险确认卡；`/busy` 是每聊天的发送行为开关。两者都按人手点击就地更新 |
 | [名册发送器](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-panel.ts>) | 快照指纹、合并、节流、按聊天串行、按钮归属回查；`onSent(key)` 交付后钩子（内容依赖「之前发过什么」的模块用它提交记忆，发送失败则下次重试） |
-| [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子智能体](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子智能体生命周期、模型、树与手动目录合并 |
-| [智能体团队看板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-team.ts>) | 只在宿主启用 Agent Teams 插件时出现：`team/member` / `team/task` 事件只当触发，flush 时读 lead 会话的 `agentTeam` 投影；成员/任务变化发新卡（同 `feishu-panel` 的合并与指纹去重），队友 `turn/start` / `turn/end` 刷新活动状态，Lead 只显示角色以免每轮重发 |
+| [后台任务](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-jobs.ts>) / [子智能体](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-subagents.ts>) | 真正后台任务的名册：表格（任务列 48 字符截断）+ 长/多行命令的「完整命令」围栏代码块（换行原样、围栏按最长反引号串加长、超 2000 字符截断注明），**详情只在新任务首次出现的那张卡给一次**（按聊天记住已交付的 job id，`onSent` 确认后才提交）；子智能体生命周期、模型、树与手动目录合并；DSH 0.2.2-rc.5 起 catalog 的 `name`（同级唯一）与 descendants 的 `path` 进 agent 列（路径只在比名字多信息时追加），catalog-only 行的状态用它自己的 `activity`，本进程观测过的行仍以 lifecycle 边为准 |
+| [智能体团队看板](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-team.ts>) | `team/mode` / `team/task` / `subagent/catalog` 事件只当触发，flush 时读同一份 snapshot：`agentTeam` 投影给选择与任务板（rc.5 的投影对每个会话都存在，按 `enabled` 门控），成员名册在 rc.5 来自父会话的 `subagentCatalog`（旧版投影自带 `members`，两种线形都支持）；成员/任务变化发新卡（同 `feishu-panel` 的合并与指纹去重），队友 `turn/start` / `turn/end` 刷新活动状态，Lead 只显示角色以免每轮重发 |
 
 ### 渲染、交付与可靠性
 
@@ -77,7 +77,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | [主动发送](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-send-file.ts>) / [按需接收](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-receive-file.ts>) | 原生媒体/文件消息；入站资源下载到附件库 |
 | [回合来源](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-turn-origin.ts>) / [外部回合](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-external-turns.ts>) / [界面提示](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-surface.ts>) | 来源归因、Web/自动化镜像、绑定会话的稳定通道提示 |
 | [有界等待](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/outbound-timeout.ts>) / [出站健康](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/outbound-health.ts>) | 请求超时与健康观测；内部管线等待不冒充网络事实 |
-| [错误文本](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/error-text.ts>) / [回合失败](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-failure.ts>) | 安全提取 cause/业务码、对齐 Web UI 的失败事实 |
+| [错误文本](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/error-text.ts>) / [回合失败](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/turn-failure.ts>) | 安全提取 cause/业务码、对齐 Web UI 的失败事实；可重试失败多一个「🔁 继续生成」按钮（读 `conversationContinuation` 投影，点击走宿主空 prompt），`CONTENT_REFUSED` 多一行内容审查说明（原始 message/code 不变） |
 | [程序名解析](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/shell-programs.ts>) | 解析脚本中的程序名供 compact 摘要；不靠分隔符硬切 |
 
 ## 会话与话题
@@ -101,7 +101,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | `tool/call` / `tool/result` | 调用与结果配对，补状态、耗时、预览与成功产出 |
 | `step/end` | 定格步骤，移除实时状态灯，忽略迟到帧 |
 | `compaction/start` / `summary` / `prune` / `end` | 压缩事务卡：开始、详情与折叠摘要、成功/失败；prune 可能无摘要 |
-| `turn/end` | flush 待发/在飞写入，按送达事实决定正文兜底，再收尾与交付 |
+| `turn/end` | flush 待发/在飞写入，按送达事实决定正文兜底，再收尾与交付；`reason.kind === 'error'` 时发失败卡（见「回合失败与继续」） |
 
 `assistant/chunk` 是旧版事件，**不是当前实时内容来源**。相位在一次尝试内只前进，abandoned 尝试才退回占位等待重试。瞬时帧以子/当前 agent 的会话 id 关联，只处理已绑定会话（关键坑 8 / 67）。
 
@@ -139,11 +139,18 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 | 权限 | 按钮来自宿主 `permissionPresets.catalog()`：目录不含 `auto` 时与三个预设的旧卡逐字一致；`auto`（无沙箱、实验性）与「完全权限」同为红色 danger，点击先就地改写成风险确认卡、确认按钮才写入；`/permission <mode>` 文本路径共用同一目录 |
 | 交互流程 | 通常每步发新卡，旧卡去按钮/退休；**决策所在的那张卡整卡改写成结算卡**（绿色表头「✅ 已选定」+ 决策值 + 「已锁定，继续用下方最新卡」脚注，`card-supersede` 的 `replace` 模式）——只追加一行注释时，注释落在长列表最底部、看不出变化；纯路过的卡才收敛为灰通知。已点过可点行的卡不能复用。部分控制卡残余就地更新风险见待办 O4 |
 | 后台任务 | 一个聊天一份名册快照，变化发新消息；只认模型确实获得 job handle 的后台调用；前台 bash/pwsh 不列。表格的「任务」列截到 48 字符，被截断或多行的命令改到表格下方 `📜 完整命令` 代码块——**只在任务首次出现的那张卡上给一次**，后续进度/完成快照只留表格（命令仍可在首卡回看） |
-| 子智能体 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录，`tree` 读 descendants |
-| 智能体团队 | 宿主启用 `dsh-experimental-agent-team` 且 Agent 自动组队时，每个变化发一张新的看板卡（名册 + 共享任务表）；只读宿主 `agentTeam` 投影，不提供操作；成员活动读 live Agent registry，Lead 不显示运行状态 |
+| 子智能体 | 自动名册来自 catalog + global lifecycle，模型从子会话 `requestContext()` 与增量事件双源读取；手动 `/subagents` 额外合并宿主目录（rc.5 起带唯一 `name`、树形 `path` 与行级 `activity`），`tree` 读 descendants |
+| 智能体团队 | 会话启用团队（宿主 `agentTeam` 投影 `enabled: true`）时，每个变化发一张新的看板卡（名册 + 共享任务表）；只读宿主投影，不提供操作。rc.5 的投影只给选择与任务板，成员名册读父会话的 `subagentCatalog`（continuable 子项），旧版投影自带 `members` 也兼容；成员活动读 live Agent registry，Lead 不显示运行状态 |
 | 名册容量 | 最多 8 行、已结算 30 分钟后退出内存名册；历史消息不更新。后台任务可“清理已完成”，仅清名册不清宿主记录。「完整命令」记忆按聊天存已交付的 job id、上限 256（id 不复用，超限丢最旧 ⇒ 最坏多显示一次），名册清空时一并忘掉 |
 
 卡片实体只能发送一次且仅 14 天可操作；长寿命过程卡不带按钮、不跨轮或跨重启复用，引用不落盘（关键坑 11 / 54 / 55 / 57）。
+
+### 回合失败与继续
+
+- 失败事实按 Web UI 的 `displayFailure` 投影：`reason.error.message` 全文 + `code` 成红卡；`AUTH` 用本地化句子替换可能回显凭据的消息。卡被拒时回退同内容纯文本。
+- **内容审查拒绝**（rc.4 起 `CONTENT_REFUSED`；rc.1 上表现为 `MALFORMED_RESPONSE` + `unsupported stop reason refusal`，回滚后同样识别）只**追加一行**本地化说明：是模型提供方的内容安全审查、不是网络或插件问题，换说法或新会话通常可绕开；原始 message/code 一字不改，文本兜底也带这行。
+- **继续生成**：宿主用 `conversationContinuation` 投影发布「这个失败回合还能不能续」——可续错误码固定为 `RATE_LIMIT` / `SERVER` / `TIMEOUT` / `TRANSPORT` / `EMPTY_RESPONSE` / `STREAM_CLOSED`，且期间不能有新输入。可续时失败卡上多一个 `🔁 继续生成` 按钮，值只带 action kind + session id；点击先复核（投影已变就回一句「已不可继续」，不悄悄排队消息），再走 `sessionController.prompt` + `content: []`——与 Web UI 的「继续生成」同一条原生路径。失败卡只发一次、不就地更新，所以按钮回调不碰关键坑 11。
+- 读投影失败、没有 live Agent、宿主没有 prompt 入口：一律降级为**不显示按钮**，不报错、也不假装可续。
 
 ## 发送可靠性与健康
 
