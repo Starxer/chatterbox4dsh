@@ -2651,8 +2651,13 @@ describe('level + injection wiring through session events', () => {
     })
     await tick(1_100)
     const md = mdOf(lastCard(ch))
-    // The program row carries its schema-required description …
-    expect(md).toContain('`run_code` · 检查本地环境')
+    // The program row names what the program did exactly ONCE: the derived
+    // "what" for `run_code` IS its schema-required description, so the
+    // description-first row style must not print it on both sides of the tool
+    // name (2026-11-18 — the row used to read `检查本地环境 · \`run_code\` ·
+    // 检查本地环境 · 执行中…`).
+    expect(md).toContain('检查本地环境 · `run_code` · ')
+    expect(md.split('检查本地环境')).toHaveLength(2)
     // … and the tool its program dispatched reads as a row under it, arrow first.
     expect(md).toMatch(/^> ↳ /mu)
     expect(md).toContain('`read` · AGENTS.md')

@@ -825,6 +825,34 @@ describe('createProgressCards', () => {
     expect(md('description')).toContain('`read` · 100ms')
   })
 
+  it('does not render a PTC run_code description twice on one row', () => {
+    // A `run_code` row's derived "what" IS its own description (the program's
+    // code cannot be shortened to a file name or a shell program), so the
+    // description-first style used to print the sentence on both sides of the
+    // tool name: `<desc> · \`run_code\` · <desc> · 1.4s` (reported 2026-11-18).
+    const description = '核对工作目录、项目状态及可用技能'
+    const facts = {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 4_000,
+        tools: [{ name: 'run_code', callId: 'c1', startedAt: 0, elapsed: 1_400, detail: [description], description }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 4_000, now: 4_000, failedTurn: false,
+    }
+    const md = (style: 'tool' | 'tool-description' | 'description'): string =>
+      String(mdOf(renderProgressCard(t, facts, style)))
+    const row = (style: 'tool' | 'tool-description' | 'description'): string =>
+      md(style).split('\n').find(line => line.includes('run_code') || line.includes(description)) ?? ''
+    // 1. description first: the sentence once, then the tool name.
+    expect(row('tool-description')).toContain(`✅ ${description} · \`run_code\` · 1.4s`)
+    expect(row('tool-description').split(description)).toHaveLength(2)
+    // 2. tool only: the derived "what" is the only thing that says anything —
+    //    it must survive there.
+    expect(row('tool')).toContain(`\`run_code\` · ${description} · 1.4s`)
+    // 3. description only: the sentence alone, and no tool name at all.
+    expect(md('description')).toContain(`${description} · 1.4s`)
+    expect(md('description')).not.toContain('run_code')
+  })
+
   it('neutralizes a description that would break the card markdown', () => {
     const card: any = renderProgressCard(t, {
       steps: [{

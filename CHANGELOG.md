@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：PTC 模式下 compact 工具行把 `run_code` 描述印两遍（`src/feishu-progress.ts`，2026-11-18）
+
+- **现象**：PTC 回合的过程卡上，一个步骤行读成 `✅ 核对工作目录、项目状态及可用技能 · \`run_code\` · 核对工作目录、项目状态及可用技能 · 1.4s` —— 同一句话出现在工具名前后各一次。
+- **根因**：这是两处各自正确的适配叠在一起。2026-10-28 为了让 PTC 行「不只写工具名」，派生摘要对 `run_code` 取的是它必填的 `description`（程序的代码不像文件/命令那样能缩成名字）；2026-11-11 新增的 `compactToolRow = tool-description`（默认档）又把这句描述放在工具行**前面**。两者都印同一句，行自然重复。
+- **修法**：只在「显示描述」的行样式里丢掉与描述**逐字相同**的派生项 —— `tool-description` 得到 `<描述> · \`run_code\` · 1.4s`；`tool` 样式没有描述可显示，仍保留派生摘要；`description` 样式本来就不渲染派生项。对 `bash` / `read` 等派生项是程序名、裸文件名，与描述不同，不受影响。
+- **测试**：`tests/feishu-progress.spec.ts` 新增 1 例，三种样式分别断言（重复只此一次、`tool` 仍保留摘要、`description` 不含工具名）。
+- **文档**：[docs/ptc-mode.md](docs/ptc-mode.md) 的事实源对照与「已修复」段同步。
+
+**English**: On a PTC turn's compact process card a step row read `✅ <description> · \`run_code\` · <description> · 1.4s` — the same sentence on both sides of the tool name. Two separately-correct adaptations overlapped: the derived "what" added on 2026-10-28 so a PTC row says more than the tool name uses `run_code`'s mandatory `description` (a program's code cannot be shortened to a file name or a shell program the way other rows can), and the `tool-description` row style added on 2026-11-11 (the default) prints that same description BEFORE the tool row. The renderer now drops a derived "what" that is identical to the description being shown, so the row reads `<description> · \`run_code\` · 1.4s`; the `tool` style keeps the derived summary (it has no description to show) and the `description` style is unchanged. Other tools are unaffected because their derived "what" is a program name or a bare file name. Covered by a new progress-card test that pins all three styles.
+
 ### 修复：PTC 模式下的后台任务面板与产出文件（`src/feishu-streaming.ts` / `src/harness.ts`，2026-11-17）
 
 全面审计了插件对工具事件的依赖（记录在新增的 [docs/ptc-mode.md](docs/ptc-mode.md)）：PTC 只让模型看到 `run_code`，所有内层工具变成 `tool/ptc-dispatch-start` / `tool/ptc-dispatch` 事件。凡是只从 `tool/call` / `tool/result` 推导的事实，在 PTC 下都会丢失。本次修掉两处：

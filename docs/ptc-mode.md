@@ -20,7 +20,7 @@ PTC 预设（`packages/bundle/web-app/presets/ptc.patch.yml`）为 agent 挂载 
 | 插件能力 | 事实来源 | PTC 下 |
 |---|---|---|
 | compact 回合卡的内层工具行（`↳` + 文件/命令/URL/搜索词） | `tool/ptc-dispatch-*` | ✅ 2026-10-28 起已适配 |
-| 父行一行描述（`run_code` 的必填 `description`） | `tool/call` 参数 | ✅ |
+| 父行一行描述（`run_code` 的必填 `description`） | `tool/call` 参数 | ✅ 2026-11-18 起在「描述在前」的行样式里只印一次（派生摘要与描述同句，见 §3） |
 | 子代理名册 / 面板 | 全局 `subagent/start`、`subagent/end` + 父会话 `subagent/catalog` | ✅ PTC 内层调用走同一工具管线，catalog 由子代理管理器 append 到父会话 |
 | Agent Teams 看板 | `team/member`、`team/task` + lead 会话的 `agentTeam` 投影 | ✅ |
 | todo 卡 | 会话事件 `todo/write` | ✅ tool body 自己 append |
@@ -35,13 +35,14 @@ PTC 预设（`packages/bundle/web-app/presets/ptc.patch.yml`）为 agent 挂载 
 | PTC 内层结果文本（`showToolResults`） | `tool/ptc-dispatch.content` | ⚠️ 未展示；compact 子行只有状态，detailed 连子行都没有（与上一行一并设计） |
 | `src/feishu-toolcalls.ts` | 独立旧模块，未被 `index.ts` 启动 | ⚠️ 疑似死代码，与 PTC 无关，待确认清理或保留 |
 
-## 3. 已修复（2026-11-17）
+## 3. 已修复（2026-11-17 / 2026-11-18）
 
 - **后台任务面板**：`tool/ptc-dispatch` 结算时把 `content` 文本按内层 `name` 交给 `noteDetachedJob`，复用 job 镜像原有的 registry 核对、owner 校验与 `confirmed` 去重 —— PTC 程序里 `bash run_in_background`（以及前台超时转后台的通知行）产生的 job 现在会出现在面板里。
 - **产出文件**：同一结算点用内层 `name` + `arguments` + `isError` 走 `pendingProducedCall()` → `settleProducedCall()`，结果推入 `turnStats.produced`。这让 Turn Complete 的「本轮产出」、`produceCard = delivery` 的自动交付、外部回合同步都恢复。
 - **`/status` 工具次数**：`deriveSessionStats()` 把 `tool/ptc-dispatch` 计为一次工具调用。
+- **compact 工具行把 `run_code` 描述印两遍**：`run_code` 的派生「摘要」用的是它必填的 `description`（程序代码没法缩成文件名/程序名），而 `compactToolRow = tool-description` 又把同一句描述放在工具名前 ⇒ 行读成 `✅ <描述> · \`run_code\` · <描述> · 1.4s`。渲染时只在「显示描述」的样式里丢掉与描述逐字相同的派生项：`tool` 样式仍保留派生摘要（那时它是整行唯一的信息），`description` 样式不变。
 
-测试覆盖：PTC 子调用触发 job 通知、PTC 内层写文件计入 produced（成功/失败两例）、`getSessionMeta` 统计内层调用。
+测试覆盖：PTC 子调用触发 job 通知、PTC 内层写文件计入 produced（成功/失败两例）、`getSessionMeta` 统计内层调用、compact 工具行三种样式下 `run_code` 描述的重复判定（`tests/feishu-progress.spec.ts`）。
 
 ## 4. 待设计 / 待确认
 

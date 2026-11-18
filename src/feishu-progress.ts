@@ -367,9 +367,20 @@ function toolLine(
   description: string | undefined,
   style: CompactToolRowStyle,
 ): string {
-  const what = details.length === 0 ? '' : ` · ${details.join(' / ')}`
   const tool = `\`${name}\`${count > 1 ? ` ×${count}` : ''}`
   const description_ = description === undefined ? '' : progressRowText(description, PROGRESS_NOTE_MAX)
+  // A PTC `run_code` row's derived "what" IS its own description: the program's
+  // code cannot be shortened to a name the way a file or a shell program can, so
+  // `progressToolDetails` returns the `description` argument itself (2026-10-28,
+  // under the old tool-only row). A style that already prints the description
+  // must therefore not print it a second time — otherwise the row reads
+  // `<desc> · \`run_code\` · <desc> · 1.2s` (reported 2026-11-18). Only the
+  // description-first style needs the filter: `tool` has no description to
+  // repeat, and `description` never renders the "what" at all.
+  const named = style === 'tool-description'
+    ? details.filter(detail => detail !== description_)
+    : details
+  const what = named.length === 0 ? '' : ` · ${named.join(' / ')}`
   // The style decides what comes before the clock: the tool row, the
   // description before it, or the description alone (with no fallback — a call
   // that wrote none keeps just its name so the row still says something ran).
