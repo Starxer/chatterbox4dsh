@@ -142,6 +142,39 @@ describe('HarnessConversationService', () => {
     expect(f.create).not.toHaveBeenCalled()
   })
 
+  it('retries a resume that lost the write-ownership race at boot', async () => {
+    // Two surfaces can resume the same session at restart: the plugin's
+    // auto-resend and the Web GUI restoring its tab. `agents.resume` takes
+    // single-writer ownership first, so the loser used to surface
+    // `session "…" is already owned by an active write handle` to the operator.
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    f.resume.mockRejectedValueOnce(new Error(`session "${sessionId}" is already owned by an active write handle`))
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })).resolves.toBe('answer:again')
+    expect(f.resume).toHaveBeenCalledTimes(2)
+  })
+
+  it('reuses the live agent when the competing resume finished first', async () => {
+    const f = fixture()
+    const deps = dependencies(f)
+    const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'
+    deps.sessionPersistence.list = vi.fn(async () => [{ id: sessionId }])
+    // The competing surface registers its agent and only then does the
+    // rejection reach us; the retry must reuse that agent, not resume again.
+    f.resume.mockImplementationOnce(async ({ resumeSessionId }: { resumeSessionId: string }) => {
+      await f.create({ sessionId: resumeSessionId })
+      throw new Error(`session "${sessionId}" is already owned by an active write handle`)
+    })
+    const service = new HarnessConversationService(deps, { domain: 'lark' })
+
+    await expect(service.reply({ chatId: 'a', chatType: 'p2p', content: 'again' })).resolves.toBe('answer:again')
+    expect(f.resume).toHaveBeenCalledTimes(1)
+  })
+
   it('resolves a live agent without re-creating the session', async () => {
     const f = fixture()
     const sessionId = 'lark-v2-427e3361f60f3bd896c74f6acd7d065d2e0198db'

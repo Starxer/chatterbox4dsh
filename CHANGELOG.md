@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：重启后「session already owned by an active write handle」（`src/harness.ts`，2026-11-20）
+
+- **现象**：重启后自动重发的那一轮，聊天里收到 `处理这条消息时出错：session "…" is already owned by an active write handle`（两次重启各出现一次；轮次随后仍能跑起来，但用户先看到一条错误）。
+- **根因**：`agents.resume` 在**读日志之前**先抢单写所有权（agent-loop `resumeWith`）。启动瞬间有两个面上同时认领同一个会话——插件的「中断回合自动重发」和 Web GUI 恢复上次打开的标签页——谁后到谁拿到 `SessionAlreadyOwnedError`，旧代码直接把它抛给入站处理器，于是变成一条错误文本。
+- **修法**：`resumeAgent()` 对这类错误做**有界重试**（100/200/400/800ms，共 4 次）；每次重试前先看 `agents.get(sessionId)`——如果对方已经把它挂起来了，就直接复用那个 live agent，不再重复 resume。其余错误照旧上抛。
+- 测试：新增「重试后成功」与「对方先完成、直接复用」两个用例；全量 82 文件 / 1,592 用例、typecheck、build、privacy 全绿。
+
+**English**: After a restart the auto-resend could surface `处理这条消息时出错：session "…" is already owned by an active write handle` in the chat (observed on two restarts; the turn still ran afterwards, so the operator merely got an error first). Root cause: `agents.resume` claims single-writer ownership *before* reading the log (agent-loop `resumeWith`), and two surfaces can claim the same session at boot — the plugin's interrupted-turn auto-resend and the Web GUI restoring its tab. The loser rejects with `SessionAlreadyOwnedError`, which the inbound handler used to render as an error. `resumeAgent()` now retries that specific failure a bounded number of times (100/200/400/800 ms) and, before each retry, reuses `agents.get(sessionId)` when the other surface has already registered the agent. Other errors are still thrown. Covered by two new cases (retry succeeds; competing resume finished first so the live agent is reused); 82 files / 1,592 tests, typecheck, build and privacy gate green.
+
 ### 变更：展示档位合并为「两模式 + 正交开关」（`display-level` / `config` / `commands` / `feishu-display` / `index`，2026-11-20）
 
 - **模式与预设分离**：`compact` 是唯一的模式（它改的是**卡片拓扑**：一回合一张过程卡 + 答案卡），`standard` / `detailed` / `verbose` 降级为**一键预设**（同一批开关的命名组合）。`presetOf()` 按当前组合反查预设名，匹配不上显示「自定义」。

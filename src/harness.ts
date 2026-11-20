@@ -2289,7 +2289,7 @@ export class HarnessConversationService {
       await this.deps.agentPresets.mount(agentCtx, agentPreset)
     }
     const handle = persisted
-      ? await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions: initial, setup })
+      ? await this.resumeAgent(sessionId, initial, setup)
       : await this.deps.agents.create({
         sessionId,
         meta: { cwd, agentPreset },
@@ -2310,6 +2310,47 @@ export class HarnessConversationService {
       await this.applyCreationRoute(sessionId, creation)
     }
     return handle
+  }
+
+  /**
+   * Resume a persisted session, retrying while another surface holds the turn.
+   *
+   * Booting `dsh` resumes nothing by itself, but two surfaces can reach for the
+   * same session at the same moment: this bridge's auto-resend of the turn a
+   * restart interrupted, and the Web GUI restoring the tab it had open.
+   * `agents.resume` claims single-writer ownership BEFORE reading the log
+   * (agent-loop `resumeWith`), so the loser rejects with
+   * `SessionAlreadyOwnedError` — which used to surface to the operator as
+   * `session "…" is already owned by an active write handle` (2026-11-20
+   * restart). The winner's setup finishes in a second or two, so retry briefly
+   * and, once its agent is registered, reuse that instead of resuming again.
+   *
+   * @param sessionId - durable session to resume.
+   * @param agentOptions - the route/preset resolved for this creation.
+   * @param setup - preset mounting hook passed to the host.
+   * @returns a handle for the live agent, owned by whoever created it.
+   */
+  private async resumeAgent(
+    sessionId: string,
+    agentOptions: ModelSelection,
+    setup: (agentCtx: import('@deepseek-ai/cordis').Context) => Promise<void>,
+  ): Promise<AgentHandleLike> {
+    const delays = [100, 200, 400, 800]
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions, setup })
+      } catch (error: unknown) {
+        const owned = error instanceof Error
+          && error.message.includes('is already owned by an active write handle')
+        if (!owned || attempt >= delays.length) throw error
+        await new Promise(resolve => setTimeout(resolve, delays[attempt]))
+        const live = this.deps.agents.get(sessionId as never)
+        if (live !== undefined) {
+          // The other surface finished its resume: its agent is the session.
+          return { agent: live as unknown as AgentLike, dispose: async () => undefined }
+        }
+      }
+    }
   }
 
   /**
