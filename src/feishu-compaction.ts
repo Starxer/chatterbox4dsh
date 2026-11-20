@@ -243,7 +243,7 @@ export function renderCompactionCard(t: Translations, input: CompactionRenderInp
     } else {
       // A prune (or a summary event we could not read) has no body. Say so
       // instead of showing an empty expander. `foldedPanel` adds the chrome and
-      // the "已折叠 · 点击展开" hint: a folded summary nobody notices is a
+      // the "点击展开" hint: a folded summary nobody notices is a
       // summary nobody reads.
       const body = input.facts?.summary
       // `truncateInline`, not a slice: a cut inside `**…**` would leave a literal

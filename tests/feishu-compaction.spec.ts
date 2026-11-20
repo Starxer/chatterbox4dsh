@@ -67,7 +67,7 @@ describe('renderCompactionCard', () => {
     // Same visible-fold treatment as the reasoning panel: the header says it is
     // folded and the block is bordered and tinted (card-fold.ts).
     expect(panel.header.title.content).toBe(t.cardFoldTitle(`**${t.compactionSummaryLabel}**`))
-    expect(panel.header.title.content).toContain('已折叠')
+    expect(panel.header.title.content).toContain('点击展开')
     expect(panel.header.background_color).toBe('grey-100')
     expect(panel.border).toEqual({ color: 'grey-300', corner_radius: '4px' })
     // ASCII: the budget is bytes, so this carries COMPACTION_SUMMARY_BYTES of them.

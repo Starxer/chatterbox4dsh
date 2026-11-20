@@ -2292,7 +2292,7 @@ describe('display levels on the step card (O22/O5)', () => {
     // drawn as a bordered, tinted block so it reads as a control (see
     // card-fold.ts — a bare header looks like a heading).
     expect(panel.header.title.content).toBe(t.cardFoldTitle(t.stepReasoningHeader))
-    expect(panel.header.title.content).toContain('已折叠')
+    expect(panel.header.title.content).toContain('点击展开')
     // The block is called 深度思考, not 推理 (2026-11-20, operator's request).
     expect(t.stepReasoningHeader).toContain('深度思考')
     expect(panel.header.background_color).toBe('grey-100')

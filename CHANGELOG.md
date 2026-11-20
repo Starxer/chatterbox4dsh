@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 调整：折叠面板标题去掉「已折叠」，只留「点击展开」（`src/i18n.ts`，2026-11-20）
+
+- **改动**：所有 `collapsible_panel` 的 header 标题结尾从 `（▸ 已折叠 · 点击展开）` 改成 `（▸ 点击展开）`（英文 `(▸ Click to expand)`）。共用一个 `cardFoldTitle()`，所以思考内容、压缩摘要、回合过程卡的「更早的 N 步」三处折叠一起生效。
+- **为什么**：`▸` 和「点击展开」已经表达了「这里收起来了」；再加「已折叠」是同一件事说两遍，把标题挤长。收起态的可见性靠的是 chrome（边框 + 底色）与这句话本身，两者都没动。
+- **测试**：`card-fold` / `feishu-compaction` / `feishu-streaming` 里四处文案断言同步（折叠 chrome 的断言不变）。
+
+**English**: Every `collapsible_panel` header now ends with `（▸ 点击展开）` — English `(▸ Click to expand)` — instead of `（▸ 已折叠 · 点击展开）` / `(▸ Collapsed · click to expand)`. The `▸` glyph plus "click to expand" already says the panel is collapsed, so the extra "collapsed" only lengthened the title. All three folds (thinking, compaction summary, and the compact turn card's "earlier steps") share `cardFoldTitle()`, so they change together; the panel chrome (border + header tint) that makes a closed panel visible is untouched. Four copy assertions updated across the card-fold, compaction and streaming tests.
+
 ### 调整：步骤卡的「推理」块改名「深度思考」，折叠面板正文改为直接 markdown（`src/feishu-streaming.ts` / `src/i18n.ts` / `src/commands-i18n.ts` / `src/client/index.ts`，2026-11-20）
 
 - **改名**：standard / detailed / verbose 三档步骤卡上的思考内容块，头部从 `💬 推理` 改成 `💬 深度思考`（英文 `Deep thinking`）。同一套说法同步到 `/display` 卡的四档说明、「思考过程」开关与 Web GUI 插件设置页的显示项（「推理预览长度」→「深度思考预览长度」）。`/reasoning` 命令里的「推理等级」**不动**——那说的是模型的 reasoning effort，不是这个块。

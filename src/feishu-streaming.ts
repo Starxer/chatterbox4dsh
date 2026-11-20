@@ -3408,7 +3408,7 @@ export function renderStepCard(
           : reasoning
       // Collapsed by default: the header (with its duration and token count)
       // is the summary, the chain is one tap away. `foldedPanel` gives every
-      // fold the same visible chrome and the "已折叠 · 点击展开" hint — without
+      // fold the same visible chrome and the "点击展开" hint — without
       // it a reader has no way to tell there is anything behind the header.
       //
       // The body is PLAIN markdown, not a fenced block (changed 2026-11-20 at

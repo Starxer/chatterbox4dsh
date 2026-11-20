@@ -12,7 +12,7 @@
  * 1. **chrome** — a border around the panel plus a background on its header, so
  *    the header reads as a control rather than as a section title;
  * 2. **words** — the header title ends with {@link Translations.cardFoldTitle},
- *    the one signal no client can drop ("（▸ 已折叠 · 点击展开）").
+ *    the one signal no client can drop ("（▸ 点击展开）").
  *
  * Every value here is a *validated* one. The server checks these fields, which
  * is the evidence that they exist at all: `border.color` /

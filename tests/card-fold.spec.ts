@@ -24,20 +24,20 @@ describe('foldedPanel', () => {
     expect(panel.border).toEqual({ color: FOLD_BORDER_COLOR, corner_radius: FOLD_CORNER_RADIUS })
     expect(panel.header.background_color).toBe(FOLD_HEADER_BACKGROUND)
     // The hint is the one part of the affordance no client can drop.
-    expect(panel.header.title).toEqual({ tag: 'markdown', content: '**摘要**（▸ 已折叠 · 点击展开）' })
+    expect(panel.header.title).toEqual({ tag: 'markdown', content: '**摘要**（▸ 点击展开）' })
     expect(panel.elements).toEqual([{ tag: 'markdown', content: '正文' }])
   })
 
   it('keeps the header title markdown intact, hint last', () => {
     const panel: any = foldedPanel(zh, '💬 **推理** · 1.9s · 1.2K tokens', [])
-    expect(panel.header.title.content).toBe('💬 **推理** · 1.9s · 1.2K tokens（▸ 已折叠 · 点击展开）')
+    expect(panel.header.title.content).toBe('💬 **推理** · 1.9s · 1.2K tokens（▸ 点击展开）')
     expect(panel.elements).toEqual([])
   })
 
   it('separates the hint per locale, so Latin text is not glued to the bracket', () => {
     expect((foldedPanel(en, '**Summary**', []) as any).header.title.content)
-      .toBe('**Summary** (▸ Collapsed · click to expand)')
-    expect(zh.cardFoldTitle('x')).toBe('x（▸ 已折叠 · 点击展开）')
+      .toBe('**Summary** (▸ Click to expand)')
+    expect(zh.cardFoldTitle('x')).toBe('x（▸ 点击展开）')
   })
 
   it('uses only values the card API accepted', () => {

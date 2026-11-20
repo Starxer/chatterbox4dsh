@@ -985,7 +985,7 @@ export const zh = {
 
   // The trailing arrow is the point of the whole hint: a collapsed panel must
   // look collapsed, and no client draws anything for us that a reader notices.
-  cardFoldTitle: title => `${title}（▸ 已折叠 · 点击展开）`,
+  cardFoldTitle: title => `${title}（▸ 点击展开）`,
 
   stepReasoningHeader: '💬 **深度思考**',
   stepMessageHeader: '📝 **消息**',
@@ -1594,7 +1594,7 @@ export const en: Translations = {
   onboardingNewSessionLabel: 'Start session',
   onboardingStart: '🚀 Start session',
 
-  cardFoldTitle: title => `${title} (▸ Collapsed · click to expand)`,
+  cardFoldTitle: title => `${title} (▸ Click to expand)`,
 
   stepReasoningHeader: '💬 **Deep thinking**',
   stepMessageHeader: '📝 **Message**',
