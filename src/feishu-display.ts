@@ -153,116 +153,99 @@ function buttonRows(buttons: readonly object[], size = 2): object[] {
 export function renderDisplayCard(state: DisplayCardState, t: Translations): object {
   const settings = state.settings
   const compact = state.mode === 'compact'
-  const elements: object[] = [
-    { tag: 'markdown', content: `${t.displayCardModeTitle}${t.displayModeName(state.mode)}` },
-  ]
-  // Mode: two card layouts. `compact` is the one that changes which cards exist.
-  elements.push(buttonColumns((['compact', 'detailed'] as const).map(mode => {
-    const active = mode === state.mode
-    return {
+  /** A section heading plus the one line that explains what it controls. */
+  const section = (title: string, hint: string): string => `${title}\n_${hint}_`
+  /** A selectable option: `✓ ` marks the current value (blue, still clickable). */
+  const choice = (name: string, active: boolean): string => t.displayCardChoice(name, active)
+  /** One row of buttons; `payload` omits `p`, which every callback carries. */
+  const row = (specs: Array<{ text: string; active: boolean; payload: object }>): object[] =>
+    specs.map(spec => ({
       tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayModeName(mode), active) },
-      type: active ? 'primary' : 'default',
-      behaviors: [{ type: 'callback', value: { p: 'display', mode } }],
-    }
-  })))
+      text: { tag: 'plain_text', content: spec.text },
+      type: spec.active ? 'primary' : 'default',
+      behaviors: [{ type: 'callback', value: { p: 'display', ...spec.payload } }],
+    }))
+
+  const elements: object[] = [
+    {
+      tag: 'markdown',
+      content: section(`${t.displayCardModeTitle}：${t.displayModeName(state.mode)}`, t.displayCardModeHint),
+    },
+  ]
+  elements.push(buttonColumns(row((['compact', 'detailed'] as const).map(mode => ({
+    text: choice(t.displayModeName(mode), state.mode === mode),
+    active: state.mode === mode,
+    payload: { mode },
+  })))))
   // Compact carries the answer on its turn card, so the step-card switches below
   // would change nothing there.
   if (!compact) {
     elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: t.displayCardThinkingTitle })
-    elements.push(buttonColumns([
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('reasoning'), settings.reasoning !== 'off') },
-        type: settings.reasoning !== 'off' ? 'primary' : 'default',
-        behaviors: [{ type: 'callback', value: { p: 'display', key: 'reasoning', value: settings.reasoning === 'off' } }],
-      },
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayCardFoldName(state.folded), true) },
-        type: 'primary',
-        behaviors: [{ type: 'callback', value: { p: 'display', folded: !state.folded } }],
-      },
-    ]))
+    elements.push({ tag: 'markdown', content: section(t.displayCardThinkingTitle, t.displayCardThinkingHint) })
+    elements.push(buttonColumns(row([
+      { text: choice(t.displayShow, settings.reasoning !== 'off'), active: settings.reasoning !== 'off', payload: { key: 'reasoning', value: true } },
+      { text: choice(t.displayHide, settings.reasoning === 'off'), active: settings.reasoning === 'off', payload: { key: 'reasoning', value: false } },
+    ])))
+    elements.push(buttonColumns(row([
+      { text: choice(t.displayCardFoldName(true), state.folded), active: state.folded, payload: { folded: true } },
+      { text: choice(t.displayCardFoldName(false), !state.folded), active: !state.folded, payload: { folded: false } },
+    ])))
     elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: t.displayCardToolDetailTitle })
-    elements.push(buttonColumns((['off', 'count', 'summary', 'full'] as const).map(detail => {
-      const active = state.toolDetail === detail
-      return {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayToolDetailName(detail), active) },
-        type: active ? 'primary' : 'default',
-          behaviors: [{ type: 'callback', value: { p: 'display', toolDetail: detail } }],
-      }
-    })))
+    elements.push({ tag: 'markdown', content: section(t.displayCardToolDetailTitle, t.displayCardToolDetailHint) })
+    elements.push(buttonColumns(row((['off', 'summary', 'full'] as const).map(detail => ({
+      text: choice(t.displayToolDetailName(detail), state.toolDetail === detail),
+      active: state.toolDetail === detail,
+      payload: { toolDetail: detail },
+    })))))
     if (settings.tools === 'full') {
-      elements.push(buttonColumns([
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('args'), settings.toolArgs) },
-          type: settings.toolArgs ? 'primary' : 'default',
-          behaviors: [{ type: 'callback', value: { p: 'display', key: 'args', value: !settings.toolArgs } }],
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('results'), settings.toolResults) },
-          type: settings.toolResults ? 'primary' : 'default',
-          behaviors: [{ type: 'callback', value: { p: 'display', key: 'results', value: !settings.toolResults } }],
-        },
-      ]))
+      elements.push({
+        tag: 'markdown',
+        content: `${t.displayCardLabel('args')}：${settings.toolArgs ? t.displayShow : t.displayHide}`
+          + `　${t.displayCardLabel('results')}：${settings.toolResults ? t.displayShow : t.displayHide}`,
+        text_size: 'notation',
+      })
+      elements.push(buttonColumns(row([
+        { text: choice(`${t.displayCardLabel('args')}·${t.displayShow}`, settings.toolArgs), active: settings.toolArgs, payload: { key: 'args', value: true } },
+        { text: choice(`${t.displayCardLabel('args')}·${t.displayHide}`, !settings.toolArgs), active: !settings.toolArgs, payload: { key: 'args', value: false } },
+        { text: choice(`${t.displayCardLabel('results')}·${t.displayShow}`, settings.toolResults), active: settings.toolResults, payload: { key: 'results', value: true } },
+        { text: choice(`${t.displayCardLabel('results')}·${t.displayHide}`, !settings.toolResults), active: !settings.toolResults, payload: { key: 'results', value: false } },
+      ])))
     }
-    elements.push({ tag: 'markdown', content: t.displayCardOutputTitle })
-    elements.push(buttonColumns(([false, true] as const).map(full => {
-      const active = state.outputFull === full
-      return {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayOutputName(full), active) },
-        type: active ? 'primary' : 'default',
-          behaviors: [{ type: 'callback', value: { p: 'display', outputFull: full } }],
-      }
-    })))
+    elements.push({ tag: 'markdown', content: section(t.displayCardOutputTitle, t.displayCardOutputHint) })
+    elements.push(buttonColumns(row(([false, true] as const).map(full => ({
+      text: choice(t.displayOutputName(full), state.outputFull === full),
+      active: state.outputFull === full,
+      payload: { outputFull: full },
+    })))))
   }
   // Truncation lengths: one row per field, the active choice marked.
   elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: t.displayCardLengthTitle })
+  elements.push({ tag: 'markdown', content: section(t.displayCardLengthTitle, t.displayCardLengthHint) })
   for (const field of ['args', 'result'] as const) {
     elements.push({ tag: 'markdown', content: t.displayLengthName(field, state.lengths[field]), text_size: 'notation' })
-    elements.push(buttonColumns(PREVIEW_LENGTH_CHOICES[field].map(chars => {
-      const active = state.lengths[field] === chars
-      return {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardFoldButton(String(chars), active) },
-        type: active ? 'primary' : 'default',
-          behaviors: [{ type: 'callback', value: { p: 'display', length: field, chars } }],
-      }
-    })))
+    elements.push(buttonColumns(row(PREVIEW_LENGTH_CHOICES[field].map(chars => ({
+      text: choice(String(chars), state.lengths[field] === chars),
+      active: state.lengths[field] === chars,
+      payload: { length: field, chars },
+    })))))
   }
   if (compact) {
     elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: `${t.displayCardToolRowTitle}\n${t.displayCardToolRowHint}` })
-    elements.push(buttonColumns(COMPACT_TOOL_ROW_STYLES.map(style => {
-      const active = style === state.toolRow
-      return {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardToolRowButton(t.displayToolRowName(style), active) },
-        type: active ? 'primary' : 'default',
-          behaviors: [{ type: 'callback', value: { p: 'display', toolRow: style } }],
-      }
-    })))
+    elements.push({ tag: 'markdown', content: section(t.displayCardToolRowTitle, t.displayCardToolRowHint) })
+    elements.push(buttonColumns(row(COMPACT_TOOL_ROW_STYLES.map(style => ({
+      text: choice(t.displayToolRowName(style), style === state.toolRow),
+      active: style === state.toolRow,
+      payload: { toolRow: style },
+    })))))
   }
   elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: `${t.displayCardTickTitle}\n${t.displayCardTickHint}` })
+  elements.push({ tag: 'markdown', content: section(t.displayCardTickTitle, t.displayCardTickHint) })
   const currentTick = parseElapsedRefreshSeconds(state.elapsedRefreshSeconds)
-  elements.push(buttonColumns(ELAPSED_REFRESH_SECONDS.map(seconds => {
-    const active = seconds === currentTick
-    return {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardTickButton(seconds, active) },
-      type: active ? 'primary' : 'default',
-      behaviors: [{ type: 'callback', value: { p: 'display', tick: seconds } }],
-    }
-  })))
+  elements.push(buttonColumns(row(ELAPSED_REFRESH_SECONDS.map(seconds => ({
+    text: choice(`${seconds} ${t.displayCardTickUnit}`, seconds === currentTick),
+    active: seconds === currentTick,
+    payload: { tick: seconds },
+  })))))
   elements.push({ tag: 'markdown', content: t.displayCardNote, text_size: 'notation' })
   return {
     schema: '2.0',
@@ -394,7 +377,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       return
     }
     const toolDetail = parsed.toolDetail
-    if (toolDetail === 'off' || toolDetail === 'count' || toolDetail === 'summary' || toolDetail === 'full') {
+    if (toolDetail === 'off' || toolDetail === 'summary' || toolDetail === 'full') {
       if (display.getSettings().tools === toolDetail) return
       try {
         await display.setToolDetail(toolDetail)

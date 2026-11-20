@@ -198,7 +198,7 @@ export interface LarkSettingsValues {
   /** Card topology: `compact` merges the turn onto one card, `detailed` is per step. */
   transcriptView?: TranscriptView
   /** What the tool section carries. */
-  toolDetail?: 'off' | 'count' | 'summary' | 'full'
+  toolDetail?: 'off' | 'summary' | 'full'
   /** Whether tool payloads are carried untruncated. */
   toolOutputFull?: boolean
   locale?: PluginLocale
@@ -235,7 +235,7 @@ export interface LarkFormValues {
   /** Card topology; stored in `transcriptView` for backward compatibility. */
   transcriptView: TranscriptView
   /** What the tool section carries. */
-  toolDetail: 'off' | 'count' | 'summary' | 'full'
+  toolDetail: 'off' | 'summary' | 'full'
   /** Whether tool payloads are carried untruncated. */
   toolOutputFull: boolean
   locale: PluginLocale

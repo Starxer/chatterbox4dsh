@@ -315,7 +315,7 @@ describe('Lark settings client plugin', () => {
     // Presets are gone: only the two card topologies remain.
     expect([...mode.options].map(option => option.value)).toEqual(['compact', 'detailed'])
     const detail = screen.getByLabelText('toolDetail') as HTMLSelectElement
-    expect([...detail.options].map(option => option.value)).toEqual(['off', 'count', 'summary', 'full'])
+    expect([...detail.options].map(option => option.value)).toEqual(['off', 'summary', 'full'])
     // The untruncated-output switch is a plain toggle, not a select.
     expect(screen.getByRole('switch', { name: 'toolOutputFull' })).toBeTruthy()
   })

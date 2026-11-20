@@ -3544,14 +3544,9 @@ export function renderStepCard(
     elements.push({ tag: 'markdown', content: tight ? displayText : `${t.stepMessageHeader}\n\n${displayText}` })
   }
 
-  // Tool calls section. `count` collapses the whole section to one line of
-  // totals (the `compact` level); `summary` names each call but carries no
-  // payloads (the `standard` level); `full` is the original rendering.
-  if (tools.length > 0 && display.tools === 'count') {
-    if (elements.length > 0) elements.push({ tag: 'hr' })
-    const failed = tools.filter(tool => tool.result?.isError === true).length
-    elements.push({ tag: 'markdown', content: t.stepToolCount(tools.length, failed) })
-  } else if (tools.length > 0) {
+  // Tool calls section: `summary` names each call but carries no payloads;
+  // `full` adds the argument and result blocks.
+  if (tools.length > 0) {
     if (elements.length > 0) {
       elements.push({ tag: 'hr' })
       elements.push({ tag: 'markdown', content: t.stepToolHeader })

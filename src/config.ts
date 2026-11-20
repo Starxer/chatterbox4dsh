@@ -62,7 +62,7 @@ export interface Config {
    */
   reasoningFold?: boolean
   /** What the tool section carries; unset keeps the legacy level's default. */
-  toolDetail?: 'off' | 'count' | 'summary' | 'full'
+  toolDetail?: 'off' | 'summary' | 'full'
   /** Whether tool payloads are carried untruncated; unset keeps the legacy default. */
   toolOutputFull?: boolean
   /**
@@ -315,7 +315,7 @@ export interface SettingsConfig extends Required<Pick<Config,
   /** Fold the thinking block (default) or show it flat; optional for partial callers. */
   reasoningFold?: boolean
   /** Tool detail override; optional for partial callers. */
-  toolDetail?: 'off' | 'count' | 'summary' | 'full'
+  toolDetail?: 'off' | 'summary' | 'full'
   /** Tool output truncation override; optional for partial callers. */
   toolOutputFull?: boolean
   /** Preview caps; optional in the type, always filled by resolveSettingsConfig. */
@@ -394,7 +394,7 @@ export const ConfigSchema = z.object({
   transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact (default, shorter chat cards) counts tool calls only, standard adds one summary line per call, detailed adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
   compactToolRow: z.union([...COMPACT_TOOL_ROW_STYLES]).default(DEFAULT_COMPACT_TOOL_ROW).volatile().description('What one tool row of the compact turn card carries: "tool-description" (default) puts the model-written description first and then the tool row, "tool" shows the tool name plus the file/programs it touched, "description" shows the description alone and never falls back when a call has none. Compact only; the other levels keep their own summary line.'),
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
-  toolDetail: z.union(['off', 'count', 'summary', 'full']).volatile().description('What the tool section carries: off (counts only on compact), count (one totals line), summary (one line per call) or full (summary plus argument/result blocks). Unset keeps the value the retired level name implies, so an upgrade does not change the look.'),
+  toolDetail: z.union(['off', 'summary', 'full']).volatile().description('What the tool section of a step card carries: off (nothing), summary (one line per call) or full (summary plus argument/result blocks). Unset keeps the value the retired level name implies, so an upgrade does not change the look.'),
   toolOutputFull: z.boolean().volatile().description('Whether tool argument/result blocks are carried untruncated (up to four times the configured preview length, hard cap 6000 characters, because a card near 30 KB is refused whole). Unset keeps the retired level name\'s value.'),
   reasoningFold: z.boolean().default(true).volatile().description('Fold the thinking block into a collapsed panel (default). Off shows the whole chain flat on the step card. The chain is never truncated either way: past one card it continues on follow-up cards.'),
   apiQuotaPerMonth: z.number().min(0).max(10_000_000).default(0).volatile().description('Monthly API-call quota for this app, as shown in the open-platform console (default: unset = unknown). Only used to print "this month N / quota (P%)" in /status; the plugin counts every outbound call itself and never blocks on the number.'),
@@ -447,7 +447,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     // "absent" as "keep whatever the retired level name implied".
     ...(readField(config.toolDetail) === undefined
       ? {}
-      : { toolDetail: readField(config.toolDetail) as 'off' | 'count' | 'summary' | 'full' }),
+      : { toolDetail: readField(config.toolDetail) as 'off' | 'summary' | 'full' }),
     ...(readField(config.toolOutputFull) === undefined
       ? {}
       : { toolOutputFull: readField(config.toolOutputFull) as boolean }),

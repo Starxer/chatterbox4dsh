@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### 变更：`/display` 卡片重排可读性 +「工具明细」改名 + 去掉「只报计数」（`src/feishu-display.ts` / `src/i18n.ts` / `src/display-level.ts` / `src/config.ts` / `src/commands.ts` / `src/client/*`，2026-11-20）
+
+- **原问题**：小节标题只有一两个词（「思考」「工具明细」），看不出它控制什么；选中态用灰色 `disabled` 又难判读。
+- **新卡片**：每个小节都是「标题 + 一行说明」，选项统一为「按钮组 + `✓` 标记当前值 + 蓝色高亮（可点、重复点无操作）」：
+  - **模式**：紧凑 / 详细（说明两种卡片拓扑）；
+  - **思考内容展示**：显示 / 隐藏，折叠 / 平铺（说明默认折叠、点开为全文）；
+  - **工具调用展示**（原「工具明细」）：关 / 一行摘要 / 完整；
+  - **工具输出**：截断 / 不截断；
+  - **参数与结果**：四个按钮（`参数·显示/隐藏`、`结果·显示/隐藏`），仅在「完整」时可改；
+  - **截断长度（字）**、**工具行（紧凑模式）**、**耗时刷新（秒）**同样带说明。
+- **删掉「只报计数」**：`ToolDetail` 由四值改为 `off | summary | full`——「只报数量」对读者没有意义（看不到是哪个工具、做了什么）。配置值 `count` 若已写入会按「未知值」回退到默认；命令改为 `/display tools off|summary|full`，Web GUI 设置页同步为三选项。
+- 测试：卡片用例按「显示/隐藏双按钮 + `✓` 标记」重写，客户端/命令用例同步三选项；全量 82 文件 / 1,593 用例、typecheck、build、privacy 全绿。
+
+**English**: The `/display` card was re-laid-out for readability: every section now has a heading plus one line explaining what it controls, and each choice is a button group where the current value carries a `✓` and the blue highlight (clickable; re-clicking it is a no-op). Sections: mode (compact / detailed), thinking content (show/hide, folded/flat), **tool calls** (renamed from "tool detail": off / one line / full), tool output (truncated / untruncated), arguments and results, truncation lengths, the compact tool row, and the refresh interval. The "counts only" choice was removed — `ToolDetail` is now `off | summary | full` because a bare call count tells the reader nothing about which tool ran or what it did; a stored `count` falls back to the default, `/display tools off|summary|full` and the Web GUI settings page follow. Card tests were rewritten for the show/hide pairs and the `✓` marker; 82 files / 1,593 tests, typecheck, build and privacy gate green.
+
 ### 修复：`/display` 卡选中态改回蓝色高亮；切不动选项的 HMR 事务问题（`src/feishu-display.ts` / `src/index.ts`，2026-11-20）
 
 - **选中态**：去掉所有选中按钮的 `disabled`（那层灰是使用者明确否掉的），恢复成「选中 = `primary` 蓝色高亮、仍然可点」；点自己变成**幂等无操作**（每个选项都先与当前设置比较，相同就直接返回，不写设置也不重绘）。

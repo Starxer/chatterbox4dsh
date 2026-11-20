@@ -2358,7 +2358,7 @@ describe('display levels on the step card (O22/O5)', () => {
     const card = renderStepCard(t, 'hidden chain', undefined, []) as any
     expect(mdOf(card)).toContain('hidden chain')
     const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', reasoningFold: true, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     expect(mdOf(compact)).not.toContain('hidden chain')
     expect(panelOf(compact)).toBeUndefined()
   })
@@ -2369,17 +2369,6 @@ describe('display levels on the step card (O22/O5)', () => {
     arguments: '{"command":"ls"}',
     result: { isError: false, content: 'a\nb', elapsed: 1200 },
   } as any
-
-  it('collapses tools to one count line at the compact level', () => {
-    const card = renderStepCard(t, undefined, undefined, [tool, { ...tool, callId: 'c2', result: { ...tool.result, isError: true } }], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', reasoningFold: true, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
-    const md = mdOf(card)
-    expect(md).toContain(t.stepToolCount(2, 1))
-    // No per-call lines, no args, no result blocks.
-    expect(md).not.toContain('`bash`')
-    expect(md).not.toContain(t.stepToolArgsHeader)
-    expect(md).not.toContain(t.stepToolResultHeader)
-  })
 
   it('names each call but carries no payload at the standard level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,

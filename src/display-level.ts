@@ -110,7 +110,7 @@ export type ReasoningDetail = 'off' | 'on'
  * - `summary` — one line per call (icon + name + status + elapsed), no args/results;
  * - `full`    — the current rendering: summary + args + result previews.
  */
-export type ToolDetail = 'off' | 'count' | 'summary' | 'full'
+export type ToolDetail = 'off' | 'summary' | 'full'
 
 /**
  * Default length of the live reasoning preview (characters) shown while the
@@ -235,7 +235,7 @@ export function resolveDisplaySettings(input: {
   const legacyName = parseTranscriptView(input.transcriptView)
   const legacy = LEGACY_DEFAULTS[legacyName]
   const explicitTools = typeof input.toolDetail === 'string'
-    && (['off', 'count', 'summary', 'full'] as readonly string[]).includes(input.toolDetail)
+    && (['off', 'summary', 'full'] as readonly string[]).includes(input.toolDetail)
     ? input.toolDetail as ToolDetail
     : undefined
   const tools = input.showToolCalls === false ? 'off' : (explicitTools ?? legacy.tools)

@@ -239,7 +239,6 @@ export interface Translations {
    */
   stepCardStaleNotice: (turn: number, step: number, reason: string) => string
   /** One line of tool-call totals, shown by the `compact` detail level. */
-  stepToolCount: (calls: number, failed: number) => string
 
   // ---- Turn progress card (feishu-progress.ts) ----
   // One card per turn, `compact` level only: the turn's tool activity merged
@@ -536,7 +535,7 @@ export interface Translations {
   /** Shared display vocabulary (mode, preset, tool detail, output, preview). */
   displayModeName: (mode: 'compact' | 'detailed') => string
   displayPresetName: (name: string | undefined) => string
-  displayToolDetailName: (detail: 'off' | 'count' | 'summary' | 'full') => string
+  displayToolDetailName: (detail: 'off' | 'summary' | 'full') => string
   displayOutputName: (full: boolean) => string
   /** Truncation-length rows on the `/display` card. */
   displayCardLengthTitle: string
@@ -564,6 +563,23 @@ export interface Translations {
   displayLevelName: (level: TranscriptView) => string
   /** A level button, marked when it is the active one. */
   displayCardLevelButton: (name: string, active: boolean) => string
+  /**
+   * One selectable option on the `/display` card. The active one carries a `✓ `
+   * prefix: the choices are a STATE, and a check mark reads as state without the
+   * greyed-out `disabled` look the operator rejected.
+   */
+  displayCardChoice: (name: string, active: boolean) => string
+  /** The two sides of a boolean choice: `显示` / `隐藏`. */
+  displayShow: string
+  displayHide: string
+  /** Unit after a refresh-interval number (`秒` / `s`). */
+  displayCardTickUnit: string
+  /** One-line explanations under each section heading. */
+  displayCardModeHint: string
+  displayCardThinkingHint: string
+  displayCardToolDetailHint: string
+  displayCardOutputHint: string
+  displayCardLengthHint: string
   /** What a level means, one line per level. */
   displayLevelHint: (level: TranscriptView) => string
   /** The level today's four switches add up to, when no level has been chosen. */
@@ -1060,8 +1076,6 @@ export const zh = {
   stepPosition: (turn, step) => `第 ${turn} 轮 · 第 ${step} 步`,
   stepCardStaleNotice: (turn, step, reason) =>
     `⚠️ ${turn > 0 && step > 0 ? `第 ${turn} 轮第 ${step} 步的卡片` : '这张卡片'}没能更新，已停在旧内容。\n原因：${reason}`,
-  stepToolCount: (calls, failed) =>
-    `🔧 ${calls} 个工具调用${failed > 0 ? ` · ${failed} 个失败` : ''}`,
 
   // 回合过程卡（feishu-progress.ts）：紧凑模式把整轮的工具活动合并到一张卡上。
   turnCardTitleRunning: elapsed => `🐳 深度求索中 · ${elapsed}`,
@@ -1221,11 +1235,11 @@ export const zh = {
   displayCardModeTitle: '**模式**：',
   displayCardPresetTitle: '**预设**：',
   displayCardThinkingTitle: '**思考**',
-  displayCardToolDetailTitle: '**工具明细**',
+  displayCardToolDetailTitle: '**工具调用展示**',
   displayCardOutputTitle: '**工具输出**',
   displayModeName: mode => mode === 'compact' ? '紧凑' : '详细',
   displayPresetName: name => name === undefined ? '自定义' : ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[name] ?? name,
-  displayToolDetailName: detail => ({ off: '关', count: '只报计数', summary: '一行摘要', full: '完整' })[detail],
+  displayToolDetailName: detail => ({ off: '关', summary: '一行摘要', full: '完整' })[detail],
   displayOutputName: full => full ? '不截断' : '截断',
   displayCardLengthTitle: '**截断长度**（字）',
   displayLengthName: (field, chars) => `${{ args: '参数', result: '结果' }[field]}：${chars}`,
@@ -1241,6 +1255,15 @@ export const zh = {
   })[style],
   displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardSwitchesHiddenByLevel: '_当前模式下不起作用的开关已隐藏。_',
+  displayCardChoice: (name, active) => `${active ? '✓ ' : ''}${name}`,
+  displayShow: '显示',
+  displayHide: '隐藏',
+  displayCardTickUnit: '秒',
+  displayCardModeHint: '紧凑 = 一回合合并成一张过程卡（另发答案卡）；详细 = 每一步一张步骤卡。',
+  displayCardThinkingHint: '步骤卡上是否显示模型的深度思考；显示时默认折叠成面板，点开展开全文。',
+  displayCardToolDetailHint: '每一步的工具调用展示到什么程度；「完整」才带参数与结果。',
+  displayCardOutputHint: '「完整」明细下的参数与结果是否截断到设定长度。',
+  displayCardLengthHint: '参数与结果各自的上限；选「不截断」时最多显示 4 倍（封顶 6000 字，卡片约 30 KB 会被整张拒收）。',
   displayToolRowLabel: '工具行',
   displayToolRowSet: name => `✅ 工具行已切换为「${name}」。`,
   displayToolRowUsage: '用法：`/display toolrow tool|both|description`',
@@ -1684,8 +1707,6 @@ export const en: Translations = {
   stepPosition: (turn, step) => `Turn ${turn} · Step ${step}`,
   stepCardStaleNotice: (turn, step, reason) =>
     `⚠️ ${turn > 0 && step > 0 ? `The card for turn ${turn}, step ${step}` : 'A card'} could not be updated and is stuck on its old content.\nReason: ${reason}`,
-  stepToolCount: (calls, failed) =>
-    `🔧 ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''}`,
 
   // Turn progress card (feishu-progress.ts): `compact` merges the whole turn's
   // tool activity onto one card.
@@ -1851,11 +1872,11 @@ export const en: Translations = {
   displayCardModeTitle: '**Mode**: ',
   displayCardPresetTitle: '**Preset**: ',
   displayCardThinkingTitle: '**Thinking**',
-  displayCardToolDetailTitle: '**Tool detail**',
+  displayCardToolDetailTitle: '**Tool calls**',
   displayCardOutputTitle: '**Tool output**',
   displayModeName: mode => mode === 'compact' ? 'compact' : 'detailed',
   displayPresetName: name => name === undefined ? 'custom' : ({ compact: 'compact', standard: 'standard', detailed: 'detailed', verbose: 'verbose' })[name] ?? name,
-  displayToolDetailName: detail => ({ off: 'off', count: 'counts', summary: 'one line', full: 'full' })[detail],
+  displayToolDetailName: detail => ({ off: 'off', summary: 'one line', full: 'full' })[detail],
   displayOutputName: full => full ? 'untruncated' : 'truncated',
   displayCardLengthTitle: '**Truncation lengths** (chars)',
   displayLengthName: (field, chars) => `${{ args: 'Arguments', result: 'Result' }[field]}: ${chars}`,
@@ -1871,6 +1892,15 @@ export const en: Translations = {
   })[style],
   displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardSwitchesHiddenByLevel: '_Switches the active level cannot use are hidden: arguments/results apply to detailed and verbose only, reasoning is never shown in compact._',
+  displayCardChoice: (name, active) => `${active ? '✓ ' : ''}${name}`,
+  displayShow: 'Show',
+  displayHide: 'Hide',
+  displayCardTickUnit: 's',
+  displayCardModeHint: 'Compact merges the turn onto one progress card (plus the answer card); Detailed posts one card per step.',
+  displayCardThinkingHint: "Whether step cards show the model's deep thinking; when shown it is folded by default, expand to read the whole chain.",
+  displayCardToolDetailHint: 'How much of each tool call a step card shows; only "Full" carries arguments and results.',
+  displayCardOutputHint: 'Whether the arguments and results of a Full tool section are truncated to the configured length.',
+  displayCardLengthHint: 'Per-field cap; "untruncated" shows up to 4x (hard cap 6000 chars — a card near 30 KB is refused whole).',
   displayToolRowLabel: 'Tool row',
   displayToolRowSet: name => `✅ Tool row set to "${name}".`,
   displayToolRowUsage: 'Usage: `/display toolrow tool|both|description`',

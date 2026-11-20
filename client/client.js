@@ -849,10 +849,6 @@ function LarkSettingsCard(props) {
 											children: t("toolDetailOff")
 										}),
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-											value: "count",
-											children: t("toolDetailCount")
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
 											value: "summary",
 											children: t("toolDetailSummary")
 										}),
@@ -2800,10 +2796,9 @@ const dictionaries = {
 		transcriptViewHint: "紧凑（默认）：把一回合的步骤合并成一张过程卡，另发答案卡；详细：每一步一张步骤卡（带完整工具与结果）。旧的四档已取消，下面全部是独立开关，按需组合。",
 		transcriptViewCompact: "紧凑（默认）",
 		transcriptViewDetailed: "详细",
-		toolDetail: "工具明细",
-		toolDetailHint: "一行摘要只报每个工具的名字与耗时；完整才带参数与结果负载。",
+		toolDetail: "工具调用展示",
+		toolDetailHint: "关 = 不显示工具；一行摘要 = 每个工具一行名字与耗时；完整 = 再加参数与结果块。",
 		toolDetailOff: "关",
-		toolDetailCount: "只报计数",
 		toolDetailSummary: "一行摘要",
 		toolDetailFull: "完整",
 		toolOutputFull: "工具输出不截断",
@@ -2908,10 +2903,9 @@ const dictionaries = {
 		transcriptViewHint: "Compact (default) merges the turn's steps onto one progress card and posts the answer separately; Detailed posts one card per step with the full tool section. The old four levels are gone — everything below is an independent switch.",
 		transcriptViewCompact: "Compact (default)",
 		transcriptViewDetailed: "Detailed",
-		toolDetail: "Tool detail",
-		toolDetailHint: "One line per call names the tool and its duration; Full also carries the argument and result payloads.",
+		toolDetail: "Tool calls",
+		toolDetailHint: "Off hides tools entirely; One line names each call and its duration; Full adds the argument and result blocks.",
 		toolDetailOff: "Off",
-		toolDetailCount: "Counts only",
 		toolDetailSummary: "One line per call",
 		toolDetailFull: "Full",
 		toolOutputFull: "Untruncated tool output",

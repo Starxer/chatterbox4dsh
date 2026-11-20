@@ -162,7 +162,6 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
         </select><span className="dsh-feishu-toggle-hint">{t('transcriptViewHint')}</span></label>
         <label><span>{t('toolDetail')}</span><select aria-label="toolDetail" disabled={blocked} value={form.toolDetail} onChange={event => { props.edit('toolDetail', event.target.value as LarkFormValues['toolDetail']) }}>
           <option value="off">{t('toolDetailOff')}</option>
-          <option value="count">{t('toolDetailCount')}</option>
           <option value="summary">{t('toolDetailSummary')}</option>
           <option value="full">{t('toolDetailFull')}</option>
         </select><span className="dsh-feishu-toggle-hint">{t('toolDetailHint')}</span></label>

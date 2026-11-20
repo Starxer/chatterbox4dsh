@@ -213,7 +213,7 @@ export interface CommandTranslations {
   readonly displayModeLabel: string
   readonly displayModeName: (mode: 'compact' | 'detailed') => string
   /** Tool detail + output truncation. */
-  readonly displayToolDetailName: (detail: 'off' | 'count' | 'summary' | 'full') => string
+  readonly displayToolDetailName: (detail: 'off' | 'summary' | 'full') => string
   readonly displayToolDetailSet: (name: string) => string
   readonly displayToolDetailUsage: string
   readonly displayOutputName: (full: boolean) => string
@@ -764,7 +764,7 @@ export async function handleDisplayCommand(
   if (rawKey === 'tools') {
     const detail = rawValue === undefined
       ? undefined
-      : (['off', 'count', 'summary', 'full'] as const).find(value => value === rawValue)
+      : (['off', 'summary', 'full'] as const).find(value => value === rawValue)
     if (detail === undefined) {
       return rawValue === undefined
         ? { kind: 'success', text: `${t.displayToolDetailLabel}: ${t.displayToolDetailName(display.getToolDetail())}\n${t.displayToolDetailUsage}` }

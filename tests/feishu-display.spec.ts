@@ -97,6 +97,11 @@ const outputOf = (card: any): any[] =>
 const lengthsOf = (card: any): any[] =>
   buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.length !== undefined)
 
+/** Every button controlling one boolean switch, in render order (show, hide). */
+function switchButtonsOf(card: any, key: DisplayToggleKey): any[] {
+  return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.key === key)
+}
+
 /** Only the compact tool-row style buttons. */
 function toolRowsOf(card: any): any[] {
   return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.toolRow !== undefined)
@@ -151,8 +156,9 @@ describe('renderDisplayCard', () => {
     expect(modesOf(card).map((b: any) => b.behaviors[0].value.mode)).toEqual(['compact', 'detailed'])
     expect(markdownsOf(card).join('\n')).not.toContain('预设')
     // The detailed mode offers the thinking switches and the tool rows.
-    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
-    expect(toolDetailOf(card)).toHaveLength(4)
+    // Each boolean switch is a SHOW / HIDE pair (state, not a greyed-out toggle).
+    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'reasoning', 'args', 'args', 'results', 'results'])
+    expect(toolDetailOf(card)).toHaveLength(3)
     expect(outputOf(card)).toHaveLength(2)
     expect(lengthsOf(card)).toHaveLength(8)
   })
@@ -182,9 +188,12 @@ describe('renderDisplayCard', () => {
 
   it('marks the active choices and carries TARGET values, not toggle markers', () => {
     const card = renderDisplayCard(cardFor({ ...ALL_ON, reasoning: false, args: false }), t) as any
-    const reasoning = buttonFor(card, 'reasoning')
-    expect(reasoning.text.content).toBe('⬜ 深度思考：关')
-    expect(reasoning.type).toBe('default')
+    const [showReasoning, hideReasoning] = switchButtonsOf(card, 'reasoning')
+    expect(showReasoning.text.content).toBe('显示')
+    expect(showReasoning.type).toBe('default')
+    // The current value carries a check mark and the blue highlight.
+    expect(hideReasoning.text.content).toBe('✓ 隐藏')
+    expect(hideReasoning.type).toBe('primary')
     // Clicking an off switch turns it on.
     expect(payloadOf(card, 'reasoning')).toEqual({ p: 'display', key: 'reasoning', value: true })
     expect(payloadOf(card, 'args')).toEqual({ p: 'display', key: 'args', value: true })
@@ -192,12 +201,15 @@ describe('renderDisplayCard', () => {
     const activeMode = modesOf(card).find((b: any) => b.behaviors[0].value.mode === 'detailed')
     expect(activeMode).toMatchObject({ type: 'primary' })
     expect(activeMode.disabled).toBeUndefined()
+    expect(activeMode.text.content).toBe('✓ 详细')
   })
 
   it('localizes the card', () => {
     const card = renderDisplayCard(cardFor(ALL_ON), tEn) as any
     expect(card.header.title.content).toBe('📇 Card display')
-    expect(buttonFor(card, 'results').text.content).toBe('✅ Results: on')
+    const [showResults, hideResults] = switchButtonsOf(card, 'results')
+    expect(showResults.text.content).toBe('✓ Results·Show')
+    expect(hideResults.text.content).toBe('Results·Hide')
     expect(payloadOf(card, 'results')).toMatchObject({ p: 'display' })
     expect(behaviorsOf(card, 'results')).toHaveLength(1)
     expect(markdownsOf(card).join('\n')).toContain('Mode')
@@ -218,12 +230,12 @@ describe('renderDisplayCard', () => {
     const activeDetail = toolDetailOf(summary).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')
     expect(activeDetail).toMatchObject({ type: 'primary' })
     expect(activeDetail.disabled).toBeUndefined()
-    expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+    expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'reasoning'])
 
     const full = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
     expect(toolDetailOf(full).find((b: any) => b.behaviors[0].value.toolDetail === 'full')).toMatchObject({ type: 'primary' })
     // `full` brings the argument/result switches back.
-    expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
+    expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'reasoning', 'args', 'args', 'results', 'results'])
   })
 
   it('marks the active truncation lengths', () => {
@@ -239,17 +251,21 @@ describe('renderDisplayCard', () => {
 
   it('hides the argument and result switches unless the tool section is full', () => {
     const off = renderDisplayCard(cardFor({ ...ALL_ON, tools: false }), t) as any
-    expect(switchesOf(off).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+    expect(switchesOf(off).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'reasoning'])
     const summary = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
-    expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+    expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'reasoning'])
     const full = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
-    expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
+    expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'reasoning', 'args', 'args', 'results', 'results'])
   })
 
   it('preserves stored off values when the switches come back', () => {
     const card = renderDisplayCard(cardFor({ ...ALL_ON, args: false, results: false }, 'verbose'), t) as any
-    expect(buttonFor(card, 'args').text.content).toBe('⬜ 参数：关')
-    expect(buttonFor(card, 'results').text.content).toBe('⬜ 结果：关')
+    // Both are stored off: the HIDE side carries the check mark, and the stored
+    // value is preserved (not silently turned back on).
+    const [, hideArgs] = switchButtonsOf(card, 'args')
+    expect(hideArgs.text.content).toBe('✓ 参数·隐藏')
+    const [, hideResults] = switchButtonsOf(card, 'results')
+    expect(hideResults.text.content).toBe('✓ 结果·隐藏')
   })
 
 })
@@ -421,7 +437,10 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'reasoning') } })
+    // The SHOW side carries the current value (a no-op), so a real switch taps
+    // the HIDE side.
+    const hide = switchButtonsOf(sentCard(0), 'reasoning').find((b: any) => b.behaviors[0].value.value === false)
+    await click({ messageId: 'om_1', action: { value: hide.behaviors[0].value } })
 
     expect(spy).toHaveBeenCalledWith('reasoning', false)
     // ONE message for the whole interaction: no second card, no stale notice.
@@ -429,7 +448,8 @@ describe('startFeishuDisplay', () => {
     expect(channel.updateCard).toHaveBeenCalledTimes(1)
     expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
     // The repainted card reflects the persisted value.
-    expect(buttonFor(repainted(0), 'reasoning').text.content).toBe('⬜ 深度思考：关')
+    const [, hideAfter] = switchButtonsOf(repainted(0), 'reasoning')
+    expect(hideAfter.text.content).toBe('✓ 隐藏')
     handle.stop()
   })
 
@@ -496,7 +516,8 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    const clicked = click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'reasoning') } })
+    const hide = switchButtonsOf(sentCard(0), 'reasoning').find((b: any) => b.behaviors[0].value.value === false)
+    const clicked = click({ messageId: 'om_1', action: { value: hide.behaviors[0].value } })
     await new Promise(resolve => setTimeout(resolve, 0))
     // While the write is in flight nothing may be repainted — a repaint here
     // would render the PRE-write state, which is the bug this guards.
@@ -504,7 +525,8 @@ describe('startFeishuDisplay', () => {
 
     release()
     await clicked
-    expect(buttonFor(repainted(0), 'reasoning').text.content).toBe('⬜ 深度思考：关')
+    const [, hideAfter] = switchButtonsOf(repainted(0), 'reasoning')
+    expect(hideAfter.text.content).toBe('✓ 隐藏')
     handle.stop()
   })
 
@@ -599,7 +621,8 @@ describe('startFeishuDisplay', () => {
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
     channel.updateCard.mockRejectedValueOnce(new Error('boom'))
 
-    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'reasoning') } })
+    const hide = switchButtonsOf(sentCard(0), 'reasoning').find((b: any) => b.behaviors[0].value.value === false)
+    await click({ messageId: 'om_1', action: { value: hide.behaviors[0].value } })
     // The setting still changed; only the card refresh failed.
     expect(state.reasoning).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('boom'))
