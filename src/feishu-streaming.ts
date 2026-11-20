@@ -399,10 +399,13 @@ interface SessionStepState {
    */
   reasoningOverflowSent: boolean
   /**
-   * Tail of the reasoning stream seen through `agent/assistant-stream`, kept for
-   * the live preview. Bounded to about 2× the preview length: only the last
-   * characters are ever displayed, and the full chain arrives on
-   * `assistant/message`.
+   * The reasoning text ACCUMULATED for the live preview, in stream order.
+   *
+   * Append-only on purpose: a sliding tail window made the card grow and shrink
+   * on every push (the operator called it "闪烁 / 高度会变化", 2026-11-20), while
+   * appending only ever grows the element downward. Past
+   * {@link REASONING_PREVIEW_CAP} the preview freezes — the settled card carries
+   * the full chain anyway, so continuing would only buy API calls.
    */
   previewTail: string
   /** Repeating timer that pushes the preview; cleared at every boundary. */
@@ -747,9 +750,6 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     return policy.reasoning !== 'off' && policy.reasoningPreview && reasoningPreview?.() !== false
   }
 
-  /** Characters of reasoning shown in the live preview (the tail only). */
-  const previewLength = (): number => Math.max(80, previewLimits().reasoningHead)
-
   /** Stop the repeating preview push (does not close streaming mode). */
   const stopReasoningPreview = (state: SessionStepState): void => {
     if (state.previewTimer === undefined) return
@@ -782,14 +782,17 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       state.previewFailed = true
       return
     }
-    const tr = getTranslations?.() ?? translationsFor('zh')
     try {
       const cardId = await ref.cardId
       if (cardId === undefined || state.stepCardRef !== ref) return
+      // Content only: the "深度思考中" line above it is a SEPARATE element, so it
+      // never moves down as the text grows (that movement was the other half of
+      // the jitter). Each push carries the full accumulated text, so the client
+      // animates just the appended delta.
       const ok = await channel.streamCardElement(
         cardId,
         REASONING_PREVIEW_ELEMENT,
-        `${state.previewTail}\n\n${tr.stepPreviewThinking}`,
+        state.previewTail,
       )
       if (!ok) {
         state.previewFailed = true
@@ -805,11 +808,21 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     }
   }
 
-  /** Feed one live reasoning delta into the preview tail. */
+  /**
+   * Feed one live reasoning delta into the preview.
+   *
+   * Append-only: the element only grows. Once {@link REASONING_PREVIEW_CAP} is
+   * reached the preview freezes (timer stops) instead of sliding, which is the
+   * one thing that keeps a long think from re-rendering the whole card on every
+   * tick.
+   */
   const noteReasoningPreview = (state: SessionStepState, text: string): void => {
     if (state.previewFailed || text === '' || !previewEnabled()) return
-    const cap = previewLength() * 2
-    state.previewTail = (state.previewTail + text).slice(-cap)
+    if (state.previewTail.length >= REASONING_PREVIEW_CAP) {
+      stopReasoningPreview(state)
+      return
+    }
+    state.previewTail = (state.previewTail + text).slice(0, REASONING_PREVIEW_CAP)
     if (!state.stepCardSent || state.stepCardRef === undefined) return
     scheduleReasoningPreview(state)
   }
@@ -3030,6 +3043,16 @@ const REASONING_PREVIEW_ELEMENT = 'reasoning_preview'
 const REASONING_PREVIEW_INTERVAL_MS = 1_500
 
 /**
+ * How many characters the live preview accumulates before it freezes.
+ *
+ * The settled card carries the whole chain (folded, split at 20 KB), so the
+ * preview only has to give the reader something to watch. 3000 CJK characters
+ * is ~9 KB of card JSON per push — comfortably inside the limits — and long
+ * enough that the freeze usually arrives after thinking has already settled.
+ */
+const REASONING_PREVIEW_CAP = 3_000
+
+/**
  * Split a thinking chain into per-card panels under {@link REASONING_PANEL_BYTES}.
  *
  * Exported so the event handler can send the tail as continuation cards using
@@ -3647,16 +3670,18 @@ export function renderStepCard(
   const emptyPhase = options?.empty
   const phase: StepLivePhase = options?.phase ?? 'none'
   if (options?.preview !== undefined) {
+    // The status line sits ABOVE the streamed text and is never pushed, so it
+    // stays put while the content below grows. (Having it trail the text made
+    // the whole block shift down on every update — 2026-11-20.)
+    elements.push({ tag: 'markdown', content: t.stepPreviewThinking, text_size: 'notation' })
     // The preview element carries an `element_id`: it is the only element that
     // `cardkit.v1.cardElement.content` will ever touch, and the card is created
-    // in streaming mode because of it. Rendered from the very first write (with
-    // just the status suffix) so the first push always has an element to target.
+    // in streaming mode because of it. It exists from the first write (with a
+    // one-character placeholder) so the first push always has a target.
     elements.push({
       tag: 'markdown',
       element_id: REASONING_PREVIEW_ELEMENT,
-      content: options.preview.text === ''
-        ? t.stepPreviewThinking
-        : `${options.preview.text}\n\n${t.stepPreviewThinking}`,
+      content: options.preview.text === '' ? '…' : options.preview.text,
     })
   }
   if (emptyPhase !== undefined) {

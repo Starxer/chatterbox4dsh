@@ -2165,8 +2165,20 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
     // The preview pushes on its own 1.5 s cadence.
     await vi.waitFor(() => { expect(ch.streamCardElement).toHaveBeenCalled() }, { timeout: 3000 })
     const content = String(ch.streamCardElement!.mock.calls.at(-1)![2])
-    expect(content).toContain('让我想想')
-    expect(content).toContain(t.stepPreviewThinking)
+    expect(content).toBe('让我想想')
+    // The status line is its own element ABOVE the streamed text, so it never
+    // moves as the text grows (2026-11-20: it used to trail the text).
+    const created = ch.createCardInstance!.mock.calls[0]![0] as any
+    expect(mdOf(created)).toContain(t.stepPreviewThinking)
+    // Append-only: a second delta grows the same text instead of sliding a
+    // tail window (which made the card's height jump on every push).
+    h.emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 3, index: 1, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '再想想' },
+    })
+    await vi.waitFor(() => {
+      expect(String(ch.streamCardElement!.mock.calls.at(-1)![2])).toBe('让我想想再想想')
+    }, { timeout: 3000 })
 
     // Thinking settles: streaming is closed so the card can be rewritten whole.
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })

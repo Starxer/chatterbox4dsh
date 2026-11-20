@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 修复：思考期预览不再闪烁（状态行上移 + 只追加 + 结束折叠）（`src/feishu-streaming.ts`，2026-11-20）
+
+- **现象**：预览每 1.5 秒推送一次，卡片高度会跳；而且「🧠 正在思考中…」跟在正文末尾，文字一长它就往下跑，观感很粗糙（使用者 2026-11-20 反馈）。
+- **三个原因分别修掉**：
+  1. **状态行**改成独立元素、固定放在正文**上方**，且**只渲染不推送**——正文增长时它不动；
+  2. 预览正文由「滑动尾部窗口」改为**只追加**（附录式），高度只增不减；超过 **3,000 字**后冻结（最终折叠面板里是全文，继续推只是白花额度）；
+  3. 思考结束（`assistant/message` / `step/end`）→ 停推、`card.settings` 关流式、整卡重写为**折叠面板 + 全文**（超 20 KB 走思考续卡）——只有这一次明显的收起，而不是每次推送都变高度。
+- 预览从此**不取尾巴、不截断**：显示的是从头累积的完整思考（前 3,000 字），不再是「最后 200 字」的片段。
+- 关掉仍然零成本：`/display preview off` 后不再有任何流式请求，只留状态行。
+- 测试：预览用例改为断言「内容只含追加文本、状态行在卡上、第二次增量把文本接在后面」；全量 82 文件 / 1,595 用例、typecheck、build、privacy 全绿。
+
+**English**: The live thinking preview no longer makes the card jump every 1.5 s. Three causes, fixed separately: (1) the "🧠 正在思考中…" status is now its own element ABOVE the body and is never pushed, so it does not slide down as the text grows; (2) the preview body switched from a sliding tail window to APPEND-ONLY accumulation, so the card only ever grows; it freezes at 3,000 characters (the settled panel carries the whole chain, so more pushes would only spend quota); (3) when thinking ends (`assistant/message` / `step/end`) the pushes stop, streaming mode closes and the card is rewritten as the folded panel with the full chain (20 KB continuation cards beyond that) — one visible collapse instead of a height change on every push. The preview no longer shows a truncated tail: it shows the thinking from the start, up to the freeze point, and the folded block has everything. Turning it off (`/display preview off`) still costs zero streaming calls and leaves only the status line. Covered by an updated preview test (append-only content, status line on the card, second delta appended); 82 files / 1,595 tests, typecheck, build and privacy gate green.
+
 ### 变更：模式改名「紧凑 / 详细」，设置页换成模式 + 工具两项（`i18n` / `client`，2026-11-20）
 
 - **改名**：`compact` 的中文名由「简洁」改为**「紧凑」**——它描述的是「步骤合并成一张过程卡」，不是「内容更少」；`detailed` 仍是「详细」（每步一张步骤卡）。命令、`/display` 卡、Web GUI 设置页三处口径统一。
