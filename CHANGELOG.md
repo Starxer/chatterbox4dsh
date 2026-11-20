@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 变更：展示档位合并为「两模式 + 正交开关」（`display-level` / `config` / `commands` / `feishu-display` / `index`，2026-11-20）
+
+- **模式与预设分离**：`compact` 是唯一的模式（它改的是**卡片拓扑**：一回合一张过程卡 + 答案卡），`standard` / `detailed` / `verbose` 降级为**一键预设**（同一批开关的命名组合）。`presetOf()` 按当前组合反查预设名，匹配不上显示「自定义」。
+- **开关正交**：新增 `toolDetail`（`auto` 跟随预设；`off` / `count` / `summary` / `full` 直接指定）与 `toolOutputFull`（`auto` / `cut` / `full`）两个覆盖项；`showReasoning` / `reasoningFold` / `reasoningPreview` / `showToolArgs` / `showToolResults` 仍可独立设置。于是「标准的思考块 + 完整工具明细」这种组合第一次可达。
+- **旧值兼容**：已有的 `transcriptView` 与四个 `show*` 开关照旧读取（开关只能做减法）；未设置新覆盖项时一律跟随预设，不需要迁移。
+- **`/display` 卡重排**：模式行（2）、预设行（3）、思考（内容 / 折叠 / 预览）、工具明细（4 选一）、工具输出（随预设 / 截断 / 不截断）、参数与结果开关（仅工具明细为「完整」时出现）、紧凑模式专属的工具行样式、刷新间隔。简洁模式不再显示对它无效的开关（思考被强制关闭、工具行由过程卡承载）。
+- **命令**：`/display standard|detailed|verbose` 现在是「应用预设」（写入整包并清零覆盖项）；`/display tools auto|off|count|summary|full`、`/display output auto|cut|full` 新增；无参 `/display` 报告模式、预设、思考三态、工具明细与工具输出。
+- 测试：新增设置解析（预设 + 覆盖 + 反查预设名 + 未知值回退）与命令用例；`/display` 卡用例按新布局重写。全量 82 文件 / 1,590 用例、typecheck、build、privacy 全绿。
+- 尚未暴露在 Web GUI 设置页：新开关目前只能通过 `/display` 命令或卡片修改（TODO O30 的后续项）。
+
+**English**: The four display levels became two modes plus orthogonal switches. `compact` is the only MODE (it changes the card topology: one turn progress card and one answer card); `standard` / `detailed` / `verbose` are now one-tap PRESETS over the same switch values, and `presetOf()` reports which preset the current combination equals ("custom" otherwise). Two overrides are new: `toolDetail` (`auto` follows the preset, or `off` / `count` / `summary` / `full`) and `toolOutputFull` (`auto` / `cut` / `full`); `showReasoning`, `reasoningFold`, `reasoningPreview`, `showToolArgs` and `showToolResults` remain independent, so combinations like "standard reasoning block + the full tool section" are finally reachable. Existing `transcriptView` and `show*` values are still read (the switches only subtract), and unset overrides follow the preset, so no migration is needed. The `/display` card was re-laid out: mode row, preset row, thinking (content / fold / preview), tool detail, tool output, argument and result switches (only when the tool detail is `full`), the compact-only tool-row style, and the refresh interval; the compact mode no longer offers switches that cannot change anything. `/display standard|detailed|verbose` now applies a preset bundle and clears the overrides; `/display tools auto|off|count|summary|full` and `/display output auto|cut|full` are new; a bare `/display` reports mode, preset, the three thinking aspects and both overrides. Covered by new settings/command tests and rewritten card tests: 82 files / 1,590 tests, typecheck, build and privacy gate green. The Web GUI settings page does not expose the new switches yet (the `/display` command and card do).
+
 ### 新增：思考期实时预览（打字机，默认开、默认 200 字）（`src/feishu-streaming.ts` / `src/index.ts` / `src/display-level.ts` / `src/config.ts`，2026-11-20）
 
 - **数据源**：`agent/assistant-stream` 的 `reasoning-delta`（插件早在 O20 就在订阅这个事件，此前只用来推进相位灯、把文本丢掉了）。尾部累积约 2× 预览长度，不存全文——全文仍来自 `assistant/message`。

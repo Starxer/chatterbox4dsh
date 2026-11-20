@@ -162,6 +162,10 @@ export interface FeishuStreamingDeps {
   reasoningFold?: () => boolean | undefined
   /** Live thinking preview switch (default on). */
   reasoningPreview?: () => boolean | undefined
+  /** Tool detail override; `auto` follows the preset. */
+  toolDetail?: () => 'auto' | 'off' | 'count' | 'summary' | 'full'
+  /** Tool output truncation override; `auto` follows the preset. */
+  toolOutputFull?: () => 'auto' | 'cut' | 'full'
   /** Whether to show tool calls at all; false hides the section and suppresses tool-only cards. */
   showToolCalls?: () => boolean
   /** Whether to show each tool call's arguments block. */
@@ -563,7 +567,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   cardRendersAnswer: (sessionId: string, text: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, reasoningPreview, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, reasoningPreview, toolDetail, toolOutputFull, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
   /** Live caps; read per render so a settings write needs no remount. */
   const previewLimits = (): PreviewLimits => deps.previewLimits?.() ?? DEFAULT_PREVIEW_LIMITS
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
@@ -727,6 +731,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     showToolResults: showToolResults?.(),
     reasoningFold: reasoningFold?.(),
     reasoningPreview: reasoningPreview?.(),
+    toolDetail: toolDetail?.(),
+    toolOutputFull: toolOutputFull?.(),
   })
 
   /** Whether reasoning content is rendered on cards. */

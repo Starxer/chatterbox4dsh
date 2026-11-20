@@ -1,6 +1,6 @@
 # 展示模型重构与思考块设计
 
-> 状态：**2026-11-20 已实现**——思考块全文不截断、默认折叠 + 平铺开关、20 KB 单卡 + 思考续卡、**实时预览（打字机，1.5 秒/次、默认开 200 字）**；**仍未实施**——「两模式 + 正交开关」的档位合并（见 §2 的开关表），当前仍是四档 + 四个 `show*` 开关。落地时按本文验收，完成后同步 [架构](<./architecture.md>)、[首页](<../README.md>) 与 [变更记录](<../CHANGELOG.md>)。
+> 状态：**2026-11-20 全部实现**——①思考块全文不截断、默认折叠 + 平铺开关、20 KB 单卡 + 思考续卡；②实时预览（打字机，1.5 秒/次、默认开 200 字）；③**档位合并**：`compact` 是模式（卡片拓扑），`standard/detailed/verbose` 降为一键预设，新增正交开关 `toolDetail` / `toolOutputFull`（`auto` = 跟随预设），`/display` 卡重排为「模式 + 预设 + 思考三开关 + 工具明细 + 工具输出」。仍未暴露在 Web GUI 设置页（只有命令与卡片，见 TODO）。落地时按本文验收，完成后同步 [架构](<./architecture.md>)、[首页](<../README.md>) 与 [变更记录](<../CHANGELOG.md>)。
 > 关联：[`src/display-level.ts`](<../src/display-level.ts>)（档位→policy）、[`src/feishu-streaming.ts`](<../src/feishu-streaming.ts>)（步骤卡渲染）、[`src/feishu-display.ts`](<../src/feishu-display.ts>)（`/display` 卡）、[`src/commands.ts`](<../src/commands.ts>)（命令解析）、[`src/config.ts`](<../src/config.ts>)（设置项）、[`src/card-fold.ts`](<../src/card-fold.ts>)（折叠面板）、[`src/text-chunk.ts`](<../src/text-chunk.ts>)（分片/截断）、[飞书能力参考](<./feishu-capabilities.md>)（流式卡片）。
 
 ## 一、为什么改

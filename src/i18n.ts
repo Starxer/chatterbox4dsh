@@ -529,6 +529,18 @@ export interface Translations {
   displayCardTickHint: string
   displayCardTickButton: (seconds: number, active: boolean) => string
   /** Compact-only "tool row" section of the display card. */
+  /** Mode / preset framing on the `/display` card. */
+  displayCardModeTitle: string
+  displayCardPresetTitle: string
+  displayCardThinkingTitle: string
+  displayCardToolDetailTitle: string
+  displayCardOutputTitle: string
+  /** Shared display vocabulary (mode, preset, tool detail, output, preview). */
+  displayModeName: (mode: 'compact' | 'detailed') => string
+  displayPresetName: (name: string | undefined) => string
+  displayToolDetailName: (detail: 'off' | 'count' | 'summary' | 'full') => string
+  displayOutputName: (choice: 'auto' | 'cut' | 'full') => string
+  displayPreviewName: (enabled: boolean) => string
   /** Thinking-block fold row on the `/display` card. */
   displayCardFoldTitle: string
   displayCardFoldName: (folded: boolean) => string
@@ -1209,6 +1221,16 @@ export const zh = {
   displayCardTickTitle: '**耗时刷新**',
   displayCardTickHint: '简洁过程卡与其他档位的等待卡共用；只影响计时刷新，不延迟新事件。',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds} 秒`,
+  displayCardModeTitle: '**模式**：',
+  displayCardPresetTitle: '**预设**：',
+  displayCardThinkingTitle: '**思考**',
+  displayCardToolDetailTitle: '**工具明细**',
+  displayCardOutputTitle: '**工具输出**',
+  displayModeName: mode => mode === 'compact' ? '简洁' : '详细',
+  displayPresetName: name => name === undefined ? '自定义' : ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[name] ?? name,
+  displayToolDetailName: detail => ({ off: '关', count: '只报计数', summary: '一行摘要', full: '完整' })[detail],
+  displayOutputName: choice => ({ auto: '随预设', cut: '截断', full: '不截断' })[choice],
+  displayPreviewName: enabled => enabled ? '预览开' : '预览关',
   displayCardFoldTitle: '**思考块**（折叠 = 收进面板；平铺 = 直接显示）',
   displayCardFoldName: folded => folded ? '折叠' : '平铺',
   displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
@@ -1830,6 +1852,16 @@ export const en: Translations = {
   displayCardTickTitle: '**Elapsed-time refresh**',
   displayCardTickHint: 'Shared by compact progress and other levels’ waiting cards; new events are not delayed.',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds}s`,
+  displayCardModeTitle: '**Mode**: ',
+  displayCardPresetTitle: '**Preset**: ',
+  displayCardThinkingTitle: '**Thinking**',
+  displayCardToolDetailTitle: '**Tool detail**',
+  displayCardOutputTitle: '**Tool output**',
+  displayModeName: mode => mode === 'compact' ? 'compact' : 'detailed',
+  displayPresetName: name => name === undefined ? 'custom' : ({ compact: 'compact', standard: 'standard', detailed: 'detailed', verbose: 'verbose' })[name] ?? name,
+  displayToolDetailName: detail => ({ off: 'off', count: 'counts', summary: 'one line', full: 'full' })[detail],
+  displayOutputName: choice => ({ auto: 'preset', cut: 'truncated', full: 'untruncated' })[choice],
+  displayPreviewName: enabled => enabled ? 'preview on' : 'preview off',
   displayCardFoldTitle: '**Thinking block** (fold = collapsed panel; flat = shown inline)',
   displayCardFoldName: folded => folded ? 'Folded' : 'Flat',
   displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,

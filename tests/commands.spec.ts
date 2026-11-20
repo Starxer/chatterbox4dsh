@@ -106,6 +106,18 @@ const translations: CommandTranslations = {
   displayPreviewName: (enabled: boolean) => (enabled ? 'on' : 'off'),
   displayPreviewSet: (name: string) => `preview set to ${name}`,
   displayPreviewUsage: 'Usage: /display preview on|off',
+  displayModeLabel: 'Mode',
+  displayModeName: (mode: 'compact' | 'detailed') => mode,
+  displayPresetLabel: 'Preset',
+  displayPresetName: (name: string | undefined) => name ?? 'custom',
+  displayToolDetailName: (detail: string) => detail,
+  displayToolDetailSet: (name: string) => `tool detail set to ${name}`,
+  displayToolDetailUsage: 'Usage: /display tools off|count|summary|full|auto',
+  displayOutputName: (choice: string) => choice,
+  displayOutputSet: (name: string) => `tool output set to ${name}`,
+  displayOutputUsage: 'Usage: /display output cut|full|auto',
+  displayToolDetailLabel: 'Tool detail',
+  displayOutputLabel: 'Tool output',
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -132,6 +144,22 @@ const stubDisplay: DisplayControl = {
   setFold: vi.fn(),
   getPreview: () => true,
   setPreview: vi.fn(),
+  getSettings: () => ({
+    mode: 'detailed' as const,
+    reasoning: 'on' as const,
+    reasoningFold: true,
+    reasoningPreview: true,
+    tools: 'full' as const,
+    toolArgs: true,
+    toolResults: true,
+    toolOutputFull: false,
+  }),
+  getPreset: () => 'detailed' as const,
+  applyPreset: vi.fn(),
+  getToolDetail: () => 'auto' as const,
+  setToolDetail: vi.fn(),
+  getOutputChoice: () => 'auto' as const,
+  setOutputChoice: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -283,6 +311,9 @@ describe('/display command', () => {
     setToolRow: vi.fn(),
     setFold: vi.fn(),
     setPreview: vi.fn(),
+    applyPreset: vi.fn(),
+    setToolDetail: vi.fn(),
+    setOutputChoice: vi.fn(),
   })
 
   it('reports level, elapsed refresh and all switches without arguments', async () => {
@@ -290,18 +321,34 @@ describe('/display command', () => {
     const result = await handleDisplayCommand(invocation(''), translations, display)
     expect(result.kind).toBe('success')
     expect(result.text).toContain('Card display')
-    expect(result.text).toContain('reasoning: on')
-    expect(result.text).toContain('tools: off')
-    expect(result.text).toContain('results: off')
-    expect(result.text).toContain('refresh: 5s')
+    expect(result.text).toContain('Mode: detailed')
+    expect(result.text).toContain('Preset: detailed')
     expect(result.text).toContain('Thinking block: folded')
+    expect(result.text).toContain('refresh: 5s')
   })
 
   it('writes the requested switch through the control', async () => {
     const display = control()
     const result = await handleDisplayCommand(invocation('tools off'), translations, display)
-    expect(display.set).toHaveBeenCalledWith('tools', false)
-    expect(result.text).toContain('tools set to off')
+    expect(display.setToolDetail).toHaveBeenCalledWith('off')
+    expect(result.text).toContain('tool detail set to off')
+  })
+
+  it('applies a preset bundle and the tool overrides', async () => {
+    const display = control()
+    const preset = await handleDisplayCommand(invocation('standard'), translations, display)
+    expect(display.applyPreset).toHaveBeenCalledWith('standard')
+    expect(preset.text).toContain('level set to standard')
+
+    const detail = await handleDisplayCommand(invocation('tools count'), translations, display)
+    expect(display.setToolDetail).toHaveBeenCalledWith('count')
+    expect(detail.text).toContain('tool detail set to count')
+
+    const output = await handleDisplayCommand(invocation('output full'), translations, display)
+    expect(display.setOutputChoice).toHaveBeenCalledWith('full')
+    expect(output.text).toContain('tool output set to full')
+
+    expect((await handleDisplayCommand(invocation('output nope'), translations, display)).kind).toBe('error')
   })
 
   it('toggles the thinking block between folded and flat', async () => {

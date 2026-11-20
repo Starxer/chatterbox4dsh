@@ -7,6 +7,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
 import { type CompactToolRowStyle, type TranscriptView } from './display-level.ts'
 import type { ApiUsageSnapshot } from './api-usage.ts'
+import type { DisplaySettings, ToolDetailChoice, ToolOutputChoice } from './display-level.ts'
 import { zh } from './i18n.ts'
 import { isElapsedRefreshSeconds, parseElapsedRefreshSeconds, type ElapsedRefreshSeconds } from './config.ts'
 
@@ -76,6 +77,18 @@ export interface DisplayControl {
   getFold: () => boolean
   /** Whether the live thinking preview is on. */
   getPreview: () => boolean
+  /** Effective display settings (preset + the explicit overrides). */
+  getSettings: () => DisplaySettings
+  /** Which preset the effective settings match, or undefined for "custom". */
+  getPreset: () => TranscriptView | undefined
+  /** Apply a preset's whole bundle. */
+  applyPreset: (name: TranscriptView) => void | Promise<void>
+  /** Tool detail override; `auto` follows the preset. */
+  getToolDetail: () => ToolDetailChoice
+  setToolDetail: (choice: ToolDetailChoice) => void | Promise<void>
+  /** Tool output truncation override; `auto` follows the preset. */
+  getOutputChoice: () => ToolOutputChoice
+  setOutputChoice: (choice: ToolOutputChoice) => void | Promise<void>
   /** Persist the preview choice. Asynchronous for the same reason as {@link set}. */
   setPreview: (enabled: boolean) => void | Promise<void>
   /** Persist the fold choice. Asynchronous for the same reason as {@link set}. */
@@ -204,6 +217,21 @@ export interface CommandTranslations {
   readonly displayPreviewName: (enabled: boolean) => string
   readonly displayPreviewSet: (name: string) => string
   readonly displayPreviewUsage: string
+  /** Mode (two layouts) and preset (a named bundle of switches). */
+  readonly displayModeLabel: string
+  readonly displayModeName: (mode: 'compact' | 'detailed') => string
+  readonly displayPresetLabel: string
+  readonly displayPresetName: (name: TranscriptView | undefined) => string
+  /** Tool detail + output truncation overrides. */
+  readonly displayToolDetailName: (detail: 'off' | 'count' | 'summary' | 'full') => string
+  readonly displayToolDetailSet: (name: string) => string
+  readonly displayToolDetailUsage: string
+  readonly displayOutputName: (choice: 'auto' | 'cut' | 'full') => string
+  readonly displayOutputSet: (name: string) => string
+  readonly displayOutputUsage: string
+  /** Labels for the two override rows in the `/display` report. */
+  readonly displayToolDetailLabel: string
+  readonly displayOutputLabel: string
   readonly displayToolRowLabel: string
   /** One row style's short name (`工具` / `描述 + 工具` / `仅描述`). */
   readonly displayToolRowName: (style: CompactToolRowStyle) => string
@@ -706,15 +734,16 @@ export async function handleDisplayCommand(
 ): Promise<CommandResult> {
   const raw = invocation.rawInput.trim().toLowerCase()
   if (raw === '') {
-    const state = display.get()
-    const level = display.getLevel()
+    const settings = display.getSettings()
     const lines = [
-      `${t.displayLevelLabel}: ${t.displayLevelName(level)}`,
-      `${t.displayFoldLabel}: ${t.displayFoldName(display.getFold())}`,
-      `${t.displayPreviewLabel}: ${t.displayPreviewName(display.getPreview())}`,
+      `${t.displayModeLabel}: ${t.displayModeName(settings.mode)}`,
+      `${t.displayPresetLabel}: ${t.displayPresetName(display.getPreset())}`,
+      `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`
+        + ` · ${t.displayPreviewLabel}: ${t.displayPreviewName(settings.reasoningPreview)}`,
       `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
+      `${t.displayToolDetailLabel}: ${t.displayToolDetailName(settings.tools)}`,
+      `${t.displayOutputLabel}: ${t.displayOutputName(display.getOutputChoice())}`,
       t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
-      ...DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key])),
     ]
     return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
   }
@@ -744,6 +773,27 @@ export async function handleDisplayCommand(
     return rawValue === undefined
       ? { kind: 'success', text: `${t.displayPreviewLabel}: ${t.displayPreviewName(display.getPreview())}\n${t.displayPreviewUsage}` }
       : { kind: 'error', text: t.displayPreviewUsage }
+  }
+  if (rawKey === 'tools' && rawValue !== undefined && ['on', 'true', '1', '开'].includes(rawValue)) {
+    await display.setToolDetail('auto')
+    return { kind: 'success', text: t.displayToolDetailSet(t.displayToolDetailName(display.getSettings().tools)) }
+  }
+  if (rawKey === 'tools' && rawValue !== undefined && ['off', 'false', '0', '关', 'count', 'summary', 'full', 'auto'].includes(rawValue)) {
+    const choice = rawValue === 'count' || rawValue === 'summary' || rawValue === 'full'
+      ? rawValue
+      : rawValue === 'auto' ? 'auto' : 'off'
+    await display.setToolDetail(choice)
+    return { kind: 'success', text: t.displayToolDetailSet(choice === 'auto' ? t.displayOutputName('auto') : t.displayToolDetailName(choice as 'off' | 'count' | 'summary' | 'full')) }
+  }
+  if (rawKey === 'output') {
+    const value = rawValue === undefined ? undefined : (['cut', 'full', 'auto'].includes(rawValue) ? rawValue : undefined)
+    if (value === undefined) {
+      return rawValue === undefined
+        ? { kind: 'success', text: `${t.displayOutputName(display.getOutputChoice())}\n${t.displayOutputUsage}` }
+        : { kind: 'error', text: t.displayOutputUsage }
+    }
+    await display.setOutputChoice(value as 'cut' | 'full' | 'auto')
+    return { kind: 'success', text: t.displayOutputSet(t.displayOutputName(value as 'cut' | 'full' | 'auto')) }
   }
   if (rawKey === 'toolrow' || rawKey === 'tool-row') {
     if (rawValue === undefined) {
@@ -776,8 +826,10 @@ export async function handleDisplayCommand(
   if (rawValue === undefined) {
     const level = DISPLAY_LEVEL_ALIASES[rawKey ?? '']
     if (level !== undefined) {
-      await display.setLevel(level)
-      return { kind: 'success', text: t.displayLevelSet(t.displayLevelName(level)) }
+      // A preset is a bundle now: `/display standard` resets the explicit
+      // overrides so the name always means the same combination.
+      await display.applyPreset(level)
+      return { kind: 'success', text: t.displayLevelSet(t.displayPresetName(level)) }
     }
   }
 

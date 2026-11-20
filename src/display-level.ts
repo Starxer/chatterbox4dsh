@@ -119,39 +119,76 @@ export type ToolDetail = 'off' | 'count' | 'summary' | 'full'
  */
 export const REASONING_PREVIEW_CHARS = 200
 
-/** What one level means, before the four switches refine it. */
-interface LevelSpec {
+/** The two card layouts: one turn card, or one card per step. */
+export type DisplayMode = 'compact' | 'detailed'
+
+/** `auto` follows the active preset; the rest are explicit overrides. */
+export type ToolDetailChoice = 'auto' | ToolDetail
+
+/** `auto` follows the active preset; `cut`/`full` are explicit overrides. */
+export type ToolOutputChoice = 'auto' | 'cut' | 'full'
+
+/**
+ * The switches a preset sets, before any explicit override is applied.
+ *
+ * A preset is a NAMED BUNDLE of these values (`standard` / `detailed` /
+ * `verbose` / `compact`), not an independent display axis — the card and the
+ * command let the operator pick values directly, and the preset name is only a
+ * shortcut plus a label ("custom" when the values match none).
+ */
+interface PresetSpec {
+  mode: DisplayMode
   reasoning: ReasoningDetail
-  /** Fold the whole chain into a panel (default) or show it flat on the card. */
   reasoningFold: boolean
-  /** Preset value of the live preview switch (see {@link DisplayPolicy.reasoningPreview}). */
   reasoningPreview: boolean
   tools: ToolDetail
   toolArgs: boolean
   toolResults: boolean
-  /** Render args and result previews without their preview caps (verbose only). */
-  fullToolOutput: boolean
-  /**
-   * Merge the turn's tool activity into ONE turn-level card updated in place
-   * (`feishu-progress.ts`). Compact only: it is the level whose whole point is
-   * "tell me the turn happened, not how it happened".
-   */
-  turnCard: boolean
+  toolOutputFull: boolean
 }
 
-const LEVELS: Record<TranscriptView, LevelSpec> = {
-  // 简洁: the step cards carry the ANSWER and nothing else — the turn's whole
-  // tool activity lives on the one turn card (`feishu-progress.ts`), so a step
-  // card renders no tool section and a step that only ran tools posts no card
-  // at all. `tools: 'off'` is what makes both of those true.
-  compact: { reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true },
-  // 标准: every call is named, but no payloads; the whole chain is folded.
-  standard: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false },
-  // 详细: the pre-level default — args + results, the whole chain folded.
-  detailed: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false },
-  // 完全展开: everything the card can carry, tool payloads untruncated.
-  verbose: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false },
+/**
+ * One resolved set of display choices — what the renderers and the `/display`
+ * card actually read. `compact` is a MODE (it changes which cards exist), the
+ * other three names are presets over the same switches.
+ */
+export interface DisplaySettings {
+  mode: DisplayMode
+  reasoning: ReasoningDetail
+  reasoningFold: boolean
+  reasoningPreview: boolean
+  tools: ToolDetail
+  toolArgs: boolean
+  toolResults: boolean
+  toolOutputFull: boolean
 }
+
+const PRESETS: Record<TranscriptView, PresetSpec> = {
+  // 简洁: one turn card + one answer card. The step cards carry the answer and
+  // nothing else, and a step that only ran tools posts no card at all.
+  compact: {
+    mode: 'compact', reasoning: 'off', reasoningFold: true, reasoningPreview: false,
+    tools: 'off', toolArgs: false, toolResults: false, toolOutputFull: false,
+  },
+  // 标准: every call is named, but no payloads; the whole chain is folded.
+  standard: {
+    mode: 'detailed', reasoning: 'on', reasoningFold: true, reasoningPreview: true,
+    tools: 'summary', toolArgs: false, toolResults: false, toolOutputFull: false,
+  },
+  // 详细: the pre-level default — args + results, the whole chain folded.
+  detailed: {
+    mode: 'detailed', reasoning: 'on', reasoningFold: true, reasoningPreview: true,
+    tools: 'full', toolArgs: true, toolResults: true, toolOutputFull: false,
+  },
+  // 完全展开: everything the card can carry, tool payloads untruncated.
+  verbose: {
+    mode: 'detailed', reasoning: 'on', reasoningFold: true, reasoningPreview: true,
+    tools: 'full', toolArgs: true, toolResults: true, toolOutputFull: true,
+  },
+}
+
+/** Every preset name, for the `/display` card's preset row. */
+export const PRESET_NAMES: readonly TranscriptView[] = TRANSCRIPT_VIEWS
 
 /** The resolved axes the renderers read. */
 export interface DisplayPolicy {
@@ -208,41 +245,95 @@ export function parseTranscriptView(value: unknown): TranscriptView {
 }
 
 /**
- * Project a level plus the four switches onto the renderer's axes.
+ * Project the stored settings onto one {@link DisplaySettings}.
  *
- * The switches can only subtract: each one is ANDed with what the level already
- * allows, so no combination makes a card show something the level excluded.
+ * Precedence, highest first:
+ * 1. the legacy `show*` switches can still SUBTRACT (they never add);
+ * 2. explicit overrides (`reasoningFold`, `reasoningPreview`, `toolDetail`,
+ *    `toolOutputFull`) beat the preset;
+ * 3. the preset named by `transcriptView` supplies whatever is left.
  *
- * @param input - the level (any spelling) and the current switch values.
- * @returns the axes to render with.
+ * That is what makes "standard tools + the whole reasoning chain" reachable:
+ * pick a preset for the baseline, then set one switch.
+ *
+ * @param input - raw setting values (any may be missing).
+ * @returns the resolved choices.
  */
-export function resolveDisplayPolicy(input: {
+export function resolveDisplaySettings(input: {
   transcriptView?: unknown
   showReasoning?: boolean | undefined
   showToolCalls?: boolean | undefined
   showToolArgs?: boolean | undefined
   showToolResults?: boolean | undefined
-  /** Explicit fold choice; undefined keeps the level's preset. */
   reasoningFold?: boolean | undefined
-  /** Explicit live-preview choice; undefined keeps the level's preset. */
   reasoningPreview?: boolean | undefined
-}): DisplayPolicy {
-  const level = LEVELS[parseTranscriptView(input.transcriptView)]
-  const reasoning = input.showReasoning === false ? 'off' : level.reasoning
-  const tools = input.showToolCalls === false ? 'off' : level.tools
+  toolDetail?: unknown
+  toolOutputFull?: unknown
+}): DisplaySettings {
+  const preset = PRESETS[parseTranscriptView(input.transcriptView)]
+  const explicitTools = typeof input.toolDetail === 'string'
+    && input.toolDetail !== 'auto'
+    && (['off', 'count', 'summary', 'full'] as readonly string[]).includes(input.toolDetail)
+    ? input.toolDetail as ToolDetail
+    : undefined
+  const output = input.toolOutputFull === 'cut' ? false
+    : input.toolOutputFull === 'full' ? true
+      : typeof input.toolOutputFull === 'boolean' ? input.toolOutputFull
+        : preset.toolOutputFull
+  const tools = input.showToolCalls === false ? 'off' : (explicitTools ?? preset.tools)
+  const reasoning = input.showReasoning === false ? 'off' : preset.reasoning
   return {
+    mode: preset.mode,
     reasoning,
-    reasoningFold: input.reasoningFold ?? level.reasoningFold,
-    reasoningPreview: reasoning !== 'off' && (input.reasoningPreview ?? level.reasoningPreview),
+    reasoningFold: input.reasoningFold ?? preset.reasoningFold,
+    reasoningPreview: reasoning !== 'off' && (input.reasoningPreview ?? preset.reasoningPreview),
     tools,
-    toolArgs: tools === 'full' && level.toolArgs && input.showToolArgs !== false,
-    toolResults: tools === 'full' && level.toolResults && input.showToolResults !== false,
-    fullToolOutput: tools === 'full' && level.fullToolOutput,
-    // Not gated by the four switches: they control what a STEP card shows, and
-    // this axis controls a different card. `showToolCalls === false` does turn
-    // it off, because a user who asked for no tool display at all must not get
-    // a card that lists every tool.
-    turnCard: level.turnCard && input.showToolCalls !== false,
+    toolArgs: tools === 'full' && preset.toolArgs && input.showToolArgs !== false,
+    toolResults: tools === 'full' && preset.toolResults && input.showToolResults !== false,
+    toolOutputFull: tools === 'full' && output,
+  }
+}
+
+/** Which preset name these settings match exactly, or undefined ("custom"). */
+export function presetOf(settings: DisplaySettings): TranscriptView | undefined {
+  for (const name of TRANSCRIPT_VIEWS) {
+    const preset = PRESETS[name]
+    if (settings.mode === preset.mode
+      && settings.reasoning === preset.reasoning
+      && settings.reasoningFold === preset.reasoningFold
+      && settings.reasoningPreview === preset.reasoningPreview
+      && settings.tools === preset.tools
+      && settings.toolArgs === preset.toolArgs
+      && settings.toolResults === preset.toolResults
+      && settings.toolOutputFull === preset.toolOutputFull) {
+      return name
+    }
+  }
+  return undefined
+}
+
+/**
+ * Project settings onto the renderer's axes.
+ *
+ * `compact` is the one mode that CHANGES the topology (one turn card, no tool
+ * section on step cards, tool-only steps post nothing), so it forces the tool
+ * and reasoning axes off; the step levels render whatever the switches say.
+ *
+ * @param input - raw setting values (see {@link resolveDisplaySettings}).
+ * @returns the axes to render with.
+ */
+export function resolveDisplayPolicy(input: Parameters<typeof resolveDisplaySettings>[0]): DisplayPolicy {
+  const settings = resolveDisplaySettings(input)
+  const compact = settings.mode === 'compact'
+  return {
+    reasoning: compact ? 'off' : settings.reasoning,
+    reasoningFold: settings.reasoningFold,
+    reasoningPreview: !compact && settings.reasoningPreview,
+    tools: compact ? 'off' : settings.tools,
+    toolArgs: compact ? false : settings.toolArgs,
+    toolResults: compact ? false : settings.toolResults,
+    fullToolOutput: compact ? false : settings.toolOutputFull,
+    turnCard: compact,
   }
 }
 
@@ -264,12 +355,12 @@ export function levelUsesSwitch(
   key: 'reasoning' | 'tools' | 'args' | 'results',
 ): boolean {
   switch (key) {
-    case 'reasoning': return LEVELS[level].reasoning !== 'off'
+    case 'reasoning': return PRESETS[level].reasoning !== 'off'
     // Tool display is always meaningful: at `compact` it removes the progress
     // card's tool rows, at the step levels it removes the tool section.
     case 'tools': return true
     case 'args':
-    case 'results': return LEVELS[level].toolArgs
+    case 'results': return PRESETS[level].toolArgs
   }
 }
 

@@ -31,6 +31,7 @@ import {
   COMPACT_TOOL_ROW_STYLES, isCompactToolRowStyle, levelUsesSwitch, TRANSCRIPT_VIEWS,
   type CompactToolRowStyle, type TranscriptView,
 } from './display-level.ts'
+import type { DisplaySettings } from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { decodeCardValue } from './card-action.ts'
@@ -79,14 +80,22 @@ function isDisplayKey(value: unknown): value is DisplayToggleKey {
 
 /** One render's inputs: the level's own state plus the four switches. */
 export interface DisplayCardState {
-  /** The active work-detail level (`transcriptView`). */
-  level: TranscriptView
-  /** The four card-display switches. */
+  /** Card layout: one turn card (`compact`) or one card per step. */
+  mode: 'compact' | 'detailed'
+  /** Preset the current values match, or undefined ("自定义"). */
+  preset: TranscriptView | undefined
+  /** Effective settings (preset + explicit overrides). */
+  settings: DisplaySettings
+  /** The four legacy switches (now: reasoning / args / results / tools). */
   switches: Record<DisplayToggleKey, boolean>
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   folded: boolean
   /** Live thinking preview switch. */
   preview: boolean
+  /** Tool detail override (`auto` follows the preset). */
+  toolDetail: 'auto' | 'off' | 'count' | 'summary' | 'full'
+  /** Tool output truncation override (`auto` follows the preset). */
+  outputChoice: 'auto' | 'cut' | 'full'
   /** What a compact turn card's tool row carries (compact-only section). */
   toolRow: CompactToolRowStyle
   /** Missing on older callers; rendered as the default five seconds. */
@@ -143,29 +152,96 @@ function buttonRows(buttons: readonly object[], size = 2): object[] {
  * without a long scroll.
  */
 export function renderDisplayCard(state: DisplayCardState, t: Translations): object {
+  const settings = state.settings
+  const compact = state.mode === 'compact'
   const elements: object[] = [
-    // One element for the title AND the explanation of the active level: they
-    // are one thought, and each markdown element pays its own spacing.
     {
       tag: 'markdown',
-      content: `${t.displayCardLevelTitle}\n${t.displayLevelHint(state.level)}`,
+      content: `${t.displayCardModeTitle}${t.displayModeName(state.mode)} · ${t.displayCardPresetTitle}${t.displayPresetName(state.preset)}`,
     },
   ]
-  elements.push(...buttonRows(TRANSCRIPT_VIEWS.map(level => {
-    const active = level === state.level
+  // Mode: two layouts. `compact` is the one that changes which cards exist.
+  elements.push(buttonColumns((['compact', 'detailed'] as const).map(mode => {
+    const active = mode === state.mode
     return {
       tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayLevelName(level), active) },
-      // The ACTIVE level is primary AND disabled: it is the state, not an
-      // action (the `/busy` card marks its selected option the same way).
+      text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayModeName(mode), active) },
       type: active ? 'primary' : 'default',
       ...(active ? { disabled: true } : {}),
-      behaviors: [{ type: 'callback', value: { p: 'display', level, value: !active } }],
+      behaviors: [{ type: 'callback', value: { p: 'display', preset: mode, row: 'mode' } }],
     }
   })))
-  // The tool-row style only exists at `compact` (the other levels render their
-  // own summary line per call), so the section is shown exactly when it applies.
-  if (state.level === 'compact') {
+  // Presets: named bundles of the switches below; a tap resets the overrides.
+  elements.push(...buttonRows((['standard', 'detailed', 'verbose'] as const).map(preset => {
+    const active = state.preset === preset
+    return {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayPresetName(preset), active) },
+      type: active ? 'primary' : 'default',
+      ...(active ? { disabled: true } : {}),
+      behaviors: [{ type: 'callback', value: { p: 'display', preset, row: 'preset' } }],
+    }
+  })))
+  elements.push({ tag: 'hr' })
+  if (!compact) elements.push({ tag: 'markdown', content: `${t.displayCardThinkingTitle}\n${t.displayLevelHint(state.preset ?? 'detailed')}` })
+  // Reasoning: content on/off, fold/flat, live preview on/off. Compact forces
+  // reasoning off (its card carries the answer), so the switches are not offered
+  // there — a toggle that cannot change anything reads as a broken card.
+  if (!compact) elements.push(buttonColumns([
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('reasoning'), settings.reasoning !== 'off') },
+      type: settings.reasoning !== 'off' ? 'primary' : 'default',
+      behaviors: [{ type: 'callback', value: { p: 'display', key: 'reasoning', value: settings.reasoning === 'off' } }],
+    },
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardFoldName(state.folded), true) },
+      type: 'primary',
+      behaviors: [{ type: 'callback', value: { p: 'display', folded: !state.folded } }],
+    },
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardPreviewButton(t.displayPreviewName(state.preview), state.preview) },
+      type: state.preview ? 'primary' : 'default',
+      behaviors: [{ type: 'callback', value: { p: 'display', preview: !state.preview } }],
+    },
+  ]))
+  if (!compact) elements.push({ tag: 'hr' })
+  if (!compact) elements.push({ tag: 'markdown', content: t.displayCardToolDetailTitle })
+  if (!compact) elements.push(buttonColumns((['off', 'count', 'summary', 'full'] as const).map(detail => {
+    const active = state.toolDetail !== 'auto' ? state.toolDetail === detail : settings.tools === detail
+    return {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayToolDetailName(detail), active) },
+      type: active ? 'primary' : 'default',
+      ...(active ? { disabled: true } : {}),
+      behaviors: [{ type: 'callback', value: { p: 'display', toolDetail: detail } }],
+    }
+  })))
+  if (!compact) elements.push({ tag: 'markdown', content: t.displayCardOutputTitle })
+  if (!compact) elements.push(buttonColumns((['auto', 'cut', 'full'] as const).map(choice => {
+    const active = state.outputChoice === choice
+    return {
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayOutputName(choice), active) },
+      type: active ? 'primary' : 'default',
+      ...(active ? { disabled: true } : {}),
+      behaviors: [{ type: 'callback', value: { p: 'display', output: choice } }],
+    }
+  })))
+  if (settings.tools === 'full') {
+    elements.push(...buttonRows((['args', 'results'] as const).map(key => {
+      const enabled = settings[key === 'args' ? 'toolArgs' : 'toolResults']
+      return {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel(key), enabled) },
+        type: enabled ? 'primary' : 'default',
+        behaviors: [{ type: 'callback', value: { p: 'display', key, value: !enabled } }],
+      }
+    })))
+  }
+  if (compact) {
     elements.push({ tag: 'hr' })
     elements.push({ tag: 'markdown', content: `${t.displayCardToolRowTitle}\n${t.displayCardToolRowHint}` })
     elements.push(buttonColumns(COMPACT_TOOL_ROW_STYLES.map(style => {
@@ -178,71 +254,6 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
         behaviors: [{ type: 'callback', value: { p: 'display', toolRow: style } }],
       }
     })))
-  }
-  elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: t.displayCardHint })
-  const switches = state.switches
-  let hiddenByLevel = false
-  const switchButtons: object[] = []
-  for (const key of DISPLAY_KEYS) {
-    // A switch the active level cannot use is not offered at all: a toggle that
-    // changes nothing reads as a broken card (`compact` forces reasoning off,
-    // and only detailed/verbose render argument/result payloads). The stored
-    // values are untouched, so switching the level brings the switch back.
-    if (!levelUsesSwitch(state.level, key)) {
-      hiddenByLevel = true
-      continue
-    }
-    // Arguments and results only describe tool calls, so with tool display off
-    // they have nothing to act on. Hide their switches rather than offer a
-    // toggle that cannot change anything; the stored values are left untouched
-    // and the switches come back with tool display.
-    if (!switches.tools && (key === 'args' || key === 'results')) continue
-    const enabled = switches[key]
-    switchButtons.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel(key), enabled) },
-      // Primary = on, default (grey) = off, so the state reads at a glance.
-      type: enabled ? 'primary' : 'default',
-      // `behaviors` is the callback declaration both card kinds honour — a
-      // CardKit instance silently drops a top-level `value` (which once made
-      // every click a no-op), and an embedded card accepts either form, so this
-      // is the safe one for both (same as `feishu-session.ts` /
-      // `feishu-onboarding.ts`).
-      //
-      // The payload carries the TARGET value, not a "toggle" marker, so a
-      // re-delivered click cannot flip the switch twice.
-      behaviors: [{ type: 'callback', value: { p: 'display', key, value: !enabled } }],
-    })
-  }
-  elements.push(...buttonRows(switchButtons))
-  // Thinking-block shape: folded panel (default) or flat on the card. Offered
-  // only where the block itself is rendered — it is not a way to reach content
-  // the level does not show.
-  if (levelUsesSwitch(state.level, 'reasoning')) {
-    elements.push({ tag: 'markdown', content: t.displayCardFoldTitle, text_size: 'notation' })
-    elements.push(buttonColumns([{
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardPreviewButton(t.displayCardFoldName(state.folded), state.preview) },
-      type: state.preview ? 'primary' : 'default',
-      behaviors: [{ type: 'callback', value: { p: 'display', preview: !state.preview } }],
-    }]))
-    elements.push(buttonColumns([true, false].map(folded => ({
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayCardFoldName(folded), folded === state.folded) },
-      type: folded === state.folded ? 'primary' : 'default',
-      ...(folded === state.folded ? { disabled: true } : {}),
-      behaviors: [{ type: 'callback', value: { p: 'display', folded } }],
-    }))))
-  }
-  // Say why switches are missing, so the card does not just look broken. Both
-  // reasons can apply at once; they share one element.
-  const missingNotes = [
-    ...(switches.tools ? [] : [t.displayCardHiddenByTools]),
-    ...(hiddenByLevel ? [t.displayCardSwitchesHiddenByLevel] : []),
-  ]
-  if (missingNotes.length > 0) {
-    elements.push({ tag: 'markdown', content: missingNotes.join('\n'), text_size: 'notation' })
   }
   elements.push({ tag: 'hr' })
   elements.push({ tag: 'markdown', content: `${t.displayCardTickTitle}\n${t.displayCardTickHint}` })
@@ -287,15 +298,21 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       : {}
 
   /** The card as the CURRENT settings read right now. */
-  const currentCard = (): object =>
-    renderDisplayCard({
-      level: display.getLevel(),
+  const currentCard = (): object => {
+    const settings = display.getSettings()
+    return renderDisplayCard({
+      mode: settings.mode,
+      preset: display.getPreset(),
+      settings,
       switches: display.get(),
-      folded: display.getFold(),
-      preview: display.getPreview(),
+      folded: settings.reasoningFold,
+      preview: settings.reasoningPreview,
+      toolDetail: display.getToolDetail(),
+      outputChoice: display.getOutputChoice(),
       toolRow: display.getToolRow(),
       elapsedRefreshSeconds: display.getElapsedRefreshSeconds(),
     }, getTranslations())
+  }
 
   /**
    * Repaint the clicked card from the persisted settings — in place, the way
@@ -372,16 +389,40 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       console.log(`dsh-feishu: [display] toolRow=${toolRow} card=${messageId}`)
       return
     }
-    const level = parsed.level
-    if (isLevel(level) && typeof parsed.value === 'boolean') {
+    const preset = parsed.preset
+    if (isLevel(preset)) {
       try {
-        await display.setLevel(level)
+        await display.applyPreset(preset)
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
-        logger.warn(`dsh-feishu: display level write failed: ${msg}`)
+        logger.warn(`dsh-feishu: display preset write failed: ${msg}`)
       }
       await repaint(messageId)
-      console.log(`dsh-feishu: [display] level=${level} card=${messageId}`)
+      console.log(`dsh-feishu: [display] preset=${preset} card=${messageId}`)
+      return
+    }
+    const toolDetail = parsed.toolDetail
+    if (toolDetail === 'off' || toolDetail === 'count' || toolDetail === 'summary' || toolDetail === 'full') {
+      try {
+        await display.setToolDetail(toolDetail)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display tool-detail write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] toolDetail=${toolDetail} card=${messageId}`)
+      return
+    }
+    const output = parsed.output
+    if (output === 'auto' || output === 'cut' || output === 'full') {
+      try {
+        await display.setOutputChoice(output)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display output write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] output=${output} card=${messageId}`)
       return
     }
     if (!isDisplayKey(parsed.key) || typeof parsed.value !== 'boolean') {

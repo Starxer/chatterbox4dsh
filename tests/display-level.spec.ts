@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY,
   isCompactToolRowStyle, levelUsesSwitch, parseCompactToolRow, parseTranscriptView,
-  resolveDisplayPolicy, TRANSCRIPT_VIEWS,
+  presetOf, resolveDisplayPolicy, resolveDisplaySettings, TRANSCRIPT_VIEWS,
 } from '../src/display-level.ts'
 
 describe('parseTranscriptView', () => {
@@ -23,6 +23,41 @@ describe('parseTranscriptView', () => {
     expect(parseTranscriptView('')).toBe(DEFAULT_TRANSCRIPT_VIEW)
     expect(parseTranscriptView('verbose ')).toBe(DEFAULT_TRANSCRIPT_VIEW)
     expect(parseTranscriptView(7)).toBe(DEFAULT_TRANSCRIPT_VIEW)
+  })
+})
+
+describe('resolveDisplaySettings', () => {
+  it('turns an explicit override into a preset-plus-switch combination', () => {
+    // standard = one summary line per call; asking for the full tool section
+    // keeps the standard reasoning block and adds the payloads.
+    const settings = resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'full' })
+    expect(settings.tools).toBe('full')
+    expect(settings.toolArgs).toBe(false)
+    expect(settings.toolResults).toBe(false)
+    expect(settings.reasoning).toBe('on')
+    expect(resolveDisplayPolicy({ transcriptView: 'standard', toolDetail: 'full' }).tools).toBe('full')
+    // `toolOutputFull` is an override on its own.
+    expect(resolveDisplaySettings({ transcriptView: 'detailed', toolOutputFull: 'full' }).toolOutputFull).toBe(true)
+    expect(resolveDisplaySettings({ transcriptView: 'verbose', toolOutputFull: 'cut' }).toolOutputFull).toBe(false)
+  })
+
+  it('recognizes the preset a combination equals, and calls anything else custom', () => {
+    expect(presetOf(resolveDisplaySettings({ transcriptView: 'verbose' }))).toBe('verbose')
+    expect(presetOf(resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'summary' }))).toBe('standard')
+    expect(presetOf(resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'full' }))).toBeUndefined()
+    // The legacy switches still subtract, so a preset with one switch off is custom.
+    expect(presetOf(resolveDisplaySettings({ transcriptView: 'detailed', showReasoning: false }))).toBeUndefined()
+  })
+
+  it('keeps the legacy switches subtract-only on top of a preset', () => {
+    const settings = resolveDisplaySettings({ transcriptView: 'verbose', showToolCalls: false, showReasoning: false })
+    expect(settings.tools).toBe('off')
+    expect(settings.reasoning).toBe('off')
+    expect(settings.reasoningPreview).toBe(false)
+  })
+
+  it('rejects an unknown tool detail by falling back to the preset', () => {
+    expect(resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'bogus' }).tools).toBe('summary')
   })
 })
 
@@ -74,9 +109,10 @@ describe('resolveDisplayPolicy', () => {
     for (const level of ['standard', 'detailed', 'verbose'] as const) {
       expect(resolveDisplayPolicy({ transcriptView: level }).turnCard).toBe(false)
     }
-    // A user who asked for no tool display at all must not get a card that lists
-    // every tool either.
-    expect(resolveDisplayPolicy({ transcriptView: 'compact', showToolCalls: false }).turnCard).toBe(false)
+    // `compact` is the MODE that decides the topology, so the turn card stays
+    // even with tool display off — it is also the answer card for a pure-answer
+    // turn, which has nothing to do with showing tools.
+    expect(resolveDisplayPolicy({ transcriptView: 'compact', showToolCalls: false }).turnCard).toBe(true)
   })
 
   it('lets a switch only ever show LESS than the level allows', () => {

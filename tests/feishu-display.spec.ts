@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DISPLAY_KEYS, renderDisplayCard, startFeishuDisplay } from '../src/feishu-display.ts'
 import type { DisplayToggleKey } from '../src/commands.ts'
 import type { TranscriptView } from '../src/display-level.ts'
+import { presetOf, resolveDisplaySettings } from '../src/display-level.ts'
 import { translationsFor } from '../src/i18n.ts'
 
 const t = translationsFor('zh')
@@ -40,19 +41,62 @@ function switchesOf(card: any): any[] {
   return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.key !== undefined)
 }
 
-/** Only the four LEVEL buttons. */
-function levelsOf(card: any): any[] {
-  return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.level !== undefined)
-}
-
-/** The switch-card input for one set of switches at the default level. */
+/**
+ * Card input for one set of switches at a level/preset.
+ *
+ * The card reads EFFECTIVE settings (preset + explicit overrides), so build them
+ * through the same resolver the plugin uses rather than hand-writing an object.
+ */
 function cardFor(
   switches: Record<DisplayToggleKey, boolean>,
   level: TranscriptView = 'detailed',
   toolRow: 'tool' | 'tool-description' | 'description' = 'tool',
+  overrides: {
+    toolDetail?: 'auto' | 'off' | 'count' | 'summary' | 'full'
+    output?: 'auto' | 'cut' | 'full'
+    folded?: boolean
+    preview?: boolean
+  } = {},
 ): any {
-  return { level, switches, toolRow }
+  const settings = resolveDisplaySettings({
+    transcriptView: level,
+    showReasoning: switches.reasoning,
+    showToolCalls: switches.tools,
+    showToolArgs: switches.args,
+    showToolResults: switches.results,
+    reasoningFold: overrides.folded ?? true,
+    reasoningPreview: overrides.preview ?? true,
+    toolDetail: overrides.toolDetail ?? 'auto',
+    toolOutputFull: overrides.output ?? 'auto',
+  })
+  return {
+    mode: settings.mode,
+    preset: presetOf(settings),
+    settings,
+    switches,
+    folded: settings.reasoningFold,
+    preview: settings.reasoningPreview,
+    toolDetail: overrides.toolDetail ?? 'auto',
+    outputChoice: overrides.output ?? 'auto',
+    toolRow,
+  }
 }
+
+/** Mode buttons (compact / detailed). */
+const modesOf = (card: any): any[] =>
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.row === 'mode')
+
+/** Preset buttons (standard / detailed / verbose). */
+const presetsOf = (card: any): any[] =>
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.row === 'preset')
+
+/** Tool-detail buttons (off / count / summary / full). */
+const toolDetailOf = (card: any): any[] =>
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.toolDetail !== undefined)
+
+/** Tool-output buttons (auto / cut / full). */
+const outputOf = (card: any): any[] =>
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.output !== undefined)
 
 /** Only the compact tool-row style buttons. */
 function toolRowsOf(card: any): any[] {
@@ -100,15 +144,26 @@ describe('renderDisplayCard', () => {
     }
   })
 
-  it('renders one button per switch with its state', () => {
+  it('renders the mode, preset, thinking and tool rows', () => {
     const card = renderDisplayCard(cardFor(ALL_ON), t) as any
     expect(card.header.title.content).toBe('📇 卡片显示')
-    expect(DISPLAY_KEYS).toEqual(['reasoning', 'tools', 'args', 'results'])
-    // Four level buttons on top, then one button per switch.
-    expect(levelsOf(card)).toHaveLength(4)
-    expect(switchesOf(card)).toHaveLength(4)
-    expect(buttonFor(card, 'tools').text.content).toBe('✅ 工具调用：开')
-    expect(buttonFor(card, 'tools').type).toBe('primary')
+    expect(modesOf(card).map((b: any) => b.behaviors[0].value.preset)).toEqual(['compact', 'detailed'])
+    expect(presetsOf(card).map((b: any) => b.behaviors[0].value.preset)).toEqual(['standard', 'detailed', 'verbose'])
+    // The detailed mode offers the thinking switches and the tool rows.
+    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
+    expect(toolDetailOf(card)).toHaveLength(4)
+    expect(outputOf(card)).toHaveLength(3)
+  })
+
+  it('offers no inert rows in the compact mode', () => {
+    const card = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
+    expect(modesOf(card)).toHaveLength(2)
+    // Compact forces reasoning off and its card carries the answer, so the
+    // thinking/tool switches would change nothing.
+    expect(switchesOf(card)).toHaveLength(0)
+    expect(toolDetailOf(card)).toHaveLength(0)
+    expect(outputOf(card)).toHaveLength(0)
+    expect(toolRowsOf(card)).toHaveLength(3)
   })
 
   it('declares the callback through behaviors, never a top-level value', () => {
@@ -123,14 +178,16 @@ describe('renderDisplayCard', () => {
     }
   })
 
-  it('marks a disabled switch and carries the TARGET value, not a toggle marker', () => {
+  it('marks the active choices and carries TARGET values, not toggle markers', () => {
     const card = renderDisplayCard(cardFor({ ...ALL_ON, reasoning: false, args: false }), t) as any
     const reasoning = buttonFor(card, 'reasoning')
     expect(reasoning.text.content).toBe('⬜ 深度思考：关')
     expect(reasoning.type).toBe('default')
     // Clicking an off switch turns it on.
     expect(payloadOf(card, 'reasoning')).toEqual({ p: 'display', key: 'reasoning', value: true })
-    expect(payloadOf(card, 'tools')).toEqual({ p: 'display', key: 'tools', value: false })
+    expect(payloadOf(card, 'args')).toEqual({ p: 'display', key: 'args', value: true })
+    // The preset/preset buttons mark the ACTIVE one as primary + disabled.
+    expect(modesOf(card).find((b: any) => b.behaviors[0].value.preset === 'detailed')).toMatchObject({ disabled: true, type: 'primary' })
   })
 
   it('localizes the card', () => {
@@ -139,58 +196,52 @@ describe('renderDisplayCard', () => {
     expect(buttonFor(card, 'results').text.content).toBe('✅ Results: on')
     expect(payloadOf(card, 'results')).toMatchObject({ p: 'display' })
     expect(behaviorsOf(card, 'results')).toHaveLength(1)
+    expect(markdownsOf(card).join('\n')).toContain('Mode')
   })
 
-  it('offers the compact tool-row styles only at the compact level', () => {
+  it('offers the compact tool-row styles only in the compact mode', () => {
     const compact = renderDisplayCard(cardFor(ALL_ON, 'compact', 'tool-description'), t) as any
     const rows = toolRowsOf(compact)
     expect(rows.map((b: any) => b.behaviors[0].value.toolRow)).toEqual(['tool', 'tool-description', 'description'])
-    // The active style is the state: primary AND disabled, like the level buttons.
     expect(rows.find((b: any) => b.behaviors[0].value.toolRow === 'tool-description')).toMatchObject({ disabled: true, type: 'primary' })
-    // Every other level renders its own summary line per call, so the control
-    // would have nothing to change.
     for (const level of ['standard', 'detailed', 'verbose'] as const) {
       expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, level), t))).toHaveLength(0)
     }
   })
 
-  it('hides the switches the active level cannot use, and says so', () => {
-    const md = (card: any): string => markdownsOf(card).join('\n')
-    // compact: reasoning is forced off, and there are no argument/result payloads.
-    const compact = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
-    expect(switchesOf(compact).map((b: any) => b.behaviors[0].value.key)).toEqual(['tools'])
-    expect(md(compact)).toContain('参数/结果只在「详细」「完全展开」生效')
-    // standard: reasoning and tools are real, payloads are not.
+  it('shows the tool-detail preset value and flips it with one tap', () => {
+    // standard preset = one line per call; an explicit override wins and is
+    // what the row marks as active.
     const standard = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
-    expect(switchesOf(standard).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
-    // detailed / verbose keep all four.
-    expect(switchesOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(4)
-    expect(switchesOf(renderDisplayCard(cardFor(ALL_ON, 'verbose'), t))).toHaveLength(4)
+    expect(toolDetailOf(standard).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')).toMatchObject({ disabled: true, type: 'primary' })
+    expect(switchesOf(standard).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+
+    const overridden = renderDisplayCard(cardFor(ALL_ON, 'standard', 'tool', { toolDetail: 'full' }), t) as any
+    expect(toolDetailOf(overridden).find((b: any) => b.behaviors[0].value.toolDetail === 'full')).toMatchObject({ disabled: true, type: 'primary' })
+    // `full` brings the argument/result switches back.
+    expect(switchesOf(overridden).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
   })
 
-  it('leaves out the hidden-by-level note when every switch is usable', () => {
+  it('keeps the compact-only note out of the detailed mode', () => {
     const detailed = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
-    const text = markdownsOf(detailed).join('\n')
-    expect(text).not.toContain('不起作用')
+    expect(markdownsOf(detailed).join('\n')).not.toContain('工具行')
   })
 
-  it('hides the argument and result switches while tool display is off', () => {
-    const card = renderDisplayCard(cardFor({ ...ALL_ON, tools: false }), t) as any
-    // Only the two switches that still do something remain.
-    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
-    expect(buttonFor(card, 'tools').text.content).toBe('⬜ 工具调用：关')
-    // The card says why two switches are missing instead of just looking broken.
-    const markdown = markdownsOf(card).join('\n')
-    expect(markdown).toContain('随「工具调用」一起隐藏')
+  it('hides the argument and result switches unless the tool section is full', () => {
+    const off = renderDisplayCard(cardFor({ ...ALL_ON, tools: false }), t) as any
+    expect(switchesOf(off).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+    const summary = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
+    expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+    const full = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
+    expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
   })
 
-  it('brings the hidden switches back when tool display is re-enabled', () => {
-    const card = renderDisplayCard(cardFor({ ...ALL_ON, tools: true, args: false, results: false }), t) as any
-    expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools', 'args', 'results'])
-    // The stored off values are preserved, not silently forced on.
+  it('preserves stored off values when the switches come back', () => {
+    const card = renderDisplayCard(cardFor({ ...ALL_ON, args: false, results: false }, 'verbose'), t) as any
     expect(buttonFor(card, 'args').text.content).toBe('⬜ 参数：关')
     expect(buttonFor(card, 'results').text.content).toBe('⬜ 结果：关')
   })
+
 })
 
 /**
@@ -212,6 +263,19 @@ function makeDisplay(
   let seconds = 5
   let folded = true
   let preview = true
+  let toolDetail: 'auto' | 'off' | 'count' | 'summary' | 'full' = 'auto'
+  let outputChoice: 'auto' | 'cut' | 'full' = 'auto'
+  const settings = () => resolveDisplaySettings({
+    transcriptView: level,
+    showReasoning: state.reasoning,
+    showToolCalls: state.tools,
+    showToolArgs: state.args,
+    showToolResults: state.results,
+    reasoningFold: folded,
+    reasoningPreview: preview,
+    toolDetail,
+    toolOutputFull: outputChoice,
+  })
   return {
     spy,
     levelSpy,
@@ -219,6 +283,20 @@ function makeDisplay(
     toolRowSpy,
     foldSpy,
     control: {
+      getSettings: settings,
+      getPreset: () => presetOf(settings()),
+      applyPreset: (next: TranscriptView): void => {
+        levelSpy(next)
+        level = next
+        folded = true
+        preview = true
+        toolDetail = 'auto'
+        outputChoice = 'auto'
+      },
+      getToolDetail: () => toolDetail,
+      setToolDetail: (next: 'auto' | 'off' | 'count' | 'summary' | 'full'): void => { toolDetail = next },
+      getOutputChoice: () => outputChoice,
+      setOutputChoice: (next: 'auto' | 'cut' | 'full'): void => { outputChoice = next },
       getPreview: () => preview,
       setPreview: (next: boolean): void => { preview = next },
       getFold: () => folded,
@@ -333,21 +411,19 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'tools') } })
+    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'reasoning') } })
 
-    expect(spy).toHaveBeenCalledWith('tools', false)
+    expect(spy).toHaveBeenCalledWith('reasoning', false)
     // ONE message for the whole interaction: no second card, no stale notice.
     expect(channel.send).toHaveBeenCalledTimes(1)
     expect(channel.updateCard).toHaveBeenCalledTimes(1)
     expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
-    // The repainted card reflects the persisted value...
-    expect(buttonFor(repainted(0), 'tools').text.content).toBe('⬜ 工具调用：关')
-    // ...and drops the switches that no longer do anything.
-    expect(switchesOf(repainted(0)).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'tools'])
+    // The repainted card reflects the persisted value.
+    expect(buttonFor(repainted(0), 'reasoning').text.content).toBe('⬜ 深度思考：关')
     handle.stop()
   })
 
-  it('repaints a level tap in place too, and marks the chosen level disabled', async () => {
+  it('repaints a preset tap in place too, and marks the chosen preset disabled', async () => {
     const { channel, click, sentCard, repainted } = makeChannel()
     const { control, levelSpy } = makeDisplay({ ...ALL_ON })
     const handle = startFeishuDisplay({
@@ -358,12 +434,12 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    const compact = levelsOf(sentCard(0)).find((b: any) => b.behaviors[0].value.level === 'compact')
+    const compact = modesOf(sentCard(0)).find((b: any) => b.behaviors[0].value.preset === 'compact')
     await click({ messageId: 'om_1', action: { value: compact.behaviors[0].value } })
 
     expect(levelSpy).toHaveBeenCalledWith('compact')
     expect(channel.updateCard).toHaveBeenCalledTimes(1)
-    const chosen = levelsOf(repainted(0)).find((b: any) => b.behaviors[0].value.level === 'compact')
+    const chosen = modesOf(repainted(0)).find((b: any) => b.behaviors[0].value.preset === 'compact')
     expect(chosen.disabled).toBe(true)
     expect(chosen.type).toBe('primary')
     handle.stop()
@@ -378,6 +454,19 @@ describe('startFeishuDisplay', () => {
       channel: channel as any,
       display: {
         get: () => state,
+        getSettings: () => resolveDisplaySettings({
+          transcriptView: 'detailed',
+          showReasoning: state.reasoning,
+          showToolCalls: state.tools,
+          showToolArgs: state.args,
+          showToolResults: state.results,
+        }),
+        getPreset: () => 'detailed' as const,
+        applyPreset: () => undefined,
+        getToolDetail: () => 'auto' as const,
+        setToolDetail: () => undefined,
+        getOutputChoice: () => 'auto' as const,
+        setOutputChoice: () => undefined,
         getFold: () => true,
         setFold: () => undefined,
         getPreview: () => true,
@@ -397,7 +486,7 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    const clicked = click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'tools') } })
+    const clicked = click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'reasoning') } })
     await new Promise(resolve => setTimeout(resolve, 0))
     // While the write is in flight nothing may be repainted — a repaint here
     // would render the PRE-write state, which is the bug this guards.
@@ -405,7 +494,7 @@ describe('startFeishuDisplay', () => {
 
     release()
     await clicked
-    expect(buttonFor(repainted(0), 'tools').text.content).toBe('⬜ 工具调用：关')
+    expect(buttonFor(repainted(0), 'reasoning').text.content).toBe('⬜ 深度思考：关')
     handle.stop()
   })
 
@@ -500,9 +589,9 @@ describe('startFeishuDisplay', () => {
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
     channel.updateCard.mockRejectedValueOnce(new Error('boom'))
 
-    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'tools') } })
+    await click({ messageId: 'om_1', action: { value: payloadOf(sentCard(0), 'reasoning') } })
     // The setting still changed; only the card refresh failed.
-    expect(state.tools).toBe(false)
+    expect(state.reasoning).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('boom'))
     handle.stop()
   })

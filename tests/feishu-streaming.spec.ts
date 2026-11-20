@@ -3133,7 +3133,9 @@ describe('turn progress card wiring', () => {
     streaming.stop()
   })
 
-  it('respects the tool-display switch: no progress card when tools are off', async () => {
+  it('respects the tool-display switch: the compact turn card drops its tool rows', async () => {
+    // The MODE still owns the card (it is also the answer card), but a user who
+    // asked for no tool display must not get a card listing tools.
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, {
       transcriptView: () => 'compact' as TranscriptView,
@@ -3143,7 +3145,10 @@ describe('turn progress card wiring', () => {
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
     await tick(200)
-    expect(titles(ch).some(isTurnCardTitle)).toBe(false)
+    const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
+      .find(card => isTurnCardTitle(String(card.header.title.content)))
+    expect(opened).toBeDefined()
+    expect(mdOf(opened)).not.toContain('`bash`')
     streaming.stop()
   })
 
