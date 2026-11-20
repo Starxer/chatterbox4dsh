@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：模式改名「紧凑 / 详细」，设置页换成模式 + 工具两项（`i18n` / `client`，2026-11-20）
+
+- **改名**：`compact` 的中文名由「简洁」改为**「紧凑」**——它描述的是「步骤合并成一张过程卡」，不是「内容更少」；`detailed` 仍是「详细」（每步一张步骤卡）。命令、`/display` 卡、Web GUI 设置页三处口径统一。
+- **Web GUI 设置页对齐新模型**：原来那个「四档」下拉换成**模式**（紧凑 / 详细）+ **工具明细**（关 / 只报计数 / 一行摘要 / 完整）+ **工具输出不截断**开关；深度思考、工具调用、参数、结果四个开关与三个长度设置保持不变。旧档位名（`standard` / `verbose` / `expanded`）在页面上显示为对应的模式。
+- 提示文案同步：长度上限的说明不再引用已删除的档位，改说「不截断时最多 4 倍」。
+- 测试：客户端设置页用例改为断言两模式 + 工具明细 + 不截断开关；全量 82 文件 / 1,595 用例、typecheck、build（含 `client/client.js`）、privacy 全绿。
+
+**English**: The `compact` mode is now called "紧凑" (tight) in Chinese instead of "简洁" (simple) — it describes merging the turn's steps onto ONE progress card, not showing less. `detailed` keeps its name (one card per step). The plugin command, the `/display` card and the Web GUI settings page now agree. The settings page replaced its old four-level dropdown with **mode** (compact / detailed) + **tool detail** (off / counts / one line / full) + an **untruncated tool output** switch; the thinking, tool-call, argument, result switches and the three length settings are unchanged, and legacy level names render as the mode they map onto. Length hints no longer mention the retired levels ("up to 4x when untruncated"). Covered by updated client-page tests; 82 files / 1,595 tests, typecheck, build (including `client/client.js`) and privacy gate green.
+
 ### 变更：去掉预设，新增截断长度设置（`display-level` / `config` / `commands` / `feishu-display` / `i18n`，2026-11-20）
 
 - **预设整个移除**：它和模式行重复（卡上会出现两个「详细」），比直接摆开关更乱。现在卡上只有：**模式**（简洁 / 详细，决定卡片拓扑）、**思考**（内容 / 折叠 / 预览）、**工具明细**（关 / 只报计数 / 一行摘要 / 完整）、**工具输出**（截断 / 不截断）、参数与结果的开关（工具明细为「完整」时才出现）、以及下面三类长度。

@@ -219,6 +219,8 @@ const EDITABLE_FIELDS = [
 	"showToolArgs",
 	"showToolResults",
 	"transcriptView",
+	"toolDetail",
+	"toolOutputFull",
 	"locale",
 	"cardImages",
 	"cardMediaLimit",
@@ -460,7 +462,9 @@ var LarkSettingsCardController = class {
 			showToolCalls: value?.showToolCalls ?? true,
 			showToolArgs: value?.showToolArgs ?? true,
 			showToolResults: value?.showToolResults ?? true,
-			transcriptView: parseTranscriptView(value?.transcriptView),
+			transcriptView: parseTranscriptView(value?.transcriptView) === "compact" ? "compact" : "detailed",
+			toolDetail: value?.toolDetail ?? "full",
+			toolOutputFull: value?.toolOutputFull ?? false,
 			locale: value?.locale ?? "auto",
 			cardImages: value?.cardImages ?? "workspace",
 			cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),
@@ -826,30 +830,61 @@ function LarkSettingsCard(props) {
 									onChange: (event) => {
 										props.edit("transcriptView", event.target.value);
 									},
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-											value: "compact",
-											children: t("transcriptViewCompact")
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-											value: "standard",
-											children: t("transcriptViewStandard")
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-											value: "detailed",
-											children: t("transcriptViewDetailed")
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-											value: "verbose",
-											children: t("transcriptViewVerbose")
-										})
-									]
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "compact",
+										children: t("transcriptViewCompact")
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value: "detailed",
+										children: t("transcriptViewDetailed")
+									})]
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									className: "dsh-feishu-toggle-hint",
 									children: t("transcriptViewHint")
 								})
 							] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("toolDetail") }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+									"aria-label": "toolDetail",
+									disabled: blocked,
+									value: form.toolDetail,
+									onChange: (event) => {
+										props.edit("toolDetail", event.target.value);
+									},
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "off",
+											children: t("toolDetailOff")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "count",
+											children: t("toolDetailCount")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "summary",
+											children: t("toolDetailSummary")
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+											value: "full",
+											children: t("toolDetailFull")
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dsh-feishu-toggle-hint",
+									children: t("toolDetailHint")
+								})
+							] }),
+							toggleRow({
+								label: t("toolOutputFull"),
+								hint: t("toolOutputFullHint"),
+								checked: form.toolOutputFull,
+								onToggle: (next) => {
+									props.edit("toolOutputFull", next);
+								},
+								disabled: blocked
+							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("cardImages") }),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
@@ -2770,12 +2805,18 @@ const dictionaries = {
 		reactEmoji: "表情回应",
 		reactEmojiHint: "留空表示不添加（默认 THUMBSUP）",
 		display: "卡片显示",
-		transcriptView: "工作步骤展示",
-		transcriptViewHint: "对齐 DSH WebUI 的四档：简洁（默认，适合聊天）只报工具调用计数、标准每个工具一行摘要（深度思考只给首行）、详细带参数与结果、完全展开给出深度思考全文且不截断。下面四个开关只能在此基础上再关掉内容，不会让卡片比档位更详细。",
-		transcriptViewCompact: "简洁（默认）",
-		transcriptViewStandard: "标准",
+		transcriptView: "工作步骤展示（模式）",
+		transcriptViewHint: "紧凑（默认）：把一回合的步骤合并成一张过程卡，另发答案卡；详细：每一步一张步骤卡（带完整工具与结果）。旧的四档已取消，下面全部是独立开关，按需组合。",
+		transcriptViewCompact: "紧凑（默认）",
 		transcriptViewDetailed: "详细",
-		transcriptViewVerbose: "完全展开",
+		toolDetail: "工具明细",
+		toolDetailHint: "一行摘要只报每个工具的名字与耗时；完整才带参数与结果负载。",
+		toolDetailOff: "关",
+		toolDetailCount: "只报计数",
+		toolDetailSummary: "一行摘要",
+		toolDetailFull: "完整",
+		toolOutputFull: "工具输出不截断",
+		toolOutputFullHint: "开启后参数与结果最多显示 4 倍长度（封顶 6000 字，卡片约 30 KB 会被整张拒收）。",
 		showReasoning: "显示深度思考",
 		showReasoningHint: "步骤卡上展示模型的深度思考预览（最多 200 字）",
 		showToolCalls: "显示工具调用",
@@ -2785,11 +2826,11 @@ const dictionaries = {
 		showToolResults: "显示结果",
 		showToolResultsHint: "展示每个工具调用的结果预览",
 		reasoningPreviewChars: "深度思考预览长度（字）",
-		reasoningPreviewCharsHint: "详细档里折叠的深度思考只保留前 N 个字（默认 200，范围 80–4000）；完全展开档显示全文，不受此限。",
+		reasoningPreviewCharsHint: "折叠的深度思考只保留前 N 个字（默认 200，范围 80–4000）；开启「工具输出不截断」不影响它。",
 		resultPreviewChars: "工具结果预览长度（字）",
-		resultPreviewCharsHint: "单个工具结果预览的字数上限（默认 1500，范围 200–6000）；完全展开档最多显示 4 倍（封顶 6000，卡片整体约 30KB 会被拒收）。",
+		resultPreviewCharsHint: "单个工具结果预览的字数上限（默认 1500，范围 200–6000）；不截断时最多 4 倍（封顶 6000，卡片整体约 30KB 会被拒收）。",
 		argsPreviewChars: "工具参数预览长度（字）",
-		argsPreviewCharsHint: "单个工具调用参数块的字符上限（默认 2000，范围 200–6000）；完全展开档最多 4 倍（封顶 6000）。",
+		argsPreviewCharsHint: "单个工具调用参数块的字符上限（默认 2000，范围 200–6000）；不截断时最多 4 倍（封顶 6000）。",
 		requiresToolCalls: "需先开启「显示工具调用」",
 		cardImages: "正文里的媒体",
 		cardImagesHint: "飞书卡片只能显示上传过的媒体：这里决定正文里 ![图](路径)、[视频](路径)、[语音](路径) 这类引用怎么处理。图片与 MP4 视频直接内联，音频转成 Opus 播放器（需要 ffmpeg）；无论选哪档，卡片都不会因为媒体语法被拒收。",
@@ -2874,12 +2915,18 @@ const dictionaries = {
 		reactEmoji: "Emoji reaction",
 		reactEmojiHint: "Leave empty to disable (default THUMBSUP)",
 		display: "Card display",
-		transcriptView: "Work details",
-		transcriptViewHint: "The DSH WebUI's four levels: Compact (default here, built for chat) counts tool calls only, Standard gives each call one summary line (Deep thinking first line only), Detailed adds arguments and result previews, Verbose shows the whole Deep thinking untruncated. The four switches below can only remove detail from the level, never add.",
+		transcriptView: "Work display (mode)",
+		transcriptViewHint: "Compact (default) merges the turn's steps onto one progress card and posts the answer separately; Detailed posts one card per step with the full tool section. The old four levels are gone — everything below is an independent switch.",
 		transcriptViewCompact: "Compact (default)",
-		transcriptViewStandard: "Standard",
 		transcriptViewDetailed: "Detailed",
-		transcriptViewVerbose: "Verbose",
+		toolDetail: "Tool detail",
+		toolDetailHint: "One line per call names the tool and its duration; Full also carries the argument and result payloads.",
+		toolDetailOff: "Off",
+		toolDetailCount: "Counts only",
+		toolDetailSummary: "One line per call",
+		toolDetailFull: "Full",
+		toolOutputFull: "Untruncated tool output",
+		toolOutputFullHint: "Arguments and results show up to four times as much (hard cap 6000 characters; a card near 30 KB is refused whole).",
 		showReasoning: "Show deep thinking",
 		showReasoningHint: "Show the deep thinking block on step cards",
 		showToolCalls: "Show tool calls",
@@ -2889,11 +2936,11 @@ const dictionaries = {
 		showToolResults: "Show results",
 		showToolResultsHint: "Show each tool call's result preview",
 		reasoningPreviewChars: "Deep thinking preview length (chars)",
-		reasoningPreviewCharsHint: "The folded deep thinking head at the detailed level keeps this many characters (default 200, range 80-4000); the verbose level shows the whole chain and ignores it.",
+		reasoningPreviewCharsHint: "The folded deep thinking head keeps this many characters (default 200, range 80-4000).",
 		resultPreviewChars: "Tool result preview length (chars)",
-		resultPreviewCharsHint: "Character cap for one tool result preview (default 1500, range 200-6000). The verbose level shows up to 4x, capped at 6000 because a card near 30 KB is refused whole.",
+		resultPreviewCharsHint: "Character cap for one tool result preview (default 1500, range 200-6000). Untruncated output shows up to 4x, capped at 6000 because a card near 30 KB is refused whole.",
 		argsPreviewChars: "Tool arguments length (chars)",
-		argsPreviewCharsHint: "Character cap for one tool call's arguments block (default 2000, range 200-6000). The verbose level shows up to 4x, capped at 6000.",
+		argsPreviewCharsHint: "Character cap for one tool call's arguments block (default 2000, range 200-6000). Untruncated output shows up to 4x, capped at 6000.",
 		requiresToolCalls: "Enable \"Show tool calls\" first",
 		cardImages: "Media in card text",
 		cardImagesHint: "A Feishu card can only render media it uploaded itself: this decides what happens to `![alt](path)`, `[clip](path)` and `[voice](path)` references in the model's text. Images and MP4 video are inlined, audio becomes an Opus player (needs ffmpeg). Whichever mode you pick, a card is never rejected over media syntax.",

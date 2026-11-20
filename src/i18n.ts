@@ -1069,7 +1069,7 @@ export const zh = {
   stepToolCount: (calls, failed) =>
     `🔧 ${calls} 个工具调用${failed > 0 ? ` · ${failed} 个失败` : ''}`,
 
-  // 回合过程卡（feishu-progress.ts）：简洁档把整轮的工具活动合并到一张卡上。
+  // 回合过程卡（feishu-progress.ts）：紧凑模式把整轮的工具活动合并到一张卡上。
   turnCardTitleRunning: elapsed => `🐳 深度求索中 · ${elapsed}`,
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
@@ -1222,14 +1222,14 @@ export const zh = {
   displayCardHiddenByTools: '_「参数」「结果」随「工具调用」一起隐藏；重新开启工具调用后会回来。_',
   displayCardNote: '也支持 `/display <开关> on|off` 和 `/display tick 3|5|10|30`。',
   displayCardTickTitle: '**耗时刷新**',
-  displayCardTickHint: '简洁过程卡与其他档位的等待卡共用；只影响计时刷新，不延迟新事件。',
+  displayCardTickHint: '紧凑模式过程卡与详细模式的等待卡共用；只影响计时刷新，不延迟新事件。',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds} 秒`,
   displayCardModeTitle: '**模式**：',
   displayCardPresetTitle: '**预设**：',
   displayCardThinkingTitle: '**思考**',
   displayCardToolDetailTitle: '**工具明细**',
   displayCardOutputTitle: '**工具输出**',
-  displayModeName: mode => mode === 'compact' ? '简洁' : '详细',
+  displayModeName: mode => mode === 'compact' ? '紧凑' : '详细',
   displayPresetName: name => name === undefined ? '自定义' : ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[name] ?? name,
   displayToolDetailName: detail => ({ off: '关', count: '只报计数', summary: '一行摘要', full: '完整' })[detail],
   displayOutputName: full => full ? '不截断' : '截断',
@@ -1240,22 +1240,22 @@ export const zh = {
   displayCardFoldName: folded => folded ? '折叠' : '平铺',
   displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
   displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
-  displayCardToolRowTitle: '**工具行**（仅「简洁」档）',
-  displayCardToolRowHint: '_简洁模式过程卡里，每个工具调用那一行显示什么。描述 = 模型自己写的一句 description，并非每个工具都会写。_',
+  displayCardToolRowTitle: '**工具行**（仅「紧凑」模式）',
+  displayCardToolRowHint: '_紧凑模式过程卡里，每个工具调用那一行显示什么。描述 = 模型自己写的一句 description，并非每个工具都会写。_',
   displayToolRowName: style => ({
     tool: '仅工具',
     'tool-description': '描述 + 工具',
     description: '仅描述',
   })[style],
   displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
-  displayCardSwitchesHiddenByLevel: '_当前档位下不起作用的开关已隐藏：参数/结果只在「详细」「完全展开」生效，思考内容在「简洁」下不显示。_',
+  displayCardSwitchesHiddenByLevel: '_当前模式下不起作用的开关已隐藏。_',
   displayToolRowLabel: '工具行',
   displayToolRowSet: name => `✅ 工具行已切换为「${name}」。`,
   displayToolRowUsage: '用法：`/display toolrow tool|both|description`',
   pendingAttachmentsNotice: (images, files) => `📥 已暂存 ${[images > 0 ? `${images} 张图片` : '', files > 0 ? `${files} 个文件` : ''].filter(Boolean).join('、')}，等待你的文字说明；发送文字后会一起交给 Agent。`,
   pendingAttachmentsDiscarded: '已清除上一会话暂存的附件。',
   displayCardLevelTitle: '**工作步骤展示**（四档）',
-  displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
+  displayLevelName: level => ({ compact: '紧凑', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayLevelHint: level => ({
     compact: '只报工具调用计数与状态，不显示深度思考内容（默认）',

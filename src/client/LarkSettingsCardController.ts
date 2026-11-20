@@ -196,8 +196,12 @@ export interface LarkSettingsValues {
   showToolCalls?: boolean
   showToolArgs?: boolean
   showToolResults?: boolean
-  /** Work-detail level, the same field the WebUI's own `ui-chat` page writes. */
+  /** Card topology: `compact` merges the turn onto one card, `detailed` is per step. */
   transcriptView?: TranscriptView
+  /** What the tool section carries. */
+  toolDetail?: 'off' | 'count' | 'summary' | 'full'
+  /** Whether tool payloads are carried untruncated. */
+  toolOutputFull?: boolean
   locale?: PluginLocale
   cardImages?: CardImageMode
   cardMediaLimit?: number
@@ -231,8 +235,12 @@ export interface LarkFormValues {
   showToolCalls: boolean
   showToolArgs: boolean
   showToolResults: boolean
-  /** Work-detail level; mirrors `ui-chat.transcriptView` on the DSH side. */
+  /** Card topology; stored in `transcriptView` for backward compatibility. */
   transcriptView: TranscriptView
+  /** What the tool section carries. */
+  toolDetail: 'off' | 'count' | 'summary' | 'full'
+  /** Whether tool payloads are carried untruncated. */
+  toolOutputFull: boolean
   locale: PluginLocale
   /** How images the model references in card text are handled. */
   cardImages: CardImageMode
@@ -259,7 +267,7 @@ export interface LarkFormValues {
 /** The field order every save walks; also the only keys a save may write. */
 const EDITABLE_FIELDS: readonly (keyof LarkFormValues)[] = [
   'appId', 'domain', 'requireMention', 'dmMode', 'groupAllowlist', 'dmAllowlist', 'reactEmoji',
-  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'transcriptView', 'locale', 'cardImages',
+  'showReasoning', 'showToolCalls', 'showToolArgs', 'showToolResults', 'transcriptView', 'toolDetail', 'toolOutputFull', 'locale', 'cardImages',
   'cardMediaLimit',
   'cardImageMaxMb', 'cardVideoMaxMb', 'cardAudioMaxMb',
   'deliverDocMaxMb',
@@ -568,7 +576,12 @@ export class LarkSettingsCardController {
       showToolCalls: value?.showToolCalls ?? true,
       showToolArgs: value?.showToolArgs ?? true,
       showToolResults: value?.showToolResults ?? true,
-      transcriptView: parseTranscriptView(value?.transcriptView),
+      // Legacy level names are read-only here: the page only offers the two
+      // modes, so a stored `standard`/`verbose` shows as `detailed` (its tools
+      // and output values are what actually decide the look now).
+      transcriptView: parseTranscriptView(value?.transcriptView) === 'compact' ? 'compact' : 'detailed',
+      toolDetail: value?.toolDetail ?? 'full',
+      toolOutputFull: value?.toolOutputFull ?? false,
       locale: value?.locale ?? 'auto',
       cardImages: value?.cardImages ?? 'workspace',
       cardMediaLimit: String(value?.cardMediaLimit ?? CARD_MEDIA_LIMIT.default),

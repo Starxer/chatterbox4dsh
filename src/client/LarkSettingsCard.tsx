@@ -154,15 +154,26 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
         {previewCharsRow('reasoningPreviewChars', t('reasoningPreviewChars'), t('reasoningPreviewCharsHint'))}
         {previewCharsRow('resultPreviewChars', t('resultPreviewChars'), t('resultPreviewCharsHint'))}
         {previewCharsRow('argsPreviewChars', t('argsPreviewChars'), t('argsPreviewCharsHint'))}
-        {/* The work-detail level comes FIRST: it is the baseline the four
-            switches below refine, so reading the block top-down matches how it
-            is applied (level sets the ceiling, switches can only take away). */}
+        {/* The mode decides the card TOPOLOGY (one merged turn card vs one card
+            per step); everything below is an independent switch, so reading the
+            block top-down no longer implies "baseline, then subtract". */}
         <label><span>{t('transcriptView')}</span><select aria-label="transcriptView" disabled={blocked} value={form.transcriptView} onChange={event => { props.edit('transcriptView', event.target.value as LarkFormValues['transcriptView']) }}>
           <option value="compact">{t('transcriptViewCompact')}</option>
-          <option value="standard">{t('transcriptViewStandard')}</option>
           <option value="detailed">{t('transcriptViewDetailed')}</option>
-          <option value="verbose">{t('transcriptViewVerbose')}</option>
         </select><span className="dsh-feishu-toggle-hint">{t('transcriptViewHint')}</span></label>
+        <label><span>{t('toolDetail')}</span><select aria-label="toolDetail" disabled={blocked} value={form.toolDetail} onChange={event => { props.edit('toolDetail', event.target.value as LarkFormValues['toolDetail']) }}>
+          <option value="off">{t('toolDetailOff')}</option>
+          <option value="count">{t('toolDetailCount')}</option>
+          <option value="summary">{t('toolDetailSummary')}</option>
+          <option value="full">{t('toolDetailFull')}</option>
+        </select><span className="dsh-feishu-toggle-hint">{t('toolDetailHint')}</span></label>
+        {toggleRow({
+          label: t('toolOutputFull'),
+          hint: t('toolOutputFullHint'),
+          checked: form.toolOutputFull,
+          onToggle: next => { props.edit('toolOutputFull', next) },
+          disabled: blocked,
+        })}
         <label><span>{t('cardImages')}</span><select aria-label="cardImages" disabled={blocked} value={form.cardImages} onChange={event => { props.edit('cardImages', event.target.value as LarkFormValues['cardImages']) }}>
           <option value="workspace">{t('cardImagesWorkspace')}</option>
           <option value="text">{t('cardImagesText')}</option>

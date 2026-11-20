@@ -162,14 +162,14 @@ export const zhCommandTranslations: CommandTranslations = {
   displayState: (label: string, enabled: boolean) => `• ${label}：**${enabled ? '开' : '关'}**`,
   displaySet: (label: string, enabled: boolean) => `📇 「${label}」已设为 **${enabled ? '开' : '关'}**。跨重启持久化。`,
   displayUnknown: (value: string) => `未知显示级别或开关 "${value}"。`,
-  displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
+  displayLevelName: level => ({ compact: '紧凑', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
   displayLevelSet: name => `📇 显示级别已设为「${name}」。跨重启持久化。`,
   displayLevelLabel: '级别',
   displayTickCurrent: seconds => `• 耗时刷新：每 ${seconds} 秒`,
   displayTickSet: seconds => `📇 耗时刷新已设为每 ${seconds} 秒。跨重启持久化。`,
   displayTickUsage: '用法：/display tick [3|5|10|30]（秒；不带数值查看当前设置）。',
   displayModeLabel: '模式',
-  displayModeName: mode => mode === 'compact' ? '简洁' : '详细',
+  displayModeName: mode => mode === 'compact' ? '紧凑' : '详细',
   displayToolDetailLabel: '工具明细',
   displayOutputLabel: '工具输出',
   displayToolDetailName: detail => ({ off: '关', count: '只报计数', summary: '一行摘要', full: '完整' })[detail],
@@ -198,7 +198,7 @@ export const zhCommandTranslations: CommandTranslations = {
     description: '仅描述',
   })[style],
   displayToolRowSet: name => `✅ 工具行已切换为「${name}」。`,
-  displayToolRowUsage: '用法：/display toolrow tool|both|description（仅「简洁」档生效）。',
+  displayToolRowUsage: '用法：/display toolrow tool|both|description（仅「紧凑」模式生效）。',
 }
 
 /** English implementation of `CommandTranslations`. */

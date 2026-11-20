@@ -340,7 +340,7 @@ describe('/display command', () => {
     const display = control()
     const mode = await handleDisplayCommand(invocation('compact'), translations, display)
     expect(display.setLevel).toHaveBeenCalledWith('compact')
-    expect(mode.text.toLowerCase()).toContain('level set to compact')
+    expect(mode.text?.toLowerCase()).toContain('level set to compact')
 
     const detail = await handleDisplayCommand(invocation('tools count'), translations, display)
     expect(display.setToolDetail).toHaveBeenCalledWith('count')

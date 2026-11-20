@@ -304,29 +304,36 @@ describe('Lark settings client plugin', () => {
     expect(screen.queryByText('statusConnected')).toBeNull()
   })
 
-  it('renders the work-detail level with the WebUI\'s four names', async () => {
+  it('renders the two display modes and the two tool overrides', async () => {
     stubStatus()
     const harness = mount(createForm())
     renderSettings(harness)
 
     await screen.findByDisplayValue('cli_existing')
-    const level = screen.getByLabelText('transcriptView') as HTMLSelectElement
-    expect(level.value).toBe('detailed')
-    // Same four values and the same order as the DSH WebUI's own setting.
-    expect([...level.options].map(option => option.value)).toEqual(['compact', 'standard', 'detailed', 'verbose'])
+    const mode = screen.getByLabelText('transcriptView') as HTMLSelectElement
+    expect(mode.value).toBe('detailed')
+    // Presets are gone: only the two card topologies remain.
+    expect([...mode.options].map(option => option.value)).toEqual(['compact', 'detailed'])
+    const detail = screen.getByLabelText('toolDetail') as HTMLSelectElement
+    expect([...detail.options].map(option => option.value)).toEqual(['off', 'count', 'summary', 'full'])
+    // The untruncated-output switch is a plain toggle, not a select.
+    expect(screen.getByRole('switch', { name: 'toolOutputFull' })).toBeTruthy()
   })
 
-  it('writes the level it was given, including the legacy spellings', async () => {
+  it('shows the mode a legacy level maps onto', async () => {
     stubStatus()
     const form = createForm({ transcriptView: 'compact' })
     renderSettings(mount(form))
 
     await screen.findByDisplayValue('cli_existing')
     expect((screen.getByLabelText('transcriptView') as HTMLSelectElement).value).toBe('compact')
-    // A stored `expanded` (0.1.x) reads as `detailed` in 0.2.0; the page must
-    // show that, not silently render the first option.
+    // A stored `expanded` (0.1.x) or `verbose` reads as the detailed mode; the
+    // page must show that, not silently render the first option.
     renderSettings(mount(createForm({ transcriptView: 'expanded' as any })))
     expect((await screen.findAllByLabelText('transcriptView'))[1] as HTMLSelectElement)
+      .toHaveProperty('value', 'detailed')
+    renderSettings(mount(createForm({ transcriptView: 'verbose' as any })))
+    expect((await screen.findAllByLabelText('transcriptView'))[2] as HTMLSelectElement)
       .toHaveProperty('value', 'detailed')
   })
 
