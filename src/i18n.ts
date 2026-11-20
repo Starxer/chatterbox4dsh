@@ -539,7 +539,10 @@ export interface Translations {
   displayModeName: (mode: 'compact' | 'detailed') => string
   displayPresetName: (name: string | undefined) => string
   displayToolDetailName: (detail: 'off' | 'count' | 'summary' | 'full') => string
-  displayOutputName: (choice: 'auto' | 'cut' | 'full') => string
+  displayOutputName: (full: boolean) => string
+  /** Truncation-length rows on the `/display` card. */
+  displayCardLengthTitle: string
+  displayLengthName: (field: 'reasoning' | 'args' | 'result', chars: number) => string
   displayPreviewName: (enabled: boolean) => string
   /** Thinking-block fold row on the `/display` card. */
   displayCardFoldTitle: string
@@ -1229,7 +1232,9 @@ export const zh = {
   displayModeName: mode => mode === 'compact' ? '简洁' : '详细',
   displayPresetName: name => name === undefined ? '自定义' : ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[name] ?? name,
   displayToolDetailName: detail => ({ off: '关', count: '只报计数', summary: '一行摘要', full: '完整' })[detail],
-  displayOutputName: choice => ({ auto: '随预设', cut: '截断', full: '不截断' })[choice],
+  displayOutputName: full => full ? '不截断' : '截断',
+  displayCardLengthTitle: '**截断长度**（字）',
+  displayLengthName: (field, chars) => `${{ reasoning: '思考预览', args: '参数', result: '结果' }[field]}：${chars}`,
   displayPreviewName: enabled => enabled ? '预览开' : '预览关',
   displayCardFoldTitle: '**思考块**（折叠 = 收进面板；平铺 = 直接显示）',
   displayCardFoldName: folded => folded ? '折叠' : '平铺',
@@ -1860,7 +1865,9 @@ export const en: Translations = {
   displayModeName: mode => mode === 'compact' ? 'compact' : 'detailed',
   displayPresetName: name => name === undefined ? 'custom' : ({ compact: 'compact', standard: 'standard', detailed: 'detailed', verbose: 'verbose' })[name] ?? name,
   displayToolDetailName: detail => ({ off: 'off', count: 'counts', summary: 'one line', full: 'full' })[detail],
-  displayOutputName: choice => ({ auto: 'preset', cut: 'truncated', full: 'untruncated' })[choice],
+  displayOutputName: full => full ? 'untruncated' : 'truncated',
+  displayCardLengthTitle: '**Truncation lengths** (chars)',
+  displayLengthName: (field, chars) => `${{ reasoning: 'Thinking preview', args: 'Arguments', result: 'Result' }[field]}: ${chars}`,
   displayPreviewName: enabled => enabled ? 'preview on' : 'preview off',
   displayCardFoldTitle: '**Thinking block** (fold = collapsed panel; flat = shown inline)',
   displayCardFoldName: folded => folded ? 'Folded' : 'Flat',

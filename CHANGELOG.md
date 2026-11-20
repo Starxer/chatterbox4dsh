@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 变更：去掉预设，新增截断长度设置（`display-level` / `config` / `commands` / `feishu-display` / `i18n`，2026-11-20）
+
+- **预设整个移除**：它和模式行重复（卡上会出现两个「详细」），比直接摆开关更乱。现在卡上只有：**模式**（简洁 / 详细，决定卡片拓扑）、**思考**（内容 / 折叠 / 预览）、**工具明细**（关 / 只报计数 / 一行摘要 / 完整）、**工具输出**（截断 / 不截断）、参数与结果的开关（工具明细为「完整」时才出现）、以及下面三类长度。
+- **旧档位名只作为迁移读法**：`standard` 曾被读成「一行摘要」、`verbose` 曾被读成「不截断」；升级时若对应开关从未存过就沿用该历史默认，不写回、不再出现在任何界面。`/display standard|verbose` 会明确报「旧档位已移除」并指向新命令。
+- **新增截断长度设置**：`/display length reasoning|args|result <字数>`（越界按 `PREVIEW_CHARS` 夹取），卡上三行离散选项（思考 200/500/1000/2000、参数 500/1000/2000/4000、结果 500/1000/1500/3000），底层仍是 `reasoningPreviewChars` / `argsPreviewChars` / `resultPreviewChars`。
+- **`/display` 无参报告**：模式、思考折叠/预览、工具行样式、工具明细、工具输出、三类长度、刷新间隔。
+- **`DisplayControl` 接口**：`getPreset` / `applyPreset` / `getOutputChoice` / `setOutputChoice` 移除，新增 `getOutputFull` / `setOutputFull` / `getPreviewChars` / `setPreviewChars`；`toolDetail` 不再有 `auto` 取值。
+- 测试：display-level 设置解析、命令（模式 / 工具明细 / 输出 / 长度 / 旧预设报错）与卡片布局用例全部按新模型重写；全量 82 文件 / 1,595 用例、typecheck、build、privacy 全绿。
+
+**English**: The presets are gone — they duplicated the mode row (the card showed two "detailed" entries) and read as more confusing than the switches themselves. The card now carries only: mode (compact / detailed, which decides the card topology), thinking (content / fold / preview), tool detail (off / counts / one line / full), tool output (truncated / untruncated), the argument and result switches (only when the tool detail is full), and the three truncation lengths. The retired level names are now READ-ONLY migration hints: an upgrade keeps the look it had ("standard" meant one summary line, "verbose" untruncated), nothing is written back, and `/display standard|verbose` explains that the presets were removed and points at the new commands. Truncation lengths became configurable: `/display length reasoning|args|result <chars>` (clamped by `PREVIEW_CHARS`) plus three discrete rows on the card (thinking 200/500/1000/2000, args 500/1000/2000/4000, result 500/1000/1500/3000), backed by the existing `reasoningPreviewChars` / `argsPreviewChars` / `resultPreviewChars` settings. A bare `/display` reports the mode, fold/preview, tool-row style, tool detail, tool output, the three lengths and the refresh interval. `DisplayControl` dropped `getPreset` / `applyPreset` / `getOutputChoice` / `setOutputChoice` in favour of `getOutputFull` / `setOutputFull` / `getPreviewChars` / `setPreviewChars`, and `toolDetail` no longer has an `auto` value. Tests: the settings resolver, command cases (mode / tool detail / output / length / retired presets) and card layout tests were rewritten for the new model; 82 files / 1,595 tests, typecheck, build and privacy gate green.
+
 ### 修复：重启后「session already owned by an active write handle」（`src/harness.ts`，2026-11-20）
 
 - **现象**：重启后自动重发的那一轮，聊天里收到 `处理这条消息时出错：session "…" is already owned by an active write handle`（两次重启各出现一次；轮次随后仍能跑起来，但用户先看到一条错误）。

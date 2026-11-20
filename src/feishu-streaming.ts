@@ -162,10 +162,10 @@ export interface FeishuStreamingDeps {
   reasoningFold?: () => boolean | undefined
   /** Live thinking preview switch (default on). */
   reasoningPreview?: () => boolean | undefined
-  /** Tool detail override; `auto` follows the preset. */
-  toolDetail?: () => 'auto' | 'off' | 'count' | 'summary' | 'full'
-  /** Tool output truncation override; `auto` follows the preset. */
-  toolOutputFull?: () => 'auto' | 'cut' | 'full'
+  /** What the tool section carries (unset keeps the legacy level's default). */
+  toolDetail?: () => 'off' | 'count' | 'summary' | 'full' | undefined
+  /** Whether tool payloads are carried untruncated (unset keeps the legacy default). */
+  toolOutputFull?: () => boolean | undefined
   /** Whether to show tool calls at all; false hides the section and suppresses tool-only cards. */
   showToolCalls?: () => boolean
   /** Whether to show each tool call's arguments block. */

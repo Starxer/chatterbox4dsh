@@ -63,10 +63,10 @@ export interface Config {
   reasoningFold?: boolean
   /** Live thinking preview while the model is thinking (default on). */
   reasoningPreview?: boolean
-  /** Tool detail override; `auto` follows the preset. */
-  toolDetail?: 'auto' | 'off' | 'count' | 'summary' | 'full'
-  /** Tool output truncation override; `auto` follows the preset. */
-  toolOutputFull?: 'auto' | 'cut' | 'full'
+  /** What the tool section carries; unset keeps the legacy level's default. */
+  toolDetail?: 'off' | 'count' | 'summary' | 'full'
+  /** Whether tool payloads are carried untruncated; unset keeps the legacy default. */
+  toolOutputFull?: boolean
   /**
    * How much work detail a step card carries, mirroring the WebUI's
    * `ui-chat.transcriptView` (`compact` / `standard` / `detailed` / `verbose`,
@@ -322,9 +322,9 @@ export interface SettingsConfig extends Required<Pick<Config,
   /** Live thinking preview while the model is thinking; optional for partial callers. */
   reasoningPreview?: boolean
   /** Tool detail override; optional for partial callers. */
-  toolDetail?: 'auto' | 'off' | 'count' | 'summary' | 'full'
+  toolDetail?: 'off' | 'count' | 'summary' | 'full'
   /** Tool output truncation override; optional for partial callers. */
-  toolOutputFull?: 'auto' | 'cut' | 'full'
+  toolOutputFull?: boolean
   /** Preview caps; optional in the type, always filled by resolveSettingsConfig. */
   reasoningPreviewChars?: number
   resultPreviewChars?: number
@@ -401,8 +401,8 @@ export const ConfigSchema = z.object({
   transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact (default, shorter chat cards) counts tool calls only, standard adds one summary line per call, detailed adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
   compactToolRow: z.union([...COMPACT_TOOL_ROW_STYLES]).default(DEFAULT_COMPACT_TOOL_ROW).volatile().description('What one tool row of the compact turn card carries: "tool-description" (default) puts the model-written description first and then the tool row, "tool" shows the tool name plus the file/programs it touched, "description" shows the description alone and never falls back when a call has none. Compact only; the other levels keep their own summary line.'),
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
-  toolDetail: z.union(['auto', 'off', 'count', 'summary', 'full']).default('auto').volatile().description('What the tool section carries: "auto" (default) follows the active preset, otherwise off (counts only on compact), count (one totals line), summary (one line per call) or full (summary plus argument/result blocks).'),
-  toolOutputFull: z.union(['auto', 'cut', 'full']).default('auto').volatile().description('Whether tool argument/result blocks are truncated: "auto" (default) follows the preset, cut keeps the preview caps, full carries up to four times as much (hard cap 6000 characters, because a card near 30 KB is refused whole).'),
+  toolDetail: z.union(['off', 'count', 'summary', 'full']).volatile().description('What the tool section carries: off (counts only on compact), count (one totals line), summary (one line per call) or full (summary plus argument/result blocks). Unset keeps the value the retired level name implies, so an upgrade does not change the look.'),
+  toolOutputFull: z.boolean().volatile().description('Whether tool argument/result blocks are carried untruncated (up to four times the configured preview length, hard cap 6000 characters, because a card near 30 KB is refused whole). Unset keeps the retired level name\'s value.'),
   reasoningPreview: z.boolean().default(true).volatile().description('Show a live tail of the reasoning chain while the model is thinking; the finished block is unaffected. Off sends no streaming updates at all, which also saves Feishu API calls.'),
   reasoningFold: z.boolean().default(true).volatile().description('Fold the thinking block into a collapsed panel (default). Off shows the whole chain flat on the step card. The chain is never truncated either way: past one card it continues on follow-up cards.'),
   apiQuotaPerMonth: z.number().min(0).max(10_000_000).default(0).volatile().description('Monthly API-call quota for this app, as shown in the open-platform console (default: unset = unknown). Only used to print "this month N / quota (P%)" in /status; the plugin counts every outbound call itself and never blocks on the number.'),
@@ -453,8 +453,14 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     ...(quota === undefined || quota <= 0 ? {} : { apiQuotaPerMonth: Math.min(10_000_000, Math.floor(quota)) }),
     reasoningFold: readField(config.reasoningFold) ?? true,
     reasoningPreview: readField(config.reasoningPreview) ?? true,
-    toolDetail: (readField(config.toolDetail) ?? 'auto') as 'auto' | 'off' | 'count' | 'summary' | 'full',
-    toolOutputFull: (readField(config.toolOutputFull) ?? 'auto') as 'auto' | 'cut' | 'full',
+    // Unset must stay absent (exactOptionalPropertyTypes): the resolver reads
+    // "absent" as "keep whatever the retired level name implied".
+    ...(readField(config.toolDetail) === undefined
+      ? {}
+      : { toolDetail: readField(config.toolDetail) as 'off' | 'count' | 'summary' | 'full' }),
+    ...(readField(config.toolOutputFull) === undefined
+      ? {}
+      : { toolOutputFull: readField(config.toolOutputFull) as boolean }),
     reasoningPreviewChars: clampPreviewChars('reasoningHead', readField(config.reasoningPreviewChars)),
     resultPreviewChars: clampPreviewChars('result', readField(config.resultPreviewChars)),
     argsPreviewChars: clampPreviewChars('args', readField(config.argsPreviewChars)),

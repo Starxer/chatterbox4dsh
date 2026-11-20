@@ -122,37 +122,34 @@ export const REASONING_PREVIEW_CHARS = 200
 /** The two card layouts: one turn card, or one card per step. */
 export type DisplayMode = 'compact' | 'detailed'
 
-/** `auto` follows the active preset; the rest are explicit overrides. */
-export type ToolDetailChoice = 'auto' | ToolDetail
-
-/** `auto` follows the active preset; `cut`/`full` are explicit overrides. */
-export type ToolOutputChoice = 'auto' | 'cut' | 'full'
-
 /**
- * The switches a preset sets, before any explicit override is applied.
+ * What the retired LEVEL NAMES mean now.
  *
- * A preset is a NAMED BUNDLE of these values (`standard` / `detailed` /
- * `verbose` / `compact`), not an independent display axis — the card and the
- * command let the operator pick values directly, and the preset name is only a
- * shortcut plus a label ("custom" when the values match none).
+ * The four levels are gone: the operator sets the mode (card topology) and the
+ * switches directly. These values are read ONCE from whatever a stored
+ * `transcriptView` still says, so an existing configuration keeps its look
+ * without a migration — nothing here is written back.
  */
-interface PresetSpec {
-  mode: DisplayMode
-  reasoning: ReasoningDetail
-  reasoningFold: boolean
-  reasoningPreview: boolean
-  tools: ToolDetail
-  toolArgs: boolean
-  toolResults: boolean
-  toolOutputFull: boolean
+const LEGACY_DEFAULTS: Record<TranscriptView, { tools: ToolDetail; outputFull: boolean }> = {
+  compact: { tools: 'off', outputFull: false },
+  standard: { tools: 'summary', outputFull: false },
+  detailed: { tools: 'full', outputFull: false },
+  verbose: { tools: 'full', outputFull: true },
 }
 
-/**
- * One resolved set of display choices — what the renderers and the `/display`
- * card actually read. `compact` is a MODE (it changes which cards exist), the
- * other three names are presets over the same switches.
- */
+/** The numeric choices offered by the truncation-length rows on `/display`. */
+export const PREVIEW_LENGTH_CHOICES = {
+  reasoning: [200, 500, 1000, 2000],
+  args: [500, 1000, 2000, 4000],
+  result: [500, 1000, 1500, 3000],
+} as const
+
+/** A truncation length the card and `/display length` can set. */
+export type PreviewLengthField = keyof typeof PREVIEW_LENGTH_CHOICES
+
+/** One resolved set of display choices — what the renderers and the card read. */
 export interface DisplaySettings {
+  /** `compact` is a card TOPOLOGY (one turn card); `detailed` is per-step. */
   mode: DisplayMode
   reasoning: ReasoningDetail
   reasoningFold: boolean
@@ -162,33 +159,6 @@ export interface DisplaySettings {
   toolResults: boolean
   toolOutputFull: boolean
 }
-
-const PRESETS: Record<TranscriptView, PresetSpec> = {
-  // 简洁: one turn card + one answer card. The step cards carry the answer and
-  // nothing else, and a step that only ran tools posts no card at all.
-  compact: {
-    mode: 'compact', reasoning: 'off', reasoningFold: true, reasoningPreview: false,
-    tools: 'off', toolArgs: false, toolResults: false, toolOutputFull: false,
-  },
-  // 标准: every call is named, but no payloads; the whole chain is folded.
-  standard: {
-    mode: 'detailed', reasoning: 'on', reasoningFold: true, reasoningPreview: true,
-    tools: 'summary', toolArgs: false, toolResults: false, toolOutputFull: false,
-  },
-  // 详细: the pre-level default — args + results, the whole chain folded.
-  detailed: {
-    mode: 'detailed', reasoning: 'on', reasoningFold: true, reasoningPreview: true,
-    tools: 'full', toolArgs: true, toolResults: true, toolOutputFull: false,
-  },
-  // 完全展开: everything the card can carry, tool payloads untruncated.
-  verbose: {
-    mode: 'detailed', reasoning: 'on', reasoningFold: true, reasoningPreview: true,
-    tools: 'full', toolArgs: true, toolResults: true, toolOutputFull: true,
-  },
-}
-
-/** Every preset name, for the `/display` card's preset row. */
-export const PRESET_NAMES: readonly TranscriptView[] = TRANSCRIPT_VIEWS
 
 /** The resolved axes the renderers read. */
 export interface DisplayPolicy {
@@ -247,14 +217,14 @@ export function parseTranscriptView(value: unknown): TranscriptView {
 /**
  * Project the stored settings onto one {@link DisplaySettings}.
  *
- * Precedence, highest first:
- * 1. the legacy `show*` switches can still SUBTRACT (they never add);
- * 2. explicit overrides (`reasoningFold`, `reasoningPreview`, `toolDetail`,
- *    `toolOutputFull`) beat the preset;
- * 3. the preset named by `transcriptView` supplies whatever is left.
+ * There are no presets any more: the operator picks the mode and every switch
+ * directly. The only thing still read from the old level name is its historical
+ * default (`standard` used to mean summary lines, `verbose` untruncated
+ * payloads, and so on), applied when the corresponding switch has never been
+ * stored — so an upgrade keeps the look it had without rewriting anything.
  *
- * That is what makes "standard tools + the whole reasoning chain" reachable:
- * pick a preset for the baseline, then set one switch.
+ * The legacy `show*` switches can still SUBTRACT (they never add); everything
+ * else is stored explicitly.
  *
  * @param input - raw setting values (any may be missing).
  * @returns the resolved choices.
@@ -270,46 +240,25 @@ export function resolveDisplaySettings(input: {
   toolDetail?: unknown
   toolOutputFull?: unknown
 }): DisplaySettings {
-  const preset = PRESETS[parseTranscriptView(input.transcriptView)]
+  const legacyName = parseTranscriptView(input.transcriptView)
+  const legacy = LEGACY_DEFAULTS[legacyName]
   const explicitTools = typeof input.toolDetail === 'string'
-    && input.toolDetail !== 'auto'
     && (['off', 'count', 'summary', 'full'] as readonly string[]).includes(input.toolDetail)
     ? input.toolDetail as ToolDetail
     : undefined
-  const output = input.toolOutputFull === 'cut' ? false
-    : input.toolOutputFull === 'full' ? true
-      : typeof input.toolOutputFull === 'boolean' ? input.toolOutputFull
-        : preset.toolOutputFull
-  const tools = input.showToolCalls === false ? 'off' : (explicitTools ?? preset.tools)
-  const reasoning = input.showReasoning === false ? 'off' : preset.reasoning
+  const tools = input.showToolCalls === false ? 'off' : (explicitTools ?? legacy.tools)
+  const reasoning = input.showReasoning === false ? 'off' : 'on'
   return {
-    mode: preset.mode,
+    mode: legacyName === 'compact' ? 'compact' : 'detailed',
     reasoning,
-    reasoningFold: input.reasoningFold ?? preset.reasoningFold,
-    reasoningPreview: reasoning !== 'off' && (input.reasoningPreview ?? preset.reasoningPreview),
+    reasoningFold: input.reasoningFold ?? true,
+    reasoningPreview: reasoning !== 'off' && (input.reasoningPreview ?? true),
     tools,
-    toolArgs: tools === 'full' && preset.toolArgs && input.showToolArgs !== false,
-    toolResults: tools === 'full' && preset.toolResults && input.showToolResults !== false,
-    toolOutputFull: tools === 'full' && output,
+    toolArgs: input.showToolArgs !== false,
+    toolResults: input.showToolResults !== false,
+    toolOutputFull: tools === 'full'
+      && (typeof input.toolOutputFull === 'boolean' ? input.toolOutputFull : legacy.outputFull),
   }
-}
-
-/** Which preset name these settings match exactly, or undefined ("custom"). */
-export function presetOf(settings: DisplaySettings): TranscriptView | undefined {
-  for (const name of TRANSCRIPT_VIEWS) {
-    const preset = PRESETS[name]
-    if (settings.mode === preset.mode
-      && settings.reasoning === preset.reasoning
-      && settings.reasoningFold === preset.reasoningFold
-      && settings.reasoningPreview === preset.reasoningPreview
-      && settings.tools === preset.tools
-      && settings.toolArgs === preset.toolArgs
-      && settings.toolResults === preset.toolResults
-      && settings.toolOutputFull === preset.toolOutputFull) {
-      return name
-    }
-  }
-  return undefined
 }
 
 /**
@@ -325,42 +274,18 @@ export function presetOf(settings: DisplaySettings): TranscriptView | undefined 
 export function resolveDisplayPolicy(input: Parameters<typeof resolveDisplaySettings>[0]): DisplayPolicy {
   const settings = resolveDisplaySettings(input)
   const compact = settings.mode === 'compact'
+  // Payloads exist only inside the full tool section: `summary`/`count` name the
+  // calls and carry nothing to render, so the switches must not add them back.
+  const full = !compact && settings.tools === 'full'
   return {
     reasoning: compact ? 'off' : settings.reasoning,
     reasoningFold: settings.reasoningFold,
     reasoningPreview: !compact && settings.reasoningPreview,
     tools: compact ? 'off' : settings.tools,
-    toolArgs: compact ? false : settings.toolArgs,
-    toolResults: compact ? false : settings.toolResults,
-    fullToolOutput: compact ? false : settings.toolOutputFull,
+    toolArgs: full && settings.toolArgs,
+    toolResults: full && settings.toolResults,
+    fullToolOutput: full && settings.toolOutputFull,
     turnCard: compact,
-  }
-}
-
-/**
- * Whether one of the four switches can still change anything at this level.
- *
- * The `/display` card hides the ones it cannot: offering a toggle that does
- * nothing is what made the card feel unsuited to `compact` (its reasoning is
- * forced off, and `standard`/`compact` carry no argument/result payloads at
- * all). Stored values are left untouched, so a switch comes back when the level
- * changes — the same rule the card already used when tool calls were off.
- *
- * @param level - the active level.
- * @param key - one of the four switch keys.
- * @returns whether the switch is functional at that level.
- */
-export function levelUsesSwitch(
-  level: TranscriptView,
-  key: 'reasoning' | 'tools' | 'args' | 'results',
-): boolean {
-  switch (key) {
-    case 'reasoning': return PRESETS[level].reasoning !== 'off'
-    // Tool display is always meaningful: at `compact` it removes the progress
-    // card's tool rows, at the step levels it removes the tool section.
-    case 'tools': return true
-    case 'args':
-    case 'results': return PRESETS[level].toolArgs
   }
 }
 

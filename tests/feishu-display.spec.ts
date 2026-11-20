@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DISPLAY_KEYS, renderDisplayCard, startFeishuDisplay } from '../src/feishu-display.ts'
 import type { DisplayToggleKey } from '../src/commands.ts'
 import type { TranscriptView } from '../src/display-level.ts'
-import { presetOf, resolveDisplaySettings } from '../src/display-level.ts'
+import { resolveDisplaySettings, type ToolDetail } from '../src/display-level.ts'
 import { translationsFor } from '../src/i18n.ts'
 
 const t = translationsFor('zh')
@@ -52,10 +52,11 @@ function cardFor(
   level: TranscriptView = 'detailed',
   toolRow: 'tool' | 'tool-description' | 'description' = 'tool',
   overrides: {
-    toolDetail?: 'auto' | 'off' | 'count' | 'summary' | 'full'
-    output?: 'auto' | 'cut' | 'full'
+    toolDetail?: ToolDetail
+    outputFull?: boolean
     folded?: boolean
     preview?: boolean
+    lengths?: Partial<Record<'reasoning' | 'args' | 'result', number>>
   } = {},
 ): any {
   const settings = resolveDisplaySettings({
@@ -66,37 +67,37 @@ function cardFor(
     showToolResults: switches.results,
     reasoningFold: overrides.folded ?? true,
     reasoningPreview: overrides.preview ?? true,
-    toolDetail: overrides.toolDetail ?? 'auto',
-    toolOutputFull: overrides.output ?? 'auto',
+    ...(overrides.toolDetail === undefined ? {} : { toolDetail: overrides.toolDetail }),
+    ...(overrides.outputFull === undefined ? {} : { toolOutputFull: overrides.outputFull }),
   })
   return {
     mode: settings.mode,
-    preset: presetOf(settings),
     settings,
     switches,
     folded: settings.reasoningFold,
     preview: settings.reasoningPreview,
-    toolDetail: overrides.toolDetail ?? 'auto',
-    outputChoice: overrides.output ?? 'auto',
+    toolDetail: settings.tools,
+    outputFull: settings.toolOutputFull,
+    lengths: { reasoning: 200, args: 2000, result: 1500, ...overrides.lengths },
     toolRow,
   }
 }
 
 /** Mode buttons (compact / detailed). */
 const modesOf = (card: any): any[] =>
-  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.row === 'mode')
-
-/** Preset buttons (standard / detailed / verbose). */
-const presetsOf = (card: any): any[] =>
-  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.row === 'preset')
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.mode !== undefined)
 
 /** Tool-detail buttons (off / count / summary / full). */
 const toolDetailOf = (card: any): any[] =>
   buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.toolDetail !== undefined)
 
-/** Tool-output buttons (auto / cut / full). */
+/** Tool-output buttons (cut / full). */
 const outputOf = (card: any): any[] =>
-  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.output !== undefined)
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.outputFull !== undefined)
+
+/** Truncation-length buttons. */
+const lengthsOf = (card: any): any[] =>
+  buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.length !== undefined)
 
 /** Only the compact tool-row style buttons. */
 function toolRowsOf(card: any): any[] {
@@ -144,15 +145,17 @@ describe('renderDisplayCard', () => {
     }
   })
 
-  it('renders the mode, preset, thinking and tool rows', () => {
+  it('renders the mode, thinking, tool and length rows', () => {
     const card = renderDisplayCard(cardFor(ALL_ON), t) as any
     expect(card.header.title.content).toBe('📇 卡片显示')
-    expect(modesOf(card).map((b: any) => b.behaviors[0].value.preset)).toEqual(['compact', 'detailed'])
-    expect(presetsOf(card).map((b: any) => b.behaviors[0].value.preset)).toEqual(['standard', 'detailed', 'verbose'])
+    // Two modes, no presets: the retired level names are gone from the card.
+    expect(modesOf(card).map((b: any) => b.behaviors[0].value.mode)).toEqual(['compact', 'detailed'])
+    expect(markdownsOf(card).join('\n')).not.toContain('预设')
     // The detailed mode offers the thinking switches and the tool rows.
     expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
     expect(toolDetailOf(card)).toHaveLength(4)
-    expect(outputOf(card)).toHaveLength(3)
+    expect(outputOf(card)).toHaveLength(2)
+    expect(lengthsOf(card)).toHaveLength(12)
   })
 
   it('offers no inert rows in the compact mode', () => {
@@ -187,7 +190,7 @@ describe('renderDisplayCard', () => {
     expect(payloadOf(card, 'reasoning')).toEqual({ p: 'display', key: 'reasoning', value: true })
     expect(payloadOf(card, 'args')).toEqual({ p: 'display', key: 'args', value: true })
     // The preset/preset buttons mark the ACTIVE one as primary + disabled.
-    expect(modesOf(card).find((b: any) => b.behaviors[0].value.preset === 'detailed')).toMatchObject({ disabled: true, type: 'primary' })
+    expect(modesOf(card).find((b: any) => b.behaviors[0].value.mode === 'detailed')).toMatchObject({ disabled: true, type: 'primary' })
   })
 
   it('localizes the card', () => {
@@ -204,22 +207,24 @@ describe('renderDisplayCard', () => {
     const rows = toolRowsOf(compact)
     expect(rows.map((b: any) => b.behaviors[0].value.toolRow)).toEqual(['tool', 'tool-description', 'description'])
     expect(rows.find((b: any) => b.behaviors[0].value.toolRow === 'tool-description')).toMatchObject({ disabled: true, type: 'primary' })
-    for (const level of ['standard', 'detailed', 'verbose'] as const) {
-      expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, level), t))).toHaveLength(0)
-    }
+    expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(0)
   })
 
-  it('shows the tool-detail preset value and flips it with one tap', () => {
-    // standard preset = one line per call; an explicit override wins and is
-    // what the row marks as active.
-    const standard = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
-    expect(toolDetailOf(standard).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')).toMatchObject({ disabled: true, type: 'primary' })
-    expect(switchesOf(standard).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
+  it('marks the active tool detail and flips it with one tap', () => {
+    const summary = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
+    expect(toolDetailOf(summary).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')).toMatchObject({ disabled: true, type: 'primary' })
+    expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
 
-    const overridden = renderDisplayCard(cardFor(ALL_ON, 'standard', 'tool', { toolDetail: 'full' }), t) as any
-    expect(toolDetailOf(overridden).find((b: any) => b.behaviors[0].value.toolDetail === 'full')).toMatchObject({ disabled: true, type: 'primary' })
+    const full = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
+    expect(toolDetailOf(full).find((b: any) => b.behaviors[0].value.toolDetail === 'full')).toMatchObject({ disabled: true, type: 'primary' })
     // `full` brings the argument/result switches back.
-    expect(switchesOf(overridden).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
+    expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
+  })
+
+  it('marks the active truncation lengths', () => {
+    const card = renderDisplayCard(cardFor(ALL_ON, 'detailed', 'tool', { lengths: { result: 3000 } }), t) as any
+    expect(lengthsOf(card).filter((b: any) => b.behaviors[0].value.length === 'result').map((b: any) => b.behaviors[0].value.chars)).toEqual([500, 1000, 1500, 3000])
+    expect(lengthsOf(card).find((b: any) => b.behaviors[0].value.length === 'result' && b.behaviors[0].value.chars === 3000)).toMatchObject({ disabled: true, type: 'primary' })
   })
 
   it('keeps the compact-only note out of the detailed mode', () => {
@@ -260,11 +265,13 @@ function makeDisplay(
   const tickSpy = vi.fn()
   const toolRowSpy = vi.fn()
   const foldSpy = vi.fn()
+  const lengthSpy = vi.fn()
   let seconds = 5
   let folded = true
   let preview = true
-  let toolDetail: 'auto' | 'off' | 'count' | 'summary' | 'full' = 'auto'
-  let outputChoice: 'auto' | 'cut' | 'full' = 'auto'
+  let toolDetail: ToolDetail | undefined
+  let outputFull: boolean | undefined
+  const lengths = { reasoning: 200, args: 2000, result: 1500 }
   const settings = () => resolveDisplaySettings({
     transcriptView: level,
     showReasoning: state.reasoning,
@@ -273,8 +280,8 @@ function makeDisplay(
     showToolResults: state.results,
     reasoningFold: folded,
     reasoningPreview: preview,
-    toolDetail,
-    toolOutputFull: outputChoice,
+    ...(toolDetail === undefined ? {} : { toolDetail }),
+    ...(outputFull === undefined ? {} : { toolOutputFull: outputFull }),
   })
   return {
     spy,
@@ -282,21 +289,18 @@ function makeDisplay(
     tickSpy,
     toolRowSpy,
     foldSpy,
+    lengthSpy,
     control: {
       getSettings: settings,
-      getPreset: () => presetOf(settings()),
-      applyPreset: (next: TranscriptView): void => {
-        levelSpy(next)
-        level = next
-        folded = true
-        preview = true
-        toolDetail = 'auto'
-        outputChoice = 'auto'
+      getToolDetail: () => settings().tools,
+      setToolDetail: (next: ToolDetail): void => { toolDetail = next },
+      getOutputFull: () => settings().toolOutputFull,
+      setOutputFull: (next: boolean): void => { outputFull = next },
+      getPreviewChars: (field: 'reasoning' | 'args' | 'result'): number => lengths[field],
+      setPreviewChars: (field: 'reasoning' | 'args' | 'result', chars: number): void => {
+        lengthSpy(field, chars)
+        lengths[field] = chars
       },
-      getToolDetail: () => toolDetail,
-      setToolDetail: (next: 'auto' | 'off' | 'count' | 'summary' | 'full'): void => { toolDetail = next },
-      getOutputChoice: () => outputChoice,
-      setOutputChoice: (next: 'auto' | 'cut' | 'full'): void => { outputChoice = next },
       getPreview: () => preview,
       setPreview: (next: boolean): void => { preview = next },
       getFold: () => folded,
@@ -423,7 +427,7 @@ describe('startFeishuDisplay', () => {
     handle.stop()
   })
 
-  it('repaints a preset tap in place too, and marks the chosen preset disabled', async () => {
+  it('repaints a mode tap in place too, and marks the chosen mode disabled', async () => {
     const { channel, click, sentCard, repainted } = makeChannel()
     const { control, levelSpy } = makeDisplay({ ...ALL_ON })
     const handle = startFeishuDisplay({
@@ -434,12 +438,12 @@ describe('startFeishuDisplay', () => {
     } as any)
 
     await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
-    const compact = modesOf(sentCard(0)).find((b: any) => b.behaviors[0].value.preset === 'compact')
+    const compact = modesOf(sentCard(0)).find((b: any) => b.behaviors[0].value.mode === 'compact')
     await click({ messageId: 'om_1', action: { value: compact.behaviors[0].value } })
 
     expect(levelSpy).toHaveBeenCalledWith('compact')
     expect(channel.updateCard).toHaveBeenCalledTimes(1)
-    const chosen = modesOf(repainted(0)).find((b: any) => b.behaviors[0].value.preset === 'compact')
+    const chosen = modesOf(repainted(0)).find((b: any) => b.behaviors[0].value.mode === 'compact')
     expect(chosen.disabled).toBe(true)
     expect(chosen.type).toBe('primary')
     handle.stop()
@@ -461,12 +465,12 @@ describe('startFeishuDisplay', () => {
           showToolArgs: state.args,
           showToolResults: state.results,
         }),
-        getPreset: () => 'detailed' as const,
-        applyPreset: () => undefined,
-        getToolDetail: () => 'auto' as const,
+        getToolDetail: () => 'full' as const,
         setToolDetail: () => undefined,
-        getOutputChoice: () => 'auto' as const,
-        setOutputChoice: () => undefined,
+        getOutputFull: () => false,
+        setOutputFull: () => undefined,
+        getPreviewChars: () => 200,
+        setPreviewChars: () => undefined,
         getFold: () => true,
         setFold: () => undefined,
         getPreview: () => true,

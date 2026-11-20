@@ -41,7 +41,7 @@ import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
 import { sendStartupNoticeOnce } from './feishu-startup-notice.ts'
-import { presetOf, resolveDisplaySettings } from './display-level.ts'
+import { resolveDisplaySettings } from './display-level.ts'
 import { noteDeliveredFile, wasDeliveredFile } from './deliver-files.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
@@ -169,6 +169,21 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // a settings write into its volatile references, so this reads whatever is
   // in force right now and needs no re-registration after a write.
   const currentSettings = (): SettingsConfig => resolveSettingsConfig(rawConfig)
+  /**
+   * The display-input view of the current settings, shared by the `/display`
+   * command's read face and the renderers so both resolve the same way.
+   */
+  const displayInput = () => ({
+    transcriptView: currentSettings().transcriptView,
+    showReasoning: currentSettings().showReasoning,
+    showToolCalls: currentSettings().showToolCalls,
+    showToolArgs: currentSettings().showToolArgs,
+    showToolResults: currentSettings().showToolResults,
+    reasoningFold: currentSettings().reasoningFold,
+    reasoningPreview: currentSettings().reasoningPreview,
+    toolDetail: currentSettings().toolDetail,
+    toolOutputFull: currentSettings().toolOutputFull,
+  })
   const currentRevision = () => settings.describe({ redactSecrets: true }).find(item => item.ns === namespace)?.revision ?? 0
   let apiUpdateDepth = 0
 
@@ -1197,8 +1212,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       showReasoning: () => currentSettings().showReasoning,
       reasoningFold: () => currentSettings().reasoningFold ?? true,
       reasoningPreview: () => currentSettings().reasoningPreview ?? true,
-      toolDetail: () => currentSettings().toolDetail ?? 'auto',
-      toolOutputFull: () => currentSettings().toolOutputFull ?? 'auto',
+      toolDetail: () => currentSettings().toolDetail,
+      toolOutputFull: () => currentSettings().toolOutputFull,
       showToolCalls: () => currentSettings().showToolCalls,
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
@@ -1496,61 +1511,35 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     getLevel: () => currentSettings().transcriptView,
     getFold: () => currentSettings().reasoningFold ?? true,
     getPreview: () => currentSettings().reasoningPreview ?? true,
-    getSettings: () => resolveDisplaySettings({
-      transcriptView: currentSettings().transcriptView,
-      showReasoning: currentSettings().showReasoning,
-      showToolCalls: currentSettings().showToolCalls,
-      showToolArgs: currentSettings().showToolArgs,
-      showToolResults: currentSettings().showToolResults,
-      reasoningFold: currentSettings().reasoningFold,
-      reasoningPreview: currentSettings().reasoningPreview,
-      toolDetail: currentSettings().toolDetail,
-      toolOutputFull: currentSettings().toolOutputFull,
-    }),
-    getPreset: () => presetOf(resolveDisplaySettings({
-      transcriptView: currentSettings().transcriptView,
-      showReasoning: currentSettings().showReasoning,
-      showToolCalls: currentSettings().showToolCalls,
-      showToolArgs: currentSettings().showToolArgs,
-      showToolResults: currentSettings().showToolResults,
-      reasoningFold: currentSettings().reasoningFold,
-      reasoningPreview: currentSettings().reasoningPreview,
-      toolDetail: currentSettings().toolDetail,
-      toolOutputFull: currentSettings().toolOutputFull,
-    })),
-    getToolDetail: () => currentSettings().toolDetail ?? 'auto',
-    getOutputChoice: () => currentSettings().toolOutputFull ?? 'auto',
-    setToolDetail: (choice) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['toolDetail'], value: choice }], currentRevision())
+    getSettings: () => resolveDisplaySettings(displayInput()),
+    getToolDetail: () => resolveDisplaySettings(displayInput()).tools,
+    setToolDetail: (detail) => {
+      const write = settings.mutate(namespace, [{ op: 'set', path: ['toolDetail'], value: detail }], currentRevision())
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display tools write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },
-    setOutputChoice: (choice) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['toolOutputFull'], value: choice }], currentRevision())
+    getOutputFull: () => resolveDisplaySettings(displayInput()).toolOutputFull,
+    setOutputFull: (full) => {
+      const write = settings.mutate(namespace, [{ op: 'set', path: ['toolOutputFull'], value: full }], currentRevision())
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display output write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },
-    applyPreset: (name) => {
-      // A preset is a BUNDLE: reset the explicit overrides so the name always
-      // means the same thing. `show*` switches are re-enabled too — a preset
-      // assumes everything the level allows is shown.
-      const write = settings.mutate(namespace, [
-        { op: 'set', path: ['transcriptView'], value: name },
-        { op: 'set', path: ['showReasoning'], value: true },
-        { op: 'set', path: ['showToolCalls'], value: true },
-        { op: 'set', path: ['showToolArgs'], value: true },
-        { op: 'set', path: ['showToolResults'], value: true },
-        { op: 'set', path: ['reasoningFold'], value: true },
-        { op: 'set', path: ['reasoningPreview'], value: true },
-        { op: 'set', path: ['toolDetail'], value: 'auto' },
-        { op: 'set', path: ['toolOutputFull'], value: 'auto' },
-      ], currentRevision())
+    getPreviewChars: (field) => {
+      const current = currentSettings()
+      const value = field === 'reasoning'
+        ? current.reasoningPreviewChars
+        : field === 'args' ? current.argsPreviewChars : current.resultPreviewChars
+      return typeof value === 'number' ? value : 0
+    },
+    setPreviewChars: (field, chars) => {
+      const key = field === 'reasoning' ? 'reasoningPreviewChars' : field === 'args' ? 'argsPreviewChars' : 'resultPreviewChars'
+      const write = settings.mutate(namespace, [{ op: 'set', path: [key], value: chars }], currentRevision())
       write.catch((error: unknown) => {
-        console.log(`dsh-feishu: /display preset write failed: ${error instanceof Error ? error.message : String(error)}`)
+        console.log(`dsh-feishu: /display length write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },

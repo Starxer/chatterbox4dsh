@@ -28,10 +28,10 @@
 
 import type { DisplayControl, DisplayToggleKey } from './commands.ts'
 import {
-  COMPACT_TOOL_ROW_STYLES, isCompactToolRowStyle, levelUsesSwitch, TRANSCRIPT_VIEWS,
+  COMPACT_TOOL_ROW_STYLES, isCompactToolRowStyle, TRANSCRIPT_VIEWS,
   type CompactToolRowStyle, type TranscriptView,
 } from './display-level.ts'
-import type { DisplaySettings } from './display-level.ts'
+import { PREVIEW_LENGTH_CHOICES, type DisplayMode, type DisplaySettings, type PreviewLengthField, type ToolDetail } from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { decodeCardValue } from './card-action.ts'
@@ -81,10 +81,8 @@ function isDisplayKey(value: unknown): value is DisplayToggleKey {
 /** One render's inputs: the level's own state plus the four switches. */
 export interface DisplayCardState {
   /** Card layout: one turn card (`compact`) or one card per step. */
-  mode: 'compact' | 'detailed'
-  /** Preset the current values match, or undefined ("自定义"). */
-  preset: TranscriptView | undefined
-  /** Effective settings (preset + explicit overrides). */
+  mode: DisplayMode
+  /** Effective settings (mode + switches). */
   settings: DisplaySettings
   /** The four legacy switches (now: reasoning / args / results / tools). */
   switches: Record<DisplayToggleKey, boolean>
@@ -92,15 +90,18 @@ export interface DisplayCardState {
   folded: boolean
   /** Live thinking preview switch. */
   preview: boolean
-  /** Tool detail override (`auto` follows the preset). */
-  toolDetail: 'auto' | 'off' | 'count' | 'summary' | 'full'
-  /** Tool output truncation override (`auto` follows the preset). */
-  outputChoice: 'auto' | 'cut' | 'full'
+  /** What the tool section carries. */
+  toolDetail: ToolDetail
+  /** Whether tool payloads are carried untruncated. */
+  outputFull: boolean
+  /** Truncation lengths, in characters. */
+  lengths: Record<PreviewLengthField, number>
   /** What a compact turn card's tool row carries (compact-only section). */
   toolRow: CompactToolRowStyle
   /** Missing on older callers; rendered as the default five seconds. */
   elapsedRefreshSeconds?: number
 }
+
 
 /** True when `value` is one of the four levels. */
 function isLevel(value: unknown): value is TranscriptView {
@@ -155,12 +156,9 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
   const settings = state.settings
   const compact = state.mode === 'compact'
   const elements: object[] = [
-    {
-      tag: 'markdown',
-      content: `${t.displayCardModeTitle}${t.displayModeName(state.mode)} · ${t.displayCardPresetTitle}${t.displayPresetName(state.preset)}`,
-    },
+    { tag: 'markdown', content: `${t.displayCardModeTitle}${t.displayModeName(state.mode)}` },
   ]
-  // Mode: two layouts. `compact` is the one that changes which cards exist.
+  // Mode: two card layouts. `compact` is the one that changes which cards exist.
   elements.push(buttonColumns((['compact', 'detailed'] as const).map(mode => {
     const active = mode === state.mode
     return {
@@ -168,76 +166,87 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayModeName(mode), active) },
       type: active ? 'primary' : 'default',
       ...(active ? { disabled: true } : {}),
-      behaviors: [{ type: 'callback', value: { p: 'display', preset: mode, row: 'mode' } }],
+      behaviors: [{ type: 'callback', value: { p: 'display', mode } }],
     }
   })))
-  // Presets: named bundles of the switches below; a tap resets the overrides.
-  elements.push(...buttonRows((['standard', 'detailed', 'verbose'] as const).map(preset => {
-    const active = state.preset === preset
-    return {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayPresetName(preset), active) },
-      type: active ? 'primary' : 'default',
-      ...(active ? { disabled: true } : {}),
-      behaviors: [{ type: 'callback', value: { p: 'display', preset, row: 'preset' } }],
-    }
-  })))
-  elements.push({ tag: 'hr' })
-  if (!compact) elements.push({ tag: 'markdown', content: `${t.displayCardThinkingTitle}\n${t.displayLevelHint(state.preset ?? 'detailed')}` })
-  // Reasoning: content on/off, fold/flat, live preview on/off. Compact forces
-  // reasoning off (its card carries the answer), so the switches are not offered
-  // there — a toggle that cannot change anything reads as a broken card.
-  if (!compact) elements.push(buttonColumns([
-    {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('reasoning'), settings.reasoning !== 'off') },
-      type: settings.reasoning !== 'off' ? 'primary' : 'default',
-      behaviors: [{ type: 'callback', value: { p: 'display', key: 'reasoning', value: settings.reasoning === 'off' } }],
-    },
-    {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardFoldName(state.folded), true) },
-      type: 'primary',
-      behaviors: [{ type: 'callback', value: { p: 'display', folded: !state.folded } }],
-    },
-    {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardPreviewButton(t.displayPreviewName(state.preview), state.preview) },
-      type: state.preview ? 'primary' : 'default',
-      behaviors: [{ type: 'callback', value: { p: 'display', preview: !state.preview } }],
-    },
-  ]))
-  if (!compact) elements.push({ tag: 'hr' })
-  if (!compact) elements.push({ tag: 'markdown', content: t.displayCardToolDetailTitle })
-  if (!compact) elements.push(buttonColumns((['off', 'count', 'summary', 'full'] as const).map(detail => {
-    const active = state.toolDetail !== 'auto' ? state.toolDetail === detail : settings.tools === detail
-    return {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayToolDetailName(detail), active) },
-      type: active ? 'primary' : 'default',
-      ...(active ? { disabled: true } : {}),
-      behaviors: [{ type: 'callback', value: { p: 'display', toolDetail: detail } }],
-    }
-  })))
-  if (!compact) elements.push({ tag: 'markdown', content: t.displayCardOutputTitle })
-  if (!compact) elements.push(buttonColumns((['auto', 'cut', 'full'] as const).map(choice => {
-    const active = state.outputChoice === choice
-    return {
-      tag: 'button',
-      text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayOutputName(choice), active) },
-      type: active ? 'primary' : 'default',
-      ...(active ? { disabled: true } : {}),
-      behaviors: [{ type: 'callback', value: { p: 'display', output: choice } }],
-    }
-  })))
-  if (settings.tools === 'full') {
-    elements.push(...buttonRows((['args', 'results'] as const).map(key => {
-      const enabled = settings[key === 'args' ? 'toolArgs' : 'toolResults']
+  // Compact carries the answer on its turn card, so the step-card switches below
+  // would change nothing there.
+  if (!compact) {
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: t.displayCardThinkingTitle })
+    elements.push(buttonColumns([
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('reasoning'), settings.reasoning !== 'off') },
+        type: settings.reasoning !== 'off' ? 'primary' : 'default',
+        behaviors: [{ type: 'callback', value: { p: 'display', key: 'reasoning', value: settings.reasoning === 'off' } }],
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayCardFoldName(state.folded), true) },
+        type: 'primary',
+        behaviors: [{ type: 'callback', value: { p: 'display', folded: !state.folded } }],
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardPreviewButton(t.displayPreviewName(state.preview), state.preview) },
+        type: state.preview ? 'primary' : 'default',
+        behaviors: [{ type: 'callback', value: { p: 'display', preview: !state.preview } }],
+      },
+    ]))
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: t.displayCardToolDetailTitle })
+    elements.push(buttonColumns((['off', 'count', 'summary', 'full'] as const).map(detail => {
+      const active = state.toolDetail === detail
       return {
         tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel(key), enabled) },
-        type: enabled ? 'primary' : 'default',
-        behaviors: [{ type: 'callback', value: { p: 'display', key, value: !enabled } }],
+        text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayToolDetailName(detail), active) },
+        type: active ? 'primary' : 'default',
+        ...(active ? { disabled: true } : {}),
+        behaviors: [{ type: 'callback', value: { p: 'display', toolDetail: detail } }],
+      }
+    })))
+    if (settings.tools === 'full') {
+      elements.push(buttonColumns([
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('args'), settings.toolArgs) },
+          type: settings.toolArgs ? 'primary' : 'default',
+          behaviors: [{ type: 'callback', value: { p: 'display', key: 'args', value: !settings.toolArgs } }],
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: t.displayCardButton(t.displayCardLabel('results'), settings.toolResults) },
+          type: settings.toolResults ? 'primary' : 'default',
+          behaviors: [{ type: 'callback', value: { p: 'display', key: 'results', value: !settings.toolResults } }],
+        },
+      ]))
+    }
+    elements.push({ tag: 'markdown', content: t.displayCardOutputTitle })
+    elements.push(buttonColumns(([false, true] as const).map(full => {
+      const active = state.outputFull === full
+      return {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayOutputName(full), active) },
+        type: active ? 'primary' : 'default',
+        ...(active ? { disabled: true } : {}),
+        behaviors: [{ type: 'callback', value: { p: 'display', outputFull: full } }],
+      }
+    })))
+  }
+  // Truncation lengths: one row per field, the active choice marked.
+  elements.push({ tag: 'hr' })
+  elements.push({ tag: 'markdown', content: t.displayCardLengthTitle })
+  for (const field of ['reasoning', 'args', 'result'] as const) {
+    elements.push({ tag: 'markdown', content: t.displayLengthName(field, state.lengths[field]), text_size: 'notation' })
+    elements.push(buttonColumns(PREVIEW_LENGTH_CHOICES[field].map(chars => {
+      const active = state.lengths[field] === chars
+      return {
+        tag: 'button',
+        text: { tag: 'plain_text', content: t.displayCardFoldButton(String(chars), active) },
+        type: active ? 'primary' : 'default',
+        ...(active ? { disabled: true } : {}),
+        behaviors: [{ type: 'callback', value: { p: 'display', length: field, chars } }],
       }
     })))
   }
@@ -302,13 +311,17 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     const settings = display.getSettings()
     return renderDisplayCard({
       mode: settings.mode,
-      preset: display.getPreset(),
       settings,
       switches: display.get(),
       folded: settings.reasoningFold,
       preview: settings.reasoningPreview,
       toolDetail: display.getToolDetail(),
-      outputChoice: display.getOutputChoice(),
+      outputFull: display.getOutputFull(),
+      lengths: {
+        reasoning: display.getPreviewChars('reasoning'),
+        args: display.getPreviewChars('args'),
+        result: display.getPreviewChars('result'),
+      },
       toolRow: display.getToolRow(),
       elapsedRefreshSeconds: display.getElapsedRefreshSeconds(),
     }, getTranslations())
@@ -389,16 +402,16 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       console.log(`dsh-feishu: [display] toolRow=${toolRow} card=${messageId}`)
       return
     }
-    const preset = parsed.preset
-    if (isLevel(preset)) {
+    const mode = parsed.mode
+    if (mode === 'compact' || mode === 'detailed') {
       try {
-        await display.applyPreset(preset)
+        await display.setLevel(mode)
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
-        logger.warn(`dsh-feishu: display preset write failed: ${msg}`)
+        logger.warn(`dsh-feishu: display mode write failed: ${msg}`)
       }
       await repaint(messageId)
-      console.log(`dsh-feishu: [display] preset=${preset} card=${messageId}`)
+      console.log(`dsh-feishu: [display] mode=${mode} card=${messageId}`)
       return
     }
     const toolDetail = parsed.toolDetail
@@ -413,16 +426,30 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       console.log(`dsh-feishu: [display] toolDetail=${toolDetail} card=${messageId}`)
       return
     }
-    const output = parsed.output
-    if (output === 'auto' || output === 'cut' || output === 'full') {
+    const outputFull = parsed.outputFull
+    if (typeof outputFull === 'boolean') {
       try {
-        await display.setOutputChoice(output)
+        await display.setOutputFull(outputFull)
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
         logger.warn(`dsh-feishu: display output write failed: ${msg}`)
       }
       await repaint(messageId)
-      console.log(`dsh-feishu: [display] output=${output} card=${messageId}`)
+      console.log(`dsh-feishu: [display] outputFull=${String(outputFull)} card=${messageId}`)
+      return
+    }
+    const lengthField = parsed.length
+    const lengthChars = parsed.chars
+    if ((lengthField === 'reasoning' || lengthField === 'args' || lengthField === 'result')
+      && typeof lengthChars === 'number') {
+      try {
+        await display.setPreviewChars(lengthField, lengthChars)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display length write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] length=${lengthField}:${lengthChars} card=${messageId}`)
       return
     }
     if (!isDisplayKey(parsed.key) || typeof parsed.value !== 'boolean') {

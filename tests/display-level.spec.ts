@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY,
-  isCompactToolRowStyle, levelUsesSwitch, parseCompactToolRow, parseTranscriptView,
-  presetOf, resolveDisplayPolicy, resolveDisplaySettings, TRANSCRIPT_VIEWS,
+  isCompactToolRowStyle, parseCompactToolRow, parseTranscriptView, PREVIEW_LENGTH_CHOICES,
+  resolveDisplayPolicy, resolveDisplaySettings, TRANSCRIPT_VIEWS,
 } from '../src/display-level.ts'
 
 describe('parseTranscriptView', () => {
@@ -27,37 +27,47 @@ describe('parseTranscriptView', () => {
 })
 
 describe('resolveDisplaySettings', () => {
-  it('turns an explicit override into a preset-plus-switch combination', () => {
-    // standard = one summary line per call; asking for the full tool section
-    // keeps the standard reasoning block and adds the payloads.
-    const settings = resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'full' })
+  it('reads the retired level name only for its historical defaults', () => {
+    // `standard` used to mean one summary line per call; nothing writes it any
+    // more, but an upgraded configuration must keep that look.
+    expect(resolveDisplaySettings({ transcriptView: 'standard' }).tools).toBe('summary')
+    expect(resolveDisplaySettings({ transcriptView: 'verbose' }).toolOutputFull).toBe(true)
+    expect(resolveDisplaySettings({ transcriptView: 'verbose' }).tools).toBe('full')
+    expect(resolveDisplaySettings({ transcriptView: 'detailed' }).toolOutputFull).toBe(false)
+    expect(resolveDisplaySettings({ transcriptView: 'compact' }).mode).toBe('compact')
+    expect(resolveDisplaySettings({ transcriptView: 'detailed' }).mode).toBe('detailed')
+  })
+
+  it('lets an explicit switch win over the retired default', () => {
+    const settings = resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'full', toolOutputFull: true })
     expect(settings.tools).toBe('full')
-    expect(settings.toolArgs).toBe(false)
-    expect(settings.toolResults).toBe(false)
+    expect(settings.toolOutputFull).toBe(true)
     expect(settings.reasoning).toBe('on')
-    expect(resolveDisplayPolicy({ transcriptView: 'standard', toolDetail: 'full' }).tools).toBe('full')
-    // `toolOutputFull` is an override on its own.
-    expect(resolveDisplaySettings({ transcriptView: 'detailed', toolOutputFull: 'full' }).toolOutputFull).toBe(true)
-    expect(resolveDisplaySettings({ transcriptView: 'verbose', toolOutputFull: 'cut' }).toolOutputFull).toBe(false)
+    expect(settings.toolArgs).toBe(true)
   })
 
-  it('recognizes the preset a combination equals, and calls anything else custom', () => {
-    expect(presetOf(resolveDisplaySettings({ transcriptView: 'verbose' }))).toBe('verbose')
-    expect(presetOf(resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'summary' }))).toBe('standard')
-    expect(presetOf(resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'full' }))).toBeUndefined()
-    // The legacy switches still subtract, so a preset with one switch off is custom.
-    expect(presetOf(resolveDisplaySettings({ transcriptView: 'detailed', showReasoning: false }))).toBeUndefined()
-  })
-
-  it('keeps the legacy switches subtract-only on top of a preset', () => {
+  it('keeps the legacy switches subtract-only', () => {
     const settings = resolveDisplaySettings({ transcriptView: 'verbose', showToolCalls: false, showReasoning: false })
     expect(settings.tools).toBe('off')
     expect(settings.reasoning).toBe('off')
     expect(settings.reasoningPreview).toBe(false)
+    expect(resolveDisplaySettings({ transcriptView: 'detailed', showToolArgs: false }).toolArgs).toBe(false)
   })
 
-  it('rejects an unknown tool detail by falling back to the preset', () => {
+  it('carries the output setting only while the tool section is full', () => {
+    expect(resolveDisplaySettings({ transcriptView: 'detailed', toolDetail: 'summary', toolOutputFull: true }).toolOutputFull).toBe(false)
+    expect(resolveDisplaySettings({ transcriptView: 'detailed', toolDetail: 'full', toolOutputFull: true }).toolOutputFull).toBe(true)
+  })
+
+  it('ignores an unknown tool detail instead of inventing one', () => {
     expect(resolveDisplaySettings({ transcriptView: 'standard', toolDetail: 'bogus' }).tools).toBe('summary')
+    expect(resolveDisplaySettings({ transcriptView: 'detailed', toolDetail: 'bogus' }).tools).toBe('full')
+  })
+
+  it('offers a bounded ladder of truncation lengths', () => {
+    expect(PREVIEW_LENGTH_CHOICES.reasoning).toContain(200)
+    expect(PREVIEW_LENGTH_CHOICES.args).toContain(2000)
+    expect(PREVIEW_LENGTH_CHOICES.result).toContain(1500)
   })
 })
 
@@ -157,20 +167,4 @@ describe('compact tool-row style', () => {
     }
   })
 
-  it('knows which switches the active level can still use', () => {
-    // compact forces reasoning off and renders no payloads.
-    expect(levelUsesSwitch('compact', 'reasoning')).toBe(false)
-    expect(levelUsesSwitch('compact', 'tools')).toBe(true)
-    expect(levelUsesSwitch('compact', 'args')).toBe(false)
-    expect(levelUsesSwitch('compact', 'results')).toBe(false)
-    // standard has reasoning + tools but still no payloads.
-    expect(levelUsesSwitch('standard', 'reasoning')).toBe(true)
-    expect(levelUsesSwitch('standard', 'args')).toBe(false)
-    // detailed / verbose render everything the four switches control.
-    for (const level of ['detailed', 'verbose'] as const) {
-      for (const key of ['reasoning', 'tools', 'args', 'results'] as const) {
-        expect(levelUsesSwitch(level, key)).toBe(true)
-      }
-    }
-  })
 })
