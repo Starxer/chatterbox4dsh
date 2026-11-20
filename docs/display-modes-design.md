@@ -1,6 +1,6 @@
 # 展示模型重构与思考块设计
 
-> 状态：**方案已定，尚未实施**（2026-11-20 与使用者逐条确认，细节见文末决策记录）。落地时按本文验收；实现完成后把这里改成「已实现」并同步 [架构](<./architecture.md>)、[首页](<../README.md>) 与 [变更记录](<../CHANGELOG.md>)。
+> 状态：**第一批已实现（2026-11-20）**——思考块全文不截断、默认折叠 + 平铺开关、20 KB 单卡 + 思考续卡；**第二批未实施**——实时预览（打字机）与「两模式 + 正交开关」的合并。落地时按本文验收，完成后同步 [架构](<./architecture.md>)、[首页](<../README.md>) 与 [变更记录](<../CHANGELOG.md>)。
 > 关联：[`src/display-level.ts`](<../src/display-level.ts>)（档位→policy）、[`src/feishu-streaming.ts`](<../src/feishu-streaming.ts>)（步骤卡渲染）、[`src/feishu-display.ts`](<../src/feishu-display.ts>)（`/display` 卡）、[`src/commands.ts`](<../src/commands.ts>)（命令解析）、[`src/config.ts`](<../src/config.ts>)（设置项）、[`src/card-fold.ts`](<../src/card-fold.ts>)（折叠面板）、[`src/text-chunk.ts`](<../src/text-chunk.ts>)（分片/截断）、[飞书能力参考](<./feishu-capabilities.md>)（流式卡片）。
 
 ## 一、为什么改
@@ -127,7 +127,7 @@
 
 **因此可用的推送节奏是 2–5 次/秒，而不是"逐 token"**。而一次思考按 30 秒算：3 次/秒 = 90 次调用、1.5 秒一次 = 20 次、2 秒一次 = 15 次——在月度额度未知的前提下，**默认必须保守**。
 
-### 5.4 实现约定（据此定稿）
+### 5.4 实现约定（第二批待实施）
 
 1. **默认预览节奏：1 次 / 1.5–2 秒**，按「距离上次推送的累积增量」发送（≈ #10 的组合：`print_frequency_ms` 30–50、增量 ≈ 间隔 × 速率）。单步思考约 15–20 次调用。
 2. **不提供更快档**，除非同时满足：① 操作者显式打开 `reasoningStreamFast`（新开关）；② `/status` 显示本月额度仍有余量。快档也只到 3–5 次/秒——再快平台不给、网络也不给。

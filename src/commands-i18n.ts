@@ -168,6 +168,10 @@ export const zhCommandTranslations: CommandTranslations = {
   displayTickCurrent: seconds => `• 耗时刷新：每 ${seconds} 秒`,
   displayTickSet: seconds => `📇 耗时刷新已设为每 ${seconds} 秒。跨重启持久化。`,
   displayTickUsage: '用法：/display tick [3|5|10|30]（秒；不带数值查看当前设置）。',
+  displayFoldLabel: '思考块',
+  displayFoldName: folded => folded ? '折叠' : '平铺',
+  displayFoldSet: name => `📇 思考块已设为「${name}」。`,
+  displayFoldUsage: '用法：`/display fold on|off`（on = 折叠，off = 平铺）',
   displayToolRowLabel: '工具行',
   displayToolRowName: style => ({
     tool: '仅工具',
@@ -309,6 +313,10 @@ export const enCommandTranslations: CommandTranslations = {
   displayTickCurrent: seconds => `• Elapsed refresh: every ${seconds}s`,
   displayTickSet: seconds => `📇 Elapsed refresh set to every ${seconds}s. Persisted across restarts.`,
   displayTickUsage: 'Usage: /display tick [3|5|10|30] (seconds; omit the value to show the current setting).',
+  displayFoldLabel: 'Thinking block',
+  displayFoldName: folded => folded ? 'folded' : 'flat',
+  displayFoldSet: name => `📇 Thinking block set to "${name}".`,
+  displayFoldUsage: 'Usage: `/display fold on|off` (on = folded, off = flat)',
   displayToolRowLabel: 'Tool row',
   displayToolRowName: style => ({
     tool: 'Tool only',

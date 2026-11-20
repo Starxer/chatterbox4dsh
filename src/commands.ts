@@ -72,6 +72,10 @@ export interface DisplayControl {
   set: (key: DisplayToggleKey, value: boolean) => void | Promise<void>
   /** The work-detail level (`transcriptView`), mirroring the WebUI's four. */
   getLevel: () => TranscriptView
+  /** Whether the thinking block folds into a panel (default) or shows flat. */
+  getFold: () => boolean
+  /** Persist the fold choice. Asynchronous for the same reason as {@link set}. */
+  setFold: (folded: boolean) => void | Promise<void>
   /** Persist the level. Asynchronous for the same reason as {@link set}. */
   setLevel: (level: TranscriptView) => void | Promise<void>
   /** Shared clock refresh interval for compact progress and step placeholders. */
@@ -186,6 +190,11 @@ export interface CommandTranslations {
   readonly displayTickSet: (seconds: number) => string
   readonly displayTickUsage: string
   /** Label of the compact tool-row style in `/display` listings. */
+  /** Thinking-block fold choice (`/display fold on|off`). */
+  readonly displayFoldLabel: string
+  readonly displayFoldName: (folded: boolean) => string
+  readonly displayFoldSet: (name: string) => string
+  readonly displayFoldUsage: string
   readonly displayToolRowLabel: string
   /** One row style's short name (`工具` / `描述 + 工具` / `仅描述`). */
   readonly displayToolRowName: (style: CompactToolRowStyle) => string
@@ -692,6 +701,7 @@ export async function handleDisplayCommand(
     const level = display.getLevel()
     const lines = [
       `${t.displayLevelLabel}: ${t.displayLevelName(level)}`,
+      `${t.displayFoldLabel}: ${t.displayFoldName(display.getFold())}`,
       `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
       t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
       ...DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key])),
@@ -699,6 +709,22 @@ export async function handleDisplayCommand(
     return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
   }
   const [rawKey, rawValue, extra] = raw.split(/\s+/u)
+  if (rawKey === 'fold') {
+    if (rawValue === undefined) {
+      return {
+        kind: 'success',
+        text: `${t.displayFoldLabel}: ${t.displayFoldName(display.getFold())}\n${t.displayFoldUsage}`,
+      }
+    }
+    const folded = rawValue === 'on' || rawValue === 'fold' || rawValue === 'folded'
+      ? true
+      : rawValue === 'off' || rawValue === 'flat' ? false : undefined
+    if (extra !== undefined || folded === undefined) {
+      return { kind: 'error', text: t.displayFoldUsage }
+    }
+    await display.setFold(folded)
+    return { kind: 'success', text: t.displayFoldSet(t.displayFoldName(folded)) }
+  }
   if (rawKey === 'toolrow' || rawKey === 'tool-row') {
     if (rawValue === undefined) {
       return {

@@ -319,3 +319,28 @@ export function truncateInline(text: string, maxLen: number, ellipsis = '…'): 
 
 /** Default per-card character budget for Feishu markdown content. */
 export const CARD_TEXT_MAX = 4000
+
+/**
+ * Split by a **UTF-8 byte** budget instead of a character count.
+ *
+ * Card limits are bytes (the whole card JSON must stay under ~30 KB), and the
+ * thinking block is the one place where a single markdown element can be large
+ * enough to matter. A character budget cannot express that: 6,800 Chinese
+ * characters are ~20 KB, the same count in ASCII is ~7 KB.
+ *
+ * `chunkText` still does the block-aware splitting, so the byte budget is
+ * converted to a conservative character budget first: in UTF-8 no code unit
+ * costs more than 3 bytes (ASCII 1, two-byte scripts 2, CJK 3, astral pairs
+ * 4 bytes over 2 units = 2 per unit), so `maxBytes / 3` characters can never
+ * exceed the byte budget. The trade-off is that pure-ASCII content is split
+ * earlier than strictly necessary — safe, and it keeps one splitter for both.
+ *
+ * @param text - markdown to split.
+ * @param maxBytes - per-chunk UTF-8 byte budget.
+ * @param maxChunks - cap on the number of chunks (the tail is collapsed).
+ * @returns the chunks, each within the byte budget.
+ */
+export function chunkTextByBytes(text: string, maxBytes: number, maxChunks = 30): string[] {
+  const budget = Math.max(1, Math.floor(maxBytes / 3))
+  return chunkText(text, budget, maxChunks)
+}

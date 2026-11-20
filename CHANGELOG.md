@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 调整：思考块改为全文不截断，默认折叠、可切平铺，超长发续卡（`src/display-level.ts` / `src/feishu-streaming.ts` / `src/text-chunk.ts` / `src/commands.ts` / `src/feishu-display.ts`，2026-11-20）
+
+- **去掉截断**：删掉「详细档只留前 200 字 + `…(truncated)`」和「标准档只给首行」两条裁剪。思考块的正文现在**永远是整条链**——这是操作者的明确要求：`/reasoning` 调整的是 effort，不是内容长度，卡上不该只剩开头。
+- **折叠 / 平铺**：新设置 `reasoningFold`（默认 `true` = 收进折叠面板）；`false` 时整条链直接铺在步骤卡上。命令 `/display fold on|off`，`/display` 卡多一组「折叠 / 平铺」按钮，`/display` 无参时也会报当前值。
+- **20 KB 单卡预算 + 思考续卡**：新增 `chunkTextByBytes()`（UTF-8 字节预算，复用原有的块感知分片，代码块闭合重开、表格重复表头）。正文超过 20 KB（中文约 6,800 字）时第一片进面板，其余在 `step/end` 之后发**思考续卡**：标题 `💬 深度思考（第 N 步 · 续 2/3）`，等这一步的步骤卡 message 落地再发，所以顺序紧跟该步、不会跑到后续步骤后面；每张续卡也走媒体 hydrate。
+- **显示策略**：`DisplayPolicy.reasoning` 从 `off|preview|head|full` 收成 `off|on`，新增 `reasoningFold`；四个档位的思考轴统一为「显示 + 折叠」，`previewLimits.reasoningHead` 不再参与裁剪（保留给下一步的实时预览长度）。
+- 测试：全量 82 文件 / 1,581 用例（新增：整条链不截断、平铺直出、20 KB 分批且每片超限检查、`/display fold` 三种写法与非法值、`/display` 无参列出折叠状态）；typecheck、build、privacy 全绿。
+
+**English**: The thinking block no longer truncates: the 200-character head cap and the "first line only" preview are gone, so the card always carries the WHOLE chain (`/reasoning` changes model effort, not content length — the card should not show only its opening). A new `reasoningFold` setting (default `true`) keeps the chain collapsed in a panel; setting it false shows the whole chain flat on the step card. It is switchable from `/display fold on|off`, from a new fold/flat button row on the `/display` card, and reported by `/display` with no arguments. To stay inside Feishu's card limit the chain is split by `chunkTextByBytes()` (a UTF-8 byte budget: 20 KB, roughly 6,800 Chinese characters, reusing the existing block-aware splitter so code fences close/reopen and tables repeat their header): the first slice rides the step card, the rest go out as thinking continuation cards (`💬 深度思考（第 N 步 · 续 2/3）`) right after that step's card at `step/end`, waiting for the step card's message to land so they can never be created above it. `DisplayPolicy.reasoning` collapses from `off|preview|head|full` to `off|on` plus `reasoningFold`; `previewLimits.reasoningHead` no longer truncates anything (kept for the live preview length). Covered by new tests (whole chain kept, flat rendering, 20 KB chunking with a per-slice byte check, the fold command's spellings, and the status listing); 82 files / 1,581 tests, typecheck, build and the privacy gate green.
+
 ### 新增：飞书 API 调用计数（`/status` 可见，按天/按月累计）（`src/api-usage.ts` / `src/outbound-timeout.ts` / `src/commands.ts` / `src/config.ts`，2026-11-20）
 
 - **背景**：开放平台对**每个应用**的 API 调用量有月度额度，卡片发送、卡片更新、附件上传、文档读写全都计入；操作者在后台看到本月已用 **6 万次**，而插件此前没有任何自计数——一个"每秒推一次流式预览"的新功能可能在几天内吃掉整月额度。

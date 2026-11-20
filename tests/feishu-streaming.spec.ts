@@ -306,12 +306,14 @@ describe('deriveToolSummary', () => {
 })
 
 describe('renderStepCard reasoning + args budgets', () => {
-  it('caps reasoning to a short preview window (200 chars)', () => {
+  it('keeps the whole reasoning chain, folded by default (no truncation)', () => {
     const reasoning = 'x'.repeat(500)
     const card = renderStepCard(t, reasoning, undefined, []) as any
     const md = mdOf(card)
-    expect(md).toContain(`${'x'.repeat(200)}\n…(truncated)`)
-    expect(md).not.toContain('x'.repeat(201))
+    // 2026-11-20: the 200-character head cap is gone; the panel carries it all.
+    expect(md).toContain(reasoning)
+    expect(md).not.toContain('truncated')
+    expect((card.body.elements as any[]).some(el => el.tag === 'collapsible_panel')).toBe(true)
   })
 
   it('shows JSON args pretty-printed (not a one-line digest) up to an expanded cap', () => {
@@ -2319,7 +2321,7 @@ describe('display levels on the step card (O22/O5)', () => {
   it('gives the verbose level the whole chain, still folded', () => {
     const long = 'y'.repeat(900)
     const card = renderStepCard(t, long, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
     const panel = panelOf(card)
     expect(panel.expanded).toBe(false)
     // The whole chain, verbatim and unfenced.
@@ -2327,20 +2329,34 @@ describe('display levels on the step card (O22/O5)', () => {
     expect(panel.elements[0].content).not.toContain('truncated')
   })
 
-  it('shows only the first line and nothing to expand at the standard level', () => {
+  it('shows the whole chain flat on the card when folding is turned off', () => {
     const card = renderStepCard(t, 'first line\nsecond line', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: false, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     expect(panelOf(card)).toBeUndefined()
     const md = mdOf(card)
     expect(md).toContain('first line')
-    expect(md).not.toContain('second line')
+    expect(md).toContain('second line')
+    expect(md).not.toContain('truncated')
+  })
+
+  it('splits a chain past one panel budget into continuation chunks', async () => {
+    // ~21 KB of CJK is over the 20 KB panel budget, so the tail must travel as
+    // follow-up cards instead of being cut.
+    const { reasoningPanelChunks } = await import('../src/feishu-streaming.ts')
+    const chain = '思'.repeat(8_000) // 24 KB in UTF-8
+    const chunks = reasoningPanelChunks(chain)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(Buffer.byteLength(chunk, 'utf8')).toBeLessThanOrEqual(20 * 1024)
+    }
+    expect(chunks.join('')).toBe(chain)
   })
 
   it('drops the reasoning entirely at the compact level', () => {
     const card = renderStepCard(t, 'hidden chain', undefined, []) as any
     expect(mdOf(card)).toContain('hidden chain')
     const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     expect(mdOf(compact)).not.toContain('hidden chain')
     expect(panelOf(compact)).toBeUndefined()
   })
@@ -2354,7 +2370,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('collapses tools to one count line at the compact level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool, { ...tool, callId: 'c2', result: { ...tool.result, isError: true } }], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     const md = mdOf(card)
     expect(md).toContain(t.stepToolCount(2, 1))
     // No per-call lines, no args, no result blocks.
@@ -2365,7 +2381,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('names each call but carries no payload at the standard level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     const md = mdOf(card)
     expect(md).toContain('bash')
     expect(md).not.toContain(t.stepToolArgsHeader)
@@ -3310,14 +3326,16 @@ describe('turn ownership across a plugin re-mount', () => {
 
 
 describe('preview limits', () => {
-  it('trims the detailed reasoning head to the configured cap', () => {
+  it('ignores the old reasoning-head cap: the whole chain is carried', () => {
+    // `reasoningHead` is now only the live-preview length; the settled block is
+    // never truncated (2026-11-20).
     const reasoning = 'x'.repeat(500)
     const card = renderStepCard(t, reasoning, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
       previewLimits: { reasoningHead: 120, result: 1500, args: 2000 },
     }) as any
     const text = mdOf(card)
-    expect(text).toContain('x'.repeat(120))
-    expect(text).not.toContain('x'.repeat(121))
+    expect(text).toContain(reasoning)
+    expect(text).not.toContain('truncated')
   })
 
   it('trims tool result and argument blocks to their configured caps', () => {

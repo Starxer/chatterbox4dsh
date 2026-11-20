@@ -83,6 +83,8 @@ export interface DisplayCardState {
   level: TranscriptView
   /** The four card-display switches. */
   switches: Record<DisplayToggleKey, boolean>
+  /** Whether the thinking block folds into a panel (default) or shows flat. */
+  folded: boolean
   /** What a compact turn card's tool row carries (compact-only section). */
   toolRow: CompactToolRowStyle
   /** Missing on older callers; rendered as the default five seconds. */
@@ -212,6 +214,19 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
     })
   }
   elements.push(...buttonRows(switchButtons))
+  // Thinking-block shape: folded panel (default) or flat on the card. Offered
+  // only where the block itself is rendered — it is not a way to reach content
+  // the level does not show.
+  if (levelUsesSwitch(state.level, 'reasoning')) {
+    elements.push({ tag: 'markdown', content: t.displayCardFoldTitle, text_size: 'notation' })
+    elements.push(buttonColumns([true, false].map(folded => ({
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayCardFoldName(folded), folded === state.folded) },
+      type: folded === state.folded ? 'primary' : 'default',
+      ...(folded === state.folded ? { disabled: true } : {}),
+      behaviors: [{ type: 'callback', value: { p: 'display', folded } }],
+    }))))
+  }
   // Say why switches are missing, so the card does not just look broken. Both
   // reasons can apply at once; they share one element.
   const missingNotes = [
@@ -268,6 +283,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     renderDisplayCard({
       level: display.getLevel(),
       switches: display.get(),
+      folded: display.getFold(),
       toolRow: display.getToolRow(),
       elapsedRefreshSeconds: display.getElapsedRefreshSeconds(),
     }, getTranslations())
@@ -311,6 +327,17 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
         logger.warn(`dsh-feishu: display refresh interval write failed: ${msg}`)
       }
       await repaint(messageId)
+      return
+    }
+    if (typeof parsed.folded === 'boolean') {
+      try {
+        await display.setFold(parsed.folded)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display fold write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] folded=${String(parsed.folded)} card=${messageId}`)
       return
     }
     const toolRow = parsed.toolRow

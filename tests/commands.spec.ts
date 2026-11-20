@@ -98,6 +98,10 @@ const translations: CommandTranslations = {
   displayToolRowName: style => `row:${style}`,
   displayToolRowSet: name => `row set:${name}`,
   displayToolRowUsage: 'Usage: /display toolrow tool|both|description',
+  displayFoldLabel: 'Thinking block',
+  displayFoldName: (folded: boolean) => (folded ? 'folded' : 'flat'),
+  displayFoldSet: (name: string) => `fold set to ${name}`,
+  displayFoldUsage: 'Usage: /display fold on|off',
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -120,6 +124,8 @@ const stubDisplay: DisplayControl = {
   setElapsedRefreshSeconds: vi.fn(),
   getToolRow: () => 'tool',
   setToolRow: vi.fn(),
+  getFold: () => true,
+  setFold: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -269,6 +275,7 @@ describe('/display command', () => {
     setLevel: vi.fn(),
     setElapsedRefreshSeconds: vi.fn(),
     setToolRow: vi.fn(),
+    setFold: vi.fn(),
   })
 
   it('reports level, elapsed refresh and all switches without arguments', async () => {
@@ -280,6 +287,7 @@ describe('/display command', () => {
     expect(result.text).toContain('tools: off')
     expect(result.text).toContain('results: off')
     expect(result.text).toContain('refresh: 5s')
+    expect(result.text).toContain('Thinking block: folded')
   })
 
   it('writes the requested switch through the control', async () => {
@@ -287,6 +295,17 @@ describe('/display command', () => {
     const result = await handleDisplayCommand(invocation('tools off'), translations, display)
     expect(display.set).toHaveBeenCalledWith('tools', false)
     expect(result.text).toContain('tools set to off')
+  })
+
+  it('toggles the thinking block between folded and flat', async () => {
+    const display = { ...control(), getFold: () => true }
+    expect((await handleDisplayCommand(invocation('fold'), translations, display)).text).toContain('Thinking block: folded')
+    const flat = await handleDisplayCommand(invocation('fold off'), translations, display)
+    expect(display.setFold).toHaveBeenCalledWith(false)
+    expect(flat.text).toContain('fold set to flat')
+    await handleDisplayCommand(invocation('fold on'), translations, display)
+    expect(display.setFold).toHaveBeenLastCalledWith(true)
+    expect((await handleDisplayCommand(invocation('fold maybe'), translations, display)).kind).toBe('error')
   })
 
   it('accepts aliases and on/off spellings', async () => {

@@ -23,12 +23,12 @@ import type { Translations } from './i18n.ts'
 import { translationsFor } from './i18n.ts'
 import type { DetachedJobNotice } from './feishu-jobs.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
-import { chunkText, truncateInline } from './text-chunk.ts'
+import { chunkText, chunkTextByBytes, truncateInline } from './text-chunk.ts'
 import { OUTBOUND_TIMEOUT_MS, describeError, settleWithin, withTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import {
-  DETAILED_POLICY, REASONING_HEAD_CAP, REASONING_PREVIEW_CAP,
+  DETAILED_POLICY, REASONING_PREVIEW_CHARS,
   resolveDisplayPolicy, type CompactToolRowStyle, type DisplayPolicy, type TranscriptView,
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
@@ -145,6 +145,11 @@ export interface FeishuStreamingDeps {
   logger: PluginLogger
   /** Whether to show reasoning content. */
   showReasoning?: () => boolean
+  /**
+   * Fold the thinking block into a collapsed panel (default) or show the whole
+   * chain flat on the card. Read live like the switches above.
+   */
+  reasoningFold?: () => boolean | undefined
   /** Whether to show tool calls at all; false hides the section and suppresses tool-only cards. */
   showToolCalls?: () => boolean
   /** Whether to show each tool call's arguments block. */
@@ -372,6 +377,12 @@ interface SessionStepState {
    */
   stepEnded: boolean
   /**
+   * Whether the thinking chain's overflow cards (the part past one panel's byte
+   * budget) were already sent for this step. Reset with the rest of the step so
+   * a retry of the same step cannot post the same tail twice.
+   */
+  reasoningOverflowSent: boolean
+  /**
    * Tick that refreshes the thinking placeholder's elapsed time. Cleared at
    * every step/turn boundary and on dispose, so it can never leak.
    */
@@ -523,7 +534,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   cardRendersAnswer: (sessionId: string, text: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
   /** Live caps; read per render so a settings write needs no remount. */
   const previewLimits = (): PreviewLimits => deps.previewLimits?.() ?? DEFAULT_PREVIEW_LIMITS
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
@@ -581,6 +592,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         stepCardRef: undefined,
         supersededFrom: undefined,
         stepEnded: false,
+        reasoningOverflowSent: false,
         placeholderTimer: undefined,
         warmTimer: undefined,
         pendingSend: undefined,
@@ -632,6 +644,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.supersededFrom = undefined
     state.pendingSend = undefined
     state.stepEnded = false
+    state.reasoningOverflowSent = false
     // A pure-answer turn declares itself on its answer message; the next step
     // must not inherit that (a tool call after it means the turn was not a pure
     // answer after all, and the normal step-card path takes over).
@@ -675,6 +688,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     showToolCalls: showToolCalls?.(),
     showToolArgs: showToolArgs?.(),
     showToolResults: showToolResults?.(),
+    reasoningFold: reasoningFold?.(),
   })
 
   /** Whether reasoning content is rendered on cards. */
@@ -1181,7 +1195,42 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     write: PendingWrite
   }>()
 
-  /** Flush promises: resolved by turn/end after the final card update. */
+  /**
+ * Send the thinking chain's tail as follow-up cards, once per step.
+ *
+ * Called at `step/end`: the step's card exists by then (or its send is in
+ * flight), so the continuation cards land right after it and before the next
+ * step's card. Media inside the text is hydrated exactly like the text
+ * overflow path, and the ordering awaits the step card's own send promise so a
+ * continuation can never be created above the card it continues.
+ */
+  const sendReasoningOverflow = (chat: ConversationMessage, sessionId: string, state: SessionStepState): void => {
+    if (state.reasoningOverflowSent) return
+    const chunks = reasoningPanelChunks(state.reasoning)
+    if (chunks.length <= 1) return
+    state.reasoningOverflowSent = true
+    const total = chunks.length - 1
+    const stepNumber = state.stepNumber
+    const tr = getTranslations?.() ?? translationsFor('zh')
+    const opts = chat.threadId !== undefined
+      ? { replyInThread: true, ...(chat.rootId !== undefined ? { replyTo: chat.rootId } : {}) }
+      : {}
+    const send = async (): Promise<void> => {
+      for (let index = 1; index < chunks.length; index += 1) {
+        const card = await prepareCard(
+          renderReasoningOverflowCard(chunks[index]!, index, total, stepNumber, tr),
+          sessionId,
+        )
+        await channel.send(chat.chatId, { card }, opts)
+      }
+    }
+    const pending = lastStepSendPromises.get(sessionId)
+    void (pending ?? Promise.resolve(undefined)).then(send).catch((error: unknown) => {
+      console.log(`dsh-feishu: reasoning overflow send failed: ${describeError(error)}`)
+    })
+  }
+
+/** Flush promises: resolved by turn/end after the final card update. */
   const flushPromises = new Map<string, { promise: Promise<void>; resolve: () => void }>()
 
   /**
@@ -2033,6 +2082,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         stopPlaceholderTick(state)
         if (displayPolicy().turnCard) progressCards.stepEnded(sessionId, event.time ?? Date.now())
         if (state.stepCardSent && stepIsEmpty(state)) updateStepCard(state)
+        // A thinking chain longer than one card continues on follow-up cards.
+        // Sent here (not at turn/end) so they sit immediately after this step's
+        // card instead of after the whole turn.
+        if (displayPolicy().reasoning !== 'off') sendReasoningOverflow(chat, sessionId, state)
       } else if (event.type === 'turn/start') {
         resetStep(state)
         lastStepSendPromises.delete(sessionId)
@@ -2769,7 +2822,7 @@ const PREVIEW_LIMIT_MAX = 6000
 
 /** Defaults, mirroring the constants above; used when no setting is read. */
 export const DEFAULT_PREVIEW_LIMITS: PreviewLimits = {
-  reasoningHead: REASONING_HEAD_CAP,
+  reasoningHead: REASONING_PREVIEW_CHARS,
   result: RESULT_PREVIEW_CAP,
   args: ARGS_DISPLAY_CAP,
 }
@@ -2782,6 +2835,31 @@ const TEXT_STEP_CAP = 3000
 
 /** Upper bound on the follow-up "continued" cards for one step's text. */
 const MAX_OVERFLOW_CARDS = 30
+
+/**
+ * One thinking block's UTF-8 byte budget when it folds into a card.
+ *
+ * 20 KB leaves room for the rest of the step card inside Feishu's ~30 KB card
+ * JSON limit (CJK costs 3 bytes per character, so this is roughly 6,800
+ * characters). Anything past it goes out as follow-up cards rather than being
+ * truncated.
+ */
+const REASONING_PANEL_BYTES = 20 * 1024
+
+/**
+ * Split a thinking chain into per-card panels under {@link REASONING_PANEL_BYTES}.
+ *
+ * Exported so the event handler can send the tail as continuation cards using
+ * exactly the same split the step card renders segment 0 from.
+ *
+ * @param reasoning - the step's whole reasoning text.
+ * @returns one or more panels; `[0]` is what the step card carries.
+ */
+export function reasoningPanelChunks(reasoning: string): string[] {
+  const text = reasoning.trim()
+  if (text === '') return []
+  return chunkTextByBytes(text, REASONING_PANEL_BYTES, MAX_OVERFLOW_CARDS + 1)
+}
 
 /**
  * Element spacing of a `compact` step card (the answer card). The default is
@@ -2883,6 +2961,39 @@ function renderOverflowCard(text: string, part: number, total: number, t: Transl
       template: 'blue',
     },
     body: { elements },
+  }
+}
+
+/**
+ * Render one follow-up card for a thinking chain longer than one panel allows.
+ *
+ * A chain can exceed the card's byte budget (20 KB of UTF-8 content), and the
+ * rule is to CONTINUE it, never to cut it. These cards carry the tail of the
+ * same step's chain, in order, right after the step card: they name the step
+ * and their position so a reader knows which thinking block they belong to.
+ *
+ * @param text - this card's slice of the chain (already within the byte budget).
+ * @param part - 1-based position among the continuation cards.
+ * @param total - number of continuation cards.
+ * @param step - the step this thinking block belongs to.
+ * @param t - translations for the active locale.
+ * @returns the card JSON.
+ */
+function renderReasoningOverflowCard(
+  text: string,
+  part: number,
+  total: number,
+  step: number,
+  t: Translations,
+): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: t.stepReasoningContinued(step, part, total) },
+      template: 'violet',
+    },
+    body: { elements: [{ tag: 'markdown', content: text }] },
   }
 }
 
@@ -3370,17 +3481,18 @@ export function renderStepCard(
     }
   }
 
-  // Reasoning section. The level decides HOW MUCH and whether it folds:
+  // Reasoning section (2026-11-20): the WHOLE chain, never truncated. The only
+  // shape choice is `reasoningFold` — a collapsed panel (default) or the text
+  // flat on the card. A chain longer than one panel's byte budget travels as
+  // follow-up cards (`reasoningPanelChunks` + `renderReasoningOverflowCard`,
+  // sent at `step/end` right after this step's card) instead of being cut, so
+  // the reader can always reach every character.
   //
-  //   preview — the header plus the first line (the WebUI's `settledReasoningPreview`);
-  //   head    — a folded panel whose body is the first REASONING_HEAD_CAP characters;
-  //   full    — a folded panel with the whole chain.
-  //
-  // Folding is what makes `full` affordable: the panel is collapsed by default,
-  // so a long chain no longer eats the card, and the CAP that used to exist only
-  // to protect the layout is no longer needed for `full`. The body renders as
-  // plain markdown (not a fenced block, see the `foldedPanel` call below), so a
-  // fence inside the reasoning affects that one element and nothing else.
+  // The body is PLAIN markdown, not a fenced block: a code block never
+  // soft-wraps, so on a phone a long chain ran off the right edge. The card
+  // write path still neutralizes image/link syntax inside it (关键坑 39) and
+  // repairs a glued fence closer (关键坑 68), so model text cannot break the
+  // card; the trade-off is that reasoning inherits markdown typography.
   if (reasoning !== undefined && reasoning !== '' && display.reasoning !== 'off') {
     const meta: string[] = []
     if (reasoningMs !== undefined && reasoningMs > 0) meta.push(formatMsShort(reasoningMs))
@@ -3389,38 +3501,13 @@ export function renderStepCard(
       meta.push(`${formatTokenCount(reasoningTokens)} tokens`)
     }
     const header = meta.length > 0 ? `${t.stepReasoningHeader} · ${meta.join(' · ')}` : t.stepReasoningHeader
-    if (display.reasoning === 'preview') {
-      const firstLine = reasoning.split('\n').find(line => line.trim() !== '') ?? reasoning
-      // `truncateInline`: the preview renders as a blockquote (live markdown), so
-      // a cut inside `**…**` would print the markers to the reader.
-      const preview = firstLine.trim().length > REASONING_PREVIEW_CAP
-        ? truncateInline(firstLine.trim(), REASONING_PREVIEW_CAP)
-        : firstLine.trim()
-      elements.push({
-        tag: 'markdown',
-        content: preview === '' ? header : `${header}\n> ${preview}`,
-      })
-    } else {
-      const body = display.reasoning === 'full'
-        ? reasoning
-        : reasoning.length > limits.reasoningHead
-          ? `${reasoning.slice(0, limits.reasoningHead)}\n…(truncated)`
-          : reasoning
-      // Collapsed by default: the header (with its duration and token count)
-      // is the summary, the chain is one tap away. `foldedPanel` gives every
-      // fold the same visible chrome and the "点击展开" hint — without
-      // it a reader has no way to tell there is anything behind the header.
-      //
-      // The body is PLAIN markdown, not a fenced block (changed 2026-11-20 at
-      // the operator's request): a code block never soft-wraps, so on a phone a
-      // long chain ran off the right edge and had to be scrolled sideways. The
-      // card write path still neutralizes image/link syntax inside it (关键坑
-      // 39) and repairs a glued fence closer (关键坑 68), so model text cannot
-      // break the card; the trade-off is that reasoning now inherits markdown
-      // typography (a `#` line becomes a heading) instead of staying literal.
+    const first = reasoningPanelChunks(reasoning)[0] ?? reasoning.trim()
+    if (display.reasoningFold) {
       elements.push(foldedPanel(t, header, [
-        { tag: 'markdown', content: body },
+        { tag: 'markdown', content: first },
       ]))
+    } else {
+      elements.push({ tag: 'markdown', content: `${header}\n\n${first}` })
     }
   }
 

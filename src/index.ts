@@ -1146,6 +1146,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       bridgeHolder,
       logger: ctx.logger('dsh-feishu'),
       showReasoning: () => currentSettings().showReasoning,
+      reasoningFold: () => currentSettings().reasoningFold ?? true,
       showToolCalls: () => currentSettings().showToolCalls,
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
@@ -1441,6 +1442,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       }
     },
     getLevel: () => currentSettings().transcriptView,
+    getFold: () => currentSettings().reasoningFold ?? true,
+    setFold: (folded) => {
+      const write = settings.mutate(namespace, [{ op: 'set', path: ['reasoningFold'], value: folded }], currentRevision())
+      write.catch((error: unknown) => {
+        console.log(`dsh-feishu: /display fold write failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return write
+    },
     getToolRow: () => currentSettings().compactToolRow ?? DEFAULT_COMPACT_TOOL_ROW,
     getElapsedRefreshSeconds: () => currentSettings().elapsedRefreshSeconds ?? DEFAULT_ELAPSED_REFRESH_SECONDS,
     setElapsedRefreshSeconds: seconds => settings.mutate(namespace,

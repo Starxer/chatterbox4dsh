@@ -172,6 +172,12 @@ export interface Translations {
 
   // ---- Streaming / per-step + turn complete (feishu-streaming.ts) ----
   stepReasoningHeader: string
+  /**
+   * Header of a thinking-chain follow-up card (`💬 深度思考（第 2 步 · 续 1/3）`).
+   * A chain longer than one card's byte budget continues onto these cards
+   * instead of being truncated.
+   */
+  stepReasoningContinued: (step: number, part: number, total: number) => string
   stepMessageHeader: string
   stepToolHeader: string
   stepToolSuccess: string
@@ -521,6 +527,10 @@ export interface Translations {
   displayCardTickHint: string
   displayCardTickButton: (seconds: number, active: boolean) => string
   /** Compact-only "tool row" section of the display card. */
+  /** Thinking-block fold row on the `/display` card. */
+  displayCardFoldTitle: string
+  displayCardFoldName: (folded: boolean) => string
+  displayCardFoldButton: (name: string, active: boolean) => string
   displayCardToolRowTitle: string
   displayCardToolRowHint: string
   /** One row style's short name (`仅工具` / `描述 + 工具` / `仅描述`). */
@@ -988,6 +998,7 @@ export const zh = {
   cardFoldTitle: title => `${title}（▸ 点击展开）`,
 
   stepReasoningHeader: '💬 **深度思考**',
+  stepReasoningContinued: (step, part, total) => `💬 深度思考（第 ${step} 步 · 续 ${part}/${total}）`,
   stepMessageHeader: '📝 **消息**',
   stepToolHeader: '🔧 **工具调用**',
   stepToolSuccess: '成功',
@@ -1193,6 +1204,9 @@ export const zh = {
   displayCardTickTitle: '**耗时刷新**',
   displayCardTickHint: '简洁过程卡与其他档位的等待卡共用；只影响计时刷新，不延迟新事件。',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds} 秒`,
+  displayCardFoldTitle: '**思考块**（折叠 = 收进面板；平铺 = 直接显示）',
+  displayCardFoldName: folded => folded ? '折叠' : '平铺',
+  displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardToolRowTitle: '**工具行**（仅「简洁」档）',
   displayCardToolRowHint: '_简洁模式过程卡里，每个工具调用那一行显示什么。描述 = 模型自己写的一句 description，并非每个工具都会写。_',
   displayToolRowName: style => ({
@@ -1597,6 +1611,7 @@ export const en: Translations = {
   cardFoldTitle: title => `${title} (▸ Click to expand)`,
 
   stepReasoningHeader: '💬 **Deep thinking**',
+  stepReasoningContinued: (step, part, total) => `💬 Deep thinking (step ${step} · continued ${part}/${total})`,
   stepMessageHeader: '📝 **Message**',
   stepToolHeader: '🔧 **Tool Call**',
   stepToolSuccess: 'ok',
@@ -1808,6 +1823,9 @@ export const en: Translations = {
   displayCardTickTitle: '**Elapsed-time refresh**',
   displayCardTickHint: 'Shared by compact progress and other levels’ waiting cards; new events are not delayed.',
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds}s`,
+  displayCardFoldTitle: '**Thinking block** (fold = collapsed panel; flat = shown inline)',
+  displayCardFoldName: folded => folded ? 'Folded' : 'Flat',
+  displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardToolRowTitle: '**Tool row** (compact only)',
   displayCardToolRowHint: '_What one tool row of the compact progress card carries. "Description" is the model-written one-liner, which not every tool takes._',
   displayToolRowName: style => ({

@@ -92,14 +92,15 @@ export function isCompactToolRowStyle(value: unknown): value is CompactToolRowSt
 }
 
 /**
- * How much of a step's reasoning the card carries.
+ * Whether a step's reasoning block is rendered at all.
  *
- * - `off`     — no reasoning section, and reasoning alone does not make a step visible;
- * - `preview` — the section header plus the first line, nothing to expand (the WebUI's `settledReasoningPreview`);
- * - `head`    — a folded panel whose body is the first {@link REASONING_HEAD_CAP} characters;
- * - `full`    — a folded panel with the whole chain.
+ * The "how much" axis is gone (2026-11-20): the block always carries the WHOLE
+ * chain, and the only shape question left is {@link DisplayPolicy.reasoningFold}
+ * (folded panel vs. flat). A chain that exceeds one card travels as follow-up
+ * "continued" cards instead of being cut — the same rule the answer text
+ * already follows.
  */
-export type ReasoningDetail = 'off' | 'preview' | 'head' | 'full'
+export type ReasoningDetail = 'off' | 'on'
 
 /**
  * How much of a step's tool work the card carries.
@@ -111,15 +112,18 @@ export type ReasoningDetail = 'off' | 'preview' | 'head' | 'full'
  */
 export type ToolDetail = 'off' | 'count' | 'summary' | 'full'
 
-/** Characters a folded `head` reasoning body keeps before it is cut. */
-export const REASONING_HEAD_CAP = 200
-
-/** Characters of the first reasoning line shown by the `preview` detail. */
-export const REASONING_PREVIEW_CAP = 80
+/**
+ * Default length of the live reasoning preview (characters) shown while the
+ * model is thinking. Not a truncation of the settled block: the finished block
+ * always carries the whole chain.
+ */
+export const REASONING_PREVIEW_CHARS = 200
 
 /** What one level means, before the four switches refine it. */
 interface LevelSpec {
   reasoning: ReasoningDetail
+  /** Fold the whole chain into a panel (default) or show it flat on the card. */
+  reasoningFold: boolean
   tools: ToolDetail
   toolArgs: boolean
   toolResults: boolean
@@ -138,18 +142,20 @@ const LEVELS: Record<TranscriptView, LevelSpec> = {
   // tool activity lives on the one turn card (`feishu-progress.ts`), so a step
   // card renders no tool section and a step that only ran tools posts no card
   // at all. `tools: 'off'` is what makes both of those true.
-  compact: { reasoning: 'off', tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true },
-  // 标准: every call is named, but no payloads; reasoning is one line.
-  standard: { reasoning: 'preview', tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false },
-  // 详细: the pre-level default — preview + args + results, folded reasoning.
-  detailed: { reasoning: 'head', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false },
-  // 完全展开: everything the card can carry, nothing truncated.
-  verbose: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false },
+  compact: { reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true },
+  // 标准: every call is named, but no payloads; the whole chain is folded.
+  standard: { reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false },
+  // 详细: the pre-level default — args + results, the whole chain folded.
+  detailed: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false },
+  // 完全展开: everything the card can carry, tool payloads untruncated.
+  verbose: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false },
 }
 
 /** The resolved axes the renderers read. */
 export interface DisplayPolicy {
   reasoning: ReasoningDetail
+  /** Render the whole chain inside a collapsed panel instead of flat on the card. */
+  reasoningFold: boolean
   tools: ToolDetail
   /** Whether tool ARGUMENT blocks are rendered at all. */
   toolArgs: boolean
@@ -209,12 +215,15 @@ export function resolveDisplayPolicy(input: {
   showToolCalls?: boolean | undefined
   showToolArgs?: boolean | undefined
   showToolResults?: boolean | undefined
+  /** Explicit fold choice; undefined keeps the level's preset. */
+  reasoningFold?: boolean | undefined
 }): DisplayPolicy {
   const level = LEVELS[parseTranscriptView(input.transcriptView)]
   const reasoning = input.showReasoning === false ? 'off' : level.reasoning
   const tools = input.showToolCalls === false ? 'off' : level.tools
   return {
     reasoning,
+    reasoningFold: input.reasoningFold ?? level.reasoningFold,
     tools,
     toolArgs: tools === 'full' && level.toolArgs && input.showToolArgs !== false,
     toolResults: tools === 'full' && level.toolResults && input.showToolResults !== false,
@@ -245,7 +254,7 @@ export function levelUsesSwitch(
   key: 'reasoning' | 'tools' | 'args' | 'results',
 ): boolean {
   switch (key) {
-    case 'reasoning': return level !== 'compact'
+    case 'reasoning': return LEVELS[level].reasoning !== 'off'
     // Tool display is always meaningful: at `compact` it removes the progress
     // card's tool rows, at the step levels it removes the tool section.
     case 'tools': return true

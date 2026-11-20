@@ -208,13 +208,21 @@ function makeDisplay(
   const levelSpy = vi.fn()
   const tickSpy = vi.fn()
   const toolRowSpy = vi.fn()
+  const foldSpy = vi.fn()
   let seconds = 5
+  let folded = true
   return {
     spy,
     levelSpy,
     tickSpy,
     toolRowSpy,
+    foldSpy,
     control: {
+      getFold: () => folded,
+      setFold: (next: boolean): void => {
+        foldSpy(next)
+        folded = next
+      },
       getToolRow: () => toolRow,
       setToolRow: (next: 'tool' | 'tool-description' | 'description'): void => {
         toolRowSpy(next)
@@ -367,6 +375,8 @@ describe('startFeishuDisplay', () => {
       channel: channel as any,
       display: {
         get: () => state,
+        getFold: () => true,
+        setFold: () => undefined,
         getLevel: () => 'detailed' as const,
         setLevel: () => undefined,
         getElapsedRefreshSeconds: () => 5,
