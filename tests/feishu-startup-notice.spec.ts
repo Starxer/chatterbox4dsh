@@ -15,15 +15,18 @@ interface FakeBridge {
   recentActiveSessions(sessionId?: number): Array<{ sessionId: string, interrupted: boolean }>
   resolveChat(sessionId: string): { chatId: string, chatType: 'p2p', threadId?: string, rootId?: string } | undefined
   clearInterrupted(sessionId: string): void
+  hasPendingTurnForSession?(sessionId: string): boolean
 }
 
 function fakeBridge(
   sessions: Array<{ sessionId: string, interrupted: boolean }>,
   chats: Record<string, { chatId: string, chatType: 'p2p', threadId?: string, rootId?: string } | undefined> = {},
+  pending: readonly string[] = [],
 ): { bridge: HarnessConversationService, clearInterrupted: ReturnType<typeof vi.fn> } {
   const clearInterrupted = vi.fn()
   const bridge: FakeBridge = {
     recentActiveSessions: () => sessions,
+    hasPendingTurnForSession: sessionId => pending.includes(sessionId),
     // A key present with `undefined` explicitly means "bound to no chat".
     resolveChat: sessionId => Object.hasOwn(chats, sessionId)
       ? chats[sessionId]
@@ -63,6 +66,21 @@ describe('sendStartupNotice', () => {
     expect(result).toEqual({ sent: true, sessionId: 'bound', chatId: 'chat-bound', interrupted: true })
     expect(send).toHaveBeenCalledWith('chat-bound', { text: 'CONNECTED\nINTERRUPTED' }, {})
     expect(clearInterrupted).toHaveBeenCalledWith('bound')
+  })
+
+  it('does not fall through to an older conversation when the last one is being resent', async () => {
+    // Regression (2026-11-20): the most recent session was skipped because its
+    // turn was going to be auto-resent, and the loop then sent the notice to an
+    // older group thread the operator was not in.
+    const { bridge } = fakeBridge([
+      { sessionId: 'recent', interrupted: true },
+      { sessionId: 'older', interrupted: false },
+    ], {}, ['recent'])
+    const { channel, send } = fakeChannel()
+
+    const result = await sendStartupNotice(deps(bridge, channel))
+    expect(result).toMatchObject({ sent: false, reason: 'pending-resend', sessionId: 'recent', chatId: 'chat-recent' })
+    expect(send).not.toHaveBeenCalled()
   })
 
   it('sends only the connected line when the turn ended normally', async () => {

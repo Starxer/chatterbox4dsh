@@ -46,8 +46,12 @@ export interface StartupNoticeDeps {
 /** What the attempt did, for logging and tests. */
 export interface StartupNoticeResult {
   sent: boolean
-  /** Why nothing was sent: no bridge/channel, or no chat-bound session. */
-  reason?: 'no-bridge' | 'no-channel' | 'no-bound-session' | 'send-failed'
+  /**
+   * Why nothing was sent: no bridge/channel, no chat-bound session, the send
+   * failed, or the most recent conversation is already getting its own
+   * auto-resend announcement.
+   */
+  reason?: 'no-bridge' | 'no-channel' | 'no-bound-session' | 'send-failed' | 'pending-resend'
   sessionId?: string
   chatId?: string
   interrupted?: boolean
@@ -72,11 +76,17 @@ export async function sendStartupNotice(deps: StartupNoticeDeps): Promise<Startu
   for (const candidate of bridge.recentActiveSessions(CANDIDATE_LIMIT)) {
     const chat = bridge.resolveChat(candidate.sessionId)
     if (chat === undefined) continue
-    // A turn this chat lost to a reload/restart is resent automatically a
-    // moment later, and that resend announces itself — repeating the generic
-    // "your turn may have been interrupted" sentence would be the same news
-    // twice in one chat.
-    if (candidate.interrupted && bridge.hasPendingTurnForSession?.(candidate.sessionId) === true) continue
+    // The FIRST chat-bound session in activity order IS the conversation the
+    // user was last in. If its turn is going to be auto-resent, that resend
+    // announces itself in that same chat, and the generic "back online" notice
+    // must NOT fall through to some older, unrelated conversation — that is
+    // exactly what happened on 2026-11-20: the notice landed in a group thread
+    // the operator was not in, because the most recent chat was skipped here.
+    // Skip other sessions only when they are not chat-bound (a Web-UI-only
+    // session must not swallow the notice).
+    if (candidate.interrupted && bridge.hasPendingTurnForSession?.(candidate.sessionId) === true) {
+      return { sent: false, reason: 'pending-resend', sessionId: candidate.sessionId, chatId: chat.chatId }
+    }
 
     const t = deps.getTranslations()
     const text = candidate.interrupted
