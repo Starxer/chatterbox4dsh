@@ -201,6 +201,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   let lastInboundAt = 0
   let lastOutboundAt = 0
   let lastRebuildAt = 0
+  // When the live connection came up: "no inbound yet" is not "silent for five
+  // minutes" on a socket that is seconds old.
+  let lastConnectedAt = 0
   observeOutboundCalls({
     started: label => {
       apiUsage.record(label)
@@ -720,6 +723,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         if (attachedChannels.has(ch)) return () => undefined
         attachedChannels.add(ch)
         return ch.on('cardAction', (...args) => {
+          // A tap proves the socket is still being fed — same liveness signal
+          // the message path feeds via bridge.noteInboundActivity.
+          lastInboundAt = Date.now()
           const evt = args[0] as CardActionEvent & { raw?: { action?: { form_value?: unknown } } }
           // Card callbacks reach neither the journal nor any other log, which
           // makes "I pressed the button and nothing happened" impossible to
@@ -805,6 +811,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         },
       })
       bridgeHolder.current = bridge
+      // Feed the half-open watchdog from the existing single subscribers rather
+      // than adding a second `channel.on('message')` (the SDK treats a second
+      // subscription as a REPLACEMENT — it would displace `handleInbound`).
+      ;(bridge as { noteInboundActivity?: () => void }).noteInboundActivity = () => { lastInboundAt = Date.now() }
       return startChannel(
         config,
         bridge,
@@ -938,12 +948,19 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // callback to also attach their cardAction handlers on reconnect.
   runtime.onChannelChange = channel => {
     channelHolder.current = channel
+    lastConnectedAt = Date.now()
     // Proof of inbound life: any delivered message or card tap means the socket
     // is still being fed. A half-open socket draws nothing here, which is the
     // signal `halfOpenRebuildDue` looks for (the SDK's own ping watchdog only
     // arms after the server pings, and never fires if that side went quiet).
-    channel.on('message', () => { lastInboundAt = Date.now() })
-    channel.on('cardAction', () => { lastInboundAt = Date.now() })
+    //
+    // ⚠️ Do NOT subscribe to `message`/`cardAction` here. The SDK's `channel`
+    // keeps exactly ONE handler per event and a later `on(...)` REPLACES the
+    // earlier one — subscribing here displaced `handleInbound` in channel.ts
+    // and the bot silently stopped answering (2026-11-20). Liveness is fed
+    // from the existing single subscribers instead: messages via
+    // `bridge.noteInboundActivity` (see startChannel below), taps via the
+    // `onCardAction` handler.
     // Tell the chat that was active last that DSH is up (and, when its turn
     // never ended, that it may have been interrupted). Once per process; no
     // model call involved.
@@ -970,7 +987,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // outbound was active recently but inbound has been silent for minutes.
   const livenessTimer = setInterval(() => {
     const now = Date.now()
-    if (!halfOpenRebuildDue({ now, lastInboundAt, lastOutboundAt, lastRebuildAt })) return
+    if (!halfOpenRebuildDue({ now, lastInboundAt, lastOutboundAt, lastRebuildAt, lastConnectedAt })) return
     lastRebuildAt = now
     const silent = lastInboundAt === 0 ? 'no inbound event yet' : `inbound silent for ${Math.round((now - lastInboundAt) / 1000)}s`
     console.warn(`dsh-feishu: ${silent} while outbound was active; rebuilding the channel (half-open socket)`)

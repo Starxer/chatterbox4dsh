@@ -103,14 +103,23 @@ export function halfOpenRebuildDue(input: {
   lastInboundAt: number
   lastOutboundAt: number
   lastRebuildAt: number
+  /**
+   * When the CURRENT connection came up. A freshly connected socket has not had
+   * time to receive anything, so "no inbound yet" must not be read as "silent
+   * for five minutes" — without this, a bot that starts up and sends its notice
+   * looked half-open one minute later (2026-11-20: a rebuild 59 s after
+   * `channel up`, which then displaced the message handler).
+   */
+  lastConnectedAt: number
 }): boolean {
-  const { now, lastInboundAt, lastOutboundAt, lastRebuildAt } = input
+  const { now, lastInboundAt, lastOutboundAt, lastRebuildAt, lastConnectedAt } = input
   // Nothing was sent yet: an idle channel is not evidence of anything.
   if (lastOutboundAt === 0) return false
   // Nobody is engaged; silence is expected rather than suspicious.
   if (now - lastOutboundAt > CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS) return false
-  // Inbound is still moving (or moved recently enough).
-  if (now - lastInboundAt < CHANNEL_HALF_OPEN_SILENCE_MS) return false
+  // Inbound is still moving (or moved recently enough). The clock starts at the
+  // LATEST of "last inbound" and "connection came up".
+  if (now - Math.max(lastInboundAt, lastConnectedAt) < CHANNEL_HALF_OPEN_SILENCE_MS) return false
   if (lastRebuildAt !== 0 && now - lastRebuildAt < CHANNEL_HALF_OPEN_COOLDOWN_MS) return false
   return true
 }

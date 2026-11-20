@@ -333,6 +333,12 @@ export async function startChannel(
     & {
       noteInboundSender?: HarnessConversationService['noteInboundSender']
       noteSessionActivity?: HarnessConversationService['noteSessionActivity']
+      /**
+       * Inbound liveness ping for the half-open-socket watchdog. Called from the
+       * single `channel.on('message')` subscriber (`handleInbound`) — never from
+       * a second subscription, which the SDK treats as a replacement.
+       */
+      noteInboundActivity?: () => void
       /** Automatic resend of a turn the previous instance did not finish. */
       notePendingTurn?: HarnessConversationService['notePendingTurn']
       clearPendingTurn?: HarnessConversationService['clearPendingTurn']
@@ -595,6 +601,11 @@ export async function startChannel(
    */
   const handleInbound = async (message: NormalizedMessage): Promise<void> => {
       if (stopped) return
+      // Inbound liveness for the half-open-socket watchdog. Feeding it here
+      // keeps exactly one `channel.on('message')` subscriber alive: the SDK's
+      // channel keeps one handler per event and a later `on('message')` would
+      // REPLACE this function instead of adding to it.
+      bridge.noteInboundActivity?.()
       const resources = (message.resources ?? []).filter(resource => resource.type === 'image' || ADMITTED_RESOURCE_TYPES.has(resource.type))
       const userText = attachmentMessageText(message)
       const key = conversationKey(message)

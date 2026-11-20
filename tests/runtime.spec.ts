@@ -20,6 +20,29 @@ describe('halfOpenRebuildDue', () => {
       lastInboundAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 1,
       lastOutboundAt: now - 60_000,
       lastRebuildAt: 0,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 10_000,
+    })).toBe(true)
+  })
+
+  it('stays put right after connecting, even with no inbound yet', () => {
+    // 2026-11-20: a fresh process sent its startup notice and the detector
+    // rebuilt the channel 59 s later — "never received anything" was read as
+    // "silent for five minutes", and that rebuild displaced the message handler.
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: 0,
+      lastOutboundAt: now - 30_000,
+      lastRebuildAt: 0,
+      lastConnectedAt: now - 60_000,
+    })).toBe(false)
+    // Once the connection itself is older than the silence window, the same
+    // facts DO read as half-open.
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: 0,
+      lastOutboundAt: now - 30_000,
+      lastRebuildAt: 0,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 1_000,
     })).toBe(true)
   })
 
@@ -29,11 +52,12 @@ describe('halfOpenRebuildDue', () => {
       lastInboundAt: now - 1_000,
       lastOutboundAt: now - 60_000,
       lastRebuildAt: 0,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 10_000,
     })).toBe(false)
   })
 
   it('stays put with no outbound activity at all (an idle night is not a fault)', () => {
-    expect(halfOpenRebuildDue({ now, lastInboundAt: 0, lastOutboundAt: 0, lastRebuildAt: 0 })).toBe(false)
+    expect(halfOpenRebuildDue({ now, lastInboundAt: 0, lastOutboundAt: 0, lastRebuildAt: 0, lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 10_000 })).toBe(false)
   })
 
   it('stays put once outbound has been idle for longer than the active window', () => {
@@ -42,6 +66,7 @@ describe('halfOpenRebuildDue', () => {
       lastInboundAt: 0,
       lastOutboundAt: now - CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS - 1,
       lastRebuildAt: 0,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 10_000,
     })).toBe(false)
   })
 
@@ -51,6 +76,7 @@ describe('halfOpenRebuildDue', () => {
       lastInboundAt: 0,
       lastOutboundAt: now - 60_000,
       lastRebuildAt: now - CHANNEL_HALF_OPEN_COOLDOWN_MS + 1,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 10_000,
     })).toBe(false)
   })
 })

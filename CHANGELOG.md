@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：半开自愈重建时把消息处理器顶掉（活性信号改为单订阅者喂）+ 启动后误判（`src/channel.ts` / `src/index.ts` / `src/runtime.ts`，2026-11-20）
+
+- **根因**：SDK 的 channel 每个事件只保留**一个** handler，后注册的 `channel.on('message')` 是**替换**而不是追加。半开自愈在 19:26:29 重建通道后，`onChannelChange` 里为喂活性时间戳又订阅了一次，把 `handleInbound` 顶掉——通道 `channel up` 但消息再也没人处理；日志留下两条 `[sdk warn] handler for "message" is being overwritten`。
+- **修法**：不再新增订阅。活性信号改由**已有单订阅者**喂：`bridge.noteInboundActivity?.()` 在 `handleInbound` 开头调用，卡片点击在已有的 `onCardAction` 处理器里更新时间戳；`onChannelChange` 里那两行订阅删除，并留注释写明"SAM 只保留一个 handler，二次订阅=替换"以防再犯。产物里 `on('message')` 从 2 处降到 1 处。
+- **顺带修一个我引入的误判**：新进程 19:26:35 `channel up` 后，19:27:34 就触发了重建——因为「本进程从未收到入站」被当成"静默 5 分钟"。判定现在以 `max(最后入站, 连接建立时刻)` 为静默起点：刚连上的 socket 不会被判半开，连接超过 5 分钟仍无入站才判定。
+- **正面确认**：自愈本身有效——旧进程 19:26:29 打印 `inbound silent for 338s while outbound was active; rebuilding the channel (half-open socket)`，确实识别出了 5.6 分钟无入站并主动重建。
+- 测试：新增「刚连上不得重建 / 连接超过静默窗口则可重建」用例；全量 82 文件 / 1,600 用例、typecheck、build、privacy 全绿。
+
+**English**: The SDK's channel keeps exactly ONE handler per event, and a later `channel.on('message')` REPLACES the earlier one instead of adding to it. The half-open self-heal rebuilt the channel at 19:26:29 and then `onChannelChange` subscribed again just to feed the liveness timestamp — displacing `handleInbound`, so the channel said `channel up` while no message was ever processed again (two `[sdk warn] handler for "message" is being overwritten` lines). Liveness is now fed from the EXISTING single subscribers: `bridge.noteInboundActivity?.()` at the top of `handleInbound`, and the timestamp update inside the existing `onCardAction` handler; the extra subscriptions were removed with a comment explaining the replacement semantics, so the built artifact carries one `on('message')` instead of two. A mis-judgement of mine was fixed in the same change: the fresh process came up at 19:26:35 and the detector fired at 19:27:34 because "never received anything yet" was read as "silent for five minutes" — the silence clock now starts at the latest of the last inbound event and the connection's own start, so a socket seconds old is never judged half-open, while one older than the silence window with no inbound still is. The self-heal itself was confirmed working: the old process logged `inbound silent for 338s while outbound was active`, realising 5.6 minutes without inbound. Tests: fresh-connection and old-connection cases added; 82 files / 1,600 tests, typecheck, build and privacy gate green.
+
 ### 修复：半开连接（连接假活）导致飞书入站静默，插件现在自愈（`src/runtime.ts` / `src/index.ts`，2026-11-20）
 
 - **现场**（2026-11-20 18:28:45 `channel up` 之后）：`ss -tnp` 三条 ESTABLISHED、进程正常、`curl open.feishu.cn` 410ms 可达、journal **零输出**——TCP 没断、SDK 没察觉，但飞书不再投递任何事件。典型半开（half-open）socket：只代理 TCP 的 fake-ip 透明代理静默掐流、不发 FIN/RST。
