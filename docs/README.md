@@ -1,7 +1,7 @@
 # 项目文档 / Documentation
 
-> 当前文档基线：仓库主线（含尚未发版的改动），npm 最近发布 `0.4.2`；本机部署运行 DSH `0.2.2-rc.1`，已完成构建、插件加载与飞书收发的基本验证，不是全功能/全平台认证。依赖范围保留 `^0.2.0-rc.1`。更早的 `0.2.0` 是快照，不代表当前能力。
-> Current baseline: repository main (including unreleased changes); the latest npm publish is `0.4.2`; the local deployment runs DSH `0.2.2-rc.1` with basic build, plugin-load and Feishu send/receive verification, not full feature or platform certification. Dependency ranges retain `^0.2.0-rc.1`. The earlier `0.2.0` is a snapshot, not current capabilities.
+> 当前文档基线：仓库主线（含尚未发版的改动），npm 最近发布 `0.4.2`；本机部署运行 DSH `0.2.2-rc.5`，已完成构建、插件加载与飞书收发的基本验证，不是全功能/全平台认证。依赖范围保留 `^0.2.0-rc.1`。更早的 `0.2.0` 是快照，不代表当前能力。
+> Current baseline: repository main (including unreleased changes); the latest npm publish is `0.4.2`; the local deployment runs DSH `0.2.2-rc.5` with basic build, plugin-load and Feishu send/receive verification, not full feature or platform certification. Dependency ranges retain `^0.2.0-rc.1`. The earlier `0.2.0` is a snapshot, not current capabilities.
 
 ## 按任务阅读 / Start here
 
@@ -13,6 +13,7 @@
 | 修改插件、理解模块和卡片生命周期 / Modules and card lifecycles | [架构 / Architecture](<./architecture.md>) |
 | 核查飞书组件、平台限制与实测证据 / Feishu components, limits, probe evidence | [飞书能力参考 / Feishu capability reference](<./feishu-capabilities.md>) |
 | 确认 PTC 模式下哪些卡片/统计仍然成立 / Which cards and stats still work in PTC mode | [PTC 模式适配 / PTC mode adaptation](<./ptc-mode.md>) |
+| 了解展示档位为何合并、思考块的折叠/预览/续卡目标 / Why the display levels merge, and the planned thinking block (fold, live preview, continuation cards) | [展示模型与思考块设计 / Display model & thinking block design](<./display-modes-design.md>) |
 | 看剩余工作 / Remaining work | [待办 / TODO](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) |
 | 追溯改动与决策 / Change history | [变更记录 / Changelog](<../CHANGELOG.md>) |
 
@@ -43,6 +44,7 @@ These records preserve the original problem and alternatives; they are **not cur
 |---|---|
 | [显示控制卡 / Display controls](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-card-design.md>) | 已实现；支持 4 档并在同一张卡上更新 / Implemented; four levels, updated in place |
 | [步骤相位 / Step phases](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/step-card-phases-design.md>) | 实时流仅切相位，不逐 token 上屏 / Live frames drive phase changes, not token-by-token text |
+| [展示模型与思考块 / Display model & thinking block](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-modes-design.md>) | 方案已定、尚未实施：两模式 + 正交开关、思考块全文/续卡/预览（含逐字流式探针）/ Agreed, not implemented yet: two modes + orthogonal switches; full-text thinking block with continuation cards and a live preview (typewriter streaming pending a probe) |
 | [注入、压缩与展示对齐 / Transcript parity](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/transcript-parity-design.md>) | 已实现；顶部现状优先于历史提案 / Implemented; current summary takes precedence |
 | [最初实现计划 / Original implementation plan](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/superpowers/plans/2026-08-15-dsh-lark-channel-plugin.md>) | 历史存档；未勾选项不代表当前待办 / Historical; unchecked boxes are not an active backlog |
 

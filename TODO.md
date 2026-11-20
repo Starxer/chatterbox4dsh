@@ -15,6 +15,7 @@
 | O7 | `renderMode: auto\|card\|text` | 低 · 🔲 | 现有正文已经分片，不是所有长回复都丢失；是否提供纯文本/混合回退仍待需求。不要把旧流式方案当实现要求 |
 | O23 | DSH 家目录由宿主提供 | 低 · ✅ 完成 | 2026-11-11：新增 `src/dsh-home.ts`（`ctx.get('dshHomePath')` 优先，`DSH_HOME`/`~/.dsh` 兜底，`node:path` 拼接），会话绑定表与 `feishu_doc_write` 的发布登记共用；未加必需 inject。见 [家目录解析](<./src/dsh-home.ts>) |
 | O28 | 飞书侧 Agent Teams 开关 | 中 · 🔲 | 宿主（0.2.2-rc.2+）暴露 `agentTeams.isEnabled(agent)` / `setEnabled(agent, enabled)`，Web UI 有团队开关，飞书目前只能靠模型自己组队。计划 `/team [on\|off]`：读当前状态、空闲时切换；需要会话的 live Agent，切不了时明确报「会话不在运行」。注意它会写 `team/mode` 事件（回滚到 rc.1 的那条会话需从备份恢复）。 |
+| O30 | 展示模型重构：两模式 + 正交开关 | 中 · 🔲 设计已定、未实施 | 合并 `standard` / `detailed` / `verbose` 为「详细」一个模式，档位名降级为一键预设；显示多少交给正交开关（思考：内容/折叠/预览；工具：明细/参数/结果/输出截断）。思考块改为**全文折叠**（默认收起，保留平铺开关；面板正文 ≤ 20 KB UTF-8 单卡不分片，超出按既有机制发思考续卡），新增思考预览（默认开、默认 200 字、思考结束即隐藏，数据源 `agent/assistant-stream`）。逐字流式（`streaming_mode` + `cardkit.v1.cardElement.content`）平台支持但需先真机探针三点后实施。实施口径与验收见 [展示模型与思考块设计](<./docs/display-modes-design.md>)；迁移要求「除思考块外逐项与今天一致」。 |
 
 ## 上游阻塞
 
