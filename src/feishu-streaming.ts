@@ -418,6 +418,12 @@ interface SessionStepState {
   previewStreamingOpen: boolean
   /** Streaming was refused for this step; never retry it here. */
   previewFailed: boolean
+  /** Wall clock of the last accepted push, for the settle grace period. */
+  previewLastPushAt: number
+  /** Characters in that push: its print time is what settling waits out. */
+  previewLastPushChars: number
+  /** One settle attempt per step, shared by every caller that rewrites the card. */
+  previewSettle: Promise<void> | undefined
   /**
    * Tick that refreshes the thinking placeholder's elapsed time. Cleared at
    * every step/turn boundary and on dispose, so it can never leak.
@@ -633,6 +639,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         previewTimer: undefined,
         previewStreamingOpen: false,
         previewFailed: false,
+        previewLastPushAt: 0,
+        previewLastPushChars: 0,
+        previewSettle: undefined,
         placeholderTimer: undefined,
         warmTimer: undefined,
         pendingSend: undefined,
@@ -689,6 +698,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.previewTail = ''
     state.previewStreamingOpen = false
     state.previewFailed = false
+    state.previewLastPushAt = 0
+    state.previewLastPushChars = 0
+    state.previewSettle = undefined
     // A pure-answer turn declares itself on its answer message; the next step
     // must not inherit that (a tool call after it means the turn was not a pure
     // answer after all, and the normal step-card path takes over).
@@ -760,10 +772,15 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   /** Schedule the next preview push; one chained timeout, never an interval. */
   const scheduleReasoningPreview = (state: SessionStepState): void => {
     if (state.previewTimer !== undefined || state.previewFailed) return
+    // The first push goes out early; once the stream is open the steady cadence
+    // applies (each push must print in less time than the gap between pushes).
+    const delay = state.previewStreamingOpen
+      ? REASONING_PREVIEW_INTERVAL_MS
+      : REASONING_PREVIEW_FIRST_DELAY_MS
     state.previewTimer = setTimeout(() => {
       state.previewTimer = undefined
       void pushReasoningPreview(state)
-    }, REASONING_PREVIEW_INTERVAL_MS)
+    }, delay)
     ;(state.previewTimer as { unref?: () => void }).unref?.()
   }
 
@@ -778,6 +795,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   const pushReasoningPreview = async (state: SessionStepState): Promise<void> => {
     const ref = state.stepCardRef
     if (ref === undefined || state.previewFailed || state.previewTail === '') return
+    // Nothing worth animating yet: wait rather than flash a fragment the settled
+    // card will replace within a second.
+    if (!state.previewStreamingOpen && state.previewTail.length < REASONING_PREVIEW_MIN_CHARS) {
+      scheduleReasoningPreview(state)
+      return
+    }
     if (channel.streamCardElement === undefined) {
       state.previewFailed = true
       return
@@ -800,6 +823,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         return
       }
       state.previewStreamingOpen = true
+      state.previewLastPushAt = Date.now()
+      state.previewLastPushChars = state.previewTail.length
       scheduleReasoningPreview(state)
     } catch (error: unknown) {
       state.previewFailed = true
@@ -831,18 +856,39 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * Thinking finished (or the step ended): stop pushing and leave streaming mode
    * so the settled card can be rewritten as a whole.
    */
-  const finishReasoningPreview = (state: SessionStepState): void => {
+  const finishReasoningPreview = (state: SessionStepState): Promise<void> => {
+    if (state.previewSettle !== undefined) return state.previewSettle
     stopReasoningPreview(state)
-    if (!state.previewStreamingOpen) return
+    if (!state.previewStreamingOpen) {
+      state.previewSettle = Promise.resolve()
+      return state.previewSettle
+    }
     state.previewStreamingOpen = false
     const ref = state.stepCardRef
     const close = channel.closeCardStreaming
-    if (ref === undefined || close === undefined) return
-    void ref.cardId
-      .then((cardId: string | undefined) => cardId === undefined ? undefined : close(cardId))
-      .catch((error: unknown) => {
-        console.log(`dsh-feishu: [preview] close failed: ${describeError(error)}`)
-      })
+    // Let the last push finish printing before the card is replaced: Feishu
+    // restarts the whole animation on a rewrite, so closing mid-print is exactly
+    // the "it got cut off before finishing" the operator reported (2026-11-20).
+    const printed = state.previewLastPushChars * REASONING_PREVIEW_CHAR_MS
+    const remaining = Math.min(
+      REASONING_PREVIEW_SETTLE_MAX_MS,
+      Math.max(0, printed - (Date.now() - state.previewLastPushAt)) + 150,
+    )
+    state.previewSettle = (async () => {
+      if (remaining > 0) {
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, remaining)
+          ;(timer as { unref?: () => void }).unref?.()
+        })
+      }
+      if (ref === undefined || close === undefined) return
+      await ref.cardId
+        .then((cardId: string | undefined) => cardId === undefined ? undefined : close(cardId))
+        .catch((error: unknown) => {
+          console.log(`dsh-feishu: [preview] close failed: ${describeError(error)}`)
+        })
+    })()
+    return state.previewSettle
   }
 
   /**
@@ -1973,9 +2019,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           // forever and only the newest ref kept receiving results.
           if (state.stepCardSent) {
             console.log('dsh-feishu: [message] card already sent for this step → updating')
-            updateStepCard(state)
+            // The preview may still be printing its last chunk; replacing the
+            // card before that animation ends is what made a fast model look
+            // like it "flashed the preview away" (2026-11-20).
+            void finishReasoningPreview(state).finally(() => updateStepCard(state))
           } else {
-            queueStepCardSend(chat, sessionId, state)
+            void finishReasoningPreview(state).finally(() => queueStepCardSend(chat, sessionId, state))
           }
         }
         state.lastStepHadContent = hasContent
@@ -2248,10 +2297,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // "empty step" form. Rare (it needs no text, no visible reasoning and
         // no visible tool call).
         state.stepEnded = true
-        finishReasoningPreview(state)
+        const previewSettled = finishReasoningPreview(state)
         stopPlaceholderTick(state)
         if (displayPolicy().turnCard) progressCards.stepEnded(sessionId, event.time ?? Date.now())
-        if (state.stepCardSent && stepIsEmpty(state)) updateStepCard(state)
+        if (state.stepCardSent && stepIsEmpty(state)) {
+          void previewSettled.finally(() => updateStepCard(state))
+        }
         // A thinking chain longer than one card continues on follow-up cards.
         // Sent here (not at turn/end) so they sit immediately after this step's
         // card instead of after the whole turn.
@@ -3051,6 +3102,28 @@ const REASONING_PREVIEW_INTERVAL_MS = 1_500
  * enough that the freeze usually arrives after thinking has already settled.
  */
 const REASONING_PREVIEW_CAP = 3_000
+
+/**
+ * Delay before the FIRST preview push, in milliseconds.
+ *
+ * Shorter than the steady 1.5 s cadence so a fast model still gets a complete
+ * short animation instead of nothing; long enough that a think which finishes in
+ * under a second never opens the stream at all (its card goes straight to the
+ * settled form, so no animation is cut mid-way).
+ */
+const REASONING_PREVIEW_FIRST_DELAY_MS = 800
+
+/**
+ * Characters required before the FIRST push. Below this a single flash of text is
+ * worse than waiting: the settled card is about to replace it anyway.
+ */
+const REASONING_PREVIEW_MIN_CHARS = 60
+
+/** What one pushed character costs the client animation (`print_frequency_ms`). */
+const REASONING_PREVIEW_CHAR_MS = 30
+
+/** Upper bound on how long settling waits for the last animation to finish. */
+const REASONING_PREVIEW_SETTLE_MAX_MS = 1_200
 
 /**
  * Split a thinking chain into per-card panels under {@link REASONING_PANEL_BYTES}.

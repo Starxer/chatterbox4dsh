@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 修复：快模型下预览「没流完就被刷掉」（`src/feishu-streaming.ts`，2026-11-20）
+
+- **现象**：模型思考很快（1–2 秒）时，预览的打字机动画还没播完，卡片就被结算内容替换掉了，观感像闪一下消失。
+- **三个改动**：
+  1. **首次推送提前到 800ms**（稳态仍是 1.5 秒/次）：快模型也能看到一段完整的动画，而不是等到结算都没推过一次；
+  2. **太短不推**：正文不足 60 字不推送——四个字的闪现不如不闪，直接进结算状态；
+  3. **结算等动画播完**：`assistant/message` / `step/end` 到达时，按「上次推送字数 × 30ms/字」估算剩余播放时间（上限 1.2 秒）再关流式并重写卡片，不再把正在播放的动画打断。
+- 结算等待是**每步一次**（`previewSettle` 记忆化），消息分支与空步分支共用同一个 promise，不会重复等待或重复重写。
+- 测试：预览用例改为断言首次推送的门槛、追加语义与「等动画播完再关闭」；全量 82 文件 / 1,595 用例、typecheck、build、privacy 全绿。
+
+**English**: With a fast model the thinking preview could be replaced before its typewriter animation finished, reading as a flash that disappears. Three changes: (1) the FIRST push now goes out after 800 ms instead of the steady 1.5 s cadence, so a quick think still shows one complete animation; (2) very short reasoning is not pushed at all (under 60 characters) — a four-character flash is worse than none; (3) settling waits for the last animation out (estimated as pushed characters × 30 ms/char, capped at 1.2 s) before closing streaming mode and rewriting the card, so a playing animation is never cut off. The wait is memoized per step (`previewSettle`) and shared by the message branch and the empty-step branch, so nothing waits or rewrites twice. Covered by an updated preview test (first-push threshold, append semantics, close-after-animation); 82 files / 1,595 tests, typecheck, build and privacy gate green.
+
 ### 修复：思考期预览不再闪烁（状态行上移 + 只追加 + 结束折叠）（`src/feishu-streaming.ts`，2026-11-20）
 
 - **现象**：预览每 1.5 秒推送一次，卡片高度会跳；而且「🧠 正在思考中…」跟在正文末尾，文字一长它就往下跑，观感很粗糙（使用者 2026-11-20 反馈）。

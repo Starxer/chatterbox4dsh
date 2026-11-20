@@ -2158,14 +2158,16 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
     await vi.waitFor(() => { expect(ch.sendCardByReference).toHaveBeenCalled() })
 
     h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    // Only a tail worth animating is pushed (a flash of four characters that the
+    // settled card replaces is worse than waiting).
+    const thinking = '让我想想'.repeat(20)
     h.emitStream({
       type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
-      chunk: { type: 'reasoning-delta', text: '让我想想' },
+      chunk: { type: 'reasoning-delta', text: thinking },
     })
-    // The preview pushes on its own 1.5 s cadence.
     await vi.waitFor(() => { expect(ch.streamCardElement).toHaveBeenCalled() }, { timeout: 3000 })
     const content = String(ch.streamCardElement!.mock.calls.at(-1)![2])
-    expect(content).toBe('让我想想')
+    expect(content).toBe(thinking)
     // The status line is its own element ABOVE the streamed text, so it never
     // moves as the text grows (2026-11-20: it used to trail the text).
     const created = ch.createCardInstance!.mock.calls[0]![0] as any
@@ -2177,14 +2179,16 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
       chunk: { type: 'reasoning-delta', text: '再想想' },
     })
     await vi.waitFor(() => {
-      expect(String(ch.streamCardElement!.mock.calls.at(-1)![2])).toBe('让我想想再想想')
+      expect(String(ch.streamCardElement!.mock.calls.at(-1)![2])).toBe(`${thinking}再想想`)
     }, { timeout: 3000 })
 
-    // Thinking settles: streaming is closed so the card can be rewritten whole.
+    // Thinking settles: the close waits out the last animation (so a fast model
+    // does not get its preview cut mid-print) and then rewrites the card.
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await vi.waitFor(() => { expect(ch.closeCardStreaming).toHaveBeenCalled() }, { timeout: 3000 })
+    await vi.waitFor(() => { expect(ch.closeCardStreaming).toHaveBeenCalled() }, { timeout: 4000 })
     h.streaming.stop()
   })
+
 
   it('never walks backwards when a late reasoning delta follows text', async () => {
     const ch = channel()
