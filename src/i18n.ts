@@ -987,7 +987,7 @@ export const zh = {
   // look collapsed, and no client draws anything for us that a reader notices.
   cardFoldTitle: title => `${title}（▸ 已折叠 · 点击展开）`,
 
-  stepReasoningHeader: '💬 **推理**',
+  stepReasoningHeader: '💬 **深度思考**',
   stepMessageHeader: '📝 **消息**',
   stepToolHeader: '🔧 **工具调用**',
   stepToolSuccess: '成功',
@@ -1186,7 +1186,7 @@ export const zh = {
   displayCardTitle: '📇 卡片显示',
   displayCardHint: '_点击按钮切换，立即持久化，与 Web UI 设置面板同源。_',
   displayCardLabel: (key: 'reasoning' | 'tools' | 'args' | 'results') =>
-    ({ reasoning: '思考过程', tools: '工具调用', args: '参数', results: '结果' })[key],
+    ({ reasoning: '深度思考', tools: '工具调用', args: '参数', results: '结果' })[key],
   displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
   displayCardHiddenByTools: '_「参数」「结果」随「工具调用」一起隐藏；重新开启工具调用后会回来。_',
   displayCardNote: '也支持 `/display <开关> on|off` 和 `/display tick 3|5|10|30`。',
@@ -1211,10 +1211,10 @@ export const zh = {
   displayLevelName: level => ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayLevelHint: level => ({
-    compact: '只报工具调用计数与状态，不显示推理内容（默认）',
-    standard: '每个工具一行摘要，推理只给首行；无参数、无结果',
-    detailed: '推理可展开，工具带参数与结果',
-    verbose: '推理给出全文，参数与结果不截断',
+    compact: '只报工具调用计数与状态，不显示深度思考内容（默认）',
+    standard: '每个工具一行摘要，深度思考只给首行；无参数、无结果',
+    detailed: '深度思考可展开，工具带参数与结果',
+    verbose: '深度思考给出全文，参数与结果不截断',
   })[level],
   displayLevelCustom: '当前四个开关的组合不等于任何一档',
   displayLevelSet: name => `✅ 已切换到「${name}」。`,
@@ -1596,7 +1596,7 @@ export const en: Translations = {
 
   cardFoldTitle: title => `${title} (▸ Collapsed · click to expand)`,
 
-  stepReasoningHeader: '💬 **Reasoning**',
+  stepReasoningHeader: '💬 **Deep thinking**',
   stepMessageHeader: '📝 **Message**',
   stepToolHeader: '🔧 **Tool Call**',
   stepToolSuccess: 'ok',
@@ -1801,7 +1801,7 @@ export const en: Translations = {
   displayCardTitle: '📇 Card display',
   displayCardHint: '_Click a button to toggle; saved immediately and shared with the Web UI settings panel._',
   displayCardLabel: (key: 'reasoning' | 'tools' | 'args' | 'results') =>
-    ({ reasoning: 'Reasoning', tools: 'Tool calls', args: 'Arguments', results: 'Results' })[key],
+    ({ reasoning: 'Deep thinking', tools: 'Tool calls', args: 'Arguments', results: 'Results' })[key],
   displayCardButton: (label: string, enabled: boolean) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,
   displayCardHiddenByTools: '_Arguments and results are hidden together with tool calls; they come back when tool calls are re-enabled._',
   displayCardNote: 'Also available as `/display <switch> on|off` and `/display tick 3|5|10|30`.',
@@ -1826,10 +1826,10 @@ export const en: Translations = {
   displayLevelName: level => ({ compact: 'Compact', standard: 'Standard', detailed: 'Detailed', verbose: 'Verbose' })[level],
   displayCardLevelButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayLevelHint: level => ({
-    compact: 'Tool-call counts and status only; no reasoning text (default)',
-    standard: 'One summary line per call, reasoning first line only; no arguments or results',
-    detailed: 'Reasoning expandable, tools with arguments and results',
-    verbose: 'Full reasoning, arguments and results untruncated',
+    compact: 'Tool-call counts and status only; no Deep thinking (default)',
+    standard: 'One summary line per call, Deep thinking first line only; no arguments or results',
+    detailed: 'Deep thinking expandable; tools with arguments and results',
+    verbose: 'Full Deep thinking; arguments and results untruncated',
   })[level],
   displayLevelCustom: 'The four switches below no longer add up to any single level',
   displayLevelSet: name => `✅ Detail level set to "${name}".`,

@@ -3378,8 +3378,9 @@ export function renderStepCard(
   //
   // Folding is what makes `full` affordable: the panel is collapsed by default,
   // so a long chain no longer eats the card, and the CAP that used to exist only
-  // to protect the layout is no longer needed for `full`. Use 4 backticks inside
-  // the panel to avoid colliding with a code fence in the reasoning itself.
+  // to protect the layout is no longer needed for `full`. The body renders as
+  // plain markdown (not a fenced block, see the `foldedPanel` call below), so a
+  // fence inside the reasoning affects that one element and nothing else.
   if (reasoning !== undefined && reasoning !== '' && display.reasoning !== 'off') {
     const meta: string[] = []
     if (reasoningMs !== undefined && reasoningMs > 0) meta.push(formatMsShort(reasoningMs))
@@ -3409,8 +3410,16 @@ export function renderStepCard(
       // is the summary, the chain is one tap away. `foldedPanel` gives every
       // fold the same visible chrome and the "已折叠 · 点击展开" hint — without
       // it a reader has no way to tell there is anything behind the header.
+      //
+      // The body is PLAIN markdown, not a fenced block (changed 2026-11-20 at
+      // the operator's request): a code block never soft-wraps, so on a phone a
+      // long chain ran off the right edge and had to be scrolled sideways. The
+      // card write path still neutralizes image/link syntax inside it (关键坑
+      // 39) and repairs a glued fence closer (关键坑 68), so model text cannot
+      // break the card; the trade-off is that reasoning now inherits markdown
+      // typography (a `#` line becomes a heading) instead of staying literal.
       elements.push(foldedPanel(t, header, [
-        { tag: 'markdown', content: `\`\`\`\`\`\n${body}\n\`\`\`\`\`` },
+        { tag: 'markdown', content: body },
       ]))
     }
   }

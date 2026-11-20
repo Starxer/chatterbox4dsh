@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 调整：步骤卡的「推理」块改名「深度思考」，折叠面板正文改为直接 markdown（`src/feishu-streaming.ts` / `src/i18n.ts` / `src/commands-i18n.ts` / `src/client/index.ts`，2026-11-20）
+
+- **改名**：standard / detailed / verbose 三档步骤卡上的思考内容块，头部从 `💬 推理` 改成 `💬 深度思考`（英文 `Deep thinking`）。同一套说法同步到 `/display` 卡的四档说明、「思考过程」开关与 Web GUI 插件设置页的显示项（「推理预览长度」→「深度思考预览长度」）。`/reasoning` 命令里的「推理等级」**不动**——那说的是模型的 reasoning effort，不是这个块。
+- **不再用代码块**：折叠面板正文以前是一个 5 反引号围栏块；代码块不软换行，手机上长链只能横向滚（2026-11-20 使用者反馈）。现在正文是**普通 markdown 元素**，按客户端宽度自动换行。卡片书写路径原有的保护照旧生效（图片/链接语法中和，关键坑 39；粘连围栏修复，关键坑 68），折叠面板仍是收起态、「已折叠 · 点击展开」的提示不变。代价是思考内容接受 markdown 排版（`#` 行变标题、列表变列表、模型自己写的围栏照常渲染成代码块）——这是有意取舍，换来的是行宽不溢出。
+- **测试**：`tests/feishu-streaming.spec.ts` 断言折叠面板正文与模型原文逐字一致、不带围栏（模型自己写了围栏也不额外包一层）；`tests/feishu-display.spec.ts` 的开关名断言同步。
+
+**English**: On the standard / detailed / verbose step cards the thinking block is now called `💬 **深度思考**` (`Deep thinking`) instead of 推理, the same wording replacing 推理 in the `/display` card's four level hints, its thinking switch and the Web GUI plugin settings labels; the `/reasoning` command keeps saying 推理等级 because that is the model's reasoning *effort*, not this block. The folded panel's body is no longer a five-backtick fence — a code block never soft-wraps, so a long chain had to be scrolled sideways on a phone (reported 2026-11-20) — but a plain markdown element that wraps to the client width, still behind the same collapsed header; the card write path's existing guards (image/link neutralization, key pitfall 39, and glued-fence repair, key pitfall 68) still apply. The trade-off is that the chain now inherits markdown typography (`#` lines become headings, lists become lists, a fence the model wrote renders as a code block), accepted for a body that never overflows.
+
 ### 新增：失败回合一键「继续生成」、内容审查拒绝的本地化说明、`/subagents` 用上 rc.5 的具名多层信息（`src/turn-failure.ts` / `src/channel.ts` / `src/harness.ts` / `src/feishu-subagents.ts`，2026-11-19）
 
 - **一键继续（对齐 DSH 0.2.2 Web UI 的「继续生成」）**：宿主把「这个失败回合还能不能续」发布为 `conversationContinuation` 投影（可续错误码固定为 `RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT / EMPTY_RESPONSE / STREAM_CLOSED`，且期间不能有新输入）。插件的失败卡现在会在**可续**时多一个 `🔁 继续生成` 按钮：点击后走宿主的空 prompt 通道（`sessionController.prompt` + `content: []`），与 Web UI 的按钮同一条路径；点击时**重新校验**（回合已结算 / 有新输入 → 回一句「已不可继续」，不会悄悄排队一条消息）。按钮值只带 action kind + session id，不落盘、不跨卡复用（卡只发一次，天然避开就地更新 2–3 次后回调失效的坑）。

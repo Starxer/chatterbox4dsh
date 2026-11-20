@@ -2293,12 +2293,27 @@ describe('display levels on the step card (O22/O5)', () => {
     // card-fold.ts — a bare header looks like a heading).
     expect(panel.header.title.content).toBe(t.cardFoldTitle(t.stepReasoningHeader))
     expect(panel.header.title.content).toContain('已折叠')
+    // The block is called 深度思考, not 推理 (2026-11-20, operator's request).
+    expect(t.stepReasoningHeader).toContain('深度思考')
     expect(panel.header.background_color).toBe('grey-100')
     expect(panel.border).toEqual({ color: 'grey-300', corner_radius: '4px' })
-    // The body is a fenced block inside the panel, not a top-level markdown.
-    expect(panel.elements[0].content).toContain('step one\nstep two')
+    // The body is plain markdown inside the panel, not a top-level markdown and
+    // NOT fenced: a code block never soft-wraps, so the chain would run off the
+    // right edge of a phone (2026-11-20). The text arrives exactly as the model
+    // wrote it.
+    expect(panel.elements[0]).toEqual({ tag: 'markdown', content: 'step one\nstep two' })
+    expect(panel.elements[0].content).not.toContain('```')
     expect((card.body.elements as any[]).some(el => el.tag === 'markdown'
       && String(el.content).includes('step one'))).toBe(false)
+  })
+
+  it('keeps a fence the model wrote inside the reasoning as part of the prose', () => {
+    const reasoning = 'here is the plan\n```js\nconst a = 1\n```\ndone'
+    const card = renderStepCard(t, reasoning, undefined, []) as any
+    const panel = panelOf(card)
+    // One element, unchanged: no outer fence of ours is added around the chain.
+    expect(panel.elements).toHaveLength(1)
+    expect(panel.elements[0].content).toBe(reasoning)
   })
 
   it('gives the verbose level the whole chain, still folded', () => {
@@ -2307,7 +2322,8 @@ describe('display levels on the step card (O22/O5)', () => {
       { display: { reasoning: 'full', tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
     const panel = panelOf(card)
     expect(panel.expanded).toBe(false)
-    expect(panel.elements[0].content).toContain(long)
+    // The whole chain, verbatim and unfenced.
+    expect(panel.elements[0].content).toBe(long)
     expect(panel.elements[0].content).not.toContain('truncated')
   })
 

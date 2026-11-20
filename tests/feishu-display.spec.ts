@@ -126,7 +126,7 @@ describe('renderDisplayCard', () => {
   it('marks a disabled switch and carries the TARGET value, not a toggle marker', () => {
     const card = renderDisplayCard(cardFor({ ...ALL_ON, reasoning: false, args: false }), t) as any
     const reasoning = buttonFor(card, 'reasoning')
-    expect(reasoning.text.content).toBe('⬜ 思考过程：关')
+    expect(reasoning.text.content).toBe('⬜ 深度思考：关')
     expect(reasoning.type).toBe('default')
     // Clicking an off switch turns it on.
     expect(payloadOf(card, 'reasoning')).toEqual({ p: 'display', key: 'reasoning', value: true })
