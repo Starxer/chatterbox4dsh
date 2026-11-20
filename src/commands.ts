@@ -6,6 +6,7 @@ import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
 import { type CompactToolRowStyle, type TranscriptView } from './display-level.ts'
+import type { ApiUsageSnapshot } from './api-usage.ts'
 import { zh } from './i18n.ts'
 import { isElapsedRefreshSeconds, parseElapsedRefreshSeconds, type ElapsedRefreshSeconds } from './config.ts'
 
@@ -154,7 +155,7 @@ export interface CommandTranslations {
   readonly approvalsAgeMinutes: (n: number) => string
   readonly approvalsAgeHours: (n: number) => string
   readonly statusDescription: string
-  readonly statusOutput: (meta: { sessionId: string; workspace: string; agentPreset: string; model: string; title: string; turns: number; steps: number; toolCalls: number; inputTokens: number; outputTokens: number; contextWindow: number; lastInputTokens: number; cacheHitRate: number; ttftAvgMs: number; tokensPerSecond: number; llmDurationMs: number; toolDurationMs: number }) => string
+  readonly statusOutput: (meta: { sessionId: string; workspace: string; agentPreset: string; model: string; title: string; turns: number; steps: number; toolCalls: number; inputTokens: number; outputTokens: number; contextWindow: number; lastInputTokens: number; cacheHitRate: number; ttftAvgMs: number; tokensPerSecond: number; llmDurationMs: number; toolDurationMs: number }, apiUsage?: ApiUsageSnapshot & { quota?: number }) => string
   readonly stopDescription: string
   readonly reasoningDescription: string
   readonly reasoningUsage: string
@@ -281,6 +282,7 @@ export function registerLarkCommands(
   showReasoning: { get: () => boolean; toggle: () => void },
   display: DisplayControl,
   sessionController: SessionControllerLike,
+  apiUsage?: () => (ApiUsageSnapshot & { quota?: number }) | undefined,
 ): void {
   ctx.effect(function* () {
     yield ctx.commands.register({
@@ -348,7 +350,7 @@ export function registerLarkCommands(
     yield ctx.commands.register({
       name: 'status',
       description: t.statusDescription,
-      handler: invocation => handleStatusCommand(invocation, bridge, chatMessageFor, t),
+      handler: invocation => handleStatusCommand(invocation, bridge, chatMessageFor, t, apiUsage),
     })
     yield ctx.commands.register({
       name: 'reasoning',
@@ -1033,7 +1035,8 @@ async function handleStatusCommand(
   bridge: Pick<HarnessConversationService, 'getSessionMeta'>,
   chatMessageFor: (invocation: CommandInvocation) => ConversationMessage,
   t: CommandTranslations,
+  apiUsage?: () => (ApiUsageSnapshot & { quota?: number }) | undefined,
 ): Promise<CommandResult> {
   const meta = await bridge.getSessionMeta(chatMessageFor(invocation))
-  return { kind: 'success', text: t.statusOutput(meta) }
+  return { kind: 'success', text: t.statusOutput(meta, apiUsage?.()) }
 }

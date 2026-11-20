@@ -50,6 +50,39 @@ export interface OutboundWaitObserver {
 let waitObserver: OutboundWaitObserver | undefined
 
 /**
+ * Told when one outbound call STARTS.
+ *
+ * Every real Feishu request goes through {@link withLinkTimeout}, so this is the
+ * one place the plugin can count its own API usage (the open platform bills a
+ * monthly quota per app; see `src/api-usage.ts`). Counting is best-effort and
+ * synchronous: an observer that throws must not delay or fail the request.
+ */
+export interface OutboundCallObserver {
+  /** @param what - the label the call site gave the request. */
+  started(what: string): void
+}
+
+/** One plugin instance per process owns this; the last install wins. */
+let callObserver: OutboundCallObserver | undefined
+
+/**
+ * Install (or clear) the outbound-call observer.
+ * @param next - the observer, or undefined to detach it.
+ */
+export function observeOutboundCalls(next: OutboundCallObserver | undefined): void {
+  callObserver = next
+}
+
+/** Report one starting outbound call; never throws. */
+export function noteOutboundCall(what: string): void {
+  try {
+    callObserver?.started(what)
+  } catch {
+    // Swallowed on purpose: counting must never break a request.
+  }
+}
+
+/**
  * Install (or clear) the abandoned-wait observer.
  * @param next - the observer, or undefined to detach it.
  */
@@ -76,6 +109,7 @@ export const withTimeout = <T>(
   ms: number = OUTBOUND_TIMEOUT_MS,
   link = false,
 ): Promise<T> => {
+  if (link) noteOutboundCall(what)
   let timer: ReturnType<typeof setTimeout> | undefined
   const expiry = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {

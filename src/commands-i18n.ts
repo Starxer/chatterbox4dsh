@@ -1,4 +1,5 @@
 import type { CommandTranslations, DisplayToggleKey } from './commands.ts'
+import type { ApiUsageSnapshot } from './api-usage.ts'
 
 /** Format a token count as a compact human-readable number (e.g. 12.3K). */
 function formatTokenCount(n: number): string {
@@ -14,6 +15,26 @@ function formatDuration(ms: number): string {
   const m = Math.floor(ms / 60_000)
   const s = Math.round((ms % 60_000) / 1000)
   return `${m}m${s}s`
+}
+
+/**
+ * One `/status` line about the plugin's own Feishu API usage.
+ *
+ * The plugin counts every outbound call it makes (see `src/api-usage.ts`); the
+ * open platform bills a monthly quota, so showing this line is what turns "the
+ * quota is gone" into "which calls spend it". The quota comes from the
+ * operator's console reading and is only used for the percentage — nothing here
+ * enforces a budget.
+ */
+function formatApiUsageLine(usage: ApiUsageSnapshot & { quota?: number }, zh: boolean): string {
+  const quota = usage.quota !== undefined && usage.quota > 0 ? usage.quota : 0
+  const percent = quota > 0 ? ` (${Math.min(100, Math.round(usage.month / quota * 100))}%)` : ''
+  const busy = usage.labels.length === 0
+    ? ''
+    : ` · ${usage.labels.map(item => `${item.label} ${item.count}`).join(' · ')}`
+  return zh
+    ? `• 飞书 API：本月 ${formatTokenCount(usage.month)}${quota > 0 ? ` / ${formatTokenCount(quota)}${percent}` : ''} 次 · 今天 ${formatTokenCount(usage.today)} 次${busy}`
+    : `• Feishu API: ${formatTokenCount(usage.month)}${quota > 0 ? ` / ${formatTokenCount(quota)}${percent}` : ''} this month · ${formatTokenCount(usage.today)} today${busy}`
 }
 
 /** Simplified-Chinese implementation of `CommandTranslations`. */
@@ -81,7 +102,7 @@ export const zhCommandTranslations: CommandTranslations = {
   approvalsAgeMinutes: n => `${n} 分钟前`,
   approvalsAgeHours: n => `${n} 小时前`,
   statusDescription: '显示当前会话状态（工作区、Agent 预设、模型、统计）',
-  statusOutput: (meta) => {
+  statusOutput: (meta, apiUsage) => {
     const lines = [
       '**会话状态**',
       `• 会话：\`${meta.sessionId}\``,
@@ -119,6 +140,7 @@ export const zhCommandTranslations: CommandTranslations = {
       const pct = Math.min(100, Math.round(meta.lastInputTokens / meta.contextWindow * 100))
       lines.push(`• 上下文：${formatTokenCount(meta.lastInputTokens)} / ${formatTokenCount(meta.contextWindow)} (${pct}%)`)
     }
+    if (apiUsage !== undefined) lines.push(formatApiUsageLine(apiUsage, true))
     return lines.join('\n')
   },
   stopDescription: '停止本聊天当前运行中的智能体（同 Web UI 的停止按钮）',
@@ -221,7 +243,7 @@ export const enCommandTranslations: CommandTranslations = {
   approvalsAgeMinutes: n => `${n}m ago`,
   approvalsAgeHours: n => `${n}h ago`,
   statusDescription: 'Show current session status (workspace, preset, model, stats)',
-  statusOutput: (meta) => {
+  statusOutput: (meta, apiUsage) => {
     const lines = [
       '**Session Status**',
       `• Session: \`${meta.sessionId}\``,
@@ -259,6 +281,7 @@ export const enCommandTranslations: CommandTranslations = {
       const pct = Math.min(100, Math.round(meta.lastInputTokens / meta.contextWindow * 100))
       lines.push(`• Context: ${formatTokenCount(meta.lastInputTokens)} / ${formatTokenCount(meta.contextWindow)} (${pct}%)`)
     }
+    if (apiUsage !== undefined) lines.push(formatApiUsageLine(apiUsage, false))
     return lines.join('\n')
   },
   stopDescription: 'Stop the currently running agent in this chat (like the Web UI stop button)',

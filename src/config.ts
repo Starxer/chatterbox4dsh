@@ -72,6 +72,12 @@ export interface Config {
   compactToolRow?: CompactToolRowStyle
   /** Seconds between elapsed-time refreshes on running cards (3/5/10/30). */
   elapsedRefreshSeconds?: number
+  /**
+   * Monthly Feishu API-call quota the operator read off the console, used only
+   * to show a percentage in `/status`. Unset/0 means "unknown": the plugin
+   * counts its own calls but never enforces a budget.
+   */
+  apiQuotaPerMonth?: number
   /** Characters of the detailed level's reasoning head (see {@link PREVIEW_CHARS}). */
   reasoningPreviewChars?: number
   /** Characters of one tool result preview (verbose shows up to 4×, hard max 6000). */
@@ -295,6 +301,11 @@ export interface SettingsConfig extends Required<Pick<Config,
   compactToolRow?: CompactToolRowStyle
   /** Optional for partial callers; resolveSettingsConfig always fills the interval. */
   elapsedRefreshSeconds?: number
+  /**
+   * Monthly API-call quota read off the open-platform console; only used for the
+   * percentage in `/status`. Unset/0 means the operator has not told us.
+   */
+  apiQuotaPerMonth?: number
   /** Preview caps; optional in the type, always filled by resolveSettingsConfig. */
   reasoningPreviewChars?: number
   resultPreviewChars?: number
@@ -371,6 +382,7 @@ export const ConfigSchema = z.object({
   transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact (default, shorter chat cards) counts tool calls only, standard adds one summary line per call, detailed adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
   compactToolRow: z.union([...COMPACT_TOOL_ROW_STYLES]).default(DEFAULT_COMPACT_TOOL_ROW).volatile().description('What one tool row of the compact turn card carries: "tool-description" (default) puts the model-written description first and then the tool row, "tool" shows the tool name plus the file/programs it touched, "description" shows the description alone and never falls back when a call has none. Compact only; the other levels keep their own summary line.'),
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
+  apiQuotaPerMonth: z.number().min(0).max(10_000_000).default(0).volatile().description('Monthly API-call quota for this app, as shown in the open-platform console (default: unset = unknown). Only used to print "this month N / quota (P%)" in /status; the plugin counts every outbound call itself and never blocks on the number.'),
   reasoningPreviewChars: z.number().min(PREVIEW_CHARS.reasoningHead.min).max(PREVIEW_CHARS.reasoningHead.max).default(PREVIEW_CHARS.reasoningHead.default).volatile().description('Characters of the reasoning head shown (collapsed) at the detailed level. The verbose level shows the whole chain. Range 80-4000, default 200; keep it modest because every preview byte counts toward the card\'s ~30 KB budget.'),
   resultPreviewChars: z.number().min(PREVIEW_CHARS.result.min).max(PREVIEW_CHARS.result.max).default(PREVIEW_CHARS.result.default).volatile().description('Characters of one tool result preview on a step card. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 1500.'),
   argsPreviewChars: z.number().min(PREVIEW_CHARS.args.min).max(PREVIEW_CHARS.args.max).default(PREVIEW_CHARS.args.default).volatile().description('Characters of one tool call\'s arguments block. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 2000.'),
@@ -396,6 +408,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
   const model = readField(config.model)
   const workspace = readField(config.workspace)
   const agentPreset = readField(config.agentPreset)
+  const quota = readField(config.apiQuotaPerMonth)
   const locale = readField(config.locale)
   return {
     appId: readField(config.appId) ?? '',
@@ -414,6 +427,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     transcriptView: parseTranscriptView(readField(config.transcriptView)),
     compactToolRow: parseCompactToolRow(readField(config.compactToolRow)),
     elapsedRefreshSeconds: parseElapsedRefreshSeconds(readField(config.elapsedRefreshSeconds)),
+    ...(quota === undefined || quota <= 0 ? {} : { apiQuotaPerMonth: Math.min(10_000_000, Math.floor(quota)) }),
     reasoningPreviewChars: clampPreviewChars('reasoningHead', readField(config.reasoningPreviewChars)),
     resultPreviewChars: clampPreviewChars('result', readField(config.resultPreviewChars)),
     argsPreviewChars: clampPreviewChars('args', readField(config.argsPreviewChars)),

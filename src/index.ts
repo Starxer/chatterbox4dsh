@@ -24,7 +24,7 @@ import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './ch
 import { TURN_CONTINUE_ACTION } from './turn-failure.ts'
 import { LarkRuntime } from './runtime.ts'
 import { OutboundHealth, wrapHttpInstance } from './outbound-health.ts'
-import { observeOutboundWaits } from './outbound-timeout.ts'
+import { observeOutboundCalls, observeOutboundWaits } from './outbound-timeout.ts'
 import { renderTerminalQr } from './provision.ts'
 import { ProvisionManager } from './provision-manager.ts'
 import { registerLarkCommands, formatRelativeTime, handleDisplayCommand, handleHelpCommand, handleModelCommand, handleReasoningCommand, handleApprovalCommand, handleListApprovalsCommand, renderFeishuCommandsOnly, type ApprovalControl, type CommandTranslations, type DisplayControl } from './commands.ts'
@@ -45,6 +45,7 @@ import { noteDeliveredFile, wasDeliveredFile } from './deliver-files.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
 import { dshHomeFile } from './dsh-home.ts'
+import { createApiUsage } from './api-usage.ts'
 import { resolveLocale, translationsFor, type LocaleId, type Translations } from './i18n.ts'
 import { dispatchCardAction } from './card-dispatch.ts'
 import { createCardSendBarrier } from './card-send-barrier.ts'
@@ -169,6 +170,21 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   const currentSettings = (): SettingsConfig => resolveSettingsConfig(rawConfig)
   const currentRevision = () => settings.describe({ redactSecrets: true }).find(item => item.ns === namespace)?.revision ?? 0
   let apiUpdateDepth = 0
+
+  // The open platform bills a monthly quota of API calls per app, and this
+  // plugin makes most of them (card create, per-step updates, uploads). Count
+  // our own calls through the one chokepoint every real request passes
+  // (`withLinkTimeout`) so `/status` can show the trend; nothing here enforces
+  // a budget (see `src/api-usage.ts`).
+  const apiUsage = createApiUsage({
+    file: dshHomeFile(ctx, 'feishu-api-usage.json'),
+    log: message => ctx.logger('dsh-feishu').warn(message),
+  })
+  observeOutboundCalls({ started: label => apiUsage.record(label) })
+  {
+    const usage = apiUsage.snapshot()
+    console.log(`dsh-feishu: feishu API calls this month: ${usage.month} (today ${usage.today})`)
+  }
 
   /**
    * The DSH browser-language preference (`locale` namespace, owned by the
@@ -1496,6 +1512,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     showReasoningControl,
     displayControl,
     sessionController,
+    () => ({ ...apiUsage.snapshot(), quota: currentSettings().apiQuotaPerMonth ?? 0 }),
   )
   ctx.effect(() => () => {
     stopQuestions()
@@ -1522,6 +1539,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     deliverHandle?.dispose()
     stopNewSessionConfirmer?.()
     stopTurnContinue?.()
+    observeOutboundCalls(undefined)
+    apiUsage.dispose()
   }, 'dsh-feishu: feishu questions + approvals + todos + jobs + streaming + external turns + surface prompt + send-file + model-select + permission + busy + display + session + new-session-confirm listeners')
 
   let lastPrintedQrUrl: string | undefined

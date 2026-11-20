@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 新增：飞书 API 调用计数（`/status` 可见，按天/按月累计）（`src/api-usage.ts` / `src/outbound-timeout.ts` / `src/commands.ts` / `src/config.ts`，2026-11-20）
+
+- **背景**：开放平台对**每个应用**的 API 调用量有月度额度，卡片发送、卡片更新、附件上传、文档读写全都计入；操作者在后台看到本月已用 **6 万次**，而插件此前没有任何自计数——一个"每秒推一次流式预览"的新功能可能在几天内吃掉整月额度。
+- **做法**：在 `withLinkTimeout` 挂一个**出站调用观察者**（这是所有真实飞书请求的唯一汇聚点，43 个调用点全部经过），每次请求开始计一次，**不需要在每个调用点埋点**。计数按本地日/本地月分桶，并按调用标签分类（`send message` / `cardkit.card.create` / `cardkit.card.update` / `upload card image` …）。落盘 `$DSH_HOME/feishu-api-usage.json`：原子写（tmp+rename）、2 秒防抖、dispose 时同步落盘（防抖定时器在停机时不会触发）、坏文件改名隔离后从零计、最多保留 40 天。
+- **展示**：`/status` 增加一行：`📈 飞书 API：本月 N 次（/ 配额 P%）· 今天 M 次 · send message 123 · …`。配额来自新设置项 `apiQuotaPerMonth`（默认 `0` = 未知，只用于显示百分比；**不做强制、不拦请求**）。
+- **口径说明**：这是**插件自己**的计数，控制台统计的是该应用的全部调用（含本版本之前的），两者不会完全相等；它的用途是看趋势与"哪类调用在花钱"。
+- 测试：12 例——日翻转保留月、月翻转重置标签、持久化往返、dispose 不丢计数、坏文件隔离、40 天裁剪、快照只取前三类；观察者对每个 `withLinkTimeout` 恰好报一次、不把"等自家管线"算进去、抛错不影响请求完成。全量 82 文件 / 1579 用例、typecheck、build、privacy 全绿。
+
+**English**: The open platform bills a **monthly API-call quota per app** (the operator saw 60k calls used this month), and every card send, card update, upload and document read spends from it — but the plugin had no counter of its own, so a feature that multiplies calls could exhaust a month's quota unnoticed. Every real Feishu request passes through one chokepoint (`withLinkTimeout`, 43 call sites), so the plugin now hangs an **outbound-call observer** there: one increment per request, bucketed by local day and month and labelled by call site (`send message`, `cardkit.card.update`, `upload card image`, …). Counts persist to `$DSH_HOME/feishu-api-usage.json` with an atomic tmp+rename write, a 2-second debounce, a synchronous flush on dispose (a debounce timer would never fire during shutdown), quarantine-and-restart for a corrupt file, and 40 days of history. `/status` gains one line (`this month N (/ quota P%) · today M · busiest labels`); the quota comes from the new `apiQuotaPerMonth` setting (default `0` = unknown) and is display-only — nothing is enforced or blocked. The number is the plugin's own view: the console counts every call the app ever made, so the two differ, but the trend and the per-kind breakdown are what make the spending visible. Covered by 12 tests (day/month rollover, persistence round-trip, dispose without losing counts, corrupt-file isolation, 40-day pruning, observer fires exactly once per link call and does not treat waits on our own pipeline as calls). 82 files / 1579 tests, typecheck, build and privacy gate green.
+
 ### 调整：折叠面板标题去掉「已折叠」，只留「点击展开」（`src/i18n.ts`，2026-11-20）
 
 - **改动**：所有 `collapsible_panel` 的 header 标题结尾从 `（▸ 已折叠 · 点击展开）` 改成 `（▸ 点击展开）`（英文 `(▸ Click to expand)`）。共用一个 `cardFoldTitle()`，所以思考内容、压缩摘要、回合过程卡的「更早的 N 步」三处折叠一起生效。
