@@ -1767,6 +1767,20 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       // instance DID open it is the one that answers.
       if (!state.turnSeen && TURN_SCOPED_EVENTS.has(event.type)) return
 
+      // `compact` opens its turn card at `turn/start`, but the level is read
+      // LIVE: switching to `compact` in the middle of a turn leaves this turn
+      // without one, and every later progress event would be written to a card
+      // that does not exist — the rest of the turn went silent and only the
+      // final answer arrived (2026-11-20, operator's report). Open it lazily on
+      // the next event instead, so the remainder of the turn still shows its
+      // progress. `turn/end` is excluded: opening a card just to finish it
+      // would post an empty extra message.
+      if (event.type !== 'turn/end'
+        && displayPolicy().turnCard
+        && !progressCards.isOpen(sessionId)) {
+        progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
+      }
+
       if (event.type === 'assistant/chunk') {
         // Accumulate reasoning-delta and text-delta chunks.
         const chunk = event.data?.chunk

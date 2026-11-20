@@ -2856,6 +2856,32 @@ describe('turn progress card wiring', () => {
       .map(call => call[1] as any)
       .filter(card => isTurnCardTitle(String(card.header?.title?.content ?? '')))
 
+  it('opens the compact turn card when the level switches mid-turn', async () => {
+    // Regression (2026-11-20): `compact` opened its turn card at `turn/start`
+    // only. Tapping `/display compact` during a step-level turn therefore left
+    // the rest of the turn without a progress card — later events wrote to a
+    // card that did not exist and the user saw nothing but the final answer.
+    const ch = channel()
+    let level: TranscriptView = 'detailed'
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => level })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(250)
+    expect(titles(ch).some(isTurnCardTitle)).toBe(false)
+
+    // The operator switches to compact mid-turn: the next event must open the
+    // turn card lazily and keep the turn's progress visible.
+    level = 'compact'
+    emit('tool/call', { callId: 'c2', name: 'bash', arguments: '{"command":"pwd"}' })
+    await vi.waitFor(() => { expect(titles(ch).some(isTurnCardTitle)).toBe(true) })
+    // The lazily opened card already carries this turn's tool row.
+    const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
+      .find(card => isTurnCardTitle(String(card.header.title.content)))
+    expect(mdOf(opened)).toContain('`bash`')
+    streaming.stop()
+  })
+
   it('mirrors the whole turn onto one card at the compact level', async () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
