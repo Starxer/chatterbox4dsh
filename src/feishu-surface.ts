@@ -36,29 +36,6 @@ export const FEISHU_SURFACE_SECTION = 'channel:feishu-surface'
  * within which limits); this states WHERE the user is and what the other
  * delivery path reaches them with on this surface.
  */
-/**
- * Ask the model to keep the user-visible language consistent with the channel.
- *
- * Two facts a Feishu reader actually notices, and nothing else on the surface
- * controls them:
- *
- * - the card's tool row shows the model's own `description` argument, so an
- *   English description on a Chinese chat reads as a different voice;
- * - the thinking block shows the reasoning verbatim, so its language is the
- *   language of the block the reader expands.
- *
- * Kept separate from {@link FEISHU_SURFACE_NOTICE} so the fact-only sentence
- * stays reusable, and chosen per plugin locale: a deployment set to English
- * gets the English instruction, a Chinese one the Chinese one.
- */
-export const FEISHU_LANGUAGE_INSTRUCTION: Record<'zh' | 'en', string> = {
-  zh: '请用中文进行深度思考（reasoning 也用中文），并在工具调用的 `description` 等摘要字段里写中文'
-    + '（例如 bash 的 description、run_code 的 description），这样飞书卡片上的工具摘要与对话语言一致。',
-  en: 'Think (including your reasoning) in English, and write tool `description`/summary fields in English '
-    + '(e.g. the `bash` description, the `run_code` description), so the tool summaries on Feishu cards '
-    + 'match the conversation language.',
-}
-
 export const FEISHU_SURFACE_NOTICE = 'You are talking to the user in a Feishu chat, not the DSH GUI (the Web UI or the desktop app): '
   + 'replies arrive there as Feishu cards and the user cannot open local paths. '
   + 'DSH\'s `present` tool surfaces on the Feishu delivery card at the end of every turn '
@@ -72,10 +49,8 @@ export const FEISHU_SURFACE_NOTICE = 'You are talking to the user in a Feishu ch
  * @param enabled - the `surfaceContext` setting.
  * @returns the notice, or `''` to contribute nothing.
  */
-export function feishuSurfaceText(isBound: boolean, enabled: boolean, language: 'zh' | 'en' = 'en'): string {
-  return enabled && isBound
-    ? `${FEISHU_SURFACE_NOTICE}\n\n${FEISHU_LANGUAGE_INSTRUCTION[language]}`
-    : ''
+export function feishuSurfaceText(isBound: boolean, enabled: boolean): string {
+  return enabled && isBound ? FEISHU_SURFACE_NOTICE : ''
 }
 
 /** What this module needs from the host. */
@@ -84,8 +59,6 @@ export interface FeishuSurfaceDeps {
   isBound: (sessionId: string) => boolean
   /** The `surfaceContext` setting, read live. */
   enabled: () => boolean
-  /** Resolved plugin locale; decides which language instruction is appended. */
-  language?: () => 'zh' | 'en'
 }
 
 /**
@@ -130,7 +103,7 @@ export function installFeishuSurfacePrompt(ctx: Context, deps: FeishuSurfaceDeps
       text: (assembly) => {
         const agentId = (assembly as { agent?: { id?: unknown } } | undefined)?.agent?.id
         if (typeof agentId !== 'string') return ''
-        return feishuSurfaceText(deps.isBound(agentId), deps.enabled(), deps.language?.() ?? 'en')
+        return feishuSurfaceText(deps.isBound(agentId), deps.enabled())
       },
     })
   })

@@ -2,15 +2,6 @@
 
 ## Unreleased
 
-### 新增：飞书会话的提示词要求用中文思考、用中文写工具摘要（`src/feishu-surface.ts` / `src/index.ts`，2026-11-20）
-
-- 卡片上的**工具行摘要是模型自己写的 `description`**（`bash`、`run_code` 等字段），折叠块里则是**原样的思考内容**——两处语言都由模型决定，服务端没有开关。
-- 现在飞书 surface 的 system prompt 段在原有「你在飞书聊天里」事实之后追加一句**语言指令**：深度思考用中文、工具调用的 `description` 等摘要字段用中文（英文部署则对应英文）。指令随插件 `locale` 走（`zh` → 中文指令，`en` → 英文指令），每会话稳定、不随回合变化，不会破坏缓存前缀。
-- 这是提示词层面的约束（模型可能仍偶尔混用），但比卡片端硬翻译更准确：工具摘要本身就是模型写的，指令让它直接写中文，卡片不需要二次翻译。
-- 测试：surface prompt 用例覆盖中文/英文两种指令与默认值；全量 82 文件 / 1,595 用例、typecheck、build、privacy 全绿。
-
-**English**: The tool-row summary on a card is the model's own `description` argument (`bash`, `run_code`, …), and the folded block is the raw reasoning text — both languages are the model's choice and the server has no switch for them. The Feishu surface prompt section now appends a language instruction after its existing "you are in a Feishu chat" facts: think (reasoning) in Chinese and write tool `description`/summary fields in Chinese (English instruction for an English deployment). It follows the plugin `locale`, is stable per session (so the cached prompt prefix survives) and is a prompt-level constraint rather than a card-side translation, which is more accurate because the summary is written by the model in the first place. Covered by Chinese/English instruction cases in the surface-prompt tests; 82 files / 1,595 tests, typecheck, build and privacy gate green.
-
 ### 移除：流式推送（思考预览整块拿掉，改为整卡呈现）（`src/feishu-streaming.ts` / `src/index.ts` / `src/display-level.ts` / `src/config.ts` / `src/feishu-display.ts` / `src/commands.ts` / `src/i18n.ts` / `src/client/*`，2026-11-20）
 
 - **结论**：飞书卡片这条链路对读者是伪流式（整段替换 + 客户端打字动画），且卡片一更新客户端就把会话滚到底部、读者只能看到末尾；10ms/字 与直出的观感差别很小，20ms 才有逐字感但 945 字要 19 秒。**不值得**，全部改回整卡。
