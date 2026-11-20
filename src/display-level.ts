@@ -124,6 +124,8 @@ interface LevelSpec {
   reasoning: ReasoningDetail
   /** Fold the whole chain into a panel (default) or show it flat on the card. */
   reasoningFold: boolean
+  /** Preset value of the live preview switch (see {@link DisplayPolicy.reasoningPreview}). */
+  reasoningPreview: boolean
   tools: ToolDetail
   toolArgs: boolean
   toolResults: boolean
@@ -142,13 +144,13 @@ const LEVELS: Record<TranscriptView, LevelSpec> = {
   // tool activity lives on the one turn card (`feishu-progress.ts`), so a step
   // card renders no tool section and a step that only ran tools posts no card
   // at all. `tools: 'off'` is what makes both of those true.
-  compact: { reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true },
+  compact: { reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true },
   // 标准: every call is named, but no payloads; the whole chain is folded.
-  standard: { reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false },
+  standard: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false },
   // 详细: the pre-level default — args + results, the whole chain folded.
-  detailed: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false },
+  detailed: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false },
   // 完全展开: everything the card can carry, tool payloads untruncated.
-  verbose: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false },
+  verbose: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false },
 }
 
 /** The resolved axes the renderers read. */
@@ -156,6 +158,11 @@ export interface DisplayPolicy {
   reasoning: ReasoningDetail
   /** Render the whole chain inside a collapsed panel instead of flat on the card. */
   reasoningFold: boolean
+  /**
+   * Show a live tail of the chain while the model is still thinking. Off only
+   * removes the transient preview; the settled block is unaffected.
+   */
+  reasoningPreview: boolean
   tools: ToolDetail
   /** Whether tool ARGUMENT blocks are rendered at all. */
   toolArgs: boolean
@@ -217,6 +224,8 @@ export function resolveDisplayPolicy(input: {
   showToolResults?: boolean | undefined
   /** Explicit fold choice; undefined keeps the level's preset. */
   reasoningFold?: boolean | undefined
+  /** Explicit live-preview choice; undefined keeps the level's preset. */
+  reasoningPreview?: boolean | undefined
 }): DisplayPolicy {
   const level = LEVELS[parseTranscriptView(input.transcriptView)]
   const reasoning = input.showReasoning === false ? 'off' : level.reasoning
@@ -224,6 +233,7 @@ export function resolveDisplayPolicy(input: {
   return {
     reasoning,
     reasoningFold: input.reasoningFold ?? level.reasoningFold,
+    reasoningPreview: reasoning !== 'off' && (input.reasoningPreview ?? level.reasoningPreview),
     tools,
     toolArgs: tools === 'full' && level.toolArgs && input.showToolArgs !== false,
     toolResults: tools === 'full' && level.toolResults && input.showToolResults !== false,

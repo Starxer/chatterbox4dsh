@@ -178,6 +178,8 @@ export interface Translations {
    * instead of being truncated.
    */
   stepReasoningContinued: (step: number, part: number, total: number) => string
+  /** Suffix of the live thinking preview line (`🧠 正在思考中…`). */
+  stepPreviewThinking: string
   stepMessageHeader: string
   stepToolHeader: string
   stepToolSuccess: string
@@ -531,6 +533,8 @@ export interface Translations {
   displayCardFoldTitle: string
   displayCardFoldName: (folded: boolean) => string
   displayCardFoldButton: (name: string, active: boolean) => string
+  /** Live-preview switch row on the `/display` card. */
+  displayCardPreviewButton: (label: string, enabled: boolean) => string
   displayCardToolRowTitle: string
   displayCardToolRowHint: string
   /** One row style's short name (`仅工具` / `描述 + 工具` / `仅描述`). */
@@ -999,6 +1003,7 @@ export const zh = {
 
   stepReasoningHeader: '💬 **深度思考**',
   stepReasoningContinued: (step, part, total) => `💬 深度思考（第 ${step} 步 · 续 ${part}/${total}）`,
+  stepPreviewThinking: '🧠 正在思考中…',
   stepMessageHeader: '📝 **消息**',
   stepToolHeader: '🔧 **工具调用**',
   stepToolSuccess: '成功',
@@ -1206,6 +1211,7 @@ export const zh = {
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds} 秒`,
   displayCardFoldTitle: '**思考块**（折叠 = 收进面板；平铺 = 直接显示）',
   displayCardFoldName: folded => folded ? '折叠' : '平铺',
+  displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
   displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardToolRowTitle: '**工具行**（仅「简洁」档）',
   displayCardToolRowHint: '_简洁模式过程卡里，每个工具调用那一行显示什么。描述 = 模型自己写的一句 description，并非每个工具都会写。_',
@@ -1612,6 +1618,7 @@ export const en: Translations = {
 
   stepReasoningHeader: '💬 **Deep thinking**',
   stepReasoningContinued: (step, part, total) => `💬 Deep thinking (step ${step} · continued ${part}/${total})`,
+  stepPreviewThinking: '🧠 Thinking…',
   stepMessageHeader: '📝 **Message**',
   stepToolHeader: '🔧 **Tool Call**',
   stepToolSuccess: 'ok',
@@ -1825,6 +1832,7 @@ export const en: Translations = {
   displayCardTickButton: (seconds, active) => `${active ? '🔘' : '⚪'} ${seconds}s`,
   displayCardFoldTitle: '**Thinking block** (fold = collapsed panel; flat = shown inline)',
   displayCardFoldName: folded => folded ? 'Folded' : 'Flat',
+  displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,
   displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardToolRowTitle: '**Tool row** (compact only)',
   displayCardToolRowHint: '_What one tool row of the compact progress card carries. "Description" is the model-written one-liner, which not every tool takes._',

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 新增：思考期实时预览（打字机，默认开、默认 200 字）（`src/feishu-streaming.ts` / `src/index.ts` / `src/display-level.ts` / `src/config.ts`，2026-11-20）
+
+- **数据源**：`agent/assistant-stream` 的 `reasoning-delta`（插件早在 O20 就在订阅这个事件，此前只用来推进相位灯、把文本丢掉了）。尾部累积约 2× 预览长度，不存全文——全文仍来自 `assistant/message`。
+- **原生打字机**：带预览的占位卡在**建卡时就开** `config.streaming_mode` + `streaming_config`（`print_frequency_ms: 30`、`print_strategy: delay`），预览文本由一个带 `element_id` 的专用 markdown 元素承载，每 **1.5 秒**用 `cardkit.v1.cardElement.content` 推一次「最后 N 字 + 🧠 正在思考中…」。节奏按实测定：往返 200–400ms 且飞书每次元素更新都会重启动画，1.5 秒是肉眼最连续的组合。
+- **收尾**：`assistant/message`（或 `step/end`）一到达就停推送、`card.settings` 关流式，再整卡重写为「折叠面板 + 全文」；关闭后元素通道会拒写（`300309`），这正是预期。
+- **失败回退**：推送被拒/抛错即把该步标为「预览失败」，本步剩余时间回到整卡刷新（即今天的行为），不重试、不打断回合；`streamCardElement`/`closeCardStreaming` 是可选通道，宿主/测试没提供时自然退化。
+- **开关**：`reasoningPreview`（默认 `true`），`/display preview on|off`、`/display` 卡新增一行开关、`/display` 无参报告；预览长度沿用 `reasoningPreviewChars`（默认 200）。关掉后**不产生任何流式请求**，也就是零额外 API 消耗。
+- 测试：新增「推送尾部到流式元素后关闭流式」端到端用例；全量 82 文件 / 1,582 用例、typecheck、build、privacy 全绿。
+
+**English**: The thinking block now shows a live preview while the model is thinking, on by default and 200 characters long. It is fed by the `agent/assistant-stream` reasoning deltas the plugin already subscribed to for its phase light (it had been discarding the text). The placeholder card is created **in streaming mode** (`config.streaming_mode` plus `streaming_config` with `print_frequency_ms: 30` and `print_strategy: delay`), the preview text lives in a dedicated markdown element with an `element_id`, and every **1.5 s** the tail plus `🧠 正在思考中…` is pushed through `cardkit.v1.cardElement.content` so the client animates it as a typewriter. The cadence comes from measurement: round trips are 200-400 ms and Feishu restarts the animation on every element update, so 1.5 s is what reads as continuous. On `assistant/message` (or `step/end`) the pushes stop, `card.settings` closes streaming mode and the card is rewritten whole as the folded panel with the full chain; after closing, element writes are refused with `300309`, which is expected. A refused or failed push marks the step as preview-failed and falls back to whole-card refreshes for the rest of that step, without retrying or disturbing the turn; both channel methods are optional, so hosts and tests without them degrade naturally. The `reasoningPreview` setting (default on) is switchable from `/display preview on|off`, from a new row on the `/display` card and is reported by `/display`; the length reuses `reasoningPreviewChars` (default 200). Turning it off sends no streaming requests at all, so it also costs no extra API calls. Covered by a new end-to-end test (push the tail, then close streaming); 82 files / 1,582 tests, typecheck, build and privacy gate green.
+
 ### 调整：思考块改为全文不截断，默认折叠、可切平铺，超长发续卡（`src/display-level.ts` / `src/feishu-streaming.ts` / `src/text-chunk.ts` / `src/commands.ts` / `src/feishu-display.ts`，2026-11-20）
 
 - **去掉截断**：删掉「详细档只留前 200 字 + `…(truncated)`」和「标准档只给首行」两条裁剪。思考块的正文现在**永远是整条链**——这是操作者的明确要求：`/reasoning` 调整的是 effort，不是内容长度，卡上不该只剩开头。

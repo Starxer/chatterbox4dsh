@@ -74,6 +74,10 @@ export interface DisplayControl {
   getLevel: () => TranscriptView
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   getFold: () => boolean
+  /** Whether the live thinking preview is on. */
+  getPreview: () => boolean
+  /** Persist the preview choice. Asynchronous for the same reason as {@link set}. */
+  setPreview: (enabled: boolean) => void | Promise<void>
   /** Persist the fold choice. Asynchronous for the same reason as {@link set}. */
   setFold: (folded: boolean) => void | Promise<void>
   /** Persist the level. Asynchronous for the same reason as {@link set}. */
@@ -195,6 +199,11 @@ export interface CommandTranslations {
   readonly displayFoldName: (folded: boolean) => string
   readonly displayFoldSet: (name: string) => string
   readonly displayFoldUsage: string
+  /** Live thinking preview switch. */
+  readonly displayPreviewLabel: string
+  readonly displayPreviewName: (enabled: boolean) => string
+  readonly displayPreviewSet: (name: string) => string
+  readonly displayPreviewUsage: string
   readonly displayToolRowLabel: string
   /** One row style's short name (`工具` / `描述 + 工具` / `仅描述`). */
   readonly displayToolRowName: (style: CompactToolRowStyle) => string
@@ -702,6 +711,7 @@ export async function handleDisplayCommand(
     const lines = [
       `${t.displayLevelLabel}: ${t.displayLevelName(level)}`,
       `${t.displayFoldLabel}: ${t.displayFoldName(display.getFold())}`,
+      `${t.displayPreviewLabel}: ${t.displayPreviewName(display.getPreview())}`,
       `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
       t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
       ...DISPLAY_KEYS.map(key => t.displayState(t.displayLabel(key), state[key])),
@@ -724,6 +734,16 @@ export async function handleDisplayCommand(
     }
     await display.setFold(folded)
     return { kind: 'success', text: t.displayFoldSet(t.displayFoldName(folded)) }
+  }
+  if (rawKey === 'preview') {
+    const value = rawValue === undefined ? undefined : parseDisplayValue(rawValue)
+    if (value !== undefined) {
+      await display.setPreview(value)
+      return { kind: 'success', text: t.displayPreviewSet(t.displayPreviewName(value)) }
+    }
+    return rawValue === undefined
+      ? { kind: 'success', text: `${t.displayPreviewLabel}: ${t.displayPreviewName(display.getPreview())}\n${t.displayPreviewUsage}` }
+      : { kind: 'error', text: t.displayPreviewUsage }
   }
   if (rawKey === 'toolrow' || rawKey === 'tool-row') {
     if (rawValue === undefined) {

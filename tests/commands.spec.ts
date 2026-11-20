@@ -102,6 +102,10 @@ const translations: CommandTranslations = {
   displayFoldName: (folded: boolean) => (folded ? 'folded' : 'flat'),
   displayFoldSet: (name: string) => `fold set to ${name}`,
   displayFoldUsage: 'Usage: /display fold on|off',
+  displayPreviewLabel: 'Thinking preview',
+  displayPreviewName: (enabled: boolean) => (enabled ? 'on' : 'off'),
+  displayPreviewSet: (name: string) => `preview set to ${name}`,
+  displayPreviewUsage: 'Usage: /display preview on|off',
 }
 
 const stubApprovalControl: ApprovalControl = {
@@ -126,6 +130,8 @@ const stubDisplay: DisplayControl = {
   setToolRow: vi.fn(),
   getFold: () => true,
   setFold: vi.fn(),
+  getPreview: () => true,
+  setPreview: vi.fn(),
 }
 
 interface Registration { name: string; handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult> }
@@ -276,6 +282,7 @@ describe('/display command', () => {
     setElapsedRefreshSeconds: vi.fn(),
     setToolRow: vi.fn(),
     setFold: vi.fn(),
+    setPreview: vi.fn(),
   })
 
   it('reports level, elapsed refresh and all switches without arguments', async () => {

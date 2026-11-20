@@ -87,6 +87,16 @@ export interface FeishuStreamingChannel {
    * tests and non-web deployments keep the plain send path.
    */
   sendStepCard?(to: string, input: { card: object } | { text: string }, opts?: { replyInThread?: boolean; replyTo?: string }): Promise<{ messageId?: string }>
+  /**
+   * Element-level content push for a streaming (typewriter) card. Resolves to
+   * false when the platform refuses the write (for example `300309 streaming
+   * mode is closed`); the caller then stops streaming and keeps rendering whole
+   * cards. Optional so tests and non-web deployments fall back to whole-card
+   * updates.
+   */
+  streamCardElement?(cardId: string, elementId: string, content: string): Promise<boolean>
+  /** Leave streaming mode so the settled card can be rewritten normally. */
+  closeCardStreaming?(cardId: string, summary?: string): Promise<void>
 }
 
 /**
@@ -150,6 +160,8 @@ export interface FeishuStreamingDeps {
    * chain flat on the card. Read live like the switches above.
    */
   reasoningFold?: () => boolean | undefined
+  /** Live thinking preview switch (default on). */
+  reasoningPreview?: () => boolean | undefined
   /** Whether to show tool calls at all; false hides the section and suppresses tool-only cards. */
   showToolCalls?: () => boolean
   /** Whether to show each tool call's arguments block. */
@@ -383,6 +395,23 @@ interface SessionStepState {
    */
   reasoningOverflowSent: boolean
   /**
+   * Tail of the reasoning stream seen through `agent/assistant-stream`, kept for
+   * the live preview. Bounded to about 2× the preview length: only the last
+   * characters are ever displayed, and the full chain arrives on
+   * `assistant/message`.
+   */
+  previewTail: string
+  /** Repeating timer that pushes the preview; cleared at every boundary. */
+  previewTimer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * True once an element push was accepted, i.e. the card really is in
+   * streaming mode. Used to close it at settle and to suppress whole-card
+   * repaints that would interrupt the animation.
+   */
+  previewStreamingOpen: boolean
+  /** Streaming was refused for this step; never retry it here. */
+  previewFailed: boolean
+  /**
    * Tick that refreshes the thinking placeholder's elapsed time. Cleared at
    * every step/turn boundary and on dispose, so it can never leak.
    */
@@ -534,7 +563,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   cardRendersAnswer: (sessionId: string, text: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, reasoningPreview, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
   /** Live caps; read per render so a settings write needs no remount. */
   const previewLimits = (): PreviewLimits => deps.previewLimits?.() ?? DEFAULT_PREVIEW_LIMITS
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
@@ -593,6 +622,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         supersededFrom: undefined,
         stepEnded: false,
         reasoningOverflowSent: false,
+        previewTail: '',
+        previewTimer: undefined,
+        previewStreamingOpen: false,
+        previewFailed: false,
         placeholderTimer: undefined,
         warmTimer: undefined,
         pendingSend: undefined,
@@ -645,6 +678,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     state.pendingSend = undefined
     state.stepEnded = false
     state.reasoningOverflowSent = false
+    stopReasoningPreview(state)
+    state.previewTail = ''
+    state.previewStreamingOpen = false
+    state.previewFailed = false
     // A pure-answer turn declares itself on its answer message; the next step
     // must not inherit that (a tool call after it means the turn was not a pure
     // answer after all, and the normal step-card path takes over).
@@ -689,6 +726,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     showToolArgs: showToolArgs?.(),
     showToolResults: showToolResults?.(),
     reasoningFold: reasoningFold?.(),
+    reasoningPreview: reasoningPreview?.(),
   })
 
   /** Whether reasoning content is rendered on cards. */
@@ -696,6 +734,97 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
   /** Whether tool calls are rendered at all. */
   const toolsShown = (): boolean => displayPolicy().tools !== 'off'
+
+  /** Whether the live thinking preview is on for the current settings. */
+  const previewEnabled = (): boolean => {
+    const policy = displayPolicy()
+    return policy.reasoning !== 'off' && policy.reasoningPreview && reasoningPreview?.() !== false
+  }
+
+  /** Characters of reasoning shown in the live preview (the tail only). */
+  const previewLength = (): number => Math.max(80, previewLimits().reasoningHead)
+
+  /** Stop the repeating preview push (does not close streaming mode). */
+  const stopReasoningPreview = (state: SessionStepState): void => {
+    if (state.previewTimer === undefined) return
+    clearTimeout(state.previewTimer)
+    state.previewTimer = undefined
+  }
+
+  /** Schedule the next preview push; one chained timeout, never an interval. */
+  const scheduleReasoningPreview = (state: SessionStepState): void => {
+    if (state.previewTimer !== undefined || state.previewFailed) return
+    state.previewTimer = setTimeout(() => {
+      state.previewTimer = undefined
+      void pushReasoningPreview(state)
+    }, REASONING_PREVIEW_INTERVAL_MS)
+    ;(state.previewTimer as { unref?: () => void }).unref?.()
+  }
+
+  /**
+   * Push the tail of the reasoning chain to the card's preview element.
+   *
+   * The card was created in streaming mode for exactly this element, so the
+   * client animates each push instead of re-rendering the card. A refusal means
+   * the channel is gone (or streaming was closed): preview stops for this step
+   * and the regular whole-card rendering takes over, with no visible break.
+   */
+  const pushReasoningPreview = async (state: SessionStepState): Promise<void> => {
+    const ref = state.stepCardRef
+    if (ref === undefined || state.previewFailed || state.previewTail === '') return
+    if (channel.streamCardElement === undefined) {
+      state.previewFailed = true
+      return
+    }
+    const tr = getTranslations?.() ?? translationsFor('zh')
+    try {
+      const cardId = await ref.cardId
+      if (cardId === undefined || state.stepCardRef !== ref) return
+      const ok = await channel.streamCardElement(
+        cardId,
+        REASONING_PREVIEW_ELEMENT,
+        `${state.previewTail}\n\n${tr.stepPreviewThinking}`,
+      )
+      if (!ok) {
+        state.previewFailed = true
+        stopReasoningPreview(state)
+        return
+      }
+      state.previewStreamingOpen = true
+      scheduleReasoningPreview(state)
+    } catch (error: unknown) {
+      state.previewFailed = true
+      stopReasoningPreview(state)
+      console.log(`dsh-feishu: [preview] push failed for ${state.sessionId}: ${describeError(error)}`)
+    }
+  }
+
+  /** Feed one live reasoning delta into the preview tail. */
+  const noteReasoningPreview = (state: SessionStepState, text: string): void => {
+    if (state.previewFailed || text === '' || !previewEnabled()) return
+    const cap = previewLength() * 2
+    state.previewTail = (state.previewTail + text).slice(-cap)
+    if (!state.stepCardSent || state.stepCardRef === undefined) return
+    scheduleReasoningPreview(state)
+  }
+
+  /**
+   * Thinking finished (or the step ended): stop pushing and leave streaming mode
+   * so the settled card can be rewritten as a whole.
+   */
+  const finishReasoningPreview = (state: SessionStepState): void => {
+    stopReasoningPreview(state)
+    if (!state.previewStreamingOpen) return
+    state.previewStreamingOpen = false
+    const ref = state.stepCardRef
+    const close = channel.closeCardStreaming
+    if (ref === undefined || close === undefined) return
+    void ref.cardId
+      .then((cardId: string | undefined) => cardId === undefined ? undefined : close(cardId))
+      .catch((error: unknown) => {
+        console.log(`dsh-feishu: [preview] close failed: ${describeError(error)}`)
+      })
+  }
 
   /**
    * Whether this step has anything visible to render. A step whose only
@@ -738,7 +867,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       if (current !== state || state.stepEnded || !stepIsEmpty(state)) return
       // While the first send is still in flight there is nothing to update:
       // the pending send rebuilds the card from this state anyway.
-      if (state.stepCardRef !== undefined) updateStepCard(state)
+      if (state.stepCardRef !== undefined && !state.previewStreamingOpen) updateStepCard(state)
       state.placeholderTimer = setTimeout(tick, parseElapsedRefreshSeconds(deps.elapsedRefreshSeconds?.()) * 1_000)
     }
     state.placeholderTimer = setTimeout(tick, parseElapsedRefreshSeconds(deps.elapsedRefreshSeconds?.()) * 1_000)
@@ -815,6 +944,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // The live phase only has meaning on the content-free form; passing it
         // alongside content would let a stale phase name a settled card.
         ...(emptyPhase === 'thinking' ? { phase: state.livePhase } : {}),
+        // Live thinking preview: the card exists and the model is thinking. The
+        // element is rendered even before the first delta so the card is
+        // created in streaming mode from the start.
+        ...(emptyPhase === 'thinking' && previewEnabled() ? { preview: { text: state.previewTail } } : {}),
         ...(state.requestRoute !== undefined ? { route: state.requestRoute } : {}),
         // The turn's filtered summary, on the LAST write of the turn only
         // (`compact`; see the `turn/end` handler and `src/turn-summary.ts`).
@@ -1694,6 +1827,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         }
 
         // The assembled message arrived. Record usage and message time.
+        // Thinking is over: the preview disappears and the card leaves streaming
+        // mode before it is rewritten with the settled content.
+        finishReasoningPreview(state)
         state.messageTime = event.time ?? Date.now()
         state.completedTime = state.messageTime
         // The attempt COMMITTED: whatever an abandoned attempt of this step had
@@ -2079,6 +2215,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // "empty step" form. Rare (it needs no text, no visible reasoning and
         // no visible tool call).
         state.stepEnded = true
+        finishReasoningPreview(state)
         stopPlaceholderTick(state)
         if (displayPolicy().turnCard) progressCards.stepEnded(sessionId, event.time ?? Date.now())
         if (state.stepCardSent && stepIsEmpty(state)) updateStepCard(state)
@@ -2520,6 +2657,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // `tool-call-delta` is the live signal that the model is building a
         // tool call: name it as such instead of letting the previous phase
         // linger (see StepLivePhase).
+        const chunkText = (frame.chunk as { text?: unknown } | undefined)?.text
+        if (frame.chunk?.type === 'reasoning-delta' && typeof chunkText === 'string') {
+          noteReasoningPreview(state, chunkText)
+        }
         const chunkType = frame.chunk?.type
         const wanted: StepLivePhase | undefined = chunkType === 'reasoning-delta'
           ? 'thinking'
@@ -2553,7 +2694,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       }
       // Only a content-free card shows the phase, and only once it exists: while
       // the first send is still pending, that send rebuilds from state anyway.
-      if (state.stepCardSent && state.stepCardRef !== undefined && stepIsEmpty(state)) updateStepCard(state)
+      // While the preview owns the card's animation, a whole-card repaint would
+      // restart it; the push itself refreshes the visible state.
+      if (state.stepCardSent && state.stepCardRef !== undefined && stepIsEmpty(state) && !state.previewStreamingOpen) updateStepCard(state)
     } catch (streamError: unknown) {
       console.log(`dsh-feishu: assistant-stream handler error: ${streamError instanceof Error ? streamError.message : String(streamError)}`)
     }
@@ -2845,6 +2988,26 @@ const MAX_OVERFLOW_CARDS = 30
  * truncated.
  */
 const REASONING_PANEL_BYTES = 20 * 1024
+
+/**
+ * Element id of the live thinking preview inside the streaming placeholder card.
+ *
+ * Only one element per card can be pushed through `cardElement.content`, so the
+ * preview owns a dedicated markdown element and every other part of the card
+ * stays out of the stream.
+ */
+const REASONING_PREVIEW_ELEMENT = 'reasoning_preview'
+
+/**
+ * How often the live thinking preview is pushed, in milliseconds.
+ *
+ * Sized against the measured pipeline rather than taste: a round trip to
+ * `open.feishu.cn` is 200-400 ms, and Feishu *restarts* the client animation on
+ * every element update, so a push interval shorter than the injected delta's
+ * own print time makes the card stutter instead of typing. 1.5 s is the tested
+ * sweet spot (see `docs/display-modes-design.md` §5).
+ */
+const REASONING_PREVIEW_INTERVAL_MS = 1_500
 
 /**
  * Split a thinking chain into per-card panels under {@link REASONING_PANEL_BYTES}.
@@ -3395,6 +3558,12 @@ export function renderStepCard(
     /** Live preview caps; omitted falls back to {@link DEFAULT_PREVIEW_LIMITS}. */
     previewLimits?: PreviewLimits
     /**
+     * Live thinking preview: the tail seen so far plus the "thinking" suffix.
+     * Its presence puts the preview element on the card — and the card itself
+     * into `streaming_mode`, so later pushes animate instead of repainting.
+     */
+    preview?: { text: string }
+    /**
      * Context-injection notice lines for THIS step, one per injected message,
      * rendered before everything else. Metadata only — never the injected text.
      */
@@ -3457,6 +3626,19 @@ export function renderStepCard(
   // its terminal form when the step ends without ever producing visible content.
   const emptyPhase = options?.empty
   const phase: StepLivePhase = options?.phase ?? 'none'
+  if (options?.preview !== undefined) {
+    // The preview element carries an `element_id`: it is the only element that
+    // `cardkit.v1.cardElement.content` will ever touch, and the card is created
+    // in streaming mode because of it. Rendered from the very first write (with
+    // just the status suffix) so the first push always has an element to target.
+    elements.push({
+      tag: 'markdown',
+      element_id: REASONING_PREVIEW_ELEMENT,
+      content: options.preview.text === ''
+        ? t.stepPreviewThinking
+        : `${options.preview.text}\n\n${t.stepPreviewThinking}`,
+    })
+  }
   if (emptyPhase !== undefined) {
     elements.push({
       tag: 'markdown',
@@ -3725,7 +3907,19 @@ export function renderStepCard(
 
   return {
     schema: '2.0',
-    config: { wide_screen_mode: true },
+    config: {
+      wide_screen_mode: true,
+      ...(options?.preview === undefined ? {} : {
+        // Typewriter streaming: the client animates element pushes instead of
+        // snapping to each new full card. Closed again once thinking settles.
+        streaming_mode: true,
+        streaming_config: {
+          print_frequency_ms: { default: 30 },
+          print_step: { default: 1 },
+          print_strategy: 'delay',
+        },
+      }),
+    },
     header: {
       title: { tag: 'plain_text', content: titleWithPosition },
       template,

@@ -29,14 +29,14 @@ describe('parseTranscriptView', () => {
 describe('resolveDisplayPolicy', () => {
   it('maps each level onto the axes the renderer reads', () => {
     expect(resolveDisplayPolicy({ transcriptView: 'compact' })).toEqual({
-      reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'standard' })).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(resolveDisplayPolicy({ transcriptView: 'verbose' })).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
+      reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
     })
   })
 
@@ -45,7 +45,7 @@ describe('resolveDisplayPolicy', () => {
     // counting tool calls) instead of the WebUI's `detailed`.
     expect(DEFAULT_TRANSCRIPT_VIEW).toBe('compact')
     expect(resolveDisplayPolicy({})).toEqual({
-      reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
   })
 
@@ -54,7 +54,7 @@ describe('resolveDisplayPolicy', () => {
     // that level changed.
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(DETAILED_POLICY).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
     })
   })
 

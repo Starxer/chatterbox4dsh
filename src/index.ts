@@ -678,6 +678,54 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         return cardWriter.write(card, payload => withLinkTimeout(ch.updateCard(messageId, payload), 'patch card'))
       })
     },
+    /**
+     * Push one element's content to a streaming card (`cardkit.v1.cardElement.content`).
+     *
+     * The card must have been created with `config.streaming_mode: true`; the
+     * client then animates the diff as a typewriter. Every call carries the
+     * element's FULL content plus a monotonic sequence (the same per-card
+     * counter the full-card writes use), so a duplicate or out-of-order call
+     * cannot corrupt the card.
+     *
+     * Returns true when the platform accepted it. A refusal (for example the
+     * `300309 streaming mode is closed` answer after the stream was closed) is
+     * reported as false instead of throwing: the caller's fallback is to stop
+     * streaming and keep rendering whole cards, which must not depend on an
+     * exception type.
+     */
+    streamCardElement: async (cardId: string, elementId: string, content: string): Promise<boolean> => {
+      const ch = channelHolder.current
+      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+      const sequence = cardWriter.nextSequence(cardId, 0)
+      const result = await withLinkTimeout(ch.rawClient.cardkit.v1.cardElement.content({
+        path: { card_id: cardId, element_id: elementId },
+        data: { content, sequence, uuid: `c_${cardId}_${sequence}` },
+      }) as Promise<{ code?: number; msg?: string }>, 'stream card element')
+      if (result?.code !== undefined && result.code !== 0) {
+        console.log(`dsh-feishu: [stream] cardElement.content rejected: code=${result.code} msg=${result.msg ?? 'unknown'}`)
+        return false
+      }
+      return true
+    },
+    /**
+     * Leave streaming mode so the card can be rewritten as a normal card.
+     *
+     * Feishu closes a streaming card by itself after ten minutes, and after the
+     * close the element channel refuses writes (`300309`); the settled card is
+     * therefore written through {@link updateCardInstance} as usual.
+     */
+    closeCardStreaming: async (cardId: string, summary?: string): Promise<void> => {
+      const ch = channelHolder.current
+      if (ch === undefined) throw new Error('dsh-feishu: channel not connected')
+      const sequence = cardWriter.nextSequence(cardId, 0)
+      const settings = summary === undefined
+        ? { config: { streaming_mode: false } }
+        : { config: { streaming_mode: false, summary: { content: summary } } }
+      await withLinkTimeout(ch.rawClient.cardkit.v1.card.settings({
+        path: { card_id: cardId },
+        data: { settings: JSON.stringify(settings), sequence, uuid: `s_${cardId}_${sequence}` },
+      }) as Promise<unknown>, 'close card streaming')
+    },
     updateCard: (messageId: string, card: object): Promise<void> => {
       const ch = channelHolder.current
       if (ch === undefined) return Promise.reject(new Error('dsh-feishu: channel not connected'))
@@ -1147,6 +1195,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       logger: ctx.logger('dsh-feishu'),
       showReasoning: () => currentSettings().showReasoning,
       reasoningFold: () => currentSettings().reasoningFold ?? true,
+      reasoningPreview: () => currentSettings().reasoningPreview ?? true,
       showToolCalls: () => currentSettings().showToolCalls,
       showToolArgs: () => currentSettings().showToolArgs,
       showToolResults: () => currentSettings().showToolResults,
@@ -1443,6 +1492,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     getLevel: () => currentSettings().transcriptView,
     getFold: () => currentSettings().reasoningFold ?? true,
+    getPreview: () => currentSettings().reasoningPreview ?? true,
+    setPreview: (enabled) => {
+      const write = settings.mutate(namespace, [{ op: 'set', path: ['reasoningPreview'], value: enabled }], currentRevision())
+      write.catch((error: unknown) => {
+        console.log(`dsh-feishu: /display preview write failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return write
+    },
     setFold: (folded) => {
       const write = settings.mutate(namespace, [{ op: 'set', path: ['reasoningFold'], value: folded }], currentRevision())
       write.catch((error: unknown) => {

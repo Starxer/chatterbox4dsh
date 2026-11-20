@@ -85,6 +85,8 @@ export interface DisplayCardState {
   switches: Record<DisplayToggleKey, boolean>
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   folded: boolean
+  /** Live thinking preview switch. */
+  preview: boolean
   /** What a compact turn card's tool row carries (compact-only section). */
   toolRow: CompactToolRowStyle
   /** Missing on older callers; rendered as the default five seconds. */
@@ -219,6 +221,12 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
   // the level does not show.
   if (levelUsesSwitch(state.level, 'reasoning')) {
     elements.push({ tag: 'markdown', content: t.displayCardFoldTitle, text_size: 'notation' })
+    elements.push(buttonColumns([{
+      tag: 'button',
+      text: { tag: 'plain_text', content: t.displayCardPreviewButton(t.displayCardFoldName(state.folded), state.preview) },
+      type: state.preview ? 'primary' : 'default',
+      behaviors: [{ type: 'callback', value: { p: 'display', preview: !state.preview } }],
+    }]))
     elements.push(buttonColumns([true, false].map(folded => ({
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayCardFoldName(folded), folded === state.folded) },
@@ -284,6 +292,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       level: display.getLevel(),
       switches: display.get(),
       folded: display.getFold(),
+      preview: display.getPreview(),
       toolRow: display.getToolRow(),
       elapsedRefreshSeconds: display.getElapsedRefreshSeconds(),
     }, getTranslations())
@@ -327,6 +336,17 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
         logger.warn(`dsh-feishu: display refresh interval write failed: ${msg}`)
       }
       await repaint(messageId)
+      return
+    }
+    if (typeof parsed.preview === 'boolean') {
+      try {
+        await display.setPreview(parsed.preview)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display preview write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] preview=${String(parsed.preview)} card=${messageId}`)
       return
     }
     if (typeof parsed.folded === 'boolean') {

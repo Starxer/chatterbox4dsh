@@ -211,6 +211,7 @@ function makeDisplay(
   const foldSpy = vi.fn()
   let seconds = 5
   let folded = true
+  let preview = true
   return {
     spy,
     levelSpy,
@@ -218,6 +219,8 @@ function makeDisplay(
     toolRowSpy,
     foldSpy,
     control: {
+      getPreview: () => preview,
+      setPreview: (next: boolean): void => { preview = next },
       getFold: () => folded,
       setFold: (next: boolean): void => {
         foldSpy(next)
@@ -377,6 +380,8 @@ describe('startFeishuDisplay', () => {
         get: () => state,
         getFold: () => true,
         setFold: () => undefined,
+        getPreview: () => true,
+        setPreview: () => undefined,
         getLevel: () => 'detailed' as const,
         setLevel: () => undefined,
         getElapsedRefreshSeconds: () => 5,
