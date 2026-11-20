@@ -63,6 +63,58 @@ export interface LarkRuntimeStart {
  */
 export const CHANNEL_RETRY_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000] as const
 
+/**
+ * How long the inbound side may stay silent while the outbound side is busy
+ * before the channel is presumed half-open.
+ *
+ * A half-open socket is the one failure the SDK cannot see: the TCP connection
+ * stays ESTABLISHED, no FIN/RST arrives, and the server simply stops pushing
+ * events — while our own HTTP calls (each one a fresh connection) keep working.
+ * On a TCP-only transparent proxy this is the normal failure shape
+ * (2026-11-20: `channel up` at 18:28:45, then zero inbound for 4.5 minutes
+ * while `ss` showed three ESTABLISHED sockets and curl was fine).
+ *
+ * Five minutes is long enough that an ordinary "the user has not replied yet"
+ * pause is not mistaken for death, and short enough that the operator does not
+ * conclude the bot is gone.
+ */
+export const CHANNEL_HALF_OPEN_SILENCE_MS = 5 * 60_000
+
+/** Only suspect half-open while we were OUTBOUND-active recently (someone is engaged). */
+export const CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS = 10 * 60_000
+
+/** Never rebuild more often than this, so a genuinely idle chat cannot churn. */
+export const CHANNEL_HALF_OPEN_COOLDOWN_MS = 15 * 60_000
+
+/**
+ * Whether the channel looks half-open and should be rebuilt from scratch.
+ *
+ * The judgement uses only facts the plugin has: when it last sent something
+ * (outbound activity) and when it last received anything (inbound activity).
+ * Rebuilding on pure silence would churn on an idle night, so it is gated on
+ * recent outbound activity — the operator replied to, or asked, something, and
+ * then nothing came back.
+ *
+ * @param input - milliseconds timestamps; `0` means "never".
+ * @returns whether a rebuild is due.
+ */
+export function halfOpenRebuildDue(input: {
+  now: number
+  lastInboundAt: number
+  lastOutboundAt: number
+  lastRebuildAt: number
+}): boolean {
+  const { now, lastInboundAt, lastOutboundAt, lastRebuildAt } = input
+  // Nothing was sent yet: an idle channel is not evidence of anything.
+  if (lastOutboundAt === 0) return false
+  // Nobody is engaged; silence is expected rather than suspicious.
+  if (now - lastOutboundAt > CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS) return false
+  // Inbound is still moving (or moved recently enough).
+  if (now - lastInboundAt < CHANNEL_HALF_OPEN_SILENCE_MS) return false
+  if (lastRebuildAt !== 0 && now - lastRebuildAt < CHANNEL_HALF_OPEN_COOLDOWN_MS) return false
+  return true
+}
+
 export interface LarkRuntimeDependencies {
   settings(): SettingsConfig
   resolveSecret(ref: string): Promise<string | undefined>
@@ -105,6 +157,36 @@ export class LarkRuntime {
         ...status.nextConnectTime === undefined ? {} : { nextConnectTime: status.nextConnectTime },
       },
     }
+  }
+
+  /**
+   * Rebuild the live channel even though the configuration did not change.
+   *
+   * `reconcile()` short-circuits on an unchanged fingerprint, which is right for
+   * settings writes but useless for a half-open socket: the connection is dead,
+   * the config is not. Dropping `current` first makes the normal start path run
+   * again (fresh handshake, fresh socket).
+   *
+   * @param reason - why, for the log line and the operator's journal.
+   * @returns resolved once the new start settled (or failed and scheduled a retry).
+   */
+  restartChannel(reason: string): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.disposed) return
+      console.warn(`dsh-feishu: rebuilding the channel: ${reason}`)
+      try {
+        await this.stopCurrent()
+      } catch {
+        // A channel that cannot even stop is exactly the one worth replacing.
+      }
+      this.current = undefined
+      this.snapshot = { state: 'connecting' }
+      this.clearRetryTimer()
+      this.retryAttempt = 0
+    }).then(() => this.reconcile()).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('dsh-feishu: channel rebuild failed:', message)
+    })
   }
 
   reconcile(): Promise<void> {

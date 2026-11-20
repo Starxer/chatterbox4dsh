@@ -22,7 +22,7 @@ import { HarnessConversationService, TurnDroppedError, type BusyMode } from './h
 import type { ConversationMessage } from './conversation.ts'
 import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './channel.ts'
 import { TURN_CONTINUE_ACTION } from './turn-failure.ts'
-import { LarkRuntime } from './runtime.ts'
+import { LarkRuntime, halfOpenRebuildDue } from './runtime.ts'
 import { OutboundHealth, wrapHttpInstance } from './outbound-health.ts'
 import { observeOutboundCalls, observeOutboundWaits } from './outbound-timeout.ts'
 import { renderTerminalQr } from './provision.ts'
@@ -195,7 +195,18 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     file: dshHomeFile(ctx, 'feishu-api-usage.json'),
     log: message => ctx.logger('dsh-feishu').warn(message),
   })
-  observeOutboundCalls({ started: label => apiUsage.record(label) })
+  // Inbound/outbound liveness for the half-open detector (`halfOpenRebuildDue`):
+  // outbound is stamped by the one chokepoint every real request passes, and
+  // inbound by the channel's own event delivery below.
+  let lastInboundAt = 0
+  let lastOutboundAt = 0
+  let lastRebuildAt = 0
+  observeOutboundCalls({
+    started: label => {
+      apiUsage.record(label)
+      lastOutboundAt = Date.now()
+    },
+  })
   {
     const usage = apiUsage.snapshot()
     console.log(`dsh-feishu: feishu API calls this month: ${usage.month} (today ${usage.today})`)
@@ -927,6 +938,12 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // callback to also attach their cardAction handlers on reconnect.
   runtime.onChannelChange = channel => {
     channelHolder.current = channel
+    // Proof of inbound life: any delivered message or card tap means the socket
+    // is still being fed. A half-open socket draws nothing here, which is the
+    // signal `halfOpenRebuildDue` looks for (the SDK's own ping watchdog only
+    // arms after the server pings, and never fires if that side went quiet).
+    channel.on('message', () => { lastInboundAt = Date.now() })
+    channel.on('cardAction', () => { lastInboundAt = Date.now() })
     // Tell the chat that was active last that DSH is up (and, when its turn
     // never ended, that it may have been interrupted). Once per process; no
     // model call involved.
@@ -944,6 +961,23 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       console.log(`dsh-feishu: topic root recovery failed: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
+  // Half-open detector. A socket can stay ESTABLISHED while Feishu stops pushing
+  // events — a TCP-only proxy silently cuts the stream, no FIN/RST arrives, and
+  // neither the SDK's reconnect nor its ping watchdog notices (the watchdog only
+  // arms after the SERVER pings, and that side is exactly what went quiet).
+  // The operator's 2026-11-20 report had 4.5 minutes of that: three ESTABLISHED
+  // sockets, `curl` fine, not one inbound event. Rebuild the channel when
+  // outbound was active recently but inbound has been silent for minutes.
+  const livenessTimer = setInterval(() => {
+    const now = Date.now()
+    if (!halfOpenRebuildDue({ now, lastInboundAt, lastOutboundAt, lastRebuildAt })) return
+    lastRebuildAt = now
+    const silent = lastInboundAt === 0 ? 'no inbound event yet' : `inbound silent for ${Math.round((now - lastInboundAt) / 1000)}s`
+    console.warn(`dsh-feishu: ${silent} while outbound was active; rebuilding the channel (half-open socket)`)
+    void runtime.restartChannel('inbound silent after recent outbound activity')
+  }, 60_000)
+  ;(livenessTimer as { unref?: () => void }).unref?.()
+  ctx.effect(() => () => clearInterval(livenessTimer))
   // `feishu_send_file` is independent of the questions/approvals seams: it only
   // needs the live channel + the session→chat reverse lookup, so it registers
   // unconditionally. Unbound sessions fail at execution time with a clear error.

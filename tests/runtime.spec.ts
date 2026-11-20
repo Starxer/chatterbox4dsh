@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LarkChannel } from '@larksuiteoapi/node-sdk'
-import { CHANNEL_RETRY_BACKOFF_MS, LarkRuntime, type LarkRuntimeStart } from '../src/runtime.ts'
+import {
+  CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS, CHANNEL_HALF_OPEN_COOLDOWN_MS, CHANNEL_HALF_OPEN_SILENCE_MS,
+  CHANNEL_RETRY_BACKOFF_MS, LarkRuntime, halfOpenRebuildDue, type LarkRuntimeStart,
+} from '../src/runtime.ts'
 import { resolveSettingsConfig } from '../src/config.ts'
 
 function fakeStart(stop: () => Promise<void>): LarkRuntimeStart {
@@ -8,6 +11,74 @@ function fakeStart(stop: () => Promise<void>): LarkRuntimeStart {
   // an empty stub keeps the surface narrow while satisfying the type.
   return { stop, channel: {} as LarkChannel }
 }
+
+describe('halfOpenRebuildDue', () => {
+  const now = 10_000_000
+  it('rebuilds when outbound was recent but inbound has been silent', () => {
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 1,
+      lastOutboundAt: now - 60_000,
+      lastRebuildAt: 0,
+    })).toBe(true)
+  })
+
+  it('stays put while inbound is still moving', () => {
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: now - 1_000,
+      lastOutboundAt: now - 60_000,
+      lastRebuildAt: 0,
+    })).toBe(false)
+  })
+
+  it('stays put with no outbound activity at all (an idle night is not a fault)', () => {
+    expect(halfOpenRebuildDue({ now, lastInboundAt: 0, lastOutboundAt: 0, lastRebuildAt: 0 })).toBe(false)
+  })
+
+  it('stays put once outbound has been idle for longer than the active window', () => {
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: 0,
+      lastOutboundAt: now - CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS - 1,
+      lastRebuildAt: 0,
+    })).toBe(false)
+  })
+
+  it('respects the cooldown so an idle chat cannot churn', () => {
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: 0,
+      lastOutboundAt: now - 60_000,
+      lastRebuildAt: now - CHANNEL_HALF_OPEN_COOLDOWN_MS + 1,
+    })).toBe(false)
+  })
+})
+
+describe('LarkRuntime.restartChannel', () => {
+  it('rebuilds the channel even though the configuration did not change', async () => {
+    const stops: Array<ReturnType<typeof vi.fn>> = []
+    const start = vi.fn(async () => {
+      const stop = vi.fn(async () => undefined)
+      stops.push(stop)
+      return fakeStart(stop)
+    })
+    const runtime = new LarkRuntime({
+      settings: () => resolveSettingsConfig({ appId: 'id' }),
+      resolveSecret: async () => 'secret',
+      start,
+    })
+    await runtime.reconcile()
+    expect(start).toHaveBeenCalledOnce()
+
+    // A half-open socket: reconcile() would short-circuit on the unchanged
+    // fingerprint, so the rebuild path must drop the current channel itself.
+    await runtime.restartChannel('test: half-open socket')
+    expect(stops[0]).toHaveBeenCalledOnce()
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(runtime.status()).toMatchObject({ state: 'connected' })
+  })
+})
 
 describe('LarkRuntime', () => {
   it('stays idle until both application credentials are configured', async () => {

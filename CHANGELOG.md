@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 修复：半开连接（连接假活）导致飞书入站静默，插件现在自愈（`src/runtime.ts` / `src/index.ts`，2026-11-20）
+
+- **现场**（2026-11-20 18:28:45 `channel up` 之后）：`ss -tnp` 三条 ESTABLISHED、进程正常、`curl open.feishu.cn` 410ms 可达、journal **零输出**——TCP 没断、SDK 没察觉，但飞书不再投递任何事件。典型半开（half-open）socket：只代理 TCP 的 fake-ip 透明代理静默掐流、不发 FIN/RST。
+- **为什么 SDK 看门狗不管用**：`wsConfig.pingTimeout` 的看门狗只在我们**发出 ping 之后**才武装，而半开时正是服务端不再推帧；它还会被任何入站帧（含 pong）清掉。⇒ 必须由插件自己判定。
+- **自愈判据**（`halfOpenRebuildDue`，纯函数、可单测）：最近 **10 分钟内有出站活动**（有人在用）**且**入站已静默 **≥ 5 分钟** **且**距上次重建 **≥ 15 分钟**（冷却）⇒ 判定半开。这样空闲的夜晚不会被误判成故障。
+- **动作**：`LarkRuntime.restartChannel(reason)` 丢弃当前 channel（`reconcile()` 会因配置指纹不变而短路，这里刻意绕过），重新走完整握手，journal 打 `dsh-feishu: rebuilding the channel: …`。检测器每 60 秒检查一次，入站时间戳由 `channel.on('message' | 'cardAction')` 维护，出站时间戳由 `withLinkTimeout` 的统一观察者维护。
+- 另：启动握手超时 **15s → 8s**、重试退避首两档 **5s/10s → 2s/5s**（同一起因的启动期抖动，最坏恢复 ~50s → ~20s）。
+- 测试：新增 `halfOpenRebuildDue` 五条判定与 `restartChannel` 强制重建用例；全量 82 文件 / 1,599 用例、typecheck、build、privacy 全绿。
+
+**English**: The plugin now heals a half-open socket by itself. On 2026-11-20, after `channel up` at 18:28:45, `ss` showed three ESTABLISHED sockets, the process and `curl` were fine, and the journal was silent — the TCP connection had not dropped and the SDK saw nothing, yet Feishu stopped delivering events (the classic shape when a TCP-only transparent proxy silently cuts the stream without FIN/RST). The SDK's `pingTimeout` watchdog cannot help: it only arms after WE send a ping (the quiet side is the server) and any inbound frame clears it. The plugin therefore judges for itself: outbound activity within the last 10 minutes (someone is engaged) AND inbound silent for at least 5 minutes AND no rebuild in the last 15 minutes (cooldown) — a pure function, `halfOpenRebuildDue`, so an idle night is never mistaken for a fault. When due, `LarkRuntime.restartChannel(reason)` drops the current channel (deliberately bypassing `reconcile()`'s unchanged-fingerprint short-circuit) and runs a fresh handshake, logging `rebuilding the channel: …`; a 60 s timer checks, with inbound stamps from `channel.on('message' | 'cardAction')` and outbound stamps from the shared `withLinkTimeout` observer. The boot-time handshake timeout also went 15 s → 8 s and the first two backoff slots 5 s/10 s → 2 s/5 s (worst-case recovery ~50 s → ~20 s). Five `halfOpenRebuildDue` cases plus a forced-rebuild case were added; 82 files / 1,599 tests, typecheck, build and privacy gate green.
+
 ### 修复：启动时飞书长连接握手超时导致的「无响应窗口」被拉长（`src/channel.ts` / `src/runtime.ts`，2026-11-20）
 
 - **现场**（2026-11-20 18:27 重启）：插件 `apply()` 正常，但 WebSocket 握手超时 `WebSocket handshake did not complete within 15000ms`，退避重试 5s / 10s，第三次才成功——`18:28:45 channel up`，`channel start recovered after 2 failed attempt(s)`。这段时间里飞书完全无响应，使用者感知为「插件没起来」。
