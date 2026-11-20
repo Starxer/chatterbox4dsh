@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  FEISHU_LANGUAGE_INSTRUCTION,
   FEISHU_SURFACE_NOTICE,
   FEISHU_SURFACE_SECTION,
   feishuSurfaceText,
@@ -67,14 +68,24 @@ describe('the Feishu surface prompt section', () => {
     expect(host.sections[0]?.order).toBe(10100)
   })
 
-  it('states the Feishu facts for a bound session', () => {
+  it('states the Feishu facts plus the language instruction for a bound session', () => {
     const host = buildHost()
-    installFeishuSurfacePrompt(host.ctx, { isBound: id => id === 'bound', enabled: () => true })
-    expect(host.assemble('bound')).toBe(FEISHU_SURFACE_NOTICE)
+    installFeishuSurfacePrompt(host.ctx, { isBound: id => id === 'bound', enabled: () => true, language: () => 'zh' })
+    expect(host.assemble('bound')).toBe(`${FEISHU_SURFACE_NOTICE}\n\n${FEISHU_LANGUAGE_INSTRUCTION.zh}`)
     expect(FEISHU_SURFACE_NOTICE).toContain('Feishu chat')
     expect(FEISHU_SURFACE_NOTICE).toContain('feishu_send_file')
     // The Web bundle's promise that does not exist here must not be repeated.
     expect(FEISHU_SURFACE_NOTICE).not.toContain('native-open')
+    // The two facts a Feishu reader notices in the model's own words.
+    expect(FEISHU_LANGUAGE_INSTRUCTION.zh).toContain('深度思考')
+    expect(FEISHU_LANGUAGE_INSTRUCTION.zh).toContain('description')
+  })
+
+  it('asks for English when the plugin locale is English', () => {
+    const host = buildHost()
+    installFeishuSurfacePrompt(host.ctx, { isBound: () => true, enabled: () => true, language: () => 'en' })
+    expect(host.assemble('bound')).toContain(FEISHU_LANGUAGE_INSTRUCTION.en)
+    expect(FEISHU_LANGUAGE_INSTRUCTION.en).toContain('reasoning')
   })
 
   it('contributes nothing for every other session', () => {
@@ -96,7 +107,7 @@ describe('the Feishu surface prompt section', () => {
     installFeishuSurfacePrompt(host.ctx, { isBound: () => true, enabled: () => enabled })
     expect(host.assemble('bound')).toBe('')
     enabled = true
-    expect(host.assemble('bound')).toBe(FEISHU_SURFACE_NOTICE)
+    expect(host.assemble('bound')).toBe(`${FEISHU_SURFACE_NOTICE}\n\n${FEISHU_LANGUAGE_INSTRUCTION.en}`)
   })
 
   it('disposes once and tolerates a second call', () => {
@@ -110,7 +121,10 @@ describe('the Feishu surface prompt section', () => {
 
 describe('feishuSurfaceText', () => {
   it('is the notice only when bound and enabled', () => {
-    expect(feishuSurfaceText(true, true)).toBe(FEISHU_SURFACE_NOTICE)
+    expect(feishuSurfaceText(true, true, 'en')).toBe(`${FEISHU_SURFACE_NOTICE}\n\n${FEISHU_LANGUAGE_INSTRUCTION.en}`)
+    expect(feishuSurfaceText(true, true, 'zh')).toContain(FEISHU_LANGUAGE_INSTRUCTION.zh)
+    // English is the default when no locale is supplied.
+    expect(feishuSurfaceText(true, true)).toContain(FEISHU_LANGUAGE_INSTRUCTION.en)
     expect(feishuSurfaceText(true, false)).toBe('')
     expect(feishuSurfaceText(false, true)).toBe('')
   })

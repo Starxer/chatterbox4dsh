@@ -1194,6 +1194,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     stopSurface = installFeishuSurfacePrompt(ctx, {
       isBound: sessionId => bridgeHolder.current?.resolveChat(sessionId) !== undefined,
       enabled: () => currentSettings().surfaceContext ?? true,
+      // The tool-row summaries and the thinking block are the model's own words:
+      // ask it for the channel's language, not the language of some default.
+      language: () => currentLocale().id === 'zh' ? 'zh' : 'en',
     })
     // Turns the user starts outside Feishu (Web GUI, background-job wake-up,
     // schedule) rendered from the same native events every other DSH surface
