@@ -50,7 +50,18 @@ export interface LarkRuntimeStart {
  * the conditions this recovers from (no network, host suspended, link down)
  * are fixed by time, not by us.
  */
-export const CHANNEL_RETRY_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000] as const
+/**
+ * Backoff before each channel start retry, in milliseconds.
+ *
+ * The first two slots are short on purpose: a boot-time WebSocket handshake
+ * failure is usually a transient DNS/TLS hiccup right after the process starts,
+ * and the operator experiences the whole window as "Feishu is dead". With a
+ * 15 s handshake timeout a 5 s + 10 s backoff put recovery ~50 s out
+ * (2026-11-20: two failed attempts, then `channel start recovered after 2
+ * failed attempt(s)`); 2 s + 5 s brings the same recovery well under half a
+ * minute. Later slots keep the long-exponential shape for real outages.
+ */
+export const CHANNEL_RETRY_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000] as const
 
 export interface LarkRuntimeDependencies {
   settings(): SettingsConfig

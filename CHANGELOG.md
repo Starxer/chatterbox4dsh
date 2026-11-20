@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 修复：启动时飞书长连接握手超时导致的「无响应窗口」被拉长（`src/channel.ts` / `src/runtime.ts`，2026-11-20）
+
+- **现场**（2026-11-20 18:27 重启）：插件 `apply()` 正常，但 WebSocket 握手超时 `WebSocket handshake did not complete within 15000ms`，退避重试 5s / 10s，第三次才成功——`18:28:45 channel up`，`channel start recovered after 2 failed attempt(s)`。这段时间里飞书完全无响应，使用者感知为「插件没起来」。
+- **两处收紧**：握手超时 **15s → 8s**（一次失败的等待直接减半），重试退避首两档 **5s/10s → 2s/5s**（启动期的抖动通常一两秒就过去）；最坏恢复时间从约 50 秒降到约 20 秒内。后续档位保持指数增长（10/20/40/80/160/300s），真断网时仍是稳定退避。
+- 测试：`runtime.spec` 全部通过（用常量推导时序，不硬编码毫秒）；全量 82 文件 / 1,593 用例、typecheck、build、privacy 全绿。
+
+**English**: On the 2026-11-20 18:27 restart the plugin applied fine but its Feishu WebSocket handshake timed out (`handshake did not complete within 15000ms`); the 5 s / 10 s backoff meant the third attempt only connected at 18:28:45 (`channel start recovered after 2 failed attempt(s)`), and Feishu stayed silent in between — which reads as "the plugin never came up". The handshake timeout is now 8 s instead of 15 s, and the first two backoff slots are 2 s / 5 s instead of 5 s / 10 s, cutting the worst-case recovery from ~50 s to under ~20 s while keeping the exponential shape (10/20/40/80/160/300 s) for real outages. `runtime.spec` passes unchanged (it derives timings from the constants); 82 files / 1,593 tests, typecheck, build and privacy gate green.
+
 ### 变更：`/display` 卡片重排可读性 +「工具明细」改名 + 去掉「只报计数」（`src/feishu-display.ts` / `src/i18n.ts` / `src/display-level.ts` / `src/config.ts` / `src/commands.ts` / `src/client/*`，2026-11-20）
 
 - **原问题**：小节标题只有一两个词（「思考」「工具明细」），看不出它控制什么；选中态用灰色 `disabled` 又难判读。

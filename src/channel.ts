@@ -478,7 +478,10 @@ export async function startChannel(
     // Ours reduces errors to message + stack and scrubs known secrets (key
     // pitfall 29, secondary finding).
     logger: createSafeChannelLogger([config.appSecret]),
-    handshakeTimeoutMs: 15_000,
+    // 8 s, not the SDK's 15: a failed handshake blocks the whole channel, and
+    // the retry backoff only starts after it times out. Halving it makes a
+    // transient boot-time hiccup recover in ~10 s instead of ~50 (2026-11-20).
+    handshakeTimeoutMs: 8_000,
     includeRawEvent: true,
     // Self-healing inbound: on a silent network partition (TCP half-open) the
     // socket never emits a clean `close`, so the SDK's auto-reconnect never
