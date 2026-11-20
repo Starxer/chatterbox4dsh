@@ -163,7 +163,6 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardLevelButton(t.displayModeName(mode), active) },
       type: active ? 'primary' : 'default',
-      ...(active ? { disabled: true } : {}),
       behaviors: [{ type: 'callback', value: { p: 'display', mode } }],
     }
   })))
@@ -194,8 +193,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
         tag: 'button',
         text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayToolDetailName(detail), active) },
         type: active ? 'primary' : 'default',
-        ...(active ? { disabled: true } : {}),
-        behaviors: [{ type: 'callback', value: { p: 'display', toolDetail: detail } }],
+          behaviors: [{ type: 'callback', value: { p: 'display', toolDetail: detail } }],
       }
     })))
     if (settings.tools === 'full') {
@@ -221,8 +219,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
         tag: 'button',
         text: { tag: 'plain_text', content: t.displayCardFoldButton(t.displayOutputName(full), active) },
         type: active ? 'primary' : 'default',
-        ...(active ? { disabled: true } : {}),
-        behaviors: [{ type: 'callback', value: { p: 'display', outputFull: full } }],
+          behaviors: [{ type: 'callback', value: { p: 'display', outputFull: full } }],
       }
     })))
   }
@@ -237,8 +234,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
         tag: 'button',
         text: { tag: 'plain_text', content: t.displayCardFoldButton(String(chars), active) },
         type: active ? 'primary' : 'default',
-        ...(active ? { disabled: true } : {}),
-        behaviors: [{ type: 'callback', value: { p: 'display', length: field, chars } }],
+          behaviors: [{ type: 'callback', value: { p: 'display', length: field, chars } }],
       }
     })))
   }
@@ -251,8 +247,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
         tag: 'button',
         text: { tag: 'plain_text', content: t.displayCardToolRowButton(t.displayToolRowName(style), active) },
         type: active ? 'primary' : 'default',
-        ...(active ? { disabled: true } : {}),
-        behaviors: [{ type: 'callback', value: { p: 'display', toolRow: style } }],
+          behaviors: [{ type: 'callback', value: { p: 'display', toolRow: style } }],
       }
     })))
   }
@@ -265,7 +260,6 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       tag: 'button',
       text: { tag: 'plain_text', content: t.displayCardTickButton(seconds, active) },
       type: active ? 'primary' : 'default',
-      ...(active ? { disabled: true } : {}),
       behaviors: [{ type: 'callback', value: { p: 'display', tick: seconds } }],
     }
   })))
@@ -349,6 +343,9 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     // a silently ignored click is exactly how this card first failed.
     if (parsed.tick !== undefined) {
       if (!isElapsedRefreshSeconds(parsed.tick)) return
+      // The active choice is a STATE, not an action: re-clicking it is a no-op
+      // (and each write is an HMR transaction, so refusing it is the cheap path).
+      if (display.getElapsedRefreshSeconds() === parsed.tick) return
       try {
         await display.setElapsedRefreshSeconds(parsed.tick)
       } catch (error: unknown) {
@@ -359,6 +356,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       return
     }
     if (typeof parsed.folded === 'boolean') {
+      if (display.getFold() === parsed.folded) return
       try {
         await display.setFold(parsed.folded)
       } catch (error: unknown) {
@@ -371,6 +369,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     }
     const toolRow = parsed.toolRow
     if (isCompactToolRowStyle(toolRow)) {
+      if (display.getToolRow() === toolRow) return
       try {
         await display.setToolRow(toolRow)
       } catch (error: unknown) {
@@ -383,6 +382,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     }
     const mode = parsed.mode
     if (mode === 'compact' || mode === 'detailed') {
+      if (display.getSettings().mode === mode) return
       try {
         await display.setLevel(mode)
       } catch (error: unknown) {
@@ -395,6 +395,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     }
     const toolDetail = parsed.toolDetail
     if (toolDetail === 'off' || toolDetail === 'count' || toolDetail === 'summary' || toolDetail === 'full') {
+      if (display.getSettings().tools === toolDetail) return
       try {
         await display.setToolDetail(toolDetail)
       } catch (error: unknown) {
@@ -407,6 +408,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     }
     const outputFull = parsed.outputFull
     if (typeof outputFull === 'boolean') {
+      if (display.getOutputFull() === outputFull) return
       try {
         await display.setOutputFull(outputFull)
       } catch (error: unknown) {
@@ -421,6 +423,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     const lengthChars = parsed.chars
     if ((lengthField === 'args' || lengthField === 'result')
       && typeof lengthChars === 'number') {
+      if (display.getPreviewChars(lengthField) === lengthChars) return
       try {
         await display.setPreviewChars(lengthField, lengthChars)
       } catch (error: unknown) {
@@ -432,9 +435,10 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       return
     }
     if (!isDisplayKey(parsed.key) || typeof parsed.value !== 'boolean') {
-      console.log(`dsh-feishu: [display] ignored malformed action key=${String(parsed.key)} level=${String(parsed.level)}`)
+      console.log(`dsh-feishu: [display] ignored malformed action key=${String(parsed.key)}`)
       return
     }
+    if (display.get()[parsed.key] === parsed.value) return
     try {
       await display.set(parsed.key, parsed.value)
     } catch (error: unknown) {

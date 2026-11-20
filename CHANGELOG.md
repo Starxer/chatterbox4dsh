@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：`/display` 卡选中态改回蓝色高亮；切不动选项的 HMR 事务问题（`src/feishu-display.ts` / `src/index.ts`，2026-11-20）
+
+- **选中态**：去掉所有选中按钮的 `disabled`（那层灰是使用者明确否掉的），恢复成「选中 = `primary` 蓝色高亮、仍然可点」；点自己变成**幂等无操作**（每个选项都先与当前设置比较，相同就直接返回，不写设置也不重绘）。
+- **切不动的根因**：设置写入走 config editor，而它把自己包在 `hmr.runExclusive` 里（写 settings.yaml 后要 reconcile profile，插件会热重载）。卡片点击如果落在那次 reconcile 还没结束的窗口里，就会被拒：`HMR transactions cannot be nested`。日志取证（2026-11-20 14:23）：`summary` 成功、8 秒后 `full` 连续两次失败，错误文本一致。
+- **修法**：`/display` 的所有设置写入统一走 `writeDisplaySetting()`——对这条错误做退避重试（300 / 600 / 1200 / 2400ms，每次重试都重新读 `currentRevision()`），事务结束后写入照常成功；其它错误照旧上抛并记录。
+- 测试：卡片用例改为断言「选中 = primary 且未禁用」，点击幂等由选项比较覆盖；全量 82 文件 / 1,594 用例、typecheck、build、privacy 全绿。
+
+**English**: The `/display` card's selected state is blue (`primary`) again and no longer greyed out with `disabled` — that grey layer is exactly what the operator rejected. Clicking the already-selected choice is a no-op: every option compares with the current setting first and returns without writing or repainting. The "cannot switch to full" bug had a concrete cause: setting writes go through the config editor, which wraps itself in `hmr.runExclusive` (it reconciles the profile after writing settings.yaml, hot-reloading the plugin). A card tap landing inside that reconciliation window is rejected with `HMR transactions cannot be nested`; the journal shows `summary` succeeding and `full` failing twice, eight seconds apart, with that exact message. Every `/display` write now goes through `writeDisplaySetting()`, which retries that specific error with backoff (300 / 600 / 1200 / 2400 ms, re-reading `currentRevision()` each time) so the write lands once the transaction finishes; other errors still propagate and are logged. Card tests assert primary-and-not-disabled; 82 files / 1,594 tests, typecheck, build and privacy gate green.
+
 ### 移除：流式推送（思考预览整块拿掉，改为整卡呈现）（`src/feishu-streaming.ts` / `src/index.ts` / `src/display-level.ts` / `src/config.ts` / `src/feishu-display.ts` / `src/commands.ts` / `src/i18n.ts` / `src/client/*`，2026-11-20）
 
 - **结论**：飞书卡片这条链路对读者是伪流式（整段替换 + 客户端打字动画），且卡片一更新客户端就把会话滚到底部、读者只能看到末尾；10ms/字 与直出的观感差别很小，20ms 才有逐字感但 945 字要 19 秒。**不值得**，全部改回整卡。

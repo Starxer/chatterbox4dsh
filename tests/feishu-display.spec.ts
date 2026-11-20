@@ -138,7 +138,8 @@ describe('renderDisplayCard', () => {
       const card = renderDisplayCard({ ...cardFor(ALL_ON), elapsedRefreshSeconds: 10 }, strings)
       const ticks = buttonsOf(card).filter(b => b.behaviors[0].value.tick !== undefined)
       expect(ticks.map(b => b.behaviors[0].value.tick)).toEqual([3, 5, 10, 30])
-      expect(ticks.find(b => b.behaviors[0].value.tick === 10)).toMatchObject({ disabled: true, type: 'primary' })
+      expect(ticks.find(b => b.behaviors[0].value.tick === 10)).toMatchObject({ type: 'primary' })
+      expect(ticks.find(b => b.behaviors[0].value.tick === 10).disabled).toBeUndefined()
       expect(ticks.find(b => b.behaviors[0].value.tick === 3).disabled).toBeUndefined()
     }
   })
@@ -188,7 +189,9 @@ describe('renderDisplayCard', () => {
     expect(payloadOf(card, 'reasoning')).toEqual({ p: 'display', key: 'reasoning', value: true })
     expect(payloadOf(card, 'args')).toEqual({ p: 'display', key: 'args', value: true })
     // The preset/preset buttons mark the ACTIVE one as primary + disabled.
-    expect(modesOf(card).find((b: any) => b.behaviors[0].value.mode === 'detailed')).toMatchObject({ disabled: true, type: 'primary' })
+    const activeMode = modesOf(card).find((b: any) => b.behaviors[0].value.mode === 'detailed')
+    expect(activeMode).toMatchObject({ type: 'primary' })
+    expect(activeMode.disabled).toBeUndefined()
   })
 
   it('localizes the card', () => {
@@ -204,17 +207,21 @@ describe('renderDisplayCard', () => {
     const compact = renderDisplayCard(cardFor(ALL_ON, 'compact', 'tool-description'), t) as any
     const rows = toolRowsOf(compact)
     expect(rows.map((b: any) => b.behaviors[0].value.toolRow)).toEqual(['tool', 'tool-description', 'description'])
-    expect(rows.find((b: any) => b.behaviors[0].value.toolRow === 'tool-description')).toMatchObject({ disabled: true, type: 'primary' })
+    const activeRow = rows.find((b: any) => b.behaviors[0].value.toolRow === 'tool-description')
+    expect(activeRow).toMatchObject({ type: 'primary' })
+    expect(activeRow.disabled).toBeUndefined()
     expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(0)
   })
 
   it('marks the active tool detail and flips it with one tap', () => {
     const summary = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
-    expect(toolDetailOf(summary).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')).toMatchObject({ disabled: true, type: 'primary' })
+    const activeDetail = toolDetailOf(summary).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')
+    expect(activeDetail).toMatchObject({ type: 'primary' })
+    expect(activeDetail.disabled).toBeUndefined()
     expect(switchesOf(summary).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning'])
 
     const full = renderDisplayCard(cardFor(ALL_ON, 'detailed'), t) as any
-    expect(toolDetailOf(full).find((b: any) => b.behaviors[0].value.toolDetail === 'full')).toMatchObject({ disabled: true, type: 'primary' })
+    expect(toolDetailOf(full).find((b: any) => b.behaviors[0].value.toolDetail === 'full')).toMatchObject({ type: 'primary' })
     // `full` brings the argument/result switches back.
     expect(switchesOf(full).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
   })
@@ -222,7 +229,7 @@ describe('renderDisplayCard', () => {
   it('marks the active truncation lengths', () => {
     const card = renderDisplayCard(cardFor(ALL_ON, 'detailed', 'tool', { lengths: { result: 3000 } }), t) as any
     expect(lengthsOf(card).filter((b: any) => b.behaviors[0].value.length === 'result').map((b: any) => b.behaviors[0].value.chars)).toEqual([500, 1000, 1500, 3000])
-    expect(lengthsOf(card).find((b: any) => b.behaviors[0].value.length === 'result' && b.behaviors[0].value.chars === 3000)).toMatchObject({ disabled: true, type: 'primary' })
+    expect(lengthsOf(card).find((b: any) => b.behaviors[0].value.length === 'result' && b.behaviors[0].value.chars === 3000)).toMatchObject({ type: 'primary' })
   })
 
   it('keeps the compact-only note out of the detailed mode', () => {
@@ -355,7 +362,9 @@ describe('startFeishuDisplay', () => {
     expect(toolRowSpy).toHaveBeenCalledWith('description')
     // In place: the same message is repainted, and the new style is the state.
     expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
-    expect(toolRowsOf(repainted(0)).find((b: any) => b.behaviors[0].value.toolRow === 'description')).toMatchObject({ disabled: true, type: 'primary' })
+    const activeRow = toolRowsOf(repainted(0)).find((b: any) => b.behaviors[0].value.toolRow === 'description')
+    expect(activeRow).toMatchObject({ type: 'primary' })
+    expect(activeRow.disabled).toBeUndefined()
     handle.stop()
   })
 
@@ -376,7 +385,7 @@ describe('startFeishuDisplay', () => {
     expect(tickSpy).toHaveBeenCalledWith(3)
     expect(channel.send).toHaveBeenCalledTimes(1)
     expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
-    expect(buttonsOf(repainted(0)).find(b => b.behaviors[0].value.tick === 3).disabled).toBe(true)
+    expect(buttonsOf(repainted(0)).find(b => b.behaviors[0].value.tick === 3).disabled).toBeUndefined()
     for (const tick of [0, 4, 5000, '3', null]) {
       await click({ messageId: 'om_1', action: { value: { p: 'display', tick } } })
     }
@@ -441,7 +450,7 @@ describe('startFeishuDisplay', () => {
     expect(levelSpy).toHaveBeenCalledWith('compact')
     expect(channel.updateCard).toHaveBeenCalledTimes(1)
     const chosen = modesOf(repainted(0)).find((b: any) => b.behaviors[0].value.mode === 'compact')
-    expect(chosen.disabled).toBe(true)
+    expect(chosen.disabled).toBeUndefined()
     expect(chosen.type).toBe('primary')
     handle.stop()
   })

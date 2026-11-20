@@ -1447,6 +1447,36 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // `/display` writes the same settings snapshot as the WebUI: work-detail
   // level, four visibility switches and elapsed-time refresh interval.
   // `showReasoning` keeps its `/reasoning show on|off` compatibility alias.
+  /**
+   * Write display settings, retrying while an HMR transaction owns the config.
+   *
+   * Every setting write goes through the config editor, which wraps itself in
+   * `hmr.runExclusive` (the profile has to be reconciled afterwards). A card tap
+   * can land while that reconciliation is still running — a plugin reload takes
+   * seconds — and the editor then rejects with `HMR transactions cannot be
+   * nested`. The write itself is valid, it just has to wait for the transaction
+   * to finish, so retry with backoff instead of surfacing a failed toggle
+   * (2026-11-20: the operator could not switch the tool detail to "full").
+   */
+  const writeDisplaySetting = async (ops: Parameters<typeof settings.mutate>[1]): Promise<void> => {
+    const delays = [300, 600, 1200, 2400]
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // `currentRevision()` on every attempt: the rejected attempt may still
+        // have moved the config revision.
+        await settings.mutate(namespace, ops, currentRevision())
+        return
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!message.includes('HMR transactions cannot be nested') || attempt >= delays.length) throw error
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, delays[attempt])
+          ;(timer as { unref?: () => void }).unref?.()
+        })
+      }
+    }
+  }
+
   const displayControl: DisplayControl = {
     get: () => {
       const current = currentSettings()
@@ -1462,7 +1492,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     getSettings: () => resolveDisplaySettings(displayInput()),
     getToolDetail: () => resolveDisplaySettings(displayInput()).tools,
     setToolDetail: (detail) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['toolDetail'], value: detail }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: ['toolDetail'], value: detail }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display tools write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -1470,7 +1500,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     getOutputFull: () => resolveDisplaySettings(displayInput()).toolOutputFull,
     setOutputFull: (full) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['toolOutputFull'], value: full }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: ['toolOutputFull'], value: full }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display output write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -1483,14 +1513,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     setPreviewChars: (field, chars) => {
       const key = field === 'args' ? 'argsPreviewChars' : 'resultPreviewChars'
-      const write = settings.mutate(namespace, [{ op: 'set', path: [key], value: chars }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: [key], value: chars }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display length write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },
     setFold: (folded) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['reasoningFold'], value: folded }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: ['reasoningFold'], value: folded }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display fold write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -1498,17 +1528,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     },
     getToolRow: () => currentSettings().compactToolRow ?? DEFAULT_COMPACT_TOOL_ROW,
     getElapsedRefreshSeconds: () => currentSettings().elapsedRefreshSeconds ?? DEFAULT_ELAPSED_REFRESH_SECONDS,
-    setElapsedRefreshSeconds: seconds => settings.mutate(namespace,
-      [{ op: 'set', path: ['elapsedRefreshSeconds'], value: seconds }], currentRevision()).then(() => undefined),
+    setElapsedRefreshSeconds: seconds => writeDisplaySetting([{ op: 'set', path: ['elapsedRefreshSeconds'], value: seconds }]).then(() => undefined),
     setLevel: (level) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['transcriptView'], value: level }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: ['transcriptView'], value: level }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display level write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },
     setToolRow: (style) => {
-      const write = settings.mutate(namespace, [{ op: 'set', path: ['compactToolRow'], value: style }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: ['compactToolRow'], value: style }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display tool-row write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -1521,7 +1550,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       // Return the promise (not `void`): the interactive card repaints from a
       // re-read, and `settings` only publishes the new snapshot once the write
       // has persisted. Both card and text command paths await the write.
-      const write = settings.mutate(namespace, [{ op: 'set', path: [field], value }], currentRevision())
+      const write = writeDisplaySetting([{ op: 'set', path: [field], value }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
