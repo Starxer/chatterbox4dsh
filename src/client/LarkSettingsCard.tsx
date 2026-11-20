@@ -151,7 +151,6 @@ export function LarkSettingsCard(props: LarkCardProps): JSX.Element | string {
           disabled: blocked || toolsOff,
           nested: true,
         })}
-        {previewCharsRow('reasoningPreviewChars', t('reasoningPreviewChars'), t('reasoningPreviewCharsHint'))}
         {previewCharsRow('resultPreviewChars', t('resultPreviewChars'), t('resultPreviewCharsHint'))}
         {previewCharsRow('argsPreviewChars', t('argsPreviewChars'), t('argsPreviewCharsHint'))}
         {/* The mode decides the card TOPOLOGY (one merged turn card vs one card

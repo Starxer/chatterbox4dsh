@@ -157,11 +157,6 @@ const DELIVER_DOC_MAX_MB = {
 * inside the card's ~30 KB budget.
 */
 const PREVIEW_CHARS = {
-	reasoningPreviewChars: {
-		min: 80,
-		max: 4e3,
-		default: 200
-	},
 	resultPreviewChars: {
 		min: 200,
 		max: 6e3,
@@ -228,7 +223,6 @@ const EDITABLE_FIELDS = [
 	"cardVideoMaxMb",
 	"cardAudioMaxMb",
 	"deliverDocMaxMb",
-	"reasoningPreviewChars",
 	"resultPreviewChars",
 	"argsPreviewChars",
 	"produceCard"
@@ -472,7 +466,6 @@ var LarkSettingsCardController = class {
 			cardVideoMaxMb: String(value?.cardVideoMaxMb ?? CARD_MEDIA_MAX_MB.cardVideoMaxMb.default),
 			cardAudioMaxMb: String(value?.cardAudioMaxMb ?? CARD_MEDIA_MAX_MB.cardAudioMaxMb.default),
 			deliverDocMaxMb: String(value?.deliverDocMaxMb ?? DELIVER_DOC_MAX_MB.default),
-			reasoningPreviewChars: String(value?.reasoningPreviewChars ?? PREVIEW_CHARS.reasoningPreviewChars.default),
 			resultPreviewChars: String(value?.resultPreviewChars ?? PREVIEW_CHARS.resultPreviewChars.default),
 			argsPreviewChars: String(value?.argsPreviewChars ?? PREVIEW_CHARS.argsPreviewChars.default),
 			produceCard: parseProduceCardMode(value?.produceCard),
@@ -525,7 +518,6 @@ function writeValue(field, form) {
 		case "cardVideoMaxMb":
 		case "cardAudioMaxMb": return clampCardMediaMaxMb(field, form[field]);
 		case "deliverDocMaxMb": return clampDeliverDocMaxMb(form.deliverDocMaxMb);
-		case "reasoningPreviewChars":
 		case "resultPreviewChars":
 		case "argsPreviewChars": return clampPreviewChars(field, form[field]);
 		case "groupAllowlist": return lines(form.groupAllowlist);
@@ -818,7 +810,6 @@ function LarkSettingsCard(props) {
 								disabled: blocked || toolsOff,
 								nested: true
 							}),
-							previewCharsRow("reasoningPreviewChars", t("reasoningPreviewChars"), t("reasoningPreviewCharsHint")),
 							previewCharsRow("resultPreviewChars", t("resultPreviewChars"), t("resultPreviewCharsHint")),
 							previewCharsRow("argsPreviewChars", t("argsPreviewChars"), t("argsPreviewCharsHint")),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [
@@ -2818,15 +2809,13 @@ const dictionaries = {
 		toolOutputFull: "工具输出不截断",
 		toolOutputFullHint: "开启后参数与结果最多显示 4 倍长度（封顶 6000 字，卡片约 30 KB 会被整张拒收）。",
 		showReasoning: "显示深度思考",
-		showReasoningHint: "步骤卡上展示模型的深度思考预览（最多 200 字）",
+		showReasoningHint: "步骤卡上展示模型的深度思考（默认折叠成面板，点开是全文）",
 		showToolCalls: "显示工具调用",
 		showToolCallsHint: "关闭后步骤卡不显示任何工具信息，只有工具的步骤不再发卡",
 		showToolArgs: "显示参数",
 		showToolArgsHint: "展示每个工具调用的入参 JSON",
 		showToolResults: "显示结果",
 		showToolResultsHint: "展示每个工具调用的结果预览",
-		reasoningPreviewChars: "深度思考预览长度（字）",
-		reasoningPreviewCharsHint: "折叠的深度思考只保留前 N 个字（默认 200，范围 80–4000）；开启「工具输出不截断」不影响它。",
 		resultPreviewChars: "工具结果预览长度（字）",
 		resultPreviewCharsHint: "单个工具结果预览的字数上限（默认 1500，范围 200–6000）；不截断时最多 4 倍（封顶 6000，卡片整体约 30KB 会被拒收）。",
 		argsPreviewChars: "工具参数预览长度（字）",
@@ -2928,15 +2917,13 @@ const dictionaries = {
 		toolOutputFull: "Untruncated tool output",
 		toolOutputFullHint: "Arguments and results show up to four times as much (hard cap 6000 characters; a card near 30 KB is refused whole).",
 		showReasoning: "Show deep thinking",
-		showReasoningHint: "Show the deep thinking block on step cards",
+		showReasoningHint: "Show the deep thinking block on step cards (folded by default; expand to read the whole chain)",
 		showToolCalls: "Show tool calls",
 		showToolCallsHint: "When off, step cards show no tool details and tool-only steps post no card",
 		showToolArgs: "Show arguments",
 		showToolArgsHint: "Show each tool call's argument JSON",
 		showToolResults: "Show results",
 		showToolResultsHint: "Show each tool call's result preview",
-		reasoningPreviewChars: "Deep thinking preview length (chars)",
-		reasoningPreviewCharsHint: "The folded deep thinking head keeps this many characters (default 200, range 80-4000).",
 		resultPreviewChars: "Tool result preview length (chars)",
 		resultPreviewCharsHint: "Character cap for one tool result preview (default 1500, range 200-6000). Untruncated output shows up to 4x, capped at 6000 because a card near 30 KB is refused whole.",
 		argsPreviewChars: "Tool arguments length (chars)",

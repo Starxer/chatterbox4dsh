@@ -61,8 +61,6 @@ export interface Config {
    * chain flat on the step card. The chain is never truncated either way.
    */
   reasoningFold?: boolean
-  /** Live thinking preview while the model is thinking (default on). */
-  reasoningPreview?: boolean
   /** What the tool section carries; unset keeps the legacy level's default. */
   toolDetail?: 'off' | 'count' | 'summary' | 'full'
   /** Whether tool payloads are carried untruncated; unset keeps the legacy default. */
@@ -89,8 +87,6 @@ export interface Config {
    * counts its own calls but never enforces a budget.
    */
   apiQuotaPerMonth?: number
-  /** Characters of the detailed level's reasoning head (see {@link PREVIEW_CHARS}). */
-  reasoningPreviewChars?: number
   /** Characters of one tool result preview (verbose shows up to 4×, hard max 6000). */
   resultPreviewChars?: number
   /** Characters of one tool-call arguments block (verbose up to 4×, hard max 6000). */
@@ -146,7 +142,6 @@ export interface Config {
  * base cap by four but never past 6000.
  */
 export const PREVIEW_CHARS = {
-  reasoningHead: { min: 80, max: 4000, default: 200 },
   result: { min: 200, max: 6000, default: 1500 },
   args: { min: 200, max: 6000, default: 2000 },
 } as const
@@ -319,8 +314,6 @@ export interface SettingsConfig extends Required<Pick<Config,
   apiQuotaPerMonth?: number
   /** Fold the thinking block (default) or show it flat; optional for partial callers. */
   reasoningFold?: boolean
-  /** Live thinking preview while the model is thinking; optional for partial callers. */
-  reasoningPreview?: boolean
   /** Tool detail override; optional for partial callers. */
   toolDetail?: 'off' | 'count' | 'summary' | 'full'
   /** Tool output truncation override; optional for partial callers. */
@@ -403,10 +396,8 @@ export const ConfigSchema = z.object({
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
   toolDetail: z.union(['off', 'count', 'summary', 'full']).volatile().description('What the tool section carries: off (counts only on compact), count (one totals line), summary (one line per call) or full (summary plus argument/result blocks). Unset keeps the value the retired level name implies, so an upgrade does not change the look.'),
   toolOutputFull: z.boolean().volatile().description('Whether tool argument/result blocks are carried untruncated (up to four times the configured preview length, hard cap 6000 characters, because a card near 30 KB is refused whole). Unset keeps the retired level name\'s value.'),
-  reasoningPreview: z.boolean().default(true).volatile().description('Show a live tail of the reasoning chain while the model is thinking; the finished block is unaffected. Off sends no streaming updates at all, which also saves Feishu API calls.'),
   reasoningFold: z.boolean().default(true).volatile().description('Fold the thinking block into a collapsed panel (default). Off shows the whole chain flat on the step card. The chain is never truncated either way: past one card it continues on follow-up cards.'),
   apiQuotaPerMonth: z.number().min(0).max(10_000_000).default(0).volatile().description('Monthly API-call quota for this app, as shown in the open-platform console (default: unset = unknown). Only used to print "this month N / quota (P%)" in /status; the plugin counts every outbound call itself and never blocks on the number.'),
-  reasoningPreviewChars: z.number().min(PREVIEW_CHARS.reasoningHead.min).max(PREVIEW_CHARS.reasoningHead.max).default(PREVIEW_CHARS.reasoningHead.default).volatile().description('Characters of the reasoning head shown (collapsed) at the detailed level. The verbose level shows the whole chain. Range 80-4000, default 200; keep it modest because every preview byte counts toward the card\'s ~30 KB budget.'),
   resultPreviewChars: z.number().min(PREVIEW_CHARS.result.min).max(PREVIEW_CHARS.result.max).default(PREVIEW_CHARS.result.default).volatile().description('Characters of one tool result preview on a step card. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 1500.'),
   argsPreviewChars: z.number().min(PREVIEW_CHARS.args.min).max(PREVIEW_CHARS.args.max).default(PREVIEW_CHARS.args.default).volatile().description('Characters of one tool call\'s arguments block. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 2000.'),
   locale: z.union(['auto', 'zh', 'en']).default('auto').volatile().description('Plugin language; auto follows the DSH browser-language preference'),
@@ -452,7 +443,6 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     elapsedRefreshSeconds: parseElapsedRefreshSeconds(readField(config.elapsedRefreshSeconds)),
     ...(quota === undefined || quota <= 0 ? {} : { apiQuotaPerMonth: Math.min(10_000_000, Math.floor(quota)) }),
     reasoningFold: readField(config.reasoningFold) ?? true,
-    reasoningPreview: readField(config.reasoningPreview) ?? true,
     // Unset must stay absent (exactOptionalPropertyTypes): the resolver reads
     // "absent" as "keep whatever the retired level name implied".
     ...(readField(config.toolDetail) === undefined
@@ -461,7 +451,6 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     ...(readField(config.toolOutputFull) === undefined
       ? {}
       : { toolOutputFull: readField(config.toolOutputFull) as boolean }),
-    reasoningPreviewChars: clampPreviewChars('reasoningHead', readField(config.reasoningPreviewChars)),
     resultPreviewChars: clampPreviewChars('result', readField(config.resultPreviewChars)),
     argsPreviewChars: clampPreviewChars('args', readField(config.argsPreviewChars)),
     cardImages: readField(config.cardImages) ?? 'workspace',

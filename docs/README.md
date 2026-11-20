@@ -14,6 +14,7 @@
 | 核查飞书组件、平台限制与实测证据 / Feishu components, limits, probe evidence | [飞书能力参考 / Feishu capability reference](<./feishu-capabilities.md>) |
 | 确认 PTC 模式下哪些卡片/统计仍然成立 / Which cards and stats still work in PTC mode | [PTC 模式适配 / PTC mode adaptation](<./ptc-mode.md>) |
 | 了解展示档位为何合并、思考块的折叠/预览/续卡目标 / Why the display levels merge, and the planned thinking block (fold, live preview, continuation cards) | [展示模型与思考块设计 / Display model & thinking block design](<./display-modes-design.md>) |
+| 想知道飞书卡片到底能不能「真流式」、怎么测的、为什么放弃 / Whether Feishu cards can stream at all, how it was measured, and why it was dropped | [流式试验记录与结论 / Streaming experiments and verdict](<./feishu-streaming-experiments.md>) |
 | 看剩余工作 / Remaining work | [待办 / TODO](<https://github.com/Starxer/chatterbox4dsh/blob/main/TODO.md>) |
 | 追溯改动与决策 / Change history | [变更记录 / Changelog](<../CHANGELOG.md>) |
 
@@ -44,7 +45,8 @@ These records preserve the original problem and alternatives; they are **not cur
 |---|---|
 | [显示控制卡 / Display controls](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-card-design.md>) | 已实现；支持 4 档并在同一张卡上更新 / Implemented; four levels, updated in place |
 | [步骤相位 / Step phases](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/step-card-phases-design.md>) | 实时流仅切相位，不逐 token 上屏 / Live frames drive phase changes, not token-by-token text |
-| [展示模型与思考块 / Display model & thinking block](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-modes-design.md>) | 方案已定、尚未实施：两模式 + 正交开关、思考块全文/续卡/预览（含逐字流式探针）/ Agreed, not implemented yet: two modes + orthogonal switches; full-text thinking block with continuation cards and a live preview (typewriter streaming pending a probe) |
+| [展示模型与思考块 / Display model & thinking block](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/display-modes-design.md>) | 2026-11-20 定稿并实现：两模式 + 正交开关（无预设）、思考块全文/续卡、流式已放弃 / Final and implemented on 2026-11-20: two modes + orthogonal switches (no presets), full-text thinking block with continuation cards, streaming dropped |
+| [流式试验记录 / Streaming experiments](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/feishu-streaming-experiments.md>) | 卡片流式的平台语义、参数边界、节奏试验与放弃理由 / Platform semantics, parameter bounds, pacing experiments and why streaming was abandoned |
 | [注入、压缩与展示对齐 / Transcript parity](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/transcript-parity-design.md>) | 已实现；顶部现状优先于历史提案 / Implemented; current summary takes precedence |
 | [最初实现计划 / Original implementation plan](<https://github.com/Starxer/chatterbox4dsh/blob/main/docs/superpowers/plans/2026-08-15-dsh-lark-channel-plugin.md>) | 历史存档；未勾选项不代表当前待办 / Historical; unchecked boxes are not an active backlog |
 

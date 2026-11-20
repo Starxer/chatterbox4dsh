@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 移除：流式推送（思考预览整块拿掉，改为整卡呈现）（`src/feishu-streaming.ts` / `src/index.ts` / `src/display-level.ts` / `src/config.ts` / `src/feishu-display.ts` / `src/commands.ts` / `src/i18n.ts` / `src/client/*`，2026-11-20）
+
+- **结论**：飞书卡片这条链路对读者是伪流式（整段替换 + 客户端打字动画），且卡片一更新客户端就把会话滚到底部、读者只能看到末尾；10ms/字 与直出的观感差别很小，20ms 才有逐字感但 945 字要 19 秒。**不值得**，全部改回整卡。
+- **删除**：`reasoningPreview` 设置与 `/display preview` 命令、`streamCardElement` / `closeCardStreaming` 通道方法、思考期状态行与元素级推送、结算等待、`reasoningPreviewChars`（思考块不是截断的，不再有「预览长度」）；
+- **保留**：思考块「全文 + 折叠面板（超 20 KB 走续卡）」、最终回答整卡直出、`/display` 的「模式 / 思考内容 / 折叠 / 工具明细 / 工具输出 / 参数与结果 / 两个截断长度 / 紧凑工具行 / 刷新间隔」；
+- **记录**：新增 [docs/feishu-streaming-experiments.md](./docs/feishu-streaming-experiments.md)，完整记下平台语义（前缀规则、无追加接口）、参数边界（`print_frequency_ms ≥ 1`、`print_step ≥ 1`、二者必须同给、策略只有 `fast|delay`、违规 `11311`）、五组节奏试验与回答卡单次推送试验的实测结果，以及「以后还想做先回答三个问题」；
+- 测试：删除预览相关用例与断言，全量 82 文件 / 1,594 用例、typecheck、build、privacy 全绿。
+
+**English**: Streaming was removed entirely. Feishu cards are pseudo-streaming for the reader (full-content replacement plus a client-side typewriter animation), every update scrolls the chat to the card's bottom so the reader only sees the tail, 10 ms/char is barely distinguishable from a direct render, and 20 ms/char needs 19 s for 945 characters. The `reasoningPreview` setting, `/display preview`, the `streamCardElement` / `closeCardStreaming` channel methods, the thinking-preview status line and element pushes, the settle wait and `reasoningPreviewChars` were all deleted. The folded full-text thinking block, the whole-card answer and the rest of the `/display` card stay. A new `docs/feishu-streaming-experiments.md` records the platform semantics (prefix rule, no append API), the measured parameter bounds (`print_frequency_ms >= 1`, `print_step >= 1`, both required, `fast|delay`, `11311` on violations), the five pacing experiments and the answer-card single-push runs, plus the three questions to answer before trying again. 82 files / 1,594 tests, typecheck, build and privacy gate green.
+
 ### 修复：快模型下预览「没流完就被刷掉」（`src/feishu-streaming.ts`，2026-11-20）
 
 - **现象**：模型思考很快（1–2 秒）时，预览的打字机动画还没播完，卡片就被结算内容替换掉了，观感像闪一下消失。

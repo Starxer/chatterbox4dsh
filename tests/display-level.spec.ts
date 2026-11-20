@@ -50,7 +50,6 @@ describe('resolveDisplaySettings', () => {
     const settings = resolveDisplaySettings({ transcriptView: 'verbose', showToolCalls: false, showReasoning: false })
     expect(settings.tools).toBe('off')
     expect(settings.reasoning).toBe('off')
-    expect(settings.reasoningPreview).toBe(false)
     expect(resolveDisplaySettings({ transcriptView: 'detailed', showToolArgs: false }).toolArgs).toBe(false)
   })
 
@@ -65,7 +64,6 @@ describe('resolveDisplaySettings', () => {
   })
 
   it('offers a bounded ladder of truncation lengths', () => {
-    expect(PREVIEW_LENGTH_CHOICES.reasoning).toContain(200)
     expect(PREVIEW_LENGTH_CHOICES.args).toContain(2000)
     expect(PREVIEW_LENGTH_CHOICES.result).toContain(1500)
   })
@@ -74,14 +72,14 @@ describe('resolveDisplaySettings', () => {
 describe('resolveDisplayPolicy', () => {
   it('maps each level onto the axes the renderer reads', () => {
     expect(resolveDisplayPolicy({ transcriptView: 'compact' })).toEqual({
-      reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'standard' })).toEqual({
-      reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(resolveDisplayPolicy({ transcriptView: 'verbose' })).toEqual({
-      reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
+      reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
     })
   })
 
@@ -90,7 +88,7 @@ describe('resolveDisplayPolicy', () => {
     // counting tool calls) instead of the WebUI's `detailed`.
     expect(DEFAULT_TRANSCRIPT_VIEW).toBe('compact')
     expect(resolveDisplayPolicy({})).toEqual({
-      reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
   })
 
@@ -99,7 +97,7 @@ describe('resolveDisplayPolicy', () => {
     // that level changed.
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(DETAILED_POLICY).toEqual({
-      reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
     })
   })
 

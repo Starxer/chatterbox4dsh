@@ -178,8 +178,6 @@ export interface Translations {
    * instead of being truncated.
    */
   stepReasoningContinued: (step: number, part: number, total: number) => string
-  /** Suffix of the live thinking preview line (`🧠 正在思考中…`). */
-  stepPreviewThinking: string
   stepMessageHeader: string
   stepToolHeader: string
   stepToolSuccess: string
@@ -542,14 +540,11 @@ export interface Translations {
   displayOutputName: (full: boolean) => string
   /** Truncation-length rows on the `/display` card. */
   displayCardLengthTitle: string
-  displayLengthName: (field: 'reasoning' | 'args' | 'result', chars: number) => string
-  displayPreviewName: (enabled: boolean) => string
+  displayLengthName: (field: 'args' | 'result', chars: number) => string
   /** Thinking-block fold row on the `/display` card. */
   displayCardFoldTitle: string
   displayCardFoldName: (folded: boolean) => string
   displayCardFoldButton: (name: string, active: boolean) => string
-  /** Live-preview switch row on the `/display` card. */
-  displayCardPreviewButton: (label: string, enabled: boolean) => string
   displayCardToolRowTitle: string
   displayCardToolRowHint: string
   /** One row style's short name (`仅工具` / `描述 + 工具` / `仅描述`). */
@@ -1018,7 +1013,6 @@ export const zh = {
 
   stepReasoningHeader: '💬 **深度思考**',
   stepReasoningContinued: (step, part, total) => `💬 深度思考（第 ${step} 步 · 续 ${part}/${total}）`,
-  stepPreviewThinking: '🧠 正在思考中…',
   stepMessageHeader: '📝 **消息**',
   stepToolHeader: '🔧 **工具调用**',
   stepToolSuccess: '成功',
@@ -1234,11 +1228,9 @@ export const zh = {
   displayToolDetailName: detail => ({ off: '关', count: '只报计数', summary: '一行摘要', full: '完整' })[detail],
   displayOutputName: full => full ? '不截断' : '截断',
   displayCardLengthTitle: '**截断长度**（字）',
-  displayLengthName: (field, chars) => `${{ reasoning: '思考预览', args: '参数', result: '结果' }[field]}：${chars}`,
-  displayPreviewName: enabled => enabled ? '预览开' : '预览关',
+  displayLengthName: (field, chars) => `${{ args: '参数', result: '结果' }[field]}：${chars}`,
   displayCardFoldTitle: '**思考块**（折叠 = 收进面板；平铺 = 直接显示）',
   displayCardFoldName: folded => folded ? '折叠' : '平铺',
-  displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}：${enabled ? '开' : '关'}`,
   displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardToolRowTitle: '**工具行**（仅「紧凑」模式）',
   displayCardToolRowHint: '_紧凑模式过程卡里，每个工具调用那一行显示什么。描述 = 模型自己写的一句 description，并非每个工具都会写。_',
@@ -1645,7 +1637,6 @@ export const en: Translations = {
 
   stepReasoningHeader: '💬 **Deep thinking**',
   stepReasoningContinued: (step, part, total) => `💬 Deep thinking (step ${step} · continued ${part}/${total})`,
-  stepPreviewThinking: '🧠 Thinking…',
   stepMessageHeader: '📝 **Message**',
   stepToolHeader: '🔧 **Tool Call**',
   stepToolSuccess: 'ok',
@@ -1867,11 +1858,9 @@ export const en: Translations = {
   displayToolDetailName: detail => ({ off: 'off', count: 'counts', summary: 'one line', full: 'full' })[detail],
   displayOutputName: full => full ? 'untruncated' : 'truncated',
   displayCardLengthTitle: '**Truncation lengths** (chars)',
-  displayLengthName: (field, chars) => `${{ reasoning: 'Thinking preview', args: 'Arguments', result: 'Result' }[field]}: ${chars}`,
-  displayPreviewName: enabled => enabled ? 'preview on' : 'preview off',
+  displayLengthName: (field, chars) => `${{ args: 'Arguments', result: 'Result' }[field]}: ${chars}`,
   displayCardFoldTitle: '**Thinking block** (fold = collapsed panel; flat = shown inline)',
   displayCardFoldName: folded => folded ? 'Folded' : 'Flat',
-  displayCardPreviewButton: (label, enabled) => `${enabled ? '✅' : '⬜'} ${label}: ${enabled ? 'on' : 'off'}`,
   displayCardFoldButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
   displayCardToolRowTitle: '**Tool row** (compact only)',
   displayCardToolRowHint: '_What one tool row of the compact progress card carries. "Description" is the model-written one-liner, which not every tool takes._',

@@ -88,8 +88,6 @@ export interface DisplayCardState {
   switches: Record<DisplayToggleKey, boolean>
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   folded: boolean
-  /** Live thinking preview switch. */
-  preview: boolean
   /** What the tool section carries. */
   toolDetail: ToolDetail
   /** Whether tool payloads are carried untruncated. */
@@ -187,12 +185,6 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
         type: 'primary',
         behaviors: [{ type: 'callback', value: { p: 'display', folded: !state.folded } }],
       },
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: t.displayCardPreviewButton(t.displayPreviewName(state.preview), state.preview) },
-        type: state.preview ? 'primary' : 'default',
-        behaviors: [{ type: 'callback', value: { p: 'display', preview: !state.preview } }],
-      },
     ]))
     elements.push({ tag: 'hr' })
     elements.push({ tag: 'markdown', content: t.displayCardToolDetailTitle })
@@ -237,7 +229,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
   // Truncation lengths: one row per field, the active choice marked.
   elements.push({ tag: 'hr' })
   elements.push({ tag: 'markdown', content: t.displayCardLengthTitle })
-  for (const field of ['reasoning', 'args', 'result'] as const) {
+  for (const field of ['args', 'result'] as const) {
     elements.push({ tag: 'markdown', content: t.displayLengthName(field, state.lengths[field]), text_size: 'notation' })
     elements.push(buttonColumns(PREVIEW_LENGTH_CHOICES[field].map(chars => {
       const active = state.lengths[field] === chars
@@ -314,11 +306,9 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       settings,
       switches: display.get(),
       folded: settings.reasoningFold,
-      preview: settings.reasoningPreview,
       toolDetail: display.getToolDetail(),
       outputFull: display.getOutputFull(),
       lengths: {
-        reasoning: display.getPreviewChars('reasoning'),
         args: display.getPreviewChars('args'),
         result: display.getPreviewChars('result'),
       },
@@ -366,17 +356,6 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
         logger.warn(`dsh-feishu: display refresh interval write failed: ${msg}`)
       }
       await repaint(messageId)
-      return
-    }
-    if (typeof parsed.preview === 'boolean') {
-      try {
-        await display.setPreview(parsed.preview)
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error)
-        logger.warn(`dsh-feishu: display preview write failed: ${msg}`)
-      }
-      await repaint(messageId)
-      console.log(`dsh-feishu: [display] preview=${String(parsed.preview)} card=${messageId}`)
       return
     }
     if (typeof parsed.folded === 'boolean') {
@@ -440,7 +419,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
     }
     const lengthField = parsed.length
     const lengthChars = parsed.chars
-    if ((lengthField === 'reasoning' || lengthField === 'args' || lengthField === 'result')
+    if ((lengthField === 'args' || lengthField === 'result')
       && typeof lengthChars === 'number') {
       try {
         await display.setPreviewChars(lengthField, lengthChars)

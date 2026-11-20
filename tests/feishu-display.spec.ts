@@ -56,7 +56,7 @@ function cardFor(
     outputFull?: boolean
     folded?: boolean
     preview?: boolean
-    lengths?: Partial<Record<'reasoning' | 'args' | 'result', number>>
+    lengths?: Partial<Record<'args' | 'result', number>>
   } = {},
 ): any {
   const settings = resolveDisplaySettings({
@@ -66,7 +66,6 @@ function cardFor(
     showToolArgs: switches.args,
     showToolResults: switches.results,
     reasoningFold: overrides.folded ?? true,
-    reasoningPreview: overrides.preview ?? true,
     ...(overrides.toolDetail === undefined ? {} : { toolDetail: overrides.toolDetail }),
     ...(overrides.outputFull === undefined ? {} : { toolOutputFull: overrides.outputFull }),
   })
@@ -75,10 +74,9 @@ function cardFor(
     settings,
     switches,
     folded: settings.reasoningFold,
-    preview: settings.reasoningPreview,
     toolDetail: settings.tools,
     outputFull: settings.toolOutputFull,
-    lengths: { reasoning: 200, args: 2000, result: 1500, ...overrides.lengths },
+    lengths: { args: 2000, result: 1500, ...overrides.lengths },
     toolRow,
   }
 }
@@ -155,7 +153,7 @@ describe('renderDisplayCard', () => {
     expect(switchesOf(card).map((b: any) => b.behaviors[0].value.key)).toEqual(['reasoning', 'args', 'results'])
     expect(toolDetailOf(card)).toHaveLength(4)
     expect(outputOf(card)).toHaveLength(2)
-    expect(lengthsOf(card)).toHaveLength(12)
+    expect(lengthsOf(card)).toHaveLength(8)
   })
 
   it('offers no inert rows in the compact mode', () => {
@@ -271,7 +269,7 @@ function makeDisplay(
   let preview = true
   let toolDetail: ToolDetail | undefined
   let outputFull: boolean | undefined
-  const lengths = { reasoning: 200, args: 2000, result: 1500 }
+  const lengths = { args: 2000, result: 1500 }
   const settings = () => resolveDisplaySettings({
     transcriptView: level,
     showReasoning: state.reasoning,
@@ -279,7 +277,6 @@ function makeDisplay(
     showToolArgs: state.args,
     showToolResults: state.results,
     reasoningFold: folded,
-    reasoningPreview: preview,
     ...(toolDetail === undefined ? {} : { toolDetail }),
     ...(outputFull === undefined ? {} : { toolOutputFull: outputFull }),
   })
@@ -296,8 +293,8 @@ function makeDisplay(
       setToolDetail: (next: ToolDetail): void => { toolDetail = next },
       getOutputFull: () => settings().toolOutputFull,
       setOutputFull: (next: boolean): void => { outputFull = next },
-      getPreviewChars: (field: 'reasoning' | 'args' | 'result'): number => lengths[field],
-      setPreviewChars: (field: 'reasoning' | 'args' | 'result', chars: number): void => {
+      getPreviewChars: (field: 'args' | 'result'): number => lengths[field],
+      setPreviewChars: (field: 'args' | 'result', chars: number): void => {
         lengthSpy(field, chars)
         lengths[field] = chars
       },

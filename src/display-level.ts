@@ -139,7 +139,6 @@ const LEGACY_DEFAULTS: Record<TranscriptView, { tools: ToolDetail; outputFull: b
 
 /** The numeric choices offered by the truncation-length rows on `/display`. */
 export const PREVIEW_LENGTH_CHOICES = {
-  reasoning: [200, 500, 1000, 2000],
   args: [500, 1000, 2000, 4000],
   result: [500, 1000, 1500, 3000],
 } as const
@@ -153,7 +152,6 @@ export interface DisplaySettings {
   mode: DisplayMode
   reasoning: ReasoningDetail
   reasoningFold: boolean
-  reasoningPreview: boolean
   tools: ToolDetail
   toolArgs: boolean
   toolResults: boolean
@@ -165,11 +163,6 @@ export interface DisplayPolicy {
   reasoning: ReasoningDetail
   /** Render the whole chain inside a collapsed panel instead of flat on the card. */
   reasoningFold: boolean
-  /**
-   * Show a live tail of the chain while the model is still thinking. Off only
-   * removes the transient preview; the settled block is unaffected.
-   */
-  reasoningPreview: boolean
   tools: ToolDetail
   /** Whether tool ARGUMENT blocks are rendered at all. */
   toolArgs: boolean
@@ -236,7 +229,6 @@ export function resolveDisplaySettings(input: {
   showToolArgs?: boolean | undefined
   showToolResults?: boolean | undefined
   reasoningFold?: boolean | undefined
-  reasoningPreview?: boolean | undefined
   toolDetail?: unknown
   toolOutputFull?: unknown
 }): DisplaySettings {
@@ -252,7 +244,6 @@ export function resolveDisplaySettings(input: {
     mode: legacyName === 'compact' ? 'compact' : 'detailed',
     reasoning,
     reasoningFold: input.reasoningFold ?? true,
-    reasoningPreview: reasoning !== 'off' && (input.reasoningPreview ?? true),
     tools,
     toolArgs: input.showToolArgs !== false,
     toolResults: input.showToolResults !== false,
@@ -280,7 +271,6 @@ export function resolveDisplayPolicy(input: Parameters<typeof resolveDisplaySett
   return {
     reasoning: compact ? 'off' : settings.reasoning,
     reasoningFold: settings.reasoningFold,
-    reasoningPreview: !compact && settings.reasoningPreview,
     tools: compact ? 'off' : settings.tools,
     toolArgs: full && settings.toolArgs,
     toolResults: full && settings.toolResults,

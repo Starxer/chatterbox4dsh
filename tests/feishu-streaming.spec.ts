@@ -475,7 +475,6 @@ function stepHarness(
     /** Work-detail level; omitted means this harness's `detailed` baseline. */
     transcriptView?: () => TranscriptView
     elapsedRefreshSeconds?: () => number
-    reasoningPreview?: () => boolean
   } = {},
   extra: {
     noteDetachedJob?: (notice: any) => void
@@ -2142,54 +2141,6 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
     h.streaming.stop()
   })
 
-  it('pushes the live reasoning tail to the streaming element, then closes it', async () => {
-    const ch: StepChannel = {
-      send: vi.fn(async () => ({ messageId: 'm-plain' })),
-      updateCard: vi.fn(async () => undefined),
-      createCardInstance: vi.fn(async () => 'card-1'),
-      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
-      updateCardInstance: vi.fn(async () => undefined),
-      streamCardElement: vi.fn(async () => true),
-      closeCardStreaming: vi.fn(async () => undefined),
-    }
-    const h = stepHarness(ch, { reasoningPreview: () => true })
-    h.emit('turn/start', { turn: 1 })
-    h.emit('step/start', { turn: 1, step: 1 })
-    await vi.waitFor(() => { expect(ch.sendCardByReference).toHaveBeenCalled() })
-
-    h.emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
-    // Only a tail worth animating is pushed (a flash of four characters that the
-    // settled card replaces is worse than waiting).
-    const thinking = '让我想想'.repeat(20)
-    h.emitStream({
-      type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
-      chunk: { type: 'reasoning-delta', text: thinking },
-    })
-    await vi.waitFor(() => { expect(ch.streamCardElement).toHaveBeenCalled() }, { timeout: 3000 })
-    const content = String(ch.streamCardElement!.mock.calls.at(-1)![2])
-    expect(content).toBe(thinking)
-    // The status line is its own element ABOVE the streamed text, so it never
-    // moves as the text grows (2026-11-20: it used to trail the text).
-    const created = ch.createCardInstance!.mock.calls[0]![0] as any
-    expect(mdOf(created)).toContain(t.stepPreviewThinking)
-    // Append-only: a second delta grows the same text instead of sliding a
-    // tail window (which made the card's height jump on every push).
-    h.emitStream({
-      type: 'chunk', attemptId: 'a1', revision: 3, index: 1, time: Date.now(),
-      chunk: { type: 'reasoning-delta', text: '再想想' },
-    })
-    await vi.waitFor(() => {
-      expect(String(ch.streamCardElement!.mock.calls.at(-1)![2])).toBe(`${thinking}再想想`)
-    }, { timeout: 3000 })
-
-    // Thinking settles: the close waits out the last animation (so a fast model
-    // does not get its preview cut mid-print) and then rewrites the card.
-    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
-    await vi.waitFor(() => { expect(ch.closeCardStreaming).toHaveBeenCalled() }, { timeout: 4000 })
-    h.streaming.stop()
-  })
-
-
   it('never walks backwards when a late reasoning delta follows text', async () => {
     const ch = channel()
     const h = stepHarness(ch)
@@ -2372,7 +2323,7 @@ describe('display levels on the step card (O22/O5)', () => {
   it('gives the verbose level the whole chain, still folded', () => {
     const long = 'y'.repeat(900)
     const card = renderStepCard(t, long, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
     const panel = panelOf(card)
     expect(panel.expanded).toBe(false)
     // The whole chain, verbatim and unfenced.
@@ -2382,7 +2333,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('shows the whole chain flat on the card when folding is turned off', () => {
     const card = renderStepCard(t, 'first line\nsecond line', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: false, reasoningPreview: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: false, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     expect(panelOf(card)).toBeUndefined()
     const md = mdOf(card)
     expect(md).toContain('first line')
@@ -2407,7 +2358,7 @@ describe('display levels on the step card (O22/O5)', () => {
     const card = renderStepCard(t, 'hidden chain', undefined, []) as any
     expect(mdOf(card)).toContain('hidden chain')
     const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     expect(mdOf(compact)).not.toContain('hidden chain')
     expect(panelOf(compact)).toBeUndefined()
   })
@@ -2421,7 +2372,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('collapses tools to one count line at the compact level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool, { ...tool, callId: 'c2', result: { ...tool.result, isError: true } }], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', reasoningFold: true, reasoningPreview: false, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, tools: 'count', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     const md = mdOf(card)
     expect(md).toContain(t.stepToolCount(2, 1))
     // No per-call lines, no args, no result blocks.
@@ -2432,7 +2383,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('names each call but carries no payload at the standard level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: true, reasoningPreview: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     const md = mdOf(card)
     expect(md).toContain('bash')
     expect(md).not.toContain(t.stepToolArgsHeader)
@@ -3413,7 +3364,7 @@ describe('preview limits', () => {
     // never truncated (2026-11-20).
     const reasoning = 'x'.repeat(500)
     const card = renderStepCard(t, reasoning, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
-      previewLimits: { reasoningHead: 120, result: 1500, args: 2000 },
+      previewLimits: { result: 1500, args: 2000 },
     }) as any
     const text = mdOf(card)
     expect(text).toContain(reasoning)
@@ -3425,7 +3376,7 @@ describe('preview limits', () => {
       toolName: 'bash', callId: 'c1', arguments: JSON.stringify({ command: 'y'.repeat(400) }), startedAt: 0,
       result: { isError: false, content: 'z'.repeat(300), elapsed: 5 },
     }], undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
-      previewLimits: { reasoningHead: 200, result: 50, args: 60 },
+      previewLimits: { result: 50, args: 60 },
     }) as any
     const blocks = codeBlocksOf(card).join('\n')
     expect(blocks).toContain('z'.repeat(50))

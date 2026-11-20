@@ -77,8 +77,6 @@ export interface DisplayControl {
   getLevel: () => TranscriptView
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   getFold: () => boolean
-  /** Whether the live thinking preview is on. */
-  getPreview: () => boolean
   /** Effective display settings (`transcriptView` mode + the switches). */
   getSettings: () => DisplaySettings
   /** Tool detail (`tools` switch); the card and `/display tools` set it. */
@@ -90,8 +88,6 @@ export interface DisplayControl {
   /** One truncation length, in characters (see `PREVIEW_CHARS`). */
   getPreviewChars: (field: PreviewLengthField) => number
   setPreviewChars: (field: PreviewLengthField, chars: number) => void | Promise<void>
-  /** Persist the preview choice. Asynchronous for the same reason as {@link set}. */
-  setPreview: (enabled: boolean) => void | Promise<void>
   /** Persist the fold choice. Asynchronous for the same reason as {@link set}. */
   setFold: (folded: boolean) => void | Promise<void>
   /** Persist the level. Asynchronous for the same reason as {@link set}. */
@@ -213,11 +209,6 @@ export interface CommandTranslations {
   readonly displayFoldName: (folded: boolean) => string
   readonly displayFoldSet: (name: string) => string
   readonly displayFoldUsage: string
-  /** Live thinking preview switch. */
-  readonly displayPreviewLabel: string
-  readonly displayPreviewName: (enabled: boolean) => string
-  readonly displayPreviewSet: (name: string) => string
-  readonly displayPreviewUsage: string
   /** Mode (two layouts) and preset (a named bundle of switches). */
   readonly displayModeLabel: string
   readonly displayModeName: (mode: 'compact' | 'detailed') => string
@@ -743,13 +734,11 @@ export async function handleDisplayCommand(
     const settings = display.getSettings()
     const lines = [
       `${t.displayModeLabel}: ${t.displayModeName(settings.mode)}`,
-      `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`
-        + ` · ${t.displayPreviewLabel}: ${t.displayPreviewName(settings.reasoningPreview)}`,
+      `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`,
       `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
       `${t.displayToolDetailLabel}: ${t.displayToolDetailName(settings.tools)}`,
       `${t.displayOutputLabel}: ${t.displayOutputName(display.getOutputFull())}`,
-      `${t.displayLengthLabel}: ${t.displayLengthName('reasoning', display.getPreviewChars('reasoning'))}`
-        + ` · ${t.displayLengthName('args', display.getPreviewChars('args'))}`
+      `${t.displayLengthLabel}: ${t.displayLengthName('args', display.getPreviewChars('args'))}`
         + ` · ${t.displayLengthName('result', display.getPreviewChars('result'))}`,
       t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
     ]
@@ -771,16 +760,6 @@ export async function handleDisplayCommand(
     }
     await display.setFold(folded)
     return { kind: 'success', text: t.displayFoldSet(t.displayFoldName(folded)) }
-  }
-  if (rawKey === 'preview') {
-    const value = rawValue === undefined ? undefined : parseDisplayValue(rawValue)
-    if (value !== undefined) {
-      await display.setPreview(value)
-      return { kind: 'success', text: t.displayPreviewSet(t.displayPreviewName(value)) }
-    }
-    return rawValue === undefined
-      ? { kind: 'success', text: `${t.displayPreviewLabel}: ${t.displayPreviewName(display.getPreview())}\n${t.displayPreviewUsage}` }
-      : { kind: 'error', text: t.displayPreviewUsage }
   }
   if (rawKey === 'tools') {
     const detail = rawValue === undefined
@@ -808,8 +787,7 @@ export async function handleDisplayCommand(
   if (rawKey === 'length') {
     const field = rawValue === 'args' || rawValue === 'argument' || rawValue === 'arguments' ? 'args'
       : rawValue === 'result' || rawValue === 'results' ? 'result'
-        : rawValue === 'reasoning' || rawValue === 'thinking' ? 'reasoning'
-          : undefined
+        : undefined
     if (field === undefined) {
       return { kind: 'error', text: t.displayLengthUsage }
     }
@@ -819,7 +797,7 @@ export async function handleDisplayCommand(
         text: `${t.displayLengthLabel}: ${t.displayLengthName(field, display.getPreviewChars(field))}\n${t.displayLengthUsage}`,
       }
     }
-    const chars = clampPreviewChars(field === 'reasoning' ? 'reasoningHead' : field, Number(extra))
+    const chars = clampPreviewChars(field, Number(extra))
     await display.setPreviewChars(field, chars)
     return { kind: 'success', text: t.displayLengthSet(t.displayLengthName(field, chars)) }
   }
