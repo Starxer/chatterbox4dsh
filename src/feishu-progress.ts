@@ -1107,6 +1107,15 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     if (stopped) return
     const turn = turns.get(sessionId)
     if (turn === undefined) return
+    // A card belongs to ONE turn and its steps are numbered inside that turn, so
+    // a step number that does not move forward means a second turn is writing
+    // into this card (the operator reported "step 11 showed as step 1",
+    // 2026-11-23). Keep rendering — the card is still the best record — but leave
+    // the evidence in the journal instead of guessing from a screenshot.
+    const previous = turn.facts.steps.at(-1)
+    if (previous !== undefined && step <= previous.step) {
+      console.warn(`dsh-feishu: [progress] step went backwards in one card: ${previous.step} -> ${step} (session ${sessionId}); a new turn may be writing into the previous turn's card`)
+    }
     turn.facts.steps.push({ step, startedAt: at, tools: [] })
     turn.facts.now = at
     const entry = cards.get(sessionId)
