@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：半开自愈不能在回合运行中重建（否则回合被当成中断并自动重发，卡片分裂/编号跳变）（`src/feishu-streaming.ts` / `src/index.ts`，2026-11-23）
+
+- **现场**（2026-11-23 20:02:52）：`inbound silent for 321s while outbound was active; rebuilding the channel` —— 半开检测在一个**正在跑的回合**里触发。回合运行期间用户当然不会发消息，"入站静默"是常态而不是故障。
+- **后果链**：重建通道 → 该回合被记为「插件卸载打断」→ 留下 pending turn → 重连后**自动重发**同一条用户消息 → 同一回合出现第二、第三张过程卡（19:58、20:03、20:06 三张），步骤编号看起来「第 1 步之后跳到第 25 步」（使用者截图 2026-11-23 20:12：35 步的回合，卡片却从第 1 步接到第 25 步）。
+- **修法**：streaming 模块暴露 `hasActiveTurn()`（有 `turn/start` 未 `turn/end` 即真）；半开检测器在**有活跃回合时直接跳过**，等回合结束、真正空闲 5 分钟后再判断。配合前两条修复（`turn/start` 无条件重置进度事实、回退步号视为新回合），卡片不会再跨回合混写。
+- 测试：新增 `hasActiveTurn` 的 turn/start→true、turn/end→false 用例；全量 82 文件 / 1,602 用例、typecheck、build、privacy 全绿。
+
+**English**: The half-open watchdog fired at 2026-11-23 20:02:52 inside a RUNNING turn (`inbound silent for 321s while outbound was active`). Inbound silence during a turn is normal — the user is waiting — and rebuilding the channel then tears the turn down: it is recorded as "interrupted by the plugin unloading", a pending turn is left behind, and the next start auto-resends the same message. That turn then grew three cards (19:58, 20:03, 20:06) and the numbers read as "step 1" followed by "step 25" on one compact card (operator's screenshot at 20:12 of a 35-step turn). The streaming module now exposes `hasActiveTurn()` (a `turn/start` without its `turn/end`), and the watchdog skips the rebuild entirely while a turn is active, only judging after the turn ends and the channel has genuinely been idle for five minutes. Together with the two earlier fixes (unconditional progress reset at `turn/start`; a backwards step number treated as a new turn) a compact card can no longer mix two turns. A `hasActiveTurn` case was added; 82 files / 1,602 tests, typecheck, build and privacy gate green.
+
 ### 修复：紧凑卡把「上一回合的步骤」与「新回合第 1 步」混在同一张卡（`src/feishu-streaming.ts` / `src/feishu-progress.ts`，2026-11-23）
 
 - **现象**：紧凑模式下，卡片上「第 11 步」之后出现了「第 1 步」——两回合的步骤编号进了同一张卡。

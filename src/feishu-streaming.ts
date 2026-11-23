@@ -537,6 +537,16 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   /** True when the newest rendered card already shows this answer text. */
   cardRendersAnswer: (sessionId: string, text: string) => boolean
   flushed: (sessionId: string) => Promise<TurnStats | undefined>
+  /**
+   * True while at least one turn is being rendered.
+   *
+   * The half-open channel watchdog must not rebuild the connection mid-turn:
+   * inbound silence while the assistant works is NORMAL (the user is waiting),
+   * and a rebuild tears the turn down — the channel records it as interrupted
+   * and the next start auto-resends the message, which is how one turn ended up
+   * with three cards and a "step 1 after step 29" jump (2026-11-23 20:02).
+   */
+  hasActiveTurn: () => boolean
 } {
   const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, toolDetail, toolOutputFull, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
   /** Live caps; read per render so a settings write needs no remount. */
@@ -2695,6 +2705,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   })
 
   return {
+    hasActiveTurn: () => [...sessionStates.values()].some(state => state.turnSeen),
     stop: () => {
       disposeListener()
       disposeStream()

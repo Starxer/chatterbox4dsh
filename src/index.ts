@@ -985,8 +985,16 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // The operator's 2026-11-20 report had 4.5 minutes of that: three ESTABLISHED
   // sockets, `curl` fine, not one inbound event. Rebuild the channel when
   // outbound was active recently but inbound has been silent for minutes.
+  // Set once the streaming module exists (it is created later in `apply`).
+  let hasActiveTurn: (() => boolean) | undefined
   const livenessTimer = setInterval(() => {
     const now = Date.now()
+    // A running turn makes inbound silence NORMAL: nobody sends messages while
+    // the assistant works. Rebuilding here would tear the turn down, record it
+    // as interrupted and auto-resend it — one turn then grows a second card and
+    // its step numbers look like they jump (2026-11-23 20:02: "step 1" after
+    // "step 29" on the same compact card).
+    if (hasActiveTurn?.() === true) return
     if (!halfOpenRebuildDue({ now, lastInboundAt, lastOutboundAt, lastRebuildAt, lastConnectedAt })) return
     lastRebuildAt = now
     const silent = lastInboundAt === 0 ? 'no inbound event yet' : `inbound silent for ${Math.round((now - lastInboundAt) / 1000)}s`
@@ -1239,6 +1247,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       produceCard: () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
     })
     stopStreaming = streamingResult.stop
+    hasActiveTurn = streamingResult.hasActiveTurn
     // The Feishu surface sentence (same shape as the Web bundle's
     // `app:web-surface`): one prompt section whose provider contributes nothing
     // for a session that is not bound to a Feishu chat.

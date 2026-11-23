@@ -2111,6 +2111,17 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
     return (ch.send as any).mock.calls.at(-1)![1].card
   }
 
+  it('reports an active turn while one is being rendered', async () => {
+    const ch = channel()
+    const h = stepHarness(ch)
+    expect(h.streaming.hasActiveTurn()).toBe(false)
+    h.emit('turn/start', { turn: 1 })
+    expect(h.streaming.hasActiveTurn()).toBe(true)
+    h.emit('turn/end', { reason: { kind: 'completed' } })
+    expect(h.streaming.hasActiveTurn()).toBe(false)
+    h.streaming.stop()
+  })
+
   it('walks placeholder → awaiting → thinking → replying on ONE card', async () => {
     const ch = channel()
     const h = stepHarness(ch)
