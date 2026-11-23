@@ -2117,10 +2117,14 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         state.turnTrigger = undefined
         // This turn is OURS to render from here on (see `TURN_SCOPED_EVENTS`).
         state.turnSeen = true
-        // `compact` draws the turn's tool activity on one card; this turn owns a
-        // new one (the previous card is a historical record — a card entity may
-        // only be sent once).
-        if (displayPolicy().turnCard) progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
+        // The turn-progress facts are reset for EVERY turn, even while the mode
+        // is `detailed`: the display policy is read live, so a turn that starts
+        // in one mode and switches mid-flight must not inherit the PREVIOUS
+        // turn's steps. Leaving them behind is how "step 11" was followed by
+        // "step 1" on one card (2026-11-23): a detailed-mode turn start skipped
+        // this reset, the stale facts survived, and switching back to compact
+        // mid-turn appended the new turn's steps to them.
+        progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
         state.turnStats = {
           turnStartTime: event.time ?? Date.now(),
           stepCount: 0,

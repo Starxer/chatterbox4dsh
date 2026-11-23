@@ -881,6 +881,34 @@ describe('createProgressCards', () => {
     expect(String(mdOf(card))).toContain('第二个文件的说明 · `read` ×2 · 200ms')
   })
 
+  it('opens a NEW card when a step number goes backwards (a second turn in one card)', async () => {
+    // Regression for the operator's "step 11 showed as step 1" (2026-11-23):
+    // a turn that started while the mode was `detailed` never reset the progress
+    // facts, so switching back to compact mid-turn appended the NEXT turn's
+    // step 1 to the previous turn's eleven steps. The controller now resets on
+    // every turn; this case covers the renderer's own guard for the same shape.
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    for (let step = 1; step <= 11; step += 1) {
+      cards.stepStarted('s1', step, step * 1_000)
+      cards.stepEnded('s1', step * 1_000 + 500)
+    }
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const stale = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(mdOf(stale)).toContain(t.turnCardStep(11, '500ms'))
+
+    // No `beginTurn` for the next one (the reported path), then step 1 arrives.
+    cards.stepStarted('s1', 1, 20_000)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const fresh = (channel.sendCardByReference.mock.calls.at(-1) as any)[1] ?? undefined
+    const freshCard = fresh === undefined
+      ? (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+      : (channel.createCardInstance.mock.calls.at(-1) as any)[0]
+    expect(mdOf(freshCard)).toContain(t.turnCardStep(1, '0ms…'))
+    expect(mdOf(freshCard)).not.toContain(t.turnCardStep(11, '500ms'))
+  })
+
   it('opens at step/start, then carries a step narration on that same card', async () => {
     vi.useFakeTimers()
     const { channel, cards } = harness()

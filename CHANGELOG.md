@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 修复：紧凑卡把「上一回合的步骤」与「新回合第 1 步」混在同一张卡（`src/feishu-streaming.ts` / `src/feishu-progress.ts`，2026-11-23）
+
+- **现象**：紧凑模式下，卡片上「第 11 步」之后出现了「第 1 步」——两回合的步骤编号进了同一张卡。
+- **根因**：回合进度事实（`progressCards.beginTurn`）只在 `turn/start` 时且**当前模式为紧凑**才重置。若某回合以「详细」开始（`turnCard=false`，不重置），之后在回合中途切回「紧凑」，该回合的 `step/start` 就会拿**上一个紧凑回合残留的 facts 和卡片**继续写：上一回合的 11 步 + 本回合第 1 步 → 同卡混号。会话日志证实 `step/start` 的编号本身是**回合内**的（两个会话共 517 个回合的首步全部为 1），所以问题在事实残留，不在编号来源。
+- **两处修复**：
+  1. `turn/start` **无条件**重置回合进度事实（不再依赖当时的显示模式）——显示模式是实时读的，回合中途切换不能继承上一回合的步骤；
+  2. 渲染层兜底：`stepStarted` 收到**回退**的步号（≤ 上一步）即视为新回合，清空 facts、丢弃旧卡并开新卡，同时打日志 `[progress] step went backwards in one card: N -> M …` 留证。
+- 测试：新增「同卡出现回退步号时只保留新回合步骤」的回归用例；全量 82 文件 / 1,601 用例、typecheck、build、privacy 全绿。
+
+**English**: On the compact card, "step 11" was followed by "step 1": two turns' numbering ended up in one card. Root cause: the turn-progress facts were reset at `turn/start` only while the mode was compact. A turn that STARTED in detailed mode (no reset) and switched back to compact mid-flight appended its own `step/start` events to the previous compact turn's facts and card — eleven steps plus the new turn's first one. Session logs confirm `step/start` numbers are per-turn (all 517 turns across both sessions start at step 1), so the numbering source is fine and the defect is the stale state. Two fixes: `turn/start` now resets the progress facts unconditionally (the display mode is read live, so a mid-turn switch must never inherit the previous turn's steps), and the renderer guards itself — a step number that does not move forward is treated as a new turn: stale facts are cleared, the old card is dropped and a fresh one opened, with `[progress] step went backwards in one card: N -> M …` in the journal as evidence. A regression case covers the mixed-numbering shape; 82 files / 1,601 tests, typecheck, build and privacy gate green.
+
 ### 修复：半开自愈重建时把消息处理器顶掉（活性信号改为单订阅者喂）+ 启动后误判（`src/channel.ts` / `src/index.ts` / `src/runtime.ts`，2026-11-20）
 
 - **根因**：SDK 的 channel 每个事件只保留**一个** handler，后注册的 `channel.on('message')` 是**替换**而不是追加。半开自愈在 19:26:29 重建通道后，`onChannelChange` 里为喂活性时间戳又订阅了一次，把 `handleInbound` 顶掉——通道 `channel up` 但消息再也没人处理；日志留下两条 `[sdk warn] handler for "message" is being overwritten`。
