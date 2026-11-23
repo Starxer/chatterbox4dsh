@@ -137,6 +137,20 @@ const CHAIN_TIMEOUT_MS = OUTBOUND_TIMEOUT_MS * 2 + 5_000
  */
 const FLUSH_TIMEOUT_MS = 120_000
 
+/**
+ * How long a turn with NO session event at all still counts as "running" for
+ * the host's half-open watchdog (`hasActiveTurn`).
+ *
+ * The watchdog skips a rebuild while a turn runs — rebuilding under a running
+ * turn tears it down and the next start auto-resends it (2026-11-23). But the
+ * veto must not be permanent: a turn that produced nothing for half an hour is
+ * not working, it is a lost `turn/end` or a host-side hang, and an
+ * unconditional veto would leave a dead inbound socket unhealed forever. The
+ * longest silent stretch a healthy turn really has is one step's model call,
+ * which is minutes at most (2026-11-23).
+ */
+export const TURN_ACTIVE_STALE_MS = 30 * 60_000
+
 /** Public deps for the unified per-step module. */
 export interface FeishuStreamingDeps {
   ctx: Context
@@ -478,8 +492,25 @@ interface SessionStepState {
    * False for a turn that began before the plugin was mounted (a reload mid-turn),
    * which is what keeps a re-mounted instance from rendering — and so duplicating
    * — the tail of a turn someone else is already answering (2026-10-15).
+   *
+   * Cleared the moment `turn/end` is handled, and read by the host's half-open
+   * watchdog (`hasActiveTurn`): rebuilding a channel under a RUNNING turn tears
+   * that turn down (2026-11-23). See {@link SessionStepState.turnEventAt} for why
+   * the veto cannot be unconditional.
    */
   turnSeen: boolean
+  /**
+   * When the last session event of the turn currently claimed by `turnSeen`
+   * arrived.
+   *
+   * The half-open watchdog vetoes a rebuild while a turn runs, but a turn that
+   * stopped producing events long ago is not running any more — it is a lost
+   * `turn/end` (or a host-side hang), and an unconditional veto would then
+   * disable the ONLY self-heal this plugin has for a dead inbound socket,
+   * forever. The veto therefore expires after
+   * {@link TURN_ACTIVE_STALE_MS} of total event silence (2026-11-23).
+   */
+  turnEventAt: number
   /**
    * The route this session is RECORDED to run (`bridge.getSessionMeta`, which
    * prefers the session log's latest `request/header` over any in-memory
@@ -545,6 +576,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * and a rebuild tears the turn down — the channel records it as interrupted
    * and the next start auto-resends the message, which is how one turn ended up
    * with three cards and a "step 1 after step 29" jump (2026-11-23 20:02).
+   *
+   * The veto EXPIRES after {@link TURN_ACTIVE_STALE_MS} without a session event
+   * (see `SessionStepState.turnEventAt`): a lost `turn/end` must not silently
+   * disable the watchdog for the rest of the process.
    */
   hasActiveTurn: () => boolean
 } {
@@ -629,6 +664,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         requestRoute: undefined,
         requestEffort: undefined,
         turnSeen: false,
+        turnEventAt: 0,
         answerOnProgressCard: false,
         sessionRoute: undefined,
         completionLines: undefined,
@@ -1649,6 +1685,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       // Not our turn (see `TURN_SCOPED_EVENTS`): the reply path of whichever
       // instance DID open it is the one that answers.
       if (!state.turnSeen && TURN_SCOPED_EVENTS.has(event.type)) return
+      // Proof of progress for the watchdog veto (see `turnEventAt`).
+      state.turnEventAt = Date.now()
 
       // `compact` opens its turn card at `turn/start`, but the level is read
       // LIVE: switching to `compact` in the middle of a turn leaves this turn
@@ -1658,9 +1696,17 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       // the next event instead, so the remainder of the turn still shows its
       // progress. `turn/end` is excluded: opening a card just to finish it
       // would post an empty extra message.
+      //
+      // The question here is "did this turn ever begin?" — NOT "is its card
+      // open". An interruption (a question card, a todo card, a steer notice)
+      // closes the segment and deletes the CURRENT card while the turn keeps
+      // running, and `beginTurn` on the next event would throw away the closed
+      // card's outcome and the facts `endSegment` deliberately keeps for the
+      // new segment (2026-11-23; the closed card then claimed to be running
+      // forever and kept its refresh timer).
       if (event.type !== 'turn/end'
         && displayPolicy().turnCard
-        && !progressCards.isOpen(sessionId)) {
+        && !progressCards.hasTurn(sessionId)) {
         progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
       }
 
@@ -2311,6 +2357,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         const repaint = (cw !== undefined && cw > 0) || (routeChanged && stepIsEmpty(state))
         if (state.stepCardSent && repaint) updateStepCard(state)
       } else if (event.type === 'turn/end') {
+        // The turn is OVER the moment this branch starts, so the watchdog veto
+        // is released here rather than at the tail: anything below that throws
+        // (a card builder, a text split) is caught by the handler's outer catch
+        // and would otherwise leave `turnSeen` true for the rest of the process
+        // — silently disabling the only self-heal for a dead inbound socket
+        // (2026-11-23).
+        state.turnSeen = false
         const turnStats = state.turnStats
         const endTime = event.time ?? Date.now()
         const failedTurn = event.data?.reason?.kind === 'error'
@@ -2501,7 +2554,6 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
         })
         resetStep(state)
-        state.turnSeen = false
       }
     } catch (eventError: unknown) {
       console.log(`dsh-feishu: streaming event handler error: ${eventError instanceof Error ? eventError.message : String(eventError)}`)
@@ -2705,7 +2757,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
   })
 
   return {
-    hasActiveTurn: () => [...sessionStates.values()].some(state => state.turnSeen),
+    hasActiveTurn: () => {
+      const now = Date.now()
+      return [...sessionStates.values()].some(state => state.turnSeen
+        && now - state.turnEventAt < TURN_ACTIVE_STALE_MS)
+    },
     stop: () => {
       disposeListener()
       disposeStream()

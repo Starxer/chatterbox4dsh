@@ -56,6 +56,32 @@ describe('halfOpenRebuildDue', () => {
     })).toBe(false)
   })
 
+  it('stays put when the bot answered a message and nobody spoke again', () => {
+    // 2026-11-23 20:47:05: the detector rebuilt a HEALTHY channel because the
+    // last card went out 48 s after the user's message and the chat was then
+    // quiet for five minutes. That is the normal shape of "answered, then
+    // idle", not a half-open socket.
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 6_000,
+      lastOutboundAt: now - CHANNEL_HALF_OPEN_SILENCE_MS + 48_000,
+      lastRebuildAt: 0,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 20_000,
+    })).toBe(false)
+  })
+
+  it('rebuilds when outbound activity kept happening inside the silence', () => {
+    // The half-open signature: the bot keeps writing for minutes while nothing
+    // comes back (a running turn's card updates, ticks, notices).
+    expect(halfOpenRebuildDue({
+      now,
+      lastInboundAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 21_000,
+      lastOutboundAt: now - 60_000,
+      lastRebuildAt: 0,
+      lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 20_000,
+    })).toBe(true)
+  })
+
   it('stays put with no outbound activity at all (an idle night is not a fault)', () => {
     expect(halfOpenRebuildDue({ now, lastInboundAt: 0, lastOutboundAt: 0, lastRebuildAt: 0, lastConnectedAt: now - CHANNEL_HALF_OPEN_SILENCE_MS - 10_000 })).toBe(false)
   })

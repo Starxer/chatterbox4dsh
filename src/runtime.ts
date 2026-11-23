@@ -119,7 +119,18 @@ export function halfOpenRebuildDue(input: {
   if (now - lastOutboundAt > CHANNEL_HALF_OPEN_ACTIVE_WINDOW_MS) return false
   // Inbound is still moving (or moved recently enough). The clock starts at the
   // LATEST of "last inbound" and "connection came up".
-  if (now - Math.max(lastInboundAt, lastConnectedAt) < CHANNEL_HALF_OPEN_SILENCE_MS) return false
+  const silenceStart = Math.max(lastInboundAt, lastConnectedAt)
+  if (now - silenceStart < CHANNEL_HALF_OPEN_SILENCE_MS) return false
+  // Outbound activity has to be INSIDE the silence, not merely recent.
+  //
+  // A bot that answered a message and was then left alone is the common case,
+  // not a fault: on 2026-11-23 the detector fired on exactly that (its 20:47:05
+  // rebuild came 48 s after the last card and 5 min after the user's message —
+  // a healthy channel, rebuilt for nothing). Half-open looks different: the
+  // bot keeps talking (card writes, ticks) for minutes while nothing comes
+  // back. Requiring the last outbound write to be at least halfway into the
+  // silence keeps that signature and drops the "replied, then quiet" one.
+  if (lastOutboundAt - silenceStart < CHANNEL_HALF_OPEN_SILENCE_MS / 2) return false
   if (lastRebuildAt !== 0 && now - lastRebuildAt < CHANNEL_HALF_OPEN_COOLDOWN_MS) return false
   return true
 }

@@ -1409,6 +1409,27 @@ describe('createProgressCards', () => {
     expect(String(mdOf(fresh))).toContain('`bash`')
   })
 
+  it('reports the turn as opened even while an interruption has its card closed', async () => {
+    // The streaming layer's lazy opener must ask `hasTurn` (does this turn
+    // exist?), not `isOpen` (is its card currently writeable?): after an
+    // interruption the turn exists but its card does not, and beginning the
+    // turn again threw away the closed card's outcome (2026-11-23).
+    const interleave = createCardInterleave()
+    const { channel, cards } = harness({ interleave })
+    expect(cards.hasTurn('s1')).toBe(false)
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.toolStarted('s1', 'read', 'c1', 10)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    expect(cards.hasTurn('s1')).toBe(true)
+    expect(cards.isOpen('s1')).toBe(true)
+    // A question card lands in the conversation: the segment closes, so there is
+    // no card to write any more — but the turn is very much still running.
+    interleave.note({ chatId: 'oc_1' })
+    expect(cards.isOpen('s1')).toBe(false)
+    expect(cards.hasTurn('s1')).toBe(true)
+  })
+
   it('keeps a closed segment\'s clock alive without adding rows to it', async () => {
     vi.useFakeTimers()
     const interleave = createCardInterleave()

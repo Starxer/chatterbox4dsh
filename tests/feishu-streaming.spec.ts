@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
-import { deriveToolSummary, progressSubtoolDetails, progressToolDetails, renderStepCard, startFeishuStreaming, uncommittedToolNames } from '../src/feishu-streaming.ts'
+import { deriveToolSummary, progressSubtoolDetails, progressToolDetails, renderStepCard, startFeishuStreaming, TURN_ACTIVE_STALE_MS, uncommittedToolNames } from '../src/feishu-streaming.ts'
 import { PROGRESS_MAX_DETAILS } from '../src/feishu-progress.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { TranscriptView } from '../src/display-level.ts'
@@ -2122,6 +2122,25 @@ describe('live phase wiring from agent/assistant-stream (O20)', () => {
     h.streaming.stop()
   })
 
+  it('lets the half-open watchdog re-arm when a "turn" stopped producing events', () => {
+    // A lost `turn/end` (or a host-side hang) must not disable the plugin's only
+    // self-heal for a dead inbound socket for the rest of the process.
+    vi.useFakeTimers()
+    try {
+      const ch = channel()
+      const h = stepHarness(ch)
+      h.emit('turn/start', { turn: 1 })
+      expect(h.streaming.hasActiveTurn()).toBe(true)
+      vi.setSystemTime(Date.now() + TURN_ACTIVE_STALE_MS / 2)
+      expect(h.streaming.hasActiveTurn()).toBe(true)
+      vi.setSystemTime(Date.now() + TURN_ACTIVE_STALE_MS)
+      expect(h.streaming.hasActiveTurn()).toBe(false)
+      h.streaming.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('walks placeholder → awaiting → thinking → replying on ONE card', async () => {
     const ch = channel()
     const h = stepHarness(ch)
@@ -2846,6 +2865,61 @@ describe('turn progress card wiring', () => {
     const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
       .find(card => isTurnCardTitle(String(card.header.title.content)))
     expect(mdOf(opened)).toContain('`bash`')
+    streaming.stop()
+  })
+
+  it('gives a card closed by an interruption its outcome instead of starting the turn over', async () => {
+    // Regression (2026-11-23): the lazy "open the turn card if it is not open
+    // yet" hook asked `isOpen()`, which is ALSO false right after an
+    // interruption closed a segment. The very next event therefore called
+    // `beginTurn()` mid-turn: it dropped the closed segment (so that card never
+    // said how the turn ended — it kept a running title and its refresh timer)
+    // and wiped the turn's facts (so the new segment lost the step that was
+    // still running, which `endSegment` deliberately keeps).
+    const interleave = createCardInterleave()
+    let created = 0
+    const ch: StepChannel = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => `card-${++created}`),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, { interleave })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(300)
+    expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
+    // A question card (any other module's message) lands mid-step.
+    interleave.note({ chatId: 'oc_1' })
+    // The turn keeps running: the same step's result, then a second step.
+    emit('tool/result', {
+      message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'out.txt' }] },
+    })
+    emit('step/end')
+    emit('step/start', { turn: 1, step: 2 })
+    emit('tool/call', { callId: 'c2', name: 'read', arguments: '{}' })
+    await tick(300)
+    emit('turn/end', { reason: { kind: 'done' } })
+    await tick(400)
+
+    const updatesOf = (cardId: string): any[] =>
+      (ch.updateCardInstance!.mock.calls)
+        .filter(call => call[0] === cardId)
+        .map(call => call[1] as any)
+    const titleOf = (card: any): string => String(card.header?.title?.content ?? '')
+    // The interrupted card is frozen at its own content, but it MUST say the
+    // turn ended (otherwise it claims to be running forever and, worse, keeps
+    // the elapsed-time timer that repaints it).
+    expect(updatesOf('card-1').map(titleOf).some(title => title.startsWith('⚙️ 本回合'))).toBe(true)
+    // The new segment keeps the step that was still running: its header and its
+    // settled row are on the fresh card even though that step started before the
+    // interruption.
+    const second = (ch.createCardInstance!.mock.calls[1] as any)[0]
+    expect(mdOf(second)).toContain('第 1 步')
+    expect(mdOf(second)).toContain('`bash`')
+    expect(mdOf(second)).toContain('第 2 步')
     streaming.stop()
   })
 

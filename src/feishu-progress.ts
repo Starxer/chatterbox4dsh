@@ -854,6 +854,17 @@ export interface ProgressCardsHandle {
   /** Whether this turn has a card on screen (used to decide who shows injections). */
   hasCard(sessionId: string): boolean
   /**
+   * Whether {@link beginTurn} has already been called for the turn that is
+   * running now.
+   *
+   * This is the "is this turn known?" question the lazy opener in the streaming
+   * layer must ask — NOT {@link isOpen}, which is also false the instant an
+   * interruption closed a segment (and asking that re-ran `beginTurn` mid-turn:
+   * it dropped the closed card's outcome and the facts `endSegment` keeps for
+   * the new segment, 2026-11-23).
+   */
+  hasTurn(sessionId: string): boolean
+  /**
    * Whether that card is still usable (a failed send marks it dead). The
    * streaming layer only repaints a pure answer onto a live card and otherwise
    * falls back to its own step card.
@@ -1528,6 +1539,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   /** Whether this turn already has a card on screen. */
   const hasCard = (sessionId: string): boolean => cards.has(sessionId)
 
+  /** Whether this turn was opened at all (see the handle doc). */
+  const hasTurn = (sessionId: string): boolean => turns.has(sessionId)
+
   /** Whether the on-screen card can still be written (see the handle doc). */
   const isOpen = (sessionId: string): boolean => {
     const entry = cards.get(sessionId)
@@ -1602,7 +1616,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   }
 
   return {
-    beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard, isOpen,
+    beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard, hasTurn, isOpen,
     toolStarted, toolFinished, subtoolStarted, subtoolFinished, stepEnded, finish, stop,
   }
 }
