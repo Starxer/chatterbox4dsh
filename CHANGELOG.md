@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 修复：问题卡超时/等待结束时不再刷成看不懂的灰色「已失效」卡（`src/feishu-questions.ts` / `src/i18n.ts`，2026-11-24）
+
+- **现场**：2026-11-24 11:21:54 发到群里的问题卡（从 `run_code` 程序里调起的 `ask_user_question`），使用者没有作答；11:31:54 请求被中止，卡片被就地刷成通用灰色卡「⬆️ 此卡片已失效 / 请使用**最新的卡片**继续」——**下面根本没有新卡**，也一个字没提「超时」，使用者读成了故障而不是「你的作答窗口关了」。
+- **取证**：会话日志 11:21:54 发卡；11:31:54 一条 `tool/ptc-dispatch` 里内层 `ask_user_question` 以 `UserQuestionError / ASK_ABORTED` 结束，**正好 600 秒**（外层程序 10 分钟执行预算到点 → 中止整段执行 → 连带中止这次提问）。所以中止原因可能是超时（工具/计时模式会带 `ASK_TIMED_OUT` / `TOOL_TIMEOUT`），也可能只是「这一轮结束了」——插件必须区分，不能一律写「超时」，也不能一律写「已失效」。
+- **修法**：为「还在等作答、结果等待结束了」这一种卡片做专用形态（保留题干与全部选项、全部未选中、零按钮、说清发生了什么）：
+  1. 中止原因带**超时分类**（`ASK_TIMED_OUT` / `TOOL_TIMEOUT` / `ETIMEDOUT`，沿 `cause` 链查找）→ 标题 `⏰ 问题已超时`（橙色），正文写明「等待作答的时间已到（已等了约 N 分钟），模型不再等了」；
+  2. 不含超时分类的普通中止 → 标题 `⌛ 问题卡已失效`（灰色），正文写明「没有收到作答就结束了（时间到或这一轮已经结束）」；
+  3. 两者都写明「**如果模型仍需要你的答案，它会再发一张新的问题卡**」，不再复用「请使用下方最新卡片」那句（中止后通常没有新卡）。
+- **顺带修掉一处同源误导**：已作答的问题卡不再被中止流程刷成「未收到作答」的样子（那会抹掉操作者真的做过的决定）；只有**网页端赢下这次请求**时才把该卡覆盖成「✅ 已在网页端处理」，与原来的双面竞速语义一致。
+- 测试：新增 4 个用例（超时分类 → `⏰ 问题已超时` 且保留题干/选项/无按钮；普通中止 → `⌛ 问题卡已失效` 且不出现旧文案；等待时长写成「约 10 分钟」；已作答的卡在普通中止时不被覆盖）；全量 82 文件 / 1,611 用例、typecheck、build、privacy 全绿。
+
+**English**: A question card that timed out (or whose wait otherwise ended) used to be rewritten with the generic grey "⬆️ this card is stale / use the **newest card** below" notice — after an abort there usually IS no newer card, and nothing said the window had closed, so the operator read it as a fault. On 2026-11-24 11:21:54 a question card posted from inside a `run_code` program went unanswered; at 11:31:54 the request was aborted and the card turned grey. The session log shows the inner `ask_user_question` ending with `UserQuestionError / ASK_ABORTED` exactly 600 s after the card went out — the PTC program's 10-minute execution budget expired and took the question with it. A timeout can therefore be provable (`ASK_TIMED_OUT` from the timed wait, `TOOL_TIMEOUT` from the tool-call timeout guard) or not (a plain turn/request abort), and the plugin must not claim either one blindly. The card that was still WAITING when the wait ended now gets its own shape, keeping the question and all its options (unmarked) with no buttons: `⏰ Question timed out` (orange) when the abort carries a timeout classification along its `cause` chain, otherwise `⌛ Question card expired` (grey); both say how long it waited and that the model will post a new card if the answer is still needed. Answered question cards are no longer repainted as "no answer arrived" by an abort — only a Web-UI win overwrites them with `✅ Handled in the Web UI`, matching the existing two-surface race semantics. Four tests added; 82 files / 1,611 tests, typecheck, build and privacy gate green.
+
 ### 修复：排查上一轮修复时发现的三个隐藏问题（被「打断」的旧卡永远停在「进行中」/ 看门狗可能被永久静音 / 空闲时误判半开）（`src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/runtime.ts`，2026-11-23）
 
 - **① 被「打断」分段的旧卡永远停在「进行中」**（真机可复现，回归用例先红后绿）：`compact` 回合里只要有别的消息插进来（问题卡、待办卡、steer 通知……），该段卡片就被冻结，下一件真事要开新卡；而「懒开卡」钩子问的是 `isOpen()`——打断后它同样是 `false`，于是**下一个事件会把 `beginTurn()` 再跑一次**：`closedSegments` 被清空（冻结的卡再也拿不到回合结局，标题一直是运行态，而且它的耗时刷新定时器还在每 5 秒重写这张卡）、`turns.facts` 被清空（`endSegment` 特意保留的「仍在跑的那一步」从新卡里消失）。

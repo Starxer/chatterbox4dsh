@@ -828,6 +828,25 @@ export interface Translations {
   /** Stand-in card left behind when a spent question card is re-sent fresh. */
   questionCardRetiredTitle: string
   questionCardRetired: string
+  /**
+   * The card a question leaves behind when the request ended without an answer
+   * and the abort carried a TIMEOUT classification (`ASK_TIMED_OUT` /
+   * `TOOL_TIMEOUT`): the reader must see that the window closed, not a generic
+   * "stale card".
+   */
+  questionTimedOutTitle: string
+  /** @param waited - optional " (waited about 10 min)" clause, empty when unknown. */
+  questionTimedOutNote: (waited: string) => string
+  /**
+   * Same card when the request was aborted but the reason carries no timeout:
+   * the wait ended (turn aborted / request cancelled), which reads differently
+   * from a timeout and must not claim one.
+   */
+  questionExpiredTitle: string
+  /** @param waited - optional " (waited about 10 min)" clause, empty when unknown. */
+  questionExpiredNote: (waited: string) => string
+  /** The " (waited about N min)" clause; `''` when the duration is unknown. */
+  questionExpiredWaited: (minutes: number) => string
   /** The question card while it waits on the confirmation card. */
   /** Stand-in card left behind when the result was posted as a new card. */
   // Background-task panel (feishu-jobs.ts)
@@ -1475,6 +1494,11 @@ export const zh = {
   questionBatchSubmittedNote: '这组回答已经交给模型，这张卡片不再接受修改。要改请在下面直接回复。',
   questionCardRetiredTitle: '已作废',
   questionCardRetired: '这张卡片已用过一次，飞书不再投递它上面的选项点击。**请使用下方新发的同一张问题卡继续作答。**',
+  questionTimedOutTitle: '⏰ 问题已超时',
+  questionTimedOutNote: waited => `等待作答的时间已到${waited}，模型那边已经不再等你的回答了，这张卡片停止受理作答。**如果模型仍需要你的答案，它会再发一张新的问题卡。**`,
+  questionExpiredTitle: '⌛ 问题卡已失效',
+  questionExpiredNote: waited => `这张问题卡${waited}没有收到作答就结束了（时间到或这一轮已经结束），它不能再作答。**如果模型仍需要你的答案，它会再发一张新的问题卡。**`,
+  questionExpiredWaited: minutes => `（已等了约 ${minutes} 分钟）`,
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: '🧩 后台任务',
   jobPanelSummary: (running, total) => `运行中 ${running} · 共 ${total} 个`,
@@ -2112,6 +2136,11 @@ export const en: Translations = {
   questionBatchSubmittedNote: 'The set has been handed to the model; this card no longer accepts changes. Reply below to change it.',
   questionCardRetiredTitle: 'Superseded',
   questionCardRetired: 'This card already delivered one tap, so Feishu no longer reports taps on its option rows. **Please answer on the fresh copy of the question below.**',
+  questionTimedOutTitle: '⏰ Question timed out',
+  questionTimedOutNote: waited => `The answer window closed${waited} and the model is no longer waiting, so this card stops accepting answers. **If your answer is still needed, the model will post a new question card.**`,
+  questionExpiredTitle: '⌛ Question card expired',
+  questionExpiredNote: waited => `This question card closed without an answer${waited} (the time window ran out or the turn ended), so it cannot be answered any more. **If your answer is still needed, the model will post a new question card.**`,
+  questionExpiredWaited: minutes => ` after about ${minutes} min`,
 
   // Background-task panel (feishu-jobs.ts)
   jobPanelTitle: '🧩 Background jobs',

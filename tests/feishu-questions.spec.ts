@@ -33,6 +33,8 @@ interface CtxHandle {
     questions: AskUserQuestionItem[],
     agent?: { session: { id: string } },
     next?: () => Promise<AskUserQuestionAnswer>,
+    /** The caller's cancellation signal (a turn abort, a tool timeout). */
+    signal?: AbortSignal,
   ) => Promise<AskUserQuestionAnswer | undefined>
   /** The request object the listener received, for signal-gate assertions. */
   lastRequest: AskUserQuestionRequest | undefined
@@ -60,12 +62,13 @@ function buildCtx(): CtxHandle {
   return {
     ctx,
     get lastRequest() { return handle.lastRequest },
-    trigger: async (sessionId, questions, agent, next) => {
+    trigger: async (sessionId, questions, agent, next, signal) => {
       const listener = listeners[0]
       if (listener === undefined) return undefined
       const request: AskUserQuestionRequest = {
         questions,
         ...(agent !== undefined ? { agent: { session: { id: sessionId } } as never } : {}),
+        ...(signal !== undefined ? { signal } : {}),
       }
       handle.lastRequest = request
       const result = await listener(request, next ?? (async () => {
@@ -1062,3 +1065,130 @@ function extractPendingId(card: Harness['sentCards'][0]['card']): string {
   if (found === undefined) throw new Error('card has no pendingId')
   return found
 }
+
+// ---------------------------------------------------------------------------
+// A question whose wait ended without an answer: the card must say WHY
+// ---------------------------------------------------------------------------
+
+/** Wait until at least `count` question cards have been posted. */
+async function waitForSentCards(harness: Harness, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (harness.sentCards.length >= count) return
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  throw new Error(`expected ${count} question card(s), got ${harness.sentCards.length}`)
+}
+
+describe('question card when the wait ends without an answer', () => {
+  it('paints an explicit timeout card when the abort carries a timeout code', async () => {
+    // Regression (2026-11-24): a question card that timed out was repainted with
+    // the generic grey "此卡片已失效 / 请使用下方最新的卡片" notice — no newer card
+    // exists after an abort, and nothing said the window had closed.
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    try {
+      const controller = new AbortController()
+      const pending = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }, undefined, controller.signal)
+      // Attach the rejection handler NOW: the abort settles this promise, and an
+      // unhandled rejection would fail the run even though the test caught it.
+      const settled = pending.catch(() => undefined)
+      await waitForSentCards(harness, 1)
+      controller.abort(Object.assign(
+        new Error('ask_user_question timed out before the user answered'),
+        { code: 'ASK_TIMED_OUT' },
+      ))
+      await settled
+      const repaint = harness.updatedCards.at(-1)!
+      expect(repaint.messageId).toBe('om_question_card')
+      const card = repaint.card as any
+      expect(card.header.title.content).toBe(t.questionTimedOutTitle)
+      expect(card.header.template).toBe('orange')
+      // The question and its options stay readable as a record; nothing is
+      // marked as chosen, and no button survives.
+      const md = card.body.elements.map((el: any) => String(el.content ?? '')).join('\n')
+      expect(md).toContain('Pick one')
+      expect(md).toContain('Yes')
+      expect(md).toContain('⬜')
+      expect(md).toContain(t.questionTimedOutNote(''))
+      expect(elementsByTag(card, 'button')).toEqual([])
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('does not claim a timeout when the abort was an ordinary one', async () => {
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    try {
+      const controller = new AbortController()
+      const pending = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }, undefined, controller.signal)
+      // Attach the rejection handler NOW: the abort settles this promise, and an
+      // unhandled rejection would fail the run even though the test caught it.
+      const settled = pending.catch(() => undefined)
+      await waitForSentCards(harness, 1)
+      controller.abort(new Error('the turn was aborted'))
+      await settled
+      const card = harness.updatedCards.at(-1)!.card as any
+      expect(card.header.title.content).toBe(t.questionExpiredTitle)
+      expect(card.header.template).toBe('grey')
+      const md = card.body.elements.map((el: any) => String(el.content ?? '')).join('\n')
+      expect(md).toContain(t.questionExpiredNote(''))
+      // The generic "use the newest card below" copy was the confusing part.
+      expect(md).not.toContain(t.cardSupersededBody)
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('leaves an answered question card alone when the turn is aborted', async () => {
+    // Answering q1 settles its card into the decision record; a later abort of
+    // the whole request must not paint "no answer arrived" over it.
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    const Q2: AskUserQuestionItem = { id: 'q2', question: 'Second?', options: [{ label: 'B' }, { label: 'C' }] }
+    try {
+      const controller = new AbortController()
+      const pending = ctxHandle.trigger('oc_session', [QUESTION, Q2], { session: { id: 'oc_session' } }, undefined, controller.signal)
+      const settled = pending.catch(() => undefined)
+      await waitForSentCards(harness, 1)
+      const rows = optionRows(harness.sentCards[0]!.card)
+      await harness.cardActionHandler!({ action: { tag: 'interactive_container', value: rowValue(rows[0]!) } })
+      await waitForSentCards(harness, 3)
+      const updatesBefore = harness.updatedCards.length
+      controller.abort(new Error('the turn was aborted'))
+      await pending.catch(() => undefined)
+      const after = harness.updatedCards.slice(updatesBefore)
+      // The waiting card (q2) gets the "wait ended" shape …
+      expect(after.some(update => (update.card as any).header?.title?.content === t.questionExpiredTitle)).toBe(true)
+      // … and q1's settled card is not touched at all.
+      expect(after.some(update => update.messageId === 'om_question_card')).toBe(false)
+    } finally {
+      stop()
+      cleanup()
+    }
+  })
+
+  it('names how long the card waited when that is worth saying', async () => {
+    vi.useFakeTimers()
+    const { harness, ctxHandle, stop, cleanup } = startHarness()
+    try {
+      const controller = new AbortController()
+      const pending = ctxHandle.trigger('oc_session', [QUESTION], { session: { id: 'oc_session' } }, undefined, controller.signal)
+      // Attach the rejection handler NOW: the abort settles this promise, and an
+      // unhandled rejection would fail the run even though the test caught it.
+      const settled = pending.catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.sentCards).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      controller.abort(new Error('the turn was aborted'))
+      await vi.advanceTimersByTimeAsync(0)
+      await settled
+      const card = harness.updatedCards.at(-1)!.card as any
+      const md = card.body.elements.map((el: any) => String(el.content ?? '')).join('\n')
+      expect(md).toContain(t.questionExpiredWaited(10))
+    } finally {
+      stop()
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+})

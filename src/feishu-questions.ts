@@ -72,6 +72,12 @@ interface PendingBatch {
   currentQuestionId: string | undefined
   /** That card's message id (only its taps count). */
   questionCardId: string | undefined
+  /**
+   * When that card was posted. The wait is part of what the reader needs to
+   * understand the card afterwards: "answered nothing for 10 minutes, then the
+   * window closed" reads very differently from "aborted instantly".
+   */
+  questionCardAt: number | undefined
   /** Receipt card per answered question (`✅ 已提交` + 返回). */
   receipts: Map<string, string>
   /** The final card that commits the whole batch. */
@@ -202,6 +208,7 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     batch: PendingBatch,
     question: AskUserQuestionItem,
     cancelCard: (question: AskUserQuestionItem) => object,
+    expiredCard: (question: AskUserQuestionItem) => object,
   ): Promise<BatchEvent> => {
     const t = getTranslations()
     const options = question.options ?? []
@@ -241,13 +248,14 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
       // Cancelled while the send was in flight: retire the card now that its id
       // is finally known.
       if (messageId !== undefined) {
-        void channel.updateCard(messageId, cancelCard(question)).catch((error: unknown) => {
+        void channel.updateCard(messageId, expiredCard(question)).catch((error: unknown) => {
           logger.warn(`dsh-feishu: failed to retire cancelled question card: ${error instanceof Error ? error.message : String(error)}`)
         })
       }
       return { kind: 'abandoned' }
     }
     batch.questionCardId = messageId
+    batch.questionCardAt = Date.now()
     return await nextEvent(batch)
   }
 
@@ -321,7 +329,14 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     chat: ConversationMessage,
     questions: readonly AskUserQuestionItem[],
     abortController: AbortController,
-    cancelCard: (question: AskUserQuestionItem) => object,
+    /**
+     * What to paint over an abandoned card. `waitedMs` is passed only for a
+     * question that was still WAITING, which is what makes the renderer pick the
+     * "wait ended / timed out" shape instead of a generic stale notice.
+     */
+    cancelCard: (question: AskUserQuestionItem, waitedMs?: number) => object,
+    /** Whether the Web UI answered the same request (then it owns the record). */
+    answeredElsewhere: () => boolean,
   ): Promise<AskUserQuestionAnswer> => {
     if (questions.length === 0) return { answers: [] }
     console.log(`dsh-feishu: [q] presenting ${questions.length} question(s) to chat=${chat.chatId} thread=${chat.threadId ?? '-'}`)
@@ -333,6 +348,7 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
       answers: new Map(),
       currentQuestionId: undefined,
       questionCardId: undefined,
+      questionCardAt: undefined,
       receipts: new Map(),
       batchCardId: undefined,
       abandoned: false,
@@ -347,12 +363,32 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
         logger.warn(`dsh-feishu: failed to retire a question card: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
-    // Abandoning the batch (a turn abort, or the Web UI answered first) must stop
-    // every card of it looking answerable.
+    /**
+     * The card of the question that is still waiting when the request ends. The
+     * wait duration (which only the batch knows) is handed to `cancelCard`,
+     * which renders the timeout shape or the "wait ended" shape.
+     */
+    const expiredCard = (question: AskUserQuestionItem): object =>
+      cancelCard(question, batch.questionCardAt === undefined ? 0 : Date.now() - batch.questionCardAt)
+    // Abandoning the batch (a turn abort, a timeout, or the Web UI answered
+    // first) must stop every card of it looking answerable.
     const onCancel = (): void => {
       abandonBatch(batch)
       const current = questions.find(question => question.id === batch.currentQuestionId) ?? questions[0]
-      if (current !== undefined) retire(batch.questionCardId, cancelCard(current))
+      if (current !== undefined) {
+        if (!batch.answers.has(current.id)) {
+          // Still waiting: say why the wait ended (timed out, or the request
+          // ended) instead of leaving a generic grey "stale card".
+          retire(batch.questionCardId, expiredCard(current))
+        } else if (answeredElsewhere()) {
+          // It got an answer, but the Web UI settled the request: the card must
+          // stop showing the Feishu pick and point at the winning surface.
+          retire(batch.questionCardId, cancelCard(current))
+        }
+        // Otherwise the answered record stays exactly as it is: a plain turn
+        // abort must not paint "this card is stale" over a decision that was
+        // really made.
+      }
       for (const question of questions) retire(batch.receipts.get(question.id), cancelCard(question))
       retire(batch.batchCardId, renderSupersededCard(getTranslations()))
       batches.delete(batch.pendingId)
@@ -373,7 +409,7 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
         while (index < questions.length && batch.answers.has(questions[index]!.id)) index += 1
         if (index < questions.length) {
           const question = questions[index]!
-          const event = await askQuestion(batch, question, cancelCard)
+          const event = await askQuestion(batch, question, cancelCard, expiredCard)
           if (event.kind === 'abandoned') break
           if (event.kind === 'undo') {
             // The card of the question we were asking is not the live one any
@@ -572,13 +608,27 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     if (upstream?.aborted === true) onUpstreamAbort()
     else upstream?.addEventListener('abort', onUpstreamAbort, { once: true })
 
-    // What to paint over an abandoned card: the generic stale card for a turn
-    // abort, or — when the Web UI won — a card that still shows which option
-    // the Web UI picked, so the chat isn't left guessing.
+    // What to paint over an abandoned card.
+    //
+    // - It was answered on the other surface: show which option the Web UI
+    //   picked, so the chat isn't left guessing.
+    // - It was still WAITING for an answer (the caller passes the wait state):
+    //   say why the wait ended — timed out, or the turn/request ended — and how
+    //   long it waited. The generic "this card was replaced, use the newest one
+    //   below" notice is doubly wrong here: usually no newer card exists, and
+    //   the operator read the grey card as a fault instead of "your window
+    //   closed" (2026-11-24).
+    // - Anything else (receipts, the commit card) keeps the generic stale card.
     let webAnswer: AskUserQuestionAnswer | undefined
-    const cancelCard = (question: AskUserQuestionItem): object => {
+    const cancelCard = (question: AskUserQuestionItem, waitedMs?: number): object => {
       const t = getTranslations()
-      if (webAnswer === undefined) return renderSupersededCard(t)
+      if (webAnswer === undefined) {
+        if (waitedMs === undefined) return renderSupersededCard(t)
+        return renderExpiredQuestionCard(question, t, {
+          timedOut: abortWasTimeout(upstream?.reason ?? abortController.signal.reason),
+          waitedMs,
+        })
+      }
       const item = webAnswer.answers.find(answer => answer.id === question.id)
       if (item === undefined) return renderAnsweredElsewhereCard(t)
       const labels = [...item.selected]
@@ -592,7 +642,10 @@ export function startFeishuQuestions(deps: FeishuQuestionsDeps): () => void {
     }
 
     try {
-      const feishu = presentQuestions(chat, request.questions, abortController, cancelCard)
+      const feishu = presentQuestions(
+        chat, request.questions, abortController, cancelCard,
+        () => webAnswer !== undefined,
+      )
         .then((answer): AnswererResult<AskUserQuestionAnswer, 'feishu'> | undefined =>
           answer.answers.length > 0 ? { via: 'feishu', value: answer } : undefined)
 
@@ -787,7 +840,7 @@ function renderSettledQuestionCard(
     } else if (skipped) {
       mdParts.push(`\n⏭️ *${t.questionSkippedLabel}*`)
     }
-  } else {
+  } else if (selected.length > 0) {
     mdParts.push(`✅ **${t.questionSelectedLabel}** ${selected.join(', ')}`)
   }
   if (variant?.note !== undefined && variant.note !== '') {
@@ -810,9 +863,63 @@ function renderSettledQuestionCard(
   }
 }
 
+/**
+ * Whether an abort reason is a TIMEOUT.
+ *
+ * Two producers exist upstream: the timed `ask_user_question` wait
+ * (`ASK_TIMED_OUT`) and the cooperative tool-call timeout guard
+ * (`TOOL_TIMEOUT`). Both reach this module as the request signal's reason, and
+ * the reason may be wrapped (an aborted tool carries its own cause chain), so
+ * walk the chain and accept either the structured code or the error name.
+ *
+ * Anything else — a turn abort, a stopped session, a disposed runtime — is NOT
+ * a timeout and must not be painted as one.
+ */
+function abortWasTimeout(reason: unknown): boolean {
+  const timeoutCodes = new Set(['ASK_TIMED_OUT', 'TOOL_TIMEOUT', 'ETIMEDOUT'])
+  let current: unknown = reason
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current === undefined || current === null || typeof current !== 'object') return false
+    const record = current as { code?: unknown; name?: unknown; cause?: unknown }
+    if (typeof record.code === 'string' && timeoutCodes.has(record.code)) return true
+    if (record.name === 'TimeoutError' || record.name === 'ToolTimeoutError') return true
+    current = record.cause
+  }
+  return false
+}
+
+/**
+ * The card a question leaves behind when the request ended before an answer
+ * arrived.
+ *
+ * It keeps the question and its options (every option unmarked) as a readable
+ * record, drops all buttons, and says WHY it stopped accepting answers: an
+ * explicit timeout when the abort carried a timeout classification, otherwise
+ * the neutral "the wait ended" wording. The generic "this card was replaced,
+ * use the newest one below" copy it replaces was doubly wrong here — usually no
+ * newer card exists, and the operator read the grey card as a fault instead of
+ * "your window closed" (2026-11-24).
+ *
+ * @param state.timedOut - whether the abort proved to be a timeout.
+ * @param state.waitedMs - how long the card waited, when that is known.
+ */
+function renderExpiredQuestionCard(
+  question: AskUserQuestionItem,
+  t: Translations,
+  state: { timedOut: boolean; waitedMs: number | undefined },
+): object {
+  // Sub-minute waits are not worth a number ("waited about 0 minutes").
+  const minutes = state.waitedMs === undefined ? 0 : Math.round(state.waitedMs / 60_000)
+  const waited = minutes >= 1 ? t.questionExpiredWaited(minutes) : ''
+  return renderSettledQuestionCard(question, [], t, {
+    title: state.timedOut ? t.questionTimedOutTitle : t.questionExpiredTitle,
+    template: state.timedOut ? 'orange' : 'grey',
+    note: state.timedOut ? t.questionTimedOutNote(waited) : t.questionExpiredNote(waited),
+  })
+}
+
 /** The answer line a receipt and the batch card show. */
-function answerText(labels: readonly string[], custom: string | undefined, t: Translations): string {
-  if (custom !== undefined && custom !== '') return `✏️ ${custom}`
+function answerText(labels: readonly string[], custom: string | undefined, t: Translations): string {  if (custom !== undefined && custom !== '') return `✏️ ${custom}`
   if (labels.length === 0) return `⏭️ ${t.questionSkippedLabel}`
   return labels.join('、')
 }
