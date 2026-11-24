@@ -2418,9 +2418,9 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('puts injection notices above everything else on the card', () => {
     const card = renderStepCard(t, 'the answer', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { injections: ['📥 注入上下文 · AGENTS.md（已更新）', '🔗 跨会话召回 · other'] }) as any
+      { injections: [`${t.injectionContext} · AGENTS.md`, `🔗 跨会话召回 · other`] }) as any
     const markdown = (card.body.elements as any[]).filter(el => el.tag === 'markdown')
-    expect(markdown[0].content).toBe('📥 注入上下文 · AGENTS.md（已更新）')
+    expect(markdown[0].content).toBe(`${t.injectionContext} · AGENTS.md`)
     expect(markdown[1].content).toBe('🔗 跨会话召回 · other')
     // Marked as notation so attributions never compete with the content.
     expect(markdown[0].text_size).toBe('notation')
@@ -2516,7 +2516,8 @@ describe('level + injection wiring through session events', () => {
     const card = lastCard(ch)
     const md = mdOf(card)
     expect(isTurnCardTitle(String(card.header.title.content))).toBe(true)
-    expect(md).toContain('@deepseek-ai/dsh-system-prompt')
+    // WebUI-aligned label: the `plugin` producer is named by its durable kind.
+    expect(md).toContain(`${t.injectionContext} · plugin`)
     expect(md).toContain(t.turnCardStepNote('narration'))
     h.streaming.stop()
   })
@@ -2532,7 +2533,7 @@ describe('level + injection wiring through session events', () => {
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
     await tick(250)
     const md = mdOf(lastCard(ch))
-    expect(md).toContain('@deepseek-ai/dsh-system-prompt')
+    expect(md).toContain(`${t.injectionContext} · plugin`)
     expect(md).toContain('answer')
     h.streaming.stop()
   })
@@ -2784,7 +2785,7 @@ describe('level + injection wiring through session events', () => {
     await tick(250)
     h.emit('user/message', { source: { kind: 'agent-instructions', form: 'instructions', changes: [{ action: 'replace', path: 'AGENTS.md' }] } })
     await tick(250)
-    expect(mdOf(lastCard(ch))).toContain('AGENTS.md（已更新）')
+    expect(mdOf(lastCard(ch))).toContain(`${t.injectionContext} · AGENTS.md`)
     h.streaming.stop()
   })
 
@@ -2800,10 +2801,10 @@ describe('level + injection wiring through session events', () => {
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
     await tick(250)
     const md = mdOf(lastCard(ch))
-    expect(md).toContain('@deepseek-ai/dsh-system-prompt')
+    expect(md).toContain(`${t.injectionContext} · plugin`)
     // Still first: the injection belongs to the request this step sends.
     const markdown = (lastCard(ch).body.elements as any[]).filter(el => el.tag === 'markdown')
-    expect(String(markdown[0].content)).toContain('@deepseek-ai/dsh-system-prompt')
+    expect(String(markdown[0].content)).toContain(`${t.injectionContext} · plugin`)
     h.streaming.stop()
   })
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 变更：上下文注入提示行的名称与 WebUI 对齐（`src/injection-notice.ts` / `src/i18n.ts`，2026-11-25）
+
+- 使用者的要求：同一个注入事件在两个界面上要读起来一致。改成照搬 WebUI 的 `ContextInjectionRow` + `contextProducer` 口径：
+  - **标题**：`上下文注入`；`session-reference` 用 `跨会话召回`（对应 WebUI 的 `role: 'recall'`）；
+  - **标签**：`session-reference` → 被召回的会话标签；`agent-instructions` → 变更的文件路径；`skill-invocation` → 技能名；**其他一律用持久化的 `kind`**（`skill-catalog` / `plugin` / `runtime-context` / `goal` / `agent-message` / `subagent-settled` / `user-approval`……，WebUI 也是这样保留未知生产者）；
+  - `form: 'notice'` 的生产者自带的一行摘要接在标签后面（WebUI 也这么显示）。
+- **删掉的旧叫法**（与 WebUI 不一致的自造词）：`✉️ 会话间消息`、`🤖 子智能体已结算`、`🎯 目标更新`、`已载入技能`、`技能目录（N 条）`、`插件 <name>`、`运行时快照`、`审批结果`、`（已载入/已新增/已更新/已移除）`、`来自会话 <id>`、`第 N 轮`；对应 13 个 i18n key 一并删除，避免两条口径漂移。
+- 测试：`tests/injection-notice.spec.ts` 全部按新口径重写（11 条），三个接线用例同步；全量 83 文件 / 1,627 用例、typecheck、build、privacy 全绿。
+
+**English**: Context-injection notice lines now use the WebUI's own wording (`ContextInjectionRow` + its `contextProducer` projection) so one injected event reads the same on both surfaces. Title = `上下文注入`, or `跨会话召回` for a `session-reference` (the WebUI's `role: 'recall'`); label = the recalled session labels, the changed instruction paths, the skill name, and — for every other producer — the durable `kind` (`skill-catalog`, `plugin`, `runtime-context`, `goal`, `agent-message`, `subagent-settled`, `user-approval`, …, which is how the WebUI keeps an unknown producer visible); a `form: 'notice'` producer's own one-line summary follows the label, exactly where the WebUI shows it. The old invented names (`会话间消息`, `子智能体已结算`, `目标更新`, `已载入技能`, `技能目录（N 条）`, `插件 <name>`, `运行时快照`, `审批结果`, the four action words, `来自会话 <id>`, `第 N 轮`) and their 13 i18n keys were removed so the two vocabularies cannot drift apart again. `tests/injection-notice.spec.ts` was rewritten to the new wording (11 cases) and three wiring tests updated; 83 files / 1,627 tests, typecheck, build and privacy gate green.
+
 ### 修复：紧凑模式下一堆空白「回复 · 第 N 步」步骤卡（`src/feishu-streaming.ts`，2026-11-25）
 
 - **现场**：02:15 插件被热重载（我这边跑 `npm run build` 触发）后，聊天里出现一串**空白**的 `回复 · 第 504 轮 · 第 12/14/17/21 步` 卡片。

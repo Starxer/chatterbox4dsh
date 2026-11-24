@@ -4,9 +4,22 @@
  * A DSH context injection is a durable `user/message` whose
  * `data.source.kind` is anything but `user` (the `MessageSourceMap` is
  * merge-extensible, so the set is open — 0.2.0-rc.1 has 17 real producers).
- * The WebUI renders each one as a collapsed row titled by its producer; this
- * module reduces the same metadata to a single line, which the owning step card
- * carries at the very top (see `docs/transcript-parity-design.md` §1.5).
+ * The WebUI renders each one as a collapsed row; this module reduces the same
+ * metadata to a single line, which the owning step card carries at the very top
+ * (see `docs/transcript-parity-design.md` §1.5).
+ *
+ * **The wording follows the WebUI's own row** (`ui-chat`'s
+ * `ContextInjectionRow` + its `contextProducer` projection), because the same
+ * event should read the same on both surfaces (operator's request, 2026-11-25):
+ *
+ * - title = the role the context plays — `上下文注入`, or `跨会话召回` for a
+ *   `session-reference`;
+ * - label = the producer: the recalled session labels for a recall, the changed
+ *   paths for `agent-instructions`, the skill name for `skill-invocation`, and
+ *   the durable `kind` for everything else (the WebUI deliberately keeps an
+ *   unknown producer visible by its kind);
+ * - a `form: 'notice'` producer's own one-line `summary` follows the label —
+ *   that is the text the WebUI shows WITHOUT expanding the row.
  *
  * The injected CONTENT never reaches a card: it is model-facing text (6.2k
  * characters for one `AGENTS.md` baseline, measured 2026-09-28) and the user
@@ -35,40 +48,11 @@ const SILENT_KINDS = new Set(['user', 'compact-checkpoint', 'tool-jobs'])
 /** Longest `form: 'notice'` summary carried onto a card, in characters. */
 const NOTICE_SUMMARY_CAP = 100
 
-/**
- * The action label for an `agent-instructions` injection, using the WebUI's
- * own wording (`instructionAction(action, baseline)`).
- *
- * A `baseline` injection is the complete startup/resume set, so "已载入" is the
- * honest verb even though every change in it is a `set`.
- */
-function instructionAction(t: Translations, source: Record<string, unknown>): string {
-  if (source.baseline === true) return t.injectionActionLoaded
-  const action = Array.isArray(source.changes)
-    ? (source.changes[0] as { action?: unknown } | undefined)?.action
-    : undefined
-  switch (action) {
-    case 'replace': return t.injectionActionUpdated
-    case 'remove': return t.injectionActionRemoved
-    case 'set': return t.injectionActionAdded
-    // An unreadable action is reported as an update rather than a new file:
-    // claiming "已新增" for a reconciliation we could not read would be wrong.
-    default: return t.injectionActionUpdated
-  }
-}
-
 /** @returns the non-empty string fields of one record, in order. */
 function stringField(value: unknown, key: string): string | undefined {
   if (value === null || typeof value !== 'object') return undefined
   const field = (value as Record<string, unknown>)[key]
   return typeof field === 'string' && field !== '' ? field : undefined
-}
-
-/** @returns a positive integer field, or undefined. */
-function countField(value: unknown, key: string): number | undefined {
-  if (value === null || typeof value !== 'object') return undefined
-  const field = (value as Record<string, unknown>)[key]
-  return typeof field === 'number' && Number.isFinite(field) && field > 0 ? Math.trunc(field) : undefined
 }
 
 /** @returns the distinct `path` values of an `agent-instructions` change list. */
@@ -99,6 +83,33 @@ function clipSummary(summary: string): string {
 }
 
 /**
+ * The producer label, exactly as the WebUI's `contextProducer()` names it.
+ *
+ * `session-reference` names the recalled sessions, `agent-instructions` the
+ * changed files, `skill-invocation` the skill — and every other kind keeps its
+ * durable name. An unreadable label falls back to the kind for the same reason
+ * the WebUI does: the producer must stay visible even when its details are not.
+ */
+function producerLabel(kind: string, source: Record<string, unknown>): string {
+  switch (kind) {
+    case 'session-reference': {
+      const labels = referenceLabels(source)
+      return labels.length === 0 ? kind : labels.join('、')
+    }
+    case 'agent-instructions': {
+      const paths = instructionPaths(source)
+      return paths.length === 0 ? kind : paths.join('、')
+    }
+    case 'skill-invocation': {
+      const name = stringField(source, 'name')
+      return name ?? kind
+    }
+    default:
+      return kind
+  }
+}
+
+/**
  * Render the notice line for one injected message.
  *
  * @param source - the event's `data.source` (any shape; nothing is trusted).
@@ -112,61 +123,14 @@ export function injectionNotice(source: unknown, t: Translations): string | unde
   const kind = record.kind
   if (typeof kind !== 'string' || kind === '' || SILENT_KINDS.has(kind)) return undefined
 
-  // A `form: 'notice'` producer (model-selection, plan-mode, …) already ships a
-  // one-line human summary — the same text the WebUI shows WITHOUT expanding the
-  // row — so it is the right thing to print. This is metadata, not content.
-  const form = record.form
+  const parts = [
+    kind === 'session-reference' ? t.injectionRecall : t.injectionContext,
+    producerLabel(kind, record),
+  ]
+  // A `form: 'notice'` producer (model-selection, plan-mode, a settled subagent,
+  // …) ships the one line the WebUI shows without expanding the row. Metadata,
+  // never content.
   const summary = stringField(record, 'summary')
-
-  switch (kind) {
-    case 'agent-instructions': {
-      const paths = instructionPaths(record)
-      if (paths.length === 0) return t.injectionContext
-      return `${t.injectionContext} · ${paths.join('、')}（${instructionAction(t, record)}）`
-    }
-    case 'skill-catalog': {
-      const entries = Array.isArray(record.entries) ? record.entries.length : 0
-      return `${t.injectionContext} · ${t.injectionSkillCatalog(entries)}`
-    }
-    case 'plugin': {
-      const name = stringField(record, 'plugin')
-      return name === undefined
-        ? t.injectionContext
-        : `${t.injectionContext} · ${t.injectionPlugin(name)}`
-    }
-    case 'runtime-context':
-      return `${t.injectionContext} · ${t.injectionRuntimeSnapshot}`
-    case 'session-reference': {
-      const labels = referenceLabels(record)
-      return labels.length === 0 ? t.injectionRecall : `${t.injectionRecall} · ${labels.join('、')}`
-    }
-    case 'skill-invocation': {
-      const name = stringField(record, 'name')
-      return name === undefined ? t.injectionSkillLoaded : `${t.injectionSkillLoaded} · ${name}`
-    }
-    case 'agent-message': {
-      const sender = stringField(record, 'senderSessionId')
-      return sender === undefined ? t.injectionRelay : `${t.injectionRelay} · ${t.injectionFromSession(sender)}`
-    }
-    case 'subagent-settled': {
-      // Deliberately NOT the summary: it is a sentence about the subagent's work,
-      // not an attribution, and the id is what identifies it.
-      const sender = stringField(record, 'senderSessionId')
-      return sender === undefined ? t.injectionSubagent : `${t.injectionSubagent} · ${t.injectionFromSession(sender)}`
-    }
-    case 'goal': {
-      const round = countField(record, 'round')
-      return round === undefined ? t.injectionGoal : `${t.injectionGoal} · ${t.injectionRound(round)}`
-    }
-    case 'user-approval':
-      return `${t.injectionContext} · ${t.injectionApproval}`
-    default:
-      // Unknown producer: name the kind only. A `notice`-form producer's own
-      // one-liner is safe to show (it is written for exactly this purpose) and
-      // is far more useful than a bare kind name.
-      if (form === 'notice' && summary !== undefined) {
-        return `${t.injectionContext} · ${clipSummary(summary)}`
-      }
-      return `${t.injectionContext} · ${kind}`
-  }
+  if (record.form === 'notice' && summary !== undefined) parts.push(clipSummary(summary))
+  return parts.join(' · ')
 }
