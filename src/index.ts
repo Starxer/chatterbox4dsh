@@ -261,7 +261,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   refreshLocale()
   // Same pattern for the `/status` card's API counter: the card is rendered by
   // the module-level `executeSlashCommand`, which never sees `apiUsage`.
-  setActiveApiUsage(() => ({ ...apiUsage.snapshot(), quota: currentSettings().apiQuotaPerMonth ?? 0 }))
+  setActiveApiUsage(() => apiUsage.snapshot())
 
   // The bridge is recreated every time the Lark channel reconciles; hold it
   // in a single-cell so the `/model` command always reaches the bridge that
@@ -1829,7 +1829,6 @@ interface ApiUsageLike {
   month: number
   today: number
   labels: ReadonlyArray<{ label: string; count: number }>
-  quota?: number | undefined
 }
 
 /** Render the /status result as a Feishu interactive card. */
@@ -1869,16 +1868,13 @@ export function renderStatusCard(meta: {
     fields.push(`**${t.statusContextLabel}:** ${t.statusContextLine(formatTokenCount(meta.lastInputTokens), formatTokenCount(meta.contextWindow), pct)}`)
   }
   if (apiUsage !== undefined) {
-    const quota = apiUsage.quota !== undefined && apiUsage.quota > 0 ? apiUsage.quota : 0
-    const quotaText = quota > 0
-      ? ` / ${formatTokenCount(quota)} (${Math.min(100, Math.round(apiUsage.month / quota * 100))}%)`
-      : ''
     const labels = apiUsage.labels.length === 0
       ? ''
       : ` · ${apiUsage.labels.map(item => `${item.label} ${item.count}`).join(' · ')}`
-    fields.push(t.statusApiLine(
-      formatTokenCount(apiUsage.month), quotaText, formatTokenCount(apiUsage.today), labels,
-    ))
+    // No "/ 1M (35%)": this counter only sees THIS plugin's calls, while the
+    // app's monthly quota is shared with every other consumer of the app — a
+    // percentage here would read as a budget gauge it cannot know (2026-11-24).
+    fields.push(t.statusApiLine(formatTokenCount(apiUsage.month), formatTokenCount(apiUsage.today), labels))
   }
   if (agentRunning) {
     fields.push('')

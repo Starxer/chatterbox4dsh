@@ -27,14 +27,15 @@ function formatDuration(ms: number): string {
  * enforces a budget.
  */
 function formatApiUsageLine(usage: ApiUsageSnapshot & { quota?: number }, zh: boolean): string {
-  const quota = usage.quota !== undefined && usage.quota > 0 ? usage.quota : 0
-  const percent = quota > 0 ? ` (${Math.min(100, Math.round(usage.month / quota * 100))}%)` : ''
+  // The quota is intentionally NOT rendered: this counter only sees the plugin's
+  // own calls, while the app's monthly quota is shared with other consumers, so a
+  // percentage would misrepresent the budget (operator's call, 2026-11-24).
   const busy = usage.labels.length === 0
     ? ''
     : ` · ${usage.labels.map(item => `${item.label} ${item.count}`).join(' · ')}`
   return zh
-    ? `• 飞书 API：本月 ${formatTokenCount(usage.month)}${quota > 0 ? ` / ${formatTokenCount(quota)}${percent}` : ''} 次 · 今天 ${formatTokenCount(usage.today)} 次${busy}`
-    : `• Feishu API: ${formatTokenCount(usage.month)}${quota > 0 ? ` / ${formatTokenCount(quota)}${percent}` : ''} this month · ${formatTokenCount(usage.today)} today${busy}`
+    ? `• 飞书 API（本插件计数）：本月 ${formatTokenCount(usage.month)} 次 · 今天 ${formatTokenCount(usage.today)} 次${busy}`
+    : `• Feishu API (this plugin): ${formatTokenCount(usage.month)} this month · ${formatTokenCount(usage.today)} today${busy}`
 }
 
 /** Simplified-Chinese implementation of `CommandTranslations`. */

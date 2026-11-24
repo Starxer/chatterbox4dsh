@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：`/status` 的飞书 API 计数不再显示额度分母（只统计本插件自己的调用）（`src/i18n.ts` / `src/index.ts` / `src/commands-i18n.ts` / `src/config.ts`，2026-11-24）
+
+- 使用者的判断：这个计数器只统计**本插件**发出的调用，而应用的月度额度是**多个用途共用**的 —— 印成 `350.9K / 1M (35%)` 会被读成「预算已用掉 35%」，而真实占比我们并不知道。
+- 改法：`/status` 那行改成 `**飞书 API（本插件计数）:** 本月 350.9K 次 · 今天 235.8K 次 · <按调用点拆分>`，**不出现分母和百分比**；命令运行时那条同文案（`formatApiUsageLine`）一并改掉，避免以后又冒出来。
+- `apiQuotaPerMonth` 设置项**保留但不再参与任何渲染**，说明文字改为「仅留档，不再显示」。已在 profile 里配过 100 万也不会报错。
+- 测试：`tests/status-card.spec.ts` 断言计数行存在、且卡片里不出现 `1M` 或 `(N%)`；全量 83 文件 / 1,615 用例、typecheck、build、privacy 全绿。
+
+**English**: The `/status` API counter now renders `**Feishu API (this plugin):** 350.9K this month · 235.8K today · <breakdown>` with **no quota denominator and no percentage** — the counter only sees calls THIS plugin makes, while the app's monthly quota is shared with every other consumer, so "350.9K / 1M (35%)" read as a budget gauge it cannot know (operator's call, 2026-11-24). The same wording in `formatApiUsageLine` (the command-runtime path) was changed too so it cannot reappear. `apiQuotaPerMonth` is kept in the config schema but is no longer rendered anywhere ("kept for reference only"), so an existing value of 1,000,000 in the profile keeps validating. `tests/status-card.spec.ts` asserts the counter line exists and that neither `1M` nor a `(N%)` appears; 83 files / 1,615 tests, typecheck, build and privacy gate green.
+
 ### 修复：`/status` 卡片没有 API 用量计数（走的是另一条渲染路径）（`src/index.ts` / `src/i18n.ts`，2026-11-24）
 
 - **现场**：使用者按我上一轮说的去 `/status` 看今日调用数，卡片里没有这一行。

@@ -22,7 +22,6 @@ const meta = {
 const usage = {
   month: 350_911,
   today: 235_762,
-  quota: 1_000_000,
   labels: [
     { label: 'update card instance', count: 348_740 },
     { label: 'send message', count: 81 },
@@ -48,7 +47,11 @@ describe('renderStatusCard', () => {
     // not by the command runtime, so it used to render WITHOUT the call counter —
     // the operator asked why the number I quoted was nowhere on the card.
     const md = markdownOf(renderStatusCard(meta, false, undefined, undefined, t, usage))
-    expect(md).toContain(t.statusApiLine('350.9K', ' / 1M (35%)', '235.8K', ' · update card instance 348740 · send message 81'))
+    expect(md).toContain(t.statusApiLine('350.9K', '235.8K', ' · update card instance 348740 · send message 81'))
+    // No quota denominator: the counter only sees this plugin's calls while the
+    // app's monthly quota is shared with other consumers (operator, 2026-11-24).
+    expect(md).not.toContain('1M')
+    expect(md).not.toMatch(/\(\d+%\)/)
     // The rest of the card is untouched.
     expect(md).toContain(t.statusContextLabel)
     expect(md).toContain(meta.model)

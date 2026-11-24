@@ -449,13 +449,17 @@ export interface Translations {
   statusContextLabel: string
   statusContextLine: (used: string, total: string, pct: number) => string
   /**
-   * The Feishu API counter line of the `/status` card: this month against the
-   * configured quota, today's calls, and the per-call-site breakdown.
+   * The Feishu API counter line of the `/status` card: this plugin's own calls,
+   * this month and today, plus the per-call-site breakdown.
    *
-   * @param quota - the " / 1M (35%)" suffix, empty when no quota is configured.
+   * Deliberately NO quota denominator: the plugin only counts the calls IT makes,
+   * while the app's monthly quota is shared with every other consumer of that
+   * app — printing "350K / 1M (35%)" reads as "35% of the budget is gone" when
+   * the real share is unknown (operator's call, 2026-11-24).
+   *
    * @param labels - the "label: n · …" breakdown, empty when nothing was counted.
    */
-  statusApiLine: (month: string, quota: string, today: string, labels: string) => string
+  statusApiLine: (month: string, today: string, labels: string) => string
 
   // ---- Misc shared ----
   cancel: string
@@ -1204,7 +1208,7 @@ export const zh = {
   statusTokensLine: (input, output) => `${input} 输入 · ${output} 输出`,
   statusContextLabel: '上下文',
   statusContextLine: (used, total, pct) => `${used} / ${total}（${pct}%）`,
-  statusApiLine: (month, quota, today, labels) => `**飞书 API:** 本月 ${month}${quota} 次 · 今天 ${today} 次${labels}`,
+  statusApiLine: (month, today, labels) => `**飞书 API（本插件计数）:** 本月 ${month} 次 · 今天 ${today} 次${labels}`,
 
   cancel: '取消',
   confirm: '确认',
@@ -1846,7 +1850,7 @@ export const en: Translations = {
   statusTokensLine: (input, output) => `${input} in · ${output} out`,
   statusContextLabel: 'Context',
   statusContextLine: (used, total, pct) => `${used} / ${total} (${pct}%)`,
-  statusApiLine: (month, quota, today, labels) => `**Feishu API:** ${month}${quota} this month · ${today} today${labels}`,
+  statusApiLine: (month, today, labels) => `**Feishu API (this plugin):** ${month} this month · ${today} today${labels}`,
 
   cancel: 'Cancel',
   confirm: 'Confirm',
