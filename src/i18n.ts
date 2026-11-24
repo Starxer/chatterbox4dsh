@@ -333,13 +333,26 @@ export interface Translations {
   // One line per injected context message, carried at the TOP of the step card
   // that claims it. Only `source` metadata is ever rendered, never the injected
   // content (see docs/transcript-parity-design.md §1.5).
-  /**
-   * Title of an injected-context notice, worded exactly like the WebUI's own
-   * row (`上下文注入`); the producer label follows it.
-   */
+  /** Generic prefix, e.g. `📥 注入上下文`. */
   injectionContext: string
-  /** Title for a cross-session recall (`跨会话召回`), the WebUI's `role: 'recall'`. */
   injectionRecall: string
+  injectionRelay: string
+  injectionSubagent: string
+  injectionGoal: string
+  injectionSkillLoaded: string
+  /** `（N 条）` suffix naming a skill catalog's entry count. */
+  injectionSkillCatalog: (entries: number) => string
+  /** Names the plugin package a `plugin` injection re-declared. */
+  injectionPlugin: (name: string) => string
+  injectionRuntimeSnapshot: string
+  injectionApproval: string
+  /** The four `agent-instructions` actions, worded as the WebUI words them. */
+  injectionActionLoaded: string
+  injectionActionAdded: string
+  injectionActionUpdated: string
+  injectionActionRemoved: string
+  injectionFromSession: (sessionId: string) => string
+  injectionRound: (round: number) => string
 
   // ---- Compaction card (feishu-compaction.ts) ----
   compactionCardTitleStart: string
@@ -1140,6 +1153,20 @@ export const zh = {
   // 上下文注入提示行（injection-notice.ts）：只报来源，不显示注入内容。
   injectionContext: '📥 上下文注入',
   injectionRecall: '🔗 跨会话召回',
+  injectionRelay: '✉️ 会话间消息',
+  injectionSubagent: '🤖 子智能体已结算',
+  injectionGoal: '🎯 目标更新',
+  injectionSkillLoaded: '📥 已载入技能',
+  injectionSkillCatalog: entries => `技能目录（${entries} 条）`,
+  injectionPlugin: name => `插件 ${name}`,
+  injectionRuntimeSnapshot: '运行时快照',
+  injectionApproval: '审批结果',
+  injectionActionLoaded: '已载入',
+  injectionActionAdded: '已新增',
+  injectionActionUpdated: '已更新',
+  injectionActionRemoved: '已移除',
+  injectionFromSession: sessionId => `来自会话 ${sessionId}`,
+  injectionRound: round => `第 ${round} 轮`,
 
   // 压缩卡（feishu-compaction.ts）
   compactionCardTitleStart: '🗜️ 正在压缩上下文…',
@@ -1770,7 +1797,21 @@ export const en: Translations = {
   // Context-injection notices (injection-notice.ts): attribution only, never the
   // injected content.
   injectionContext: '📥 Context injection',
-  injectionRecall: '🔗 Session recall',
+  injectionRecall: '🔗 Cross-session recall',
+  injectionRelay: '✉️ Inter-session message',
+  injectionSubagent: '🤖 Subagent settled',
+  injectionGoal: '🎯 Goal updated',
+  injectionSkillLoaded: '📥 Skill loaded',
+  injectionSkillCatalog: entries => `skill catalog (${entries})`,
+  injectionPlugin: name => `plugin ${name}`,
+  injectionRuntimeSnapshot: 'runtime snapshot',
+  injectionApproval: 'approval result',
+  injectionActionLoaded: 'loaded',
+  injectionActionAdded: 'added',
+  injectionActionUpdated: 'updated',
+  injectionActionRemoved: 'removed',
+  injectionFromSession: sessionId => `from session ${sessionId}`,
+  injectionRound: round => `round ${round}`,
 
   // Compaction card (feishu-compaction.ts)
   compactionCardTitleStart: '🗜️ Compacting context…',

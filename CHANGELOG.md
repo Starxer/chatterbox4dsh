@@ -2,16 +2,14 @@
 
 ## Unreleased
 
-### 变更：上下文注入提示行的名称与 WebUI 对齐（`src/injection-notice.ts` / `src/i18n.ts`，2026-11-25）
+### 回退：上下文注入提示行恢复可读中文叫法（上一版照搬裸 `kind` 太生硬）（`src/injection-notice.ts` / `src/i18n.ts`，2026-11-25）
 
-- 使用者的要求：同一个注入事件在两个界面上要读起来一致。改成照搬 WebUI 的 `ContextInjectionRow` + `contextProducer` 口径：
-  - **标题**：`上下文注入`；`session-reference` 用 `跨会话召回`（对应 WebUI 的 `role: 'recall'`）；
-  - **标签**：`session-reference` → 被召回的会话标签；`agent-instructions` → 变更的文件路径；`skill-invocation` → 技能名；**其他一律用持久化的 `kind`**（`skill-catalog` / `plugin` / `runtime-context` / `goal` / `agent-message` / `subagent-settled` / `user-approval`……，WebUI 也是这样保留未知生产者）；
-  - `form: 'notice'` 的生产者自带的一行摘要接在标签后面（WebUI 也这么显示）。
-- **删掉的旧叫法**（与 WebUI 不一致的自造词）：`✉️ 会话间消息`、`🤖 子智能体已结算`、`🎯 目标更新`、`已载入技能`、`技能目录（N 条）`、`插件 <name>`、`运行时快照`、`审批结果`、`（已载入/已新增/已更新/已移除）`、`来自会话 <id>`、`第 N 轮`；对应 13 个 i18n key 一并删除，避免两条口径漂移。
-- 测试：`tests/injection-notice.spec.ts` 全部按新口径重写（11 条），三个接线用例同步；全量 83 文件 / 1,627 用例、typecheck、build、privacy 全绿。
+- 使用者的反馈：直接接官方行标题的「原生 kind」写法（`上下文注入 · plugin` / `skill-catalog` / `runtime-context` / `goal` / `user-approval`）很生硬，旧的可读叫法更好。
+- **复查官方到底有哪些柔和说法**：`ui-chat` 的本地化里，注入相关的词只有两组——**行标题**「上下文注入 / 跨会话召回」，和**展开正文**里的 `message.context.*`：`已载入 / 已新增 / 已更新 / 已移除`（instructions）、`来自会话 {session}`（relay）、`替换目录` · `…还有 N 条`（catalog）、`取代先前的快照`（snapshot）、`保留 N 条 · 省略 M 条` · `已截断`（recall）。**`plugin` / `runtime-context` / `goal` / `user-approval` / `subagent-settled` 这些官方根本没有中文名，只有裸 `kind`。**
+- 所以上一版的错误是「只照搬行标题 + 裸 kind 的规则」，把正文里的柔和词一起丢了。现回退到可读中文，并明确保留两处**官方柔和词**：指令动作（`（已载入/已新增/已更新/已移除）`）与 `来自会话 X`；行标题仍是官方的「上下文注入 / 跨会话召回」。
+- 测试：回退后 `injection-notice` / 接线用例恢复全绿；全量 83 文件 / 1,627 用例、typecheck、build、privacy 全绿。
 
-**English**: Context-injection notice lines now use the WebUI's own wording (`ContextInjectionRow` + its `contextProducer` projection) so one injected event reads the same on both surfaces. Title = `上下文注入`, or `跨会话召回` for a `session-reference` (the WebUI's `role: 'recall'`); label = the recalled session labels, the changed instruction paths, the skill name, and — for every other producer — the durable `kind` (`skill-catalog`, `plugin`, `runtime-context`, `goal`, `agent-message`, `subagent-settled`, `user-approval`, …, which is how the WebUI keeps an unknown producer visible); a `form: 'notice'` producer's own one-line summary follows the label, exactly where the WebUI shows it. The old invented names (`会话间消息`, `子智能体已结算`, `目标更新`, `已载入技能`, `技能目录（N 条）`, `插件 <name>`, `运行时快照`, `审批结果`, the four action words, `来自会话 <id>`, `第 N 轮`) and their 13 i18n keys were removed so the two vocabularies cannot drift apart again. `tests/injection-notice.spec.ts` was rewritten to the new wording (11 cases) and three wiring tests updated; 83 files / 1,627 tests, typecheck, build and privacy gate green.
+**English**: Reverted the previous "raw kind" wording — it read as stiff (`上下文注入 · plugin` / `skill-catalog` / `runtime-context` / `goal` / `user-approval`), and the operator preferred the readable Chinese names. Re-checking what the official UI actually localizes: `ui-chat` only has the **row title** (`上下文注入` / `跨会话召回`) and the **expanded body** phrases in `message.context.*` — `已载入 / 已新增 / 已更新 / 已移除` (instructions), `来自会话 {session}` (relay), `替换目录` / `…还有 N 条` (catalog), `取代先前的快照` (snapshot), `保留 N 条 · 省略 M 条` / `已截断` (recall). `plugin`, `runtime-context`, `goal`, `user-approval` and `subagent-settled` have NO localized name — only their kind. The previous change copied only the row-title + raw-kind rule and dropped the soft body words with it. The readable names are back, keeping the two official phrases (instruction actions and `来自会话 X`) and the official role titles. `injection-notice` and the wiring tests are green again; 83 files / 1,627 tests, typecheck, build and privacy gate green.
 
 ### 修复：紧凑模式下一堆空白「回复 · 第 N 步」步骤卡（`src/feishu-streaming.ts`，2026-11-25）
 
