@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_MAX_STEPS, PROGRESS_NOTE_MAX,
-  PROGRESS_RUNNING_TICK_MS, PROGRESS_WRITE_GAP_MS,
+  PROGRESS_RUNNING_TICK_MS, PROGRESS_THINKING_MAX_BYTES, PROGRESS_WRITE_GAP_MS,
   PROGRESS_QUOTE_MARKER,
   condenseStepNote, createProgressCards, formatProgressMs, inlineMarkupBalanced, renderProgressCard, type ProgressFacts,
 } from '../src/feishu-progress.ts'
@@ -1478,6 +1478,90 @@ describe('createProgressCards', () => {
     const before = writesOf('card-1')
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 10)
     expect(writesOf('card-1')).toBe(before)
+  })
+
+  it('renders a step\'s thinking chain as a folded panel between its header and rows', () => {
+    // The order inside a step is "think, then call tools" (the operator
+    // corrected the first draft on 2026-11-25): the panel sits AFTER the step
+    // header and BEFORE the step's rows.
+    const facts: ProgressFacts = {
+      steps: [{
+        step: 1,
+        startedAt: 0,
+        endedAt: 4_000,
+        reasoning: '先想清楚要做什么，再动手。',
+        tools: [{ name: 'bash', callId: 'c1', startedAt: 900, elapsed: 100, detail: ['ls'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 4_000, now: 4_000, failedTurn: false,
+    }
+    const card = renderProgressCard(t, facts, 'tool') as any
+    const elements: any[] = card.body.elements
+    const header = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('**第 1 步**'))
+    const panel = elements.findIndex(el => el.tag === 'collapsible_panel')
+    const rows = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('`bash`'))
+    expect(header).toBeGreaterThanOrEqual(0)
+    expect(panel).toBeGreaterThan(header)
+    expect(rows).toBeGreaterThan(panel)
+    expect(elements[panel].expanded).toBe(false)
+    expect(elements[panel].header.title.content).toBe(t.cardFoldTitle(t.turnCardStepThinking(1)))
+    expect(String(elements[panel].elements[0].content)).toContain('先想清楚要做什么')
+  })
+
+  it('drops the thinking panel when the switch is off, leaving the card unchanged', () => {
+    const facts: ProgressFacts = {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 4_000, reasoning: '想了一下',
+        tools: [{ name: 'read', callId: 'c1', startedAt: 900, elapsed: 100, detail: ['a.ts'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 4_000, now: 4_000, failedTurn: false,
+    }
+    const card = renderProgressCard(t, facts, 'tool', { thinking: false }) as any
+    expect((card.body.elements as any[]).some(el => el.tag === 'collapsible_panel')).toBe(false)
+    expect(mdOf(card)).toContain('`read`')
+  })
+
+  it('caps one step\'s thinking body and says where the rest lives', () => {
+    const huge = '思'.repeat(5_000)
+    const facts: ProgressFacts = {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 4_000, reasoning: huge,
+        tools: [{ name: 'bash', callId: 'c1', startedAt: 900, elapsed: 100, detail: ['ls'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 4_000, now: 4_000, failedTurn: false,
+    }
+    const card = renderProgressCard(t, facts, 'tool') as any
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    const body = String(panel.elements[0].content)
+    expect(body.length).toBeLessThan(huge.length)
+    // ~4KB of CJK is ~1,300 characters; the tail names the detailed level.
+    expect(body).toContain(t.turnCardThinkingTruncated(5_000 - Math.round(PROGRESS_THINKING_MAX_BYTES / 3)))
+  })
+
+  it('neutralizes model-written image/link syntax in the thinking body', () => {
+    // 关键坑 39: one `![alt](path)` element rejects the WHOLE card, and a chain
+    // is far more likely than a one-line narration to contain such syntax.
+    const facts: ProgressFacts = {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 4_000, reasoning: '看图 ![f](/tmp/a.png) 和 [链接](file:///tmp/b)',
+        tools: [{ name: 'bash', callId: 'c1', startedAt: 900, elapsed: 100, detail: ['ls'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 4_000, now: 4_000, failedTurn: false,
+    }
+    const card = renderProgressCard(t, facts, 'tool') as any
+    const panel = (card.body.elements as any[]).find(el => el.tag === 'collapsible_panel')
+    expect(String(panel.elements[0].content)).not.toContain('![f](/tmp/a.png)')
+  })
+
+  it('records a step\'s chain and repaints the open card with it', async () => {
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.stepReasoning('s1', 1, '先看一下仓库结构', 10)
+    cards.toolStarted('s1', 'bash', 'c1', 20)
+    await vi.waitFor(() => {
+      const cardsWritten = (channel.updateCardInstance.mock.calls as unknown[][]).map(call => call[1] as any)
+      expect(cardsWritten.some(card => (card.body.elements as any[]).some(el => el.tag === 'collapsible_panel'))).toBe(true)
+    })
   })
 
   it('keeps a closed segment\'s clock alive without adding rows to it', async () => {

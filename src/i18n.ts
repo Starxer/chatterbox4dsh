@@ -282,6 +282,17 @@ export interface Translations {
    * tools, i.e. process rather than answer. Already collapsed to one line.
    */
   turnCardStepNote: (note: string) => string
+  /**
+   * Header of the folded panel that carries one step's thinking chain on the
+   * compact turn card (the panel sits between the step header and its rows).
+   */
+  turnCardStepThinking: (step: number) => string
+  /**
+   * The line that closes a thinking panel whose chain did not fit the card's
+   * byte budget: `chars` characters were dropped, and the full text lives at the
+   * `detailed` level.
+   */
+  turnCardThinkingTruncated: (chars: number) => string
   /** One tool call that has not returned yet; `label` is already in markup. */
   turnCardToolRunning: (label: string, elapsed: string) => string
   /**
@@ -589,6 +600,8 @@ export interface Translations {
   /** One-line explanations under each section heading. */
   displayCardModeHint: string
   displayCardThinkingHint: string
+  /** Shown by `/display` when the fold choice cannot apply (`compact` always folds). */
+  displayFoldFixedCompact: string
   displayCardToolDetailHint: string
   displayCardOutputHint: string
   displayCardLengthHint: string
@@ -1117,6 +1130,8 @@ export const zh = {
   turnCardStepFailed: '❌ 失败',
   turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
   turnCardStepNote: note => `💬 ${note}`,
+  turnCardStepThinking: step => `💬 **深度思考** · 第 ${step} 步`,
+  turnCardThinkingTruncated: chars => `*…其余 ${chars} 字已省略；切到「详细」模式可看完整思考。*`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: '执行中',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,
@@ -1292,7 +1307,8 @@ export const zh = {
   displayHide: '隐藏',
   displayCardTickUnit: '秒',
   displayCardModeHint: '紧凑 = 一回合合并成一张过程卡（另发答案卡）；详细 = 每一步一张步骤卡。',
-  displayCardThinkingHint: '步骤卡上是否显示模型的深度思考；显示时默认折叠成面板，点开展开全文。',
+  displayCardThinkingHint: '步骤卡与紧凑卡上是否显示模型的深度思考；显示时是折叠面板，点开展开全文。',
+  displayFoldFixedCompact: '紧凑模式的思考块固定折叠（没有平铺形态）',
   displayCardToolDetailHint: '每一步的工具调用展示到什么程度；「完整」才带参数与结果。',
   displayCardOutputHint: '「完整」明细下的参数与结果是否截断到设定长度。',
   displayCardLengthHint: '参数与结果各自的上限；选「不截断」时最多显示 4 倍（封顶 6000 字，卡片约 30 KB 会被整张拒收）。',
@@ -1756,6 +1772,8 @@ export const en: Translations = {
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
   turnCardStep: (step, elapsed, light) => `▸ **Step ${step}**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
   turnCardStepFailed: '❌ failed',
+  turnCardStepThinking: step => `💬 **Deep thinking** · step ${step}`,
+  turnCardThinkingTruncated: chars => `*…${chars} more characters omitted; switch to the "detailed" level for the full chain.*`,
   turnCardCallUnrun: name => `⚠️ \`${name}\` · not run`,
   turnCardStepNote: note => `💬 ${note}`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
@@ -1935,7 +1953,8 @@ export const en: Translations = {
   displayHide: 'Hide',
   displayCardTickUnit: 's',
   displayCardModeHint: 'Compact merges the turn onto one progress card (plus the answer card); Detailed posts one card per step.',
-  displayCardThinkingHint: "Whether step cards show the model's deep thinking; when shown it is folded by default, expand to read the whole chain.",
+  displayCardThinkingHint: "Whether step cards and the compact turn card show the model's deep thinking; when shown it is a folded panel — expand to read the whole chain.",
+  displayFoldFixedCompact: "Compact mode always folds the thinking block (there is no flat form there).",
   displayCardToolDetailHint: 'How much of each tool call a step card shows; only "Full" carries arguments and results.',
   displayCardOutputHint: 'Whether the arguments and results of a Full tool section are truncated to the configured length.',
   displayCardLengthHint: 'Per-field cap; "untruncated" shows up to 4x (hard cap 6000 chars — a card near 30 KB is refused whole).',

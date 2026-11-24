@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 新增：紧凑回合卡里每步显示「深度思考」（折叠块，默认显示、可关）（`src/display-level.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/feishu-display.ts` / `src/commands*.ts` / `src/i18n.ts`，2026-11-25）
+
+- **需求**：`compact` 模式下也能看到模型的思考内容，**默认折叠**，并且有开关（使用者 2026-11-25 提，样板确认后实施）。
+- **位置按真实执行顺序**：一步之内先思考、后工具调用 ⇒ 折叠块放在**步头之后、该步工具行之前**（第一版样板把面板放在工具行后面，被使用者当场指出）。
+- **开关**：`/display` 的「思考内容展示」在紧凑模式下也生效，只有**显示 / 隐藏**一档（显示即折叠，不提供平铺——紧凑卡没有独立步骤卡给它摊开）；隐藏时整卡与之前逐字一致、不多一个元素。`resolveDisplayPolicy` 不再在 compact 强制 `reasoning: 'off'`，只强制 `reasoningFold: true`。
+- **数据流**：`assistant/message`（该步的思考已完整）→ `progressCards.stepReasoning()` 记到该步 facts → 渲染成真实 `collapsible_panel`（复用 `foldedPanel`：边框 + 底色 + 「▸ 点击展开」）。
+- **两处防止重复/丢失**：① 紧凑模式的**答案卡不再渲染思考**（回合卡已经承载）；② 例外是**纯回答回合**——那张卡本身就是回合卡，所以 `turn/end` 重绘成答案时保留折叠块，否则读者刚看到的思考会在答案落地时消失。
+- **长度与安全**：单步思考体 **≤ 4 KB UTF-8**（约 1300 汉字；卡片 JSON 约 30KB 上限、可见窗口最多 5 步），超出部分在面板尾部写「……其余 N 字已省略；切到「详细」模式可看完整思考」；正文先过 `neutralizeCardMarkdown`（关键坑 39：一个 `![alt](路径)` 会让整卡被拒）。详细模式的「思考续卡」**不再**在紧凑模式触发。
+- **`/display` 文本报告**：紧凑模式下多一行说明「紧凑模式的思考块固定折叠」，`/display fold` 查询也会提示同一件事。
+- 测试：+9 条（policy：compact 跟随开关且强制折叠；渲染：面板位于步头与工具行之间、开关关闭时不出现、4KB 截断与尾部提示、模型文本中和；接线：紧凑回合卡带面板、关闭时不带、答案卡不重复、纯回答卡保留面板）；全量 83 文件 / 1,624 用例、typecheck、build、privacy 全绿。
+
+**English**: Under `compact` the turn card now shows each step's thinking chain in a **folded panel**, placed where it really happens — **between the step header and that step's tool rows** (the first sample had it after the rows; the operator corrected it). The panel is shown by default and the existing `/display` → "thinking" switch now applies to compact too, as a plain **show / hide** choice (no flat form: compact has no step card to unfold it on); hiding it leaves the card byte-for-byte as before. `resolveDisplayPolicy` stops forcing `reasoning: 'off'` in compact and forces `reasoningFold: true` instead. Data flow: `assistant/message` (the step's chain is complete) → `progressCards.stepReasoning()` → a real `collapsible_panel` via `foldedPanel()`. Two guards: the compact ANSWER card does not repeat the chain, except on a pure-answer turn where that card IS the turn card — it keeps the panel so the chain does not vanish when the answer lands. Size/safety: one step's body is capped at 4 KB UTF-8 (~1,300 CJK characters; the card JSON limit is ~30KB and up to five steps are visible) with a tail line pointing at the `detailed` level, and the text is neutralized (`neutralizeCardMarkdown`, 关键坑 39); the detailed mode's "thinking continued" overflow cards no longer fire in compact. `/display` also reports that compact always folds. Nine tests added; 83 files / 1,624 tests, typecheck, build and privacy gate green.
+
 ### 变更：`/status` 的飞书 API 计数不再显示额度分母（只统计本插件自己的调用）（`src/i18n.ts` / `src/index.ts` / `src/commands-i18n.ts` / `src/config.ts`，2026-11-24）
 
 - 使用者的判断：这个计数器只统计**本插件**发出的调用，而应用的月度额度是**多个用途共用**的 —— 印成 `350.9K / 1M (35%)` 会被读成「预算已用掉 35%」，而真实占比我们并不知道。

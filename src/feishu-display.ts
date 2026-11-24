@@ -177,19 +177,23 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
     active: state.mode === mode,
     payload: { mode },
   })))))
-  // Compact carries the answer on its turn card, so the step-card switches below
-  // would change nothing there.
+  // Thinking is shown in BOTH modes (2026-11-25, the operator's request): under
+  // `compact` each step's chain is a folded panel on the turn card, so the
+  // display switch matters there too. The fold/flat choice stays a step-card
+  // shape — compact always folds — hence its row is step-level only.
+  elements.push({ tag: 'hr' })
+  elements.push({ tag: 'markdown', content: section(t.displayCardThinkingTitle, t.displayCardThinkingHint) })
+  elements.push(buttonColumns(row([
+    { text: choice(t.displayShow, settings.reasoning !== 'off'), active: settings.reasoning !== 'off', payload: { key: 'reasoning', value: true } },
+    { text: choice(t.displayHide, settings.reasoning === 'off'), active: settings.reasoning === 'off', payload: { key: 'reasoning', value: false } },
+  ])))
   if (!compact) {
-    elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: section(t.displayCardThinkingTitle, t.displayCardThinkingHint) })
-    elements.push(buttonColumns(row([
-      { text: choice(t.displayShow, settings.reasoning !== 'off'), active: settings.reasoning !== 'off', payload: { key: 'reasoning', value: true } },
-      { text: choice(t.displayHide, settings.reasoning === 'off'), active: settings.reasoning === 'off', payload: { key: 'reasoning', value: false } },
-    ])))
     elements.push(buttonColumns(row([
       { text: choice(t.displayCardFoldName(true), state.folded), active: state.folded, payload: { folded: true } },
       { text: choice(t.displayCardFoldName(false), !state.folded), active: !state.folded, payload: { folded: false } },
     ])))
+    // Compact keeps its tool activity on the turn card, so the tool-payload
+    // switches below would change nothing there.
     elements.push({ tag: 'hr' })
     elements.push({ tag: 'markdown', content: section(t.displayCardToolDetailTitle, t.displayCardToolDetailHint) })
     elements.push(buttonColumns(row((['off', 'summary', 'full'] as const).map(detail => ({

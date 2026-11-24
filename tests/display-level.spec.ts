@@ -71,9 +71,16 @@ describe('resolveDisplaySettings', () => {
 
 describe('resolveDisplayPolicy', () => {
   it('maps each level onto the axes the renderer reads', () => {
+    // `compact` honours the thinking switch too (2026-11-25): its turn card can
+    // carry each step's chain as a folded panel. Only the TOOL axes are forced
+    // off there, and the fold is forced ON (compact has no step card to give a
+    // flat chain).
     expect(resolveDisplayPolicy({ transcriptView: 'compact' })).toEqual({
-      reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'on', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
+    expect(resolveDisplayPolicy({ transcriptView: 'compact', showReasoning: false }).reasoning).toBe('off')
+    // A stored flat fold cannot un-fold the compact panel.
+    expect(resolveDisplayPolicy({ transcriptView: 'compact', reasoningFold: false }).reasoningFold).toBe(true)
     expect(resolveDisplayPolicy({ transcriptView: 'standard' })).toEqual({
       reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
     })
@@ -88,7 +95,7 @@ describe('resolveDisplayPolicy', () => {
     // counting tool calls) instead of the WebUI's `detailed`.
     expect(DEFAULT_TRANSCRIPT_VIEW).toBe('compact')
     expect(resolveDisplayPolicy({})).toEqual({
-      reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'on', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
   })
 
@@ -130,8 +137,10 @@ describe('resolveDisplayPolicy', () => {
     expect(resolveDisplayPolicy({ transcriptView: 'verbose', showToolCalls: false }).tools).toBe('off')
     expect(resolveDisplayPolicy({ transcriptView: 'verbose', showToolArgs: false }).toolArgs).toBe(false)
     expect(resolveDisplayPolicy({ transcriptView: 'verbose', showToolResults: false }).toolResults).toBe(false)
-    // …and turning one ON must not add detail the level excluded.
-    expect(resolveDisplayPolicy({ transcriptView: 'compact', showReasoning: true }).reasoning).toBe('off')
+    // …and turning one ON must not add detail the level excluded. Reasoning is
+    // the one axis compact lets through (folded), so the "less" rule is checked
+    // with the switches it still owns: TOOLS and the tool payloads.
+    expect(resolveDisplayPolicy({ transcriptView: 'compact', showToolCalls: true }).tools).toBe('off')
     expect(resolveDisplayPolicy({ transcriptView: 'compact', showToolArgs: true }).toolArgs).toBe(false)
     expect(resolveDisplayPolicy({ transcriptView: 'standard', showToolResults: true }).toolResults).toBe(false)
   })

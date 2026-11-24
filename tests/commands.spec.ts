@@ -100,6 +100,7 @@ const translations: CommandTranslations = {
   displayToolRowUsage: 'Usage: /display toolrow tool|both|description',
   displayFoldLabel: 'Thinking block',
   displayFoldName: (folded: boolean) => (folded ? 'folded' : 'flat'),
+  displayFoldFixedCompact: 'compact always folds',
   displayFoldSet: (name: string) => `fold set to ${name}`,
   displayFoldUsage: 'Usage: /display fold on|off',
   displayModeLabel: 'Mode',

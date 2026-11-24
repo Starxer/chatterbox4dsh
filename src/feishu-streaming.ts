@@ -625,6 +625,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     logger,
     elapsedRefreshSeconds: deps.elapsedRefreshSeconds,
     toolRow: deps.compactToolRow,
+    // The compact turn card carries each step's chain as a folded panel
+    // (2026-11-25); the switch is the same `showReasoning` the step cards use,
+    // read live so toggling it repaints the next card without a remount.
+    showReasoning: () => displayPolicy().reasoning !== 'off',
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
     ...(interleave === undefined ? {} : { interleave }),
   })
@@ -864,6 +868,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         previewLimits: previewLimits(),
         ...(shownInjections.length > 0 ? { injections: shownInjections } : {}),
         ...(turnTriggerNote === undefined ? {} : { turnTriggerNote }),
+        // A pure-answer turn's single card IS the turn card: it must not lose the
+        // chain the process view was showing (compact hides it everywhere else
+        // because the turn card already carried it).
+        ...(displayPolicy().turnCard && state.answerOnProgressCard
+          ? { keepCompactReasoning: true }
+          : {}),
         // The live phase only has meaning on the content-free form; passing it
         // alongside content would let a stale phase name a settled card.
         ...(emptyPhase === 'thinking' ? { phase: state.livePhase } : {}),
@@ -1836,6 +1846,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           }
         }
 
+        // The compact turn card carries each step's thinking chain as a folded
+        // panel (2026-11-25). The message is committed, so this step's chain is
+        // final — hand it over before any tool row of this step is scheduled.
+        if (displayPolicy().turnCard) {
+          progressCards.stepReasoning(sessionId, state.stepNumber, state.reasoning, state.messageTime)
+        }
         const hasContent = state.reasoning.trim() !== '' || state.text.trim() !== ''
         // A step that rendered nothing visible posts no card (see
         // `stepHasVisibleContent`). `lastStepHadContent` stays raw so it keeps
@@ -2161,7 +2177,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // A thinking chain longer than one card continues on follow-up cards.
         // Sent here (not at turn/end) so they sit immediately after this step's
         // card instead of after the whole turn.
-        if (displayPolicy().reasoning !== 'off') sendReasoningOverflow(chat, sessionId, state)
+        // Overflow "thinking continued" cards belong to the step-card shape.
+        // Under `compact` the chain lives in the turn card's folded panel (capped
+        // there), so sending overflow cards would duplicate it.
+        if (!displayPolicy().turnCard && displayPolicy().reasoning !== 'off') sendReasoningOverflow(chat, sessionId, state)
       } else if (event.type === 'turn/start') {
         resetStep(state)
         lastStepSendPromises.delete(sessionId)
@@ -3474,6 +3493,13 @@ export function renderStepCard(
     /** Route of the request in flight, named on the awaiting card. */
     route?: { provider: string; model: string }
     /**
+     * `compact` only: keep the chain on this card even though compact cards are
+     * `tight`. Set for the ONE card of a pure-answer turn, where this card IS the
+     * turn card (there is no separate process card to carry the chain, so hiding
+     * it here would throw the chain away at `turn/end`).
+     */
+    keepCompactReasoning?: boolean
+    /**
      * Resolved display policy (level + switches). Omitted only by direct
      * callers such as tests; the default is the `detailed` level with both
      * tool-output switches on, which is exactly the pre-level behavior. The
@@ -3582,7 +3608,8 @@ export function renderStepCard(
   // write path still neutralizes image/link syntax inside it (关键坑 39) and
   // repairs a glued fence closer (关键坑 68), so model text cannot break the
   // card; the trade-off is that reasoning inherits markdown typography.
-  if (reasoning !== undefined && reasoning !== '' && display.reasoning !== 'off') {
+  if (reasoning !== undefined && reasoning !== '' && display.reasoning !== 'off'
+    && (!tight || options?.keepCompactReasoning === true)) {
     const meta: string[] = []
     if (reasoningMs !== undefined && reasoningMs > 0) meta.push(formatMsShort(reasoningMs))
     const reasoningTokens = usage?.reasoningTokens

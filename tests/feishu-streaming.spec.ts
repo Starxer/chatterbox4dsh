@@ -2441,19 +2441,23 @@ describe('level + injection wiring through session events', () => {
     return (ch.createCardInstance as any).mock.calls.at(-1)![0]
   }
 
-  it('folds a live step card according to the level the settings hold', async () => {
+  it('carries the chain at the compact level as a FOLDED panel', async () => {
+    // 2026-11-25: compact used to throw the chain away. It now rides the turn
+    // card as a folded panel (and on the single card of a pure-answer turn,
+    // which IS the turn card) — folded, never flat.
     const ch = levelChannel()
     const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: 'private chain' } })
-    // The compact turn card opens at `step/start` so the wait has feedback, but
-    // the reasoning itself is never rendered at this level.
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 1 } })
     h.emit('turn/end', { reason: { kind: 'completed' } })
     await vi.waitFor(() => { expect(mdOf(lastCard(ch))).toContain('the answer') })
-    expect(mdOf(lastCard(ch))).not.toContain('private chain')
+    const panel = (lastCard(ch).body.elements as any[]).find((el: any) => el.tag === 'collapsible_panel')
+    expect(panel).toBeDefined()
+    expect(panel.expanded).toBe(false)
+    expect(String(panel.elements[0].content)).toContain('private chain')
     h.streaming.stop()
   })
 
@@ -2920,6 +2924,112 @@ describe('turn progress card wiring', () => {
     expect(mdOf(second)).toContain('第 1 步')
     expect(mdOf(second)).toContain('`bash`')
     expect(mdOf(second)).toContain('第 2 步')
+    streaming.stop()
+  })
+
+  it('carries each step\'s thinking chain on the compact turn card, folded', async () => {
+    // 2026-11-25 (the operator's request): under `compact` the chain is not
+    // thrown away — it lives in a FOLDED panel between the step header and that
+    // step's rows, because inside a step the model thinks first and calls tools
+    // afterwards.
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '先想清楚，再动手。' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await vi.waitFor(() => {
+      const withPanel = progressRenders(ch).filter(card => (card.body.elements as any[]).some(el => el.tag === 'collapsible_panel'))
+      expect(withPanel.length).toBeGreaterThan(0)
+    })
+    const card = progressRenders(ch).find(candidate => (candidate.body.elements as any[]).some(el => el.tag === 'collapsible_panel'))!
+    const elements = card.body.elements as any[]
+    const panel = elements.find(el => el.tag === 'collapsible_panel')
+    expect(panel.expanded).toBe(false)
+    expect(String(panel.elements[0].content)).toContain('先想清楚，再动手。')
+    // Header → panel → rows: the same order the real execution has.
+    const header = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('**第 1 步**'))
+    const panelIndex = elements.indexOf(panel)
+    const rows = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('`bash`'))
+    expect(header).toBeLessThan(panelIndex)
+    expect(rows).toBeGreaterThan(panelIndex)
+    streaming.stop()
+  })
+
+  it('hides the chain from the compact turn card when the switch is off', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, {
+      transcriptView: () => 'compact' as TranscriptView,
+      showReasoning: () => false,
+    })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '这段不该出现' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    await tick(300)
+    const anyPanel = [...progressRenders(ch), ...(ch.createCardInstance?.mock.calls ?? []).map(call => call[0] as any)]
+      .some(card => (card.body?.elements as any[] | undefined)?.some((el: any) => el.tag === 'collapsible_panel'))
+    expect(anyPanel).toBe(false)
+    expect(progressRenders(ch).flatMap(card => mdOf(card))).not.toContain('这段不该出现')
+    streaming.stop()
+  })
+
+  it('does not repeat the chain on the compact answer card', async () => {
+    // The chain belongs to the turn card; the answer card is the reply itself.
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '第一段推理' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
+    emit('tool/result', { message: { toolCallId: 'c1', source: { callId: 'c1' }, content: [{ type: 'text', text: 'out' }] } })
+    emit('step/end')
+    emit('step/start', { turn: 1, step: 2 })
+    emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '第二段推理' } })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: '这是最终答案' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('step/end')
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await tick(500)
+    const answerCards = (ch.createCardInstance?.mock.calls ?? [])
+      .map(call => call[0] as any)
+      .filter(card => !isTurnCardTitle(String(card.header?.title?.content ?? '')))
+    expect(answerCards.length).toBeGreaterThan(0)
+    const answerText = answerCards.map(card => mdOf(card)).join('\n')
+    expect(answerText).toContain('这是最终答案')
+    expect(answerText).not.toContain('第二段推理')
+    expect(answerText).not.toContain('第一段推理')
+    streaming.stop()
+  })
+
+  it('keeps the chain on the single card of a pure-answer compact turn', async () => {
+    // That card IS the turn card (it becomes the answer at `turn/end`), so the
+    // panel must survive the repaint — otherwise the chain the reader was just
+    // watching disappears when the answer lands.
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '这是一段思考' } })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: '这是答案' } })
+    emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await tick(500)
+    // The final render is the ANSWER card (same message, repainted), so collect
+    // every render rather than only the ones titled like a running turn card.
+    const renders = [
+      ...(ch.createCardInstance?.mock.calls ?? []).map(call => call[0] as any),
+      ...(ch.updateCardInstance?.mock.calls ?? []).map(call => call[1] as any),
+    ]
+    expect(renders.length).toBeGreaterThan(0)
+    const last = renders.at(-1)!
+    expect(mdOf(last)).toContain('这是答案')
+    const panel = (last.body.elements as any[]).find((el: any) => el.tag === 'collapsible_panel')
+    expect(panel).toBeDefined()
+    expect(String(panel.elements[0].content)).toContain('这是一段思考')
     streaming.stop()
   })
 

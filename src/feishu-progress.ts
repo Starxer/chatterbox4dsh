@@ -49,8 +49,21 @@ import { interleaveHits, type CardInterleave, type InterleaveTarget } from './ca
 import { DEFAULT_COMPACT_TOOL_ROW, type CompactToolRowStyle } from './display-level.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
+import { neutralizeCardMarkdown } from './card-markdown.ts'
 import { truncateInline } from './text-chunk.ts'
 import { DEFAULT_ELAPSED_REFRESH_SECONDS, parseElapsedRefreshSeconds } from './config.ts'
+
+/**
+ * UTF-8 budget for ONE step's folded thinking body on the compact card.
+ *
+ * The body ships inside the card JSON (a folded panel saves pixels, not bytes —
+ * 关键坑 42/57), the card itself is capped at ~30KB, and the visible window keeps
+ * up to {@link PROGRESS_MAX_STEPS} steps: 4KB each leaves room for the rows and
+ * chrome while still holding a normal chain (about 1,300 Chinese characters).
+ * A longer chain is cut here and the tail says where the full text lives (the
+ * `detailed` level's step card, which carries it whole).
+ */
+export const PROGRESS_THINKING_MAX_BYTES = 4 * 1024
 
 /** Tool lines kept visible before older ones fold away. */
 export const PROGRESS_MAX_ROWS = 40
@@ -199,6 +212,18 @@ export interface ProgressStep {
    * to one line by {@link condenseStepNote}; absent when the step said nothing.
    */
   note?: string | undefined
+  /**
+   * This step's thinking chain (the whole thing, not a digest), set by
+   * {@link ProgressCardsHandle.stepReasoning} from `assistant/message`.
+   *
+   * It is rendered as a FOLDED PANEL directly under the step header and above
+   * the step's rows — the real order inside a step is "think, then call tools"
+   * (the operator corrected this on 2026-11-25). Folded by construction: compact
+   * has no step card to give a long chain, so the panel body is capped at
+   * {@link PROGRESS_THINKING_MAX_BYTES} with a note pointing at the detailed
+   * level for the full text.
+   */
+  reasoning?: string | undefined
   /**
    * Context-injection notice lines this step claimed (`📥 注入上下文 · …`).
    * Under `compact` they belong to the PROCESS, so they render here instead of
@@ -649,18 +674,50 @@ function groupByStep(lines: readonly Line[]): Array<{ step: number; content: str
 }
 
 /**
+ * Cut one step's thinking chain to the compact card's byte budget.
+ *
+ * Cutting by UTF-8 bytes (not characters) is what keeps a mostly-emoji or
+ * mostly-CJK chain inside the card despite the 30KB limit; the cut lands on a
+ * code-unit boundary, so no half character is ever rendered.
+ *
+ * @param text - the step's chain.
+ * @param maxBytes - UTF-8 budget.
+ * @returns the body (whole, or the prefix) and whether anything was dropped.
+ */
+function capThinking(text: string, maxBytes: number): { body: string; dropped: number } {
+  const encoder = new TextEncoder()
+  if (encoder.encode(text).length <= maxBytes) return { body: text, dropped: 0 }
+  let low = 0
+  let high = text.length
+  while (low < high) {
+    const mid = (low + high + 1) >> 1
+    if (encoder.encode(text.slice(0, mid)).length <= maxBytes) low = mid
+    else high = mid - 1
+  }
+  // Do not leave a dangling high surrogate behind.
+  const cut = low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1] ?? '') ? low - 1 : low
+  return { body: text.slice(0, cut), dropped: text.length - cut }
+}
+
+/**
  * Render the card for the facts known so far.
  *
  * `now` is a parameter (not `Date.now()`) so the running labels are testable.
  *
  * @param t - translations for the active locale.
  * @param facts - the turn's steps, counters and clock.
+ * @param style - the compact tool-row shape.
+ * @param options.thinking - whether each step's chain renders as a folded panel
+ *   (`showReasoning`; omitted = shown). The panel sits BETWEEN the step header
+ *   and that step's rows, because inside a step the model thinks first and calls
+ *   tools afterwards (the operator corrected the first draft on 2026-11-25).
  * @returns the full card JSON.
  */
 export function renderProgressCard(
   t: Translations,
   facts: ProgressFacts,
   style: CompactToolRowStyle = DEFAULT_COMPACT_TOOL_ROW,
+  options: { thinking?: boolean } = {},
 ): object {
   const running = facts.endedAt === undefined
   const end = facts.endedAt ?? facts.now
@@ -747,9 +804,38 @@ export function renderProgressCard(
   // before the first one and never between a step's own elements.
   const groups = groupByStep(visible)
   let separated: number | undefined
+  /** One panel per step, even when a narration split the step into two groups. */
+  const thinkingShown = new Set<number>()
+  const thinkingOf = (stepNumber: number): string | undefined => {
+    if (options.thinking === false) return undefined
+    const step = facts.steps.find(candidate => candidate.step === stepNumber)
+    if (step?.reasoning === undefined || step.reasoning === '') return undefined
+    const { body, dropped } = capThinking(step.reasoning, PROGRESS_THINKING_MAX_BYTES)
+    const text = dropped > 0 ? `${body}\n\n${t.turnCardThinkingTruncated(dropped)}` : body
+    // Model text: neutralize BEFORE it reaches the card (关键坑 39 — one image
+    // reference with a path target rejects the whole card, and this block is far
+    // more likely than a one-line narration to contain model-written links).
+    return neutralizeCardMarkdown(text)
+  }
   for (const group of groups) {
     if (separated !== undefined && group.step !== separated) elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: group.content })
+    const thinking = thinkingShown.has(group.step) ? undefined : thinkingOf(group.step)
+    if (thinking === undefined) {
+      elements.push({ tag: 'markdown', content: group.content })
+    } else {
+      // The group's FIRST line is the step header (buildLines pushes it first):
+      // keep the header out of the panel, so the order reads
+      // 「第 N 步 → 深度思考（折叠）→ 该步的工具行」.
+      thinkingShown.add(group.step)
+      const newline = group.content.indexOf('\n')
+      const header = newline < 0 ? group.content : group.content.slice(0, newline)
+      const rest = newline < 0 ? '' : group.content.slice(newline + 1)
+      elements.push({ tag: 'markdown', content: header })
+      elements.push(foldedPanel(t, t.turnCardStepThinking(group.step), [
+        { tag: 'markdown', content: thinking },
+      ]))
+      if (rest !== '') elements.push({ tag: 'markdown', content: rest })
+    }
     separated = group.step
   }
 
@@ -903,6 +989,14 @@ export interface ProgressCardsHandle {
   ): void
   /** `tool/ptc-dispatch`: settle the sub-call row named by `subCallId`. */
   subtoolFinished(sessionId: string, parentCallId: string, subCallId: string, at: number, isError: boolean): void
+  /**
+   * The step's thinking chain (`assistant/message`), rendered as a folded panel
+   * under the step header. Only kept while the compact turn card exists: at the
+   * step levels the chain lives on the step card itself.
+   *
+   * @param text - the step's accumulated reasoning; `''` clears it.
+   */
+  stepReasoning(sessionId: string, step: number, text: string, at: number): void
   /** `step/end`: close the current section's clock. */
   stepEnded(sessionId: string, at: number): void
   /**
@@ -932,6 +1026,12 @@ export interface ProgressCardsDeps {
    * row (tool name + what it touched).
    */
   toolRow?: (() => CompactToolRowStyle) | undefined
+  /**
+   * Whether the compact card carries each step's thinking chain (`showReasoning`
+   * via the display policy). Read per render, so toggling it repaints the next
+   * card without a remount; omitted = shown (the plugin default).
+   */
+  showReasoning?: (() => boolean) | undefined
   /**
    * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
@@ -1023,13 +1123,22 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     entry.runningTick = undefined
   }
 
+  /**
+   * Render with the live switches: the row style and whether a step's thinking
+   * chain renders (a settings write applies to the next card, no remount).
+   */
+  const renderCard = (facts: ProgressFacts): object =>
+    renderProgressCard(getTranslations(), facts, rowStyle(), {
+      thinking: deps.showReasoning?.() ?? true,
+    })
+
   /** Render one write, serialized behind the card's previous write. */
   const writeNow = (entry: CardEntry): void => {
     entry.writing = true
     entry.lastWriteOk = false
     entry.chain = entry.chain.then(async () => {
       if (entry.dead) return
-      const card = entry.answer ?? renderProgressCard(getTranslations(), entry.facts, rowStyle())
+      const card = entry.answer ?? renderCard(entry.facts)
       const cardId = await entry.cardId
       const messageId = await entry.messageId
       // CardKit instance first: its update API has no edit cap, unlike
@@ -1077,7 +1186,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   /** Open the card with the render the caller already has. */
   const open = (entry: CardEntry): void => {
     const opts = topicOpts(entry.chat)
-    const render = (): object => renderProgressCard(getTranslations(), entry.facts)
+    const render = (): object => renderCard(entry.facts)
     const useInstance = channel.createCardInstance !== undefined && channel.sendCardByReference !== undefined
     entry.cardId = useInstance
       ? channel.createCardInstance!(render())
@@ -1236,6 +1345,35 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }
     if (target.note === note) return
     target.note = note
+    facts.now = at
+    const entry = cards.get(sessionId)
+    if (entry !== undefined) {
+      entry.facts = facts
+      schedule(entry)
+    }
+  }
+
+  /**
+   * Record the step's thinking chain (`assistant/message`).
+   *
+   * Stored on the facts like a narration (a card that opens later renders it),
+   * and dropped instead of rendered when empty. Rendering is a folded panel
+   * under the step header — see {@link ProgressStep.reasoning}.
+   */
+  const stepReasoning = (sessionId: string, step: number, text: string, at: number): void => {
+    if (stopped) return
+    const turn = turns.get(sessionId)
+    if (turn === undefined) return
+    const facts = turn.facts
+    const value = text.trim()
+    if (value === '') return
+    let target = facts.steps.find(candidate => candidate.step === step)
+    if (target === undefined) {
+      target = { step, startedAt: at, tools: [] }
+      facts.steps.push(target)
+    }
+    if (target.reasoning === value) return
+    target.reasoning = value
     facts.now = at
     const entry = cards.get(sessionId)
     if (entry !== undefined) {
@@ -1660,7 +1798,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   }
 
   return {
-    beginTurn, stepStarted, stepNote, stepPhase, stepAttempt, stepInjection, hasCard, hasTurn, isOpen,
+    beginTurn, stepStarted, stepNote, stepReasoning, stepPhase, stepAttempt, stepInjection, hasCard, hasTurn, isOpen,
     toolStarted, toolFinished, subtoolStarted, subtoolFinished, stepEnded, finish, stop,
   }
 }

@@ -207,6 +207,8 @@ export interface CommandTranslations {
   /** Thinking-block fold choice (`/display fold on|off`). */
   readonly displayFoldLabel: string
   readonly displayFoldName: (folded: boolean) => string
+  /** Compact always folds the thinking block; the fold choice cannot apply. */
+  readonly displayFoldFixedCompact: string
   readonly displayFoldSet: (name: string) => string
   readonly displayFoldUsage: string
   /** Mode (two layouts) and preset (a named bundle of switches). */
@@ -735,6 +737,7 @@ export async function handleDisplayCommand(
     const lines = [
       `${t.displayModeLabel}: ${t.displayModeName(settings.mode)}`,
       `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`,
+      ...(settings.mode === 'compact' ? [t.displayFoldFixedCompact] : []),
       `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
       `${t.displayToolDetailLabel}: ${t.displayToolDetailName(settings.tools)}`,
       `${t.displayOutputLabel}: ${t.displayOutputName(display.getOutputFull())}`,
@@ -749,7 +752,9 @@ export async function handleDisplayCommand(
     if (rawValue === undefined) {
       return {
         kind: 'success',
-        text: `${t.displayFoldLabel}: ${t.displayFoldName(display.getFold())}\n${t.displayFoldUsage}`,
+        text: `${t.displayFoldLabel}: ${t.displayFoldName(display.getFold())}`
+          + `${display.getSettings().mode === 'compact' ? `\n${t.displayFoldFixedCompact}` : ''}`
+          + `\n${t.displayFoldUsage}`,
       }
     }
     const folded = rawValue === 'on' || rawValue === 'fold' || rawValue === 'folded'

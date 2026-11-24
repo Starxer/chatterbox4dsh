@@ -256,8 +256,14 @@ export function resolveDisplaySettings(input: {
  * Project settings onto the renderer's axes.
  *
  * `compact` is the one mode that CHANGES the topology (one turn card, no tool
- * section on step cards, tool-only steps post nothing), so it forces the tool
- * and reasoning axes off; the step levels render whatever the switches say.
+ * section on step cards, tool-only steps post nothing), so it forces the TOOL
+ * axes off; the step levels render whatever the switches say.
+ *
+ * Reasoning is the exception (2026-11-25, the operator's request): the compact
+ * turn card can carry each step's thinking chain as a folded panel, so the
+ * `showReasoning` switch applies there too — but only in its folded form. The
+ * flat form exists to let a long chain breathe on a step card of its own, which
+ * compact has no room for, so `reasoningFold` is forced on under `compact`.
  *
  * @param input - raw setting values (see {@link resolveDisplaySettings}).
  * @returns the axes to render with.
@@ -269,8 +275,10 @@ export function resolveDisplayPolicy(input: Parameters<typeof resolveDisplaySett
   // calls and carry nothing to render, so the switches must not add them back.
   const full = !compact && settings.tools === 'full'
   return {
-    reasoning: compact ? 'off' : settings.reasoning,
-    reasoningFold: settings.reasoningFold,
+    reasoning: settings.reasoning,
+    // compact: always folded (the flat form is a step-card shape, and compact
+    // has no step card to give it).
+    reasoningFold: compact ? true : settings.reasoningFold,
     tools: compact ? 'off' : settings.tools,
     toolArgs: full && settings.toolArgs,
     toolResults: full && settings.toolResults,

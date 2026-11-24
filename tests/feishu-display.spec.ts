@@ -166,9 +166,16 @@ describe('renderDisplayCard', () => {
   it('offers no inert rows in the compact mode', () => {
     const card = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
     expect(modesOf(card)).toHaveLength(2)
-    // Compact forces reasoning off and its card carries the answer, so the
-    // thinking/tool switches would change nothing.
-    expect(switchesOf(card)).toHaveLength(0)
+    // Compact DOES show the thinking switch now (2026-11-25): its turn card
+    // carries each step's chain as a folded panel. Everything else stays hidden
+    // because compact's card carries the answer and the tool timeline:
+    // - the fold/flat choice cannot apply (compact always folds),
+    // - the tool-detail switches, the payload switches and the output switch
+    //   would change nothing.
+    const switches = switchesOf(card)
+    expect(switches).toHaveLength(2)
+    expect(switches.every(button => button.behaviors[0].value.key === 'reasoning')).toBe(true)
+    expect(buttonsOf(card).filter(button => button.behaviors?.[0]?.value?.folded !== undefined)).toHaveLength(0)
     expect(toolDetailOf(card)).toHaveLength(0)
     expect(outputOf(card)).toHaveLength(0)
     expect(toolRowsOf(card)).toHaveLength(3)
