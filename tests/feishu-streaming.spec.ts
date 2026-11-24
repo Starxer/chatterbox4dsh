@@ -3051,7 +3051,7 @@ describe('turn progress card wiring', () => {
     })
     const opened = (ch.createCardInstance!.mock.calls.map(call => call[0] as any))
       .find(card => isTurnCardTitle(String(card.header.title.content)))
-    expect(mdOf(opened)).toContain(t.turnCardStep(1, '0ms…'))
+    expect(mdOf(opened)).toContain(t.turnCardStepDetail(1, '0ms…'))
     // The elapsed time is read from the clock, so asserting the title pinned to
     // `0ms` was flaky (observed 2026-10-14); assert the row's shape instead.
     expect(mdOf(progressRenders(ch).find(card => mdOf(card).includes('⏳ `bash`'))!))

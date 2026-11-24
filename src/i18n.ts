@@ -259,12 +259,15 @@ export interface Translations {
   /** Title when the turn ended in an error (the reason rides the failure card). */
   turnCardTitleFailed: (calls: number, elapsed: string) => string
   /**
-   * Section header of one step, e.g. `**[2]** · 8.9s`. `light` is the live
-   * phase of a step that is STILL RUNNING and is inserted between the step number
-   * and the clock (`**[2]** · 🧠 思考中 · 8.9s…`); it is absent for a step that
-   * ended, which is exactly what the callers pass.
+   * Section header of one step: the step number plus an already-formatted
+   * `detail` (`**[2]** · 🧠 1.4s · 🔧 5.2s`).
+   *
+   * The detail is built by the renderer because it is structured data, not a
+   * sentence: a step prints what it did per phase (`ProgressStep.phaseMs`), and
+   * the live phase's own words while it still runs. Keeping ONE formatter here
+   * (instead of one per shape) is what keeps the two from drifting apart.
    */
-  turnCardStep: (step: number, elapsed: string, light?: string) => string
+  turnCardStepDetail: (step: number, detail: string) => string
   /**
    * Suffix naming the step the turn DIED in, appended to {@link turnCardStep}:
    * `▸ **[6]** · 22.3s · ❌ 失败`. Carries its own icon because it is a status
@@ -1076,8 +1079,8 @@ export const zh = {
   // look collapsed, and no client draws anything for us that a reader notices.
   cardFoldTitle: title => `${title}（▸ 点击展开）`,
 
-  stepReasoningHeader: '💬 **深度思考**',
-  stepReasoningContinued: (step, part, total) => `💬 深度思考（第 ${step} 步 · 续 ${part}/${total}）`,
+  stepReasoningHeader: '🐳 **深度思考**',
+  stepReasoningContinued: (step, part, total) => `🐳 深度思考（第 ${step} 步 · 续 ${part}/${total}）`,
   stepMessageHeader: '📝 **消息**',
   stepToolHeader: '🔧 **工具调用**',
   stepToolSuccess: '成功',
@@ -1131,11 +1134,11 @@ export const zh = {
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
-  turnCardStep: (step, elapsed, light) => `▸ **[${step}]**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
+  turnCardStepDetail: (step, detail) => `▸ **[${step}]** · ${detail}`,
   turnCardStepFailed: '❌ 失败',
   turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
   turnCardStepNote: note => `💬 ${note}`,
-  turnCardStepThinking: '💬 **深度思考**',
+  turnCardStepThinking: '🐳 **深度思考**',
   turnCardThinkingTruncated: chars => `*…其余 ${chars} 字已省略；切到「详细」模式可看完整思考。*`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: '执行中',
@@ -1716,8 +1719,8 @@ export const en: Translations = {
 
   cardFoldTitle: title => `${title} (▸ Click to expand)`,
 
-  stepReasoningHeader: '💬 **Deep thinking**',
-  stepReasoningContinued: (step, part, total) => `💬 Deep thinking (step ${step} · continued ${part}/${total})`,
+  stepReasoningHeader: '🐳 **Deep thinking**',
+  stepReasoningContinued: (step, part, total) => `🐳 Deep thinking (step ${step} · continued ${part}/${total})`,
   stepMessageHeader: '📝 **Message**',
   stepToolHeader: '🔧 **Tool Call**',
   stepToolSuccess: 'ok',
@@ -1775,9 +1778,9 @@ export const en: Translations = {
     `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) =>
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
-  turnCardStep: (step, elapsed, light) => `▸ **[${step}]**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
+  turnCardStepDetail: (step, detail) => `▸ **[${step}]** · ${detail}`,
   turnCardStepFailed: '❌ failed',
-  turnCardStepThinking: '💬 **Deep Thinking**',
+  turnCardStepThinking: '🐳 **Deep Thinking**',
   turnCardThinkingTruncated: chars => `*…${chars} more characters omitted; switch to the "detailed" level for the full chain.*`,
   turnCardCallUnrun: name => `⚠️ \`${name}\` · not run`,
   turnCardStepNote: note => `💬 ${note}`,

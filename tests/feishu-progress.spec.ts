@@ -131,7 +131,7 @@ describe('renderProgressCard', () => {
     expect(card.header.template).toBe('grey')
     expect(card.header.title.content).toBe(t.turnCardTitleRunning('5.0s'))
     const md = mdOf(card)
-    expect(md).toContain(t.turnCardStep(1, '5.0s'))
+    expect(md).toContain(t.turnCardStepDetail(1, '5.0s'))
     expect(md).toContain(t.turnCardToolDone('`read`', '400ms'))
   })
 
@@ -208,10 +208,10 @@ describe('renderProgressCard', () => {
       now: 2_000,
       failedTurn: true,
     }))
-    expect(visibleLines(card)).toContain(`${t.turnCardStep(6, '1.0s')} · ${t.turnCardStepFailed}`)
+    expect(visibleLines(card)).toContain(`${t.turnCardStepDetail(6, '1.0s')} · ${t.turnCardStepFailed}`)
     expect(visibleLines(card)).toContain(row(t.turnCardCallUnrun('edit')))
     // Only step 6 died: the step above it keeps its ordinary header.
-    expect(visibleLines(card)).toContain(t.turnCardStep(5, '1.0s'))
+    expect(visibleLines(card)).toContain(t.turnCardStepDetail(5, '1.0s'))
     // A call that never ran is NOT one of the turn's tool calls: the title still
     // counts the one that did.
     expect(card.header.title.content).toBe(t.turnCardTitleFailed(1, '2.0s'))
@@ -257,7 +257,7 @@ describe('renderProgressCard', () => {
     expect(md).toContain(t.turnCardToolFailed('`edit`', '50ms'))
     // The section header of a step that is still running carries the same `…`,
     // and the running call lights it (`🔧 工具调用中`).
-    expect(md).toContain(t.turnCardStep(1, '3.4s…', t.turnCardPhaseTool))
+    expect(md).toContain(t.turnCardStepDetail(1, `${t.turnCardPhaseTool} · 3.4s…`))
   })
 
   it('shows the newest rows and folds the older ones, keeping the step headers', () => {
@@ -277,7 +277,7 @@ describe('renderProgressCard', () => {
     // The visible part never starts mid-step: the first line is a section header.
     const visible = visibleLines(card)
     expect(visible.length).toBeLessThanOrEqual(PROGRESS_MAX_ROWS)
-    expect(visible[0]).toBe(t.turnCardStep(3, '100ms'))
+    expect(visible[0]).toBe(t.turnCardStepDetail(3, '100ms'))
   })
 
   it('counts folded STEPS, not rows', () => {
@@ -329,7 +329,7 @@ describe('renderProgressCard', () => {
     for (let i = 0; i < dropped; i++) {
       const lines = folded[i]!.split('\n')
       // The heading is the element's FIRST line and stays outside the frame…
-      expect(lines[0]).toBe(t.turnCardStep(i + 1, '100ms'))
+      expect(lines[0]).toBe(t.turnCardStepDetail(i + 1, '100ms'))
       expect(lines[0]!.startsWith(PROGRESS_QUOTE_MARKER)).toBe(false)
       // …and every other line is quoted, so the frame ends with this step.
       for (const line of lines.slice(1)) expect(line.startsWith(PROGRESS_QUOTE_MARKER)).toBe(true)
@@ -362,7 +362,7 @@ describe('renderProgressCard', () => {
     }))
     const lines = visibleLines(card)
     expect(lines).toEqual([
-      t.turnCardStep(2, '3.0s'),
+      t.turnCardStepDetail(2, '3.0s'),
       row(t.turnCardStepNote('我先看一下流式卡片那段代码')),
       row(t.turnCardToolDone('`read`', '200ms')),
     ])
@@ -390,7 +390,7 @@ describe('renderProgressCard', () => {
     // then the narration, then the tool rows — all of them inside the step's one
     // quote block, with the heading left outside it.
     expect(visibleLines(card)).toEqual([
-      t.turnCardStep(1, '2.0s'),
+      t.turnCardStepDetail(1, '2.0s'),
       row('📥 注入上下文 · AGENTS.md（已更新）'),
       row(t.turnCardStepNote('我看一下')),
       row(t.turnCardToolDone('`bash`', '100ms')),
@@ -414,7 +414,7 @@ describe('renderProgressCard', () => {
       now: 3_000,
     }))
     const lines = visibleLines(card)
-    const headings = lines.filter(line => line === t.turnCardStep(1, '2.0s') || line === t.turnCardStep(2, '1.0s'))
+    const headings = lines.filter(line => line === t.turnCardStepDetail(1, '2.0s') || line === t.turnCardStepDetail(2, '1.0s'))
     expect(headings).toHaveLength(2)
     for (const line of lines) {
       // The two headings are the ONLY unquoted rows on the card: a step's title
@@ -444,8 +444,8 @@ describe('renderProgressCard', () => {
     expect(panel.header.title.content).toBe(t.cardFoldTitle(t.turnCardOlderSteps(dropped)))
     const visible = visibleLines(card)
     const first = total - PROGRESS_MAX_STEPS + 1
-    expect(visible[0]).toBe(t.turnCardStep(first, '100ms'))
-    const titles = Array.from({ length: PROGRESS_MAX_STEPS }, (_, i) => t.turnCardStep(first + i, '100ms'))
+    expect(visible[0]).toBe(t.turnCardStepDetail(first, '100ms'))
+    const titles = Array.from({ length: PROGRESS_MAX_STEPS }, (_, i) => t.turnCardStepDetail(first + i, '100ms'))
     expect(visible.filter(line => titles.includes(line))).toHaveLength(PROGRESS_MAX_STEPS)
   })
 
@@ -493,7 +493,7 @@ describe('renderProgressCard', () => {
       }))
       expect(visibleElements(card)).toEqual([
         [
-          t.turnCardStep(3, '3.0s'),
+          t.turnCardStepDetail(3, '3.0s'),
           row(t.turnCardToolDone('`read`', '100ms')),
           row(t.turnCardToolDone('`bash` ×2', '400ms')),
         ].join('\n'),
@@ -542,7 +542,7 @@ describe('renderProgressCard', () => {
         steps: [{ step: 1, startedAt: 0, tools: [], phase: 'thinking' }],
         calls: 0, endedAt: undefined, now: 4_800,
       }))
-      expect(visibleLines(card)).toContain(t.turnCardStep(1, '4.8s…', t.turnCardPhaseThinking))
+      expect(visibleLines(card)).toContain(t.turnCardStepDetail(1, `${t.turnCardPhaseThinking} · 4.8s…`))
       // The heading stays plain: the light rides the title line, never its own row.
       expect(visibleLines(card).filter(line => line.includes(t.turnCardPhaseThinking))).toHaveLength(1)
     })
@@ -562,7 +562,7 @@ describe('renderProgressCard', () => {
         steps: [{ step: 1, startedAt: 0, endedAt: 4_000, tools: [], phase: 'replying' }],
         calls: 0, now: 4_500,
       }))
-      expect(visibleLines(card)).toContain(t.turnCardStep(1, '4.0s'))
+      expect(visibleLines(card)).toContain(t.turnCardStepDetail(1, '4.0s'))
       expect(mdOf(card)).not.toContain(t.turnCardPhaseReplying)
     })
 
@@ -583,7 +583,7 @@ describe('renderProgressCard', () => {
         steps: [{ step: 1, startedAt: 0, tools: [] }],
         calls: 0, endedAt: undefined, now: 10,
       }))
-      expect(visibleLines(card)).toEqual([t.turnCardStep(1, '10ms…')])
+      expect(visibleLines(card)).toEqual([t.turnCardStepDetail(1, '10ms…')])
     })
   })
 
@@ -896,7 +896,7 @@ describe('createProgressCards', () => {
     }
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     const stale = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
-    expect(mdOf(stale)).toContain(t.turnCardStep(11, '500ms'))
+    expect(mdOf(stale)).toContain(t.turnCardStepDetail(11, '500ms'))
 
     // No `beginTurn` for the next one (the reported path), then step 1 arrives.
     cards.stepStarted('s1', 1, 20_000)
@@ -905,8 +905,8 @@ describe('createProgressCards', () => {
     const freshCard = fresh === undefined
       ? (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
       : (channel.createCardInstance.mock.calls.at(-1) as any)[0]
-    expect(mdOf(freshCard)).toContain(t.turnCardStep(1, '0ms…'))
-    expect(mdOf(freshCard)).not.toContain(t.turnCardStep(11, '500ms'))
+    expect(mdOf(freshCard)).toContain(t.turnCardStepDetail(1, '0ms…'))
+    expect(mdOf(freshCard)).not.toContain(t.turnCardStepDetail(11, '500ms'))
   })
 
   it('opens at step/start, then carries a step narration on that same card', async () => {
@@ -962,7 +962,9 @@ describe('createProgressCards', () => {
     cards.toolFinished('s1', 'c1', 400, false, 500)
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
-    expect(mdOf(card)).toContain(t.turnCardStep(1, '500ms…', t.turnCardPhaseThinking))
+    // Per-phase split (2026-11-25): the tool took 400 ms, the thinking phase
+    // banked 80 ms before it and is the live one again after the tool settled.
+    expect(mdOf(card)).toContain(t.turnCardStepDetail(1, `🔧 400ms · ${t.turnCardPhaseThinking} · 80ms…`))
   })
 
   it('repaints once per phase CHANGE, and clears the light when the step ends', async () => {
@@ -981,12 +983,14 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     expect(channel.updateCardInstance).toHaveBeenCalledTimes(1)
     expect(mdOf((channel.updateCardInstance.mock.calls[0] as any)[1]))
-      .toContain(t.turnCardStep(1, '700ms…', t.turnCardPhaseThinking))
+      .toContain(t.turnCardStepDetail(1, `🔧 490ms · 📡 100ms · ${t.turnCardPhaseThinking} · 0ms…`))
 
     cards.stepEnded('s1', 800)
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     const settled = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
-    expect(settled).toContain(t.turnCardStep(1, '800ms'))
+    // Settled: every phase prints as icon + its own duration, no live words.
+    // Settled segments print in run order: thinking → replying → tool → awaiting.
+    expect(settled).toContain(t.turnCardStepDetail(1, '🧠 100ms · 🔧 490ms · 📡 100ms'))
     expect(settled).not.toContain(t.turnCardPhaseThinking)
   })
 
@@ -1404,7 +1408,7 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(channel.createCardInstance).toHaveBeenCalledTimes(2)
     const fresh = (channel.createCardInstance.mock.calls[1] as any)[0]
-    expect(String(mdOf(fresh))).toContain(t.turnCardStep(1, '1.0s…', t.turnCardPhaseTool))
+    expect(String(mdOf(fresh))).toContain(t.turnCardStepDetail(1, `${t.turnCardPhaseTool} · 1.0s…`))
     expect(String(mdOf(fresh))).toContain('`read`')
     expect(String(mdOf(fresh))).toContain('`bash`')
   })
@@ -1478,6 +1482,40 @@ describe('createProgressCards', () => {
     const before = writesOf('card-1')
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 10)
     expect(writesOf('card-1')).toBe(before)
+  })
+
+  it('prints each phase\'s own duration once the step is over', () => {
+    // 2026-11-25 (operator's choice, option B): a finished step keeps WHAT it did
+    // per phase and for how long, instead of collapsing to one opaque total.
+    const card = renderProgressCard(t, {
+      steps: [{
+        step: 2,
+        startedAt: 0,
+        endedAt: 6_600,
+        phase: 'tool',
+        phaseMs: { thinking: 1_400, tool: 5_200 },
+        tools: [{ name: 'bash', callId: 'c1', startedAt: 1_000, elapsed: 5_200, detail: ['ls'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 6_600, now: 6_600, failedTurn: false,
+    }) as any
+    expect(mdOf(card)).toContain(t.turnCardStepDetail(2, '🧠 1.4s · 🔧 5.2s'))
+    // No live words on a settled step.
+    expect(mdOf(card)).not.toContain(t.turnCardPhaseTool)
+  })
+
+  it('shows the banked phases plus the running one with its own clock', () => {
+    const card = renderProgressCard(t, {
+      steps: [{
+        step: 3,
+        startedAt: 0,
+        phase: 'tool',
+        phaseMs: { thinking: 600 },
+        phaseSince: 600,
+        tools: [{ name: 'run_code', callId: 'c1', startedAt: 600, detail: ['渲染样板'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, now: 1_400, failedTurn: false,
+    }) as any
+    expect(mdOf(card)).toContain(t.turnCardStepDetail(3, `🧠 600ms · ${t.turnCardPhaseTool} · 800ms…`))
   })
 
   it('renders a step\'s thinking chain as a folded panel between its header and rows', () => {
@@ -1640,11 +1678,11 @@ describe('createProgressCards', () => {
     await cards.finish('s1', 2_000, true)
     const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
     expect(card.header.template).toBe('red')
-    expect(String(mdOf(card))).toContain(`${t.turnCardStep(2, '1.0s')} · ${t.turnCardStepFailed}`)
+    expect(String(mdOf(card))).toContain(`${t.turnCardStepDetail(2, '1.0s')} · ${t.turnCardStepFailed}`)
     expect(String(mdOf(card))).toContain(t.turnCardCallUnrun('todo_write'))
     // Only the newest step is named as the one that failed.
-    expect(String(mdOf(card))).toContain(t.turnCardStep(1, '2.0s…'))
-    expect(String(mdOf(card))).not.toContain(`${t.turnCardStep(1, '2.0s…')} · ${t.turnCardStepFailed}`)
+    expect(String(mdOf(card))).toContain(t.turnCardStepDetail(1, '🔧 490ms'))
+    expect(String(mdOf(card))).not.toContain(`${t.turnCardStepDetail(1, '🔧 490ms')} · ${t.turnCardStepFailed}`)
   })
 
   it('ignores an attempt for a step this module never saw', async () => {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 变更：紧凑卡步头保留「分阶段耗时」，深度思考与步骤摘要图标分开（`src/feishu-progress.ts` / `src/i18n.ts` / `src/feishu-streaming.ts`，2026-11-25）
+
+- **分阶段耗时**（使用者在两版样板里选了 B）：步头不再是「一个总耗时」，而是**每个阶段各自的图标 + 耗时**，结束之后也保留：
+  - 已结束：`▸ **[2]** · 🧠 900ms · ✍️ 2.1s · 🔧 300ms`
+  - 运行中：`▸ **[3]** · 🧠 600ms · 🔧 工具调用中 · 2.4s…`（已结束阶段按 🧠→✍️→🔧→📡 顺序列出，正在跑的那个留在最后带自己的时钟）
+  - 没有任何阶段数据的步（被中断在请求帧之前）退回旧形态（`▸ **[N]** · 5.4s`），不会印出 `0ms`。
+- **实现**：`ProgressStep` 新增 `phaseMs`（各阶段累计毫秒）与 `phaseSince`（当前阶段起点），在阶段切换、工具开始/结束、`step/end`、`turn/end` 处以**事件时间**结算；渲染时把正在跑的阶段按 `now - phaseSince` 计入。步头格式改为单一入口 `turnCardStepDetail(step, detail)`（旧的三参数 `turnCardStep` 删除，避免两条路径漂移）。
+- **图标区分**：深度思考（紧凑卡折叠面板、详细模式思考块、思考续卡）统一 **🐳**；步骤摘要（旁白）保持 **💬**。
+- 测试：+2（分阶段步头、运行中的「已结算阶段 + 当前阶段时钟」）并同步 8 处旧断言；全量 83 文件 / 1,626 用例、typecheck、build、privacy 全绿。
+
+**English**: The compact step header now prints **each phase's own duration** instead of one opaque total, and keeps it after the step finishes (the operator picked this shape from two samples): `▸ **[2]** · 🧠 900ms · ✍️ 2.1s · 🔧 300ms`; a running step shows its settled phases plus the live one with its own clock (`▸ **[3]** · 🧠 600ms · 🔧 工具调用中 · 2.4s…`). Settled phases print in run order (thinking → replying → tool → awaiting), the live one stays last. A step with no phase data at all (interrupted before any request frame) keeps the old total-only shape instead of printing `0ms`. Implementation: `ProgressStep.phaseMs` accumulates per-phase time and `phaseSince` marks the current phase's start; boundaries are banked with the EVENT's timestamp at phase changes, tool start/settle, `step/end` and `turn/end`, and the renderer counts the running phase as `now - phaseSince`. The header now has a single formatter, `turnCardStepDetail(step, detail)` (the old three-argument `turnCardStep` is gone so the two cannot drift). Icons are separated: the thinking chain (compact panel, detailed step card, continuation cards) uses **🐳**, the step summary keeps **💬**. Two tests added, eight old assertions updated; 83 files / 1,626 tests, typecheck, build and privacy gate green.
+
 ### 变更：紧凑卡的步头改成 `▸ **[N]**`（更短，且长回合不破相）（`src/i18n.ts`，2026-11-25）
 
 - 使用者的选择：步号写成方括号形式。`▸ **第 3 步** · 8.6s` → `▸ **[3]** · 8.6s`（英文同样是 `**[3]**`），省两个字宽，30+ 步的回合也不会有圈号破相的问题；失败标记仍跟在后面（`▸ **[6]** · 22.3s · ❌ 失败`）。

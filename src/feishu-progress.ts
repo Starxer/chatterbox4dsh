@@ -205,6 +205,20 @@ export interface ProgressStep {
    */
   phase?: ProgressPhase | undefined
   /**
+   * Time already spent in each phase of this step (`thinking` / `replying` /
+   * `tool` / `awaiting`), accumulated as the clock crosses a phase boundary.
+   *
+   * The header prints these once the step is over, so a finished step still says
+   * WHAT it did and for how long (`▸ **[2]** · 🧠 1.4s · 🔧 5.2s`) instead of
+   * collapsing to one opaque total (the operator's choice, 2026-11-25).
+   */
+  phaseMs?: Partial<Record<ProgressPhase, number>> | undefined
+  /**
+   * When the CURRENT phase began, so the renderer can show its running clock and
+   * the next boundary can bank the interval. Cleared at `step/end`.
+   */
+  phaseSince?: number | undefined
+  /**
    * The step's own narration, when it had one: the assistant text of a step that
    * went on to call tools, i.e. PROCESS rather than the turn's answer (WebUI
    * parity — only a reply-bearing message WITHOUT tool calls is an answer,
@@ -477,6 +491,73 @@ export function stepLivePhase(step: ProgressStep): ProgressPhase | undefined {
   return step.phase
 }
 
+/**
+ * One icon per phase, language-neutral (the WORDS are translated, the icon is
+ * not): a finished step's header shows the icon plus that phase's duration.
+ */
+const PHASE_ICON: Record<ProgressPhase, string> = {
+  awaiting: '📡', thinking: '🧠', replying: '✍️', tool: '🔧',
+}
+
+/** The phases in the order a step usually runs them, which is how they print. */
+const PHASE_ORDER: readonly ProgressPhase[] = ['thinking', 'replying', 'tool', 'awaiting']
+
+/**
+ * Bank the time since the last boundary into the phase that was running.
+ *
+ * Called at every phase boundary (a phase change, a tool starting or settling, a
+ * step ending), with the event's own timestamp so the split matches the event
+ * stream instead of the wall clock at repaint time.
+ *
+ * @param step - the step whose clock advances.
+ * @param at - the boundary's timestamp (event time).
+ */
+function advancePhaseClock(step: ProgressStep, at: number): void {
+  const since = step.phaseSince
+  const phase = stepLivePhase(step)
+  if (since !== undefined && phase !== undefined) {
+    const spent = Math.max(0, at - since)
+    if (spent > 0) {
+      const buckets = step.phaseMs ?? (step.phaseMs = {})
+      buckets[phase] = (buckets[phase] ?? 0) + spent
+    }
+  }
+  step.phaseSince = at
+}
+
+/**
+ * The header's phase segments: banked phases as `icon + duration`, plus the
+ * LIVE phase as `icon + label + running clock` while the step is open.
+ *
+ * @param t - translations (the live phase's words).
+ * @param step - the step to describe.
+ * @param now - the render clock.
+ * @returns the segments in run order; empty when no phase was ever observed.
+ */
+function phaseSegments(t: Translations, step: ProgressStep, now: number): string[] {
+  // No timing was ever observed for this step (a frame stream that never
+  // reported a phase): keep the pre-existing shape (live words + the step's
+  // total), instead of printing a meaningless `0ms`.
+  const banked = step.phaseMs
+  const hasTiming = step.phaseSince !== undefined
+    || (banked !== undefined && Object.keys(banked).length > 0)
+  if (!hasTiming) return []
+  const live = step.endedAt === undefined ? stepLivePhase(step) : undefined
+  const parts: string[] = []
+  for (const phase of PHASE_ORDER) {
+    if (phase === live) continue
+    let ms = step.phaseMs?.[phase] ?? 0
+    if (ms <= 0) continue
+    parts.push(`${PHASE_ICON[phase]} ${formatProgressMs(ms)}`)
+  }
+  if (live !== undefined) {
+    const banked = step.phaseMs?.[live] ?? 0
+    const running = step.phaseSince === undefined ? banked : banked + Math.max(0, now - step.phaseSince)
+    parts.push(`${stepLight(t, step)} · ${formatProgressMs(running)}…`)
+  }
+  return parts
+}
+
 export function stepLight(t: Translations, step: ProgressStep): string {
   switch (stepLivePhase(step)) {
     case 'tool': return t.turnCardPhaseTool
@@ -575,14 +656,19 @@ function buildLines(t: Translations, facts: ProgressFacts, style: CompactToolRow
   for (const step of facts.steps) {
     const end = step.endedAt ?? facts.now
     const stepElapsed = `${formatProgressMs(end - step.startedAt)}${step.endedAt === undefined ? '…' : ''}`
-    // Only a step that is STILL open gets a light: the moment `step/end` lands,
-    // what the model was doing is history and the header goes back to naming the
-    // step and its clock.
+    // What the step did, per phase, with the running phase's clock while it is
+    // still open (`🧠 1.4s · 🔧 5.2s`, `▸ **[3]** · 🧠 0.6s · 🔧 工具调用中 · 8.0s…`).
+    // With no phase ever observed (an interruption before any request frame)
+    // the header keeps the old total-only shape.
+    const segments = phaseSegments(t, step, facts.now)
     const light = step.endedAt === undefined ? stepLight(t, step) : ''
+    const detail = segments.length > 0
+      ? segments.join(' · ')
+      : `${light === '' ? '' : `${light} · `}${stepElapsed}`
     lines.push({
       // The step the turn died in carries one more suffix than the others: the
       // red title names the TURN, this names the step (see `ProgressStep.failed`).
-      text: `${t.turnCardStep(step.step, stepElapsed, light === '' ? undefined : light)}`
+      text: t.turnCardStepDetail(step.step, detail)
         + (step.failed === true ? ` · ${t.turnCardStepFailed}` : ''),
       header: true,
       step: step.step,
@@ -1401,6 +1487,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     // A per-token caller must not repaint per token: only a real transition is
     // worth a write (the streaming layer already drops repeat frames).
     if (target.phase === phase) return
+    advancePhaseClock(target, at)
     target.phase = phase
     facts.now = at
     const entry = cards.get(sessionId)
@@ -1491,6 +1578,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       current = { step: facts.steps.length + 1, startedAt: at, tools: [] }
       facts.steps.push(current)
     }
+    // The tool is about to start: bank the phase that ran until now, so the
+    // running row takes over from here and the header's split stays honest.
+    advancePhaseClock(current, at)
     current.tools.push({
       name: toolName,
       callId,
@@ -1519,6 +1609,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     // Settle by call id. A result whose call id was never seen (a lost frame)
     // settles the oldest running row instead of being dropped.
     const running = (tool: ProgressTool): boolean => tool.elapsed === undefined
+    // Bank while the row still looks running: that interval belonged to the tool
+    // phase, and settling may switch the effective phase back.
+    for (const step of facts.steps) if (step.endedAt === undefined) advancePhaseClock(step, at)
     let row: ProgressTool | undefined
     for (const step of facts.steps) {
       row = step.tools.find(tool => running(tool) && tool.callId === callId)
@@ -1606,7 +1699,13 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     const facts = turn.facts
     facts.now = at
     const current = facts.steps[facts.steps.length - 1]
-    if (current !== undefined && current.endedAt === undefined) current.endedAt = at
+    if (current !== undefined && current.endedAt === undefined) {
+      // Bank the last phase before the step closes, then stop the clock: a
+      // settled step prints its banked split, nothing runs any more.
+      advancePhaseClock(current, at)
+      current.phaseSince = undefined
+      current.endedAt = at
+    }
     // A step that ends with a program still open (a lost frame) closes its
     // sub-call rows here, not at the next repaint: the card is about to stop
     // ticking and a "running" row would freeze mid-sentence.
@@ -1641,6 +1740,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     }
     const facts = turn.facts
     facts.now = at
+    for (const step of facts.steps) {
+      if (step.endedAt === undefined) advancePhaseClock(step, at)
+      step.phaseSince = undefined
+    }
     facts.endedAt = at
     facts.failedTurn = failedTurn
     const current = facts.steps[facts.steps.length - 1]
