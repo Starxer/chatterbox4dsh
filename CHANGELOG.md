@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：紧凑模式下一堆空白「回复 · 第 N 步」步骤卡（`src/feishu-streaming.ts`，2026-11-25）
+
+- **现场**：02:15 插件被热重载（我这边跑 `npm run build` 触发）后，聊天里出现一串**空白**的 `回复 · 第 504 轮 · 第 12/14/17/21 步` 卡片。
+- **根因**：`stepHasVisibleContent()` 把「显示思考」算作步骤卡的可见内容。紧凑模式现在把思考放到**回合卡**的折叠面板里，而紧凑的步骤卡（`tight`）按设计**不渲染思考** ⇒ 每个只有思考、没文本的步骤都被判成「有内容可发」，发出去的却是一张空卡。
+- **修法**：紧凑模式（`turnCard`）下思考**不再**计入步骤卡的可见内容；纯回答卡通过 `keepCompactReasoning` 保留思考不受影响。
+- 测试：新增「紧凑模式只思考的步骤只发回合卡、且任何卡都不能空」回归用例；全量 83 文件 / 1,627 用例、typecheck、build、privacy 全绿。
+- 另记：这次是**热重载**把半成品代码带上了线（02:15:38 `channel down` → 02:15:39 `apply() called` → 02:15:46 那一轮被打断并自动重发）。部署纪律仍是延迟重启，构建尽量放在回合结束后。
+
+**English**: After a plugin hot-reload at 02:15 (triggered by `npm run build`), the chat filled with BLANK `回复 · turn N · step M` step cards. `stepHasVisibleContent()` counted "thinking is shown" as step-card content, but a compact (`tight`) step card deliberately renders no reasoning — the chain lives on the turn card's folded panel — so every thinking-only step qualified for a card and posted an empty one. Under `turnCard` the chain no longer counts as step-card content (the pure-answer card still keeps it through `keepCompactReasoning`). A regression test asserts that a thinking-only compact step posts only the turn card and that no card is left with an empty body. 83 files / 1,627 tests, typecheck, build and privacy gate green. Note: the live code was pulled in by the hot reload (02:15:38 `channel down` → 02:15:39 `apply()` → 02:15:46 the running turn was interrupted and auto-resent); deployment stays a delayed restart, and builds belong after a turn.
+
 ### 变更：紧凑卡步头保留「分阶段耗时」，深度思考与步骤摘要图标分开（`src/feishu-progress.ts` / `src/i18n.ts` / `src/feishu-streaming.ts`，2026-11-25）
 
 - **分阶段耗时**（使用者在两版样板里选了 B）：步头不再是「一个总耗时」，而是**每个阶段各自的图标 + 耗时**，结束之后也保留：

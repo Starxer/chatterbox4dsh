@@ -761,7 +761,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   const stepHasVisibleContent = (state: SessionStepState): boolean =>
     state.text.trim() !== ''
-    || (reasoningShown() && state.reasoning.trim() !== '')
+    // Under `compact` the chain lives on the TURN card (folded panel), and a
+    // `tight` step card deliberately renders no reasoning — so letting it count
+    // as "visible content" here made every thinking-only step post a BLANK
+    // "回复 · 第 N 轮 · 第 M 步" card (2026-11-25, the operator's report).
+    || (!displayPolicy().turnCard && reasoningShown() && state.reasoning.trim() !== '')
     || (toolsShown() && state.toolCalls.length > 0)
 
   /** Whether the step has nothing the card can render (yet, or at all). */

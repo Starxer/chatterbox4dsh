@@ -2736,6 +2736,30 @@ describe('level + injection wiring through session events', () => {
     h.streaming.stop()
   })
 
+  it('posts no card for a compact step whose only content is its thinking', async () => {
+    // Regression (2026-11-25, live): once compact started showing the chain on
+    // the turn card, a thinking-only step counted as "visible content" and posted
+    // a step card that rendered BLANK (a `tight` card shows no reasoning). The
+    // turn card is the only card such a step may own.
+    const ch = levelChannel()
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '只想不做' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    h.emit('step/end')
+    await tick(300)
+    expect(ch.createCardInstance).toHaveBeenCalledTimes(1)
+    const card = lastCard(ch)
+    expect(isTurnCardTitle(String(card.header.title.content))).toBe(true)
+    // And no card in this turn may have an empty body.
+    for (const call of ch.createCardInstance?.mock.calls ?? []) {
+      const rendered = call[0] as any
+      expect(JSON.stringify(rendered.body?.elements ?? [])).not.toBe('[]')
+    }
+    h.streaming.stop()
+  })
+
   it('posts no card for a compact step that only ran tools', async () => {
     const ch = levelChannel()
     const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
