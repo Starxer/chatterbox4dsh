@@ -448,6 +448,14 @@ export interface Translations {
   statusTokensLine: (input: string, output: string) => string
   statusContextLabel: string
   statusContextLine: (used: string, total: string, pct: number) => string
+  /**
+   * The Feishu API counter line of the `/status` card: this month against the
+   * configured quota, today's calls, and the per-call-site breakdown.
+   *
+   * @param quota - the " / 1M (35%)" suffix, empty when no quota is configured.
+   * @param labels - the "label: n · …" breakdown, empty when nothing was counted.
+   */
+  statusApiLine: (month: string, quota: string, today: string, labels: string) => string
 
   // ---- Misc shared ----
   cancel: string
@@ -1196,6 +1204,7 @@ export const zh = {
   statusTokensLine: (input, output) => `${input} 输入 · ${output} 输出`,
   statusContextLabel: '上下文',
   statusContextLine: (used, total, pct) => `${used} / ${total}（${pct}%）`,
+  statusApiLine: (month, quota, today, labels) => `**飞书 API:** 本月 ${month}${quota} 次 · 今天 ${today} 次${labels}`,
 
   cancel: '取消',
   confirm: '确认',
@@ -1837,6 +1846,7 @@ export const en: Translations = {
   statusTokensLine: (input, output) => `${input} in · ${output} out`,
   statusContextLabel: 'Context',
   statusContextLine: (used, total, pct) => `${used} / ${total} (${pct}%)`,
+  statusApiLine: (month, quota, today, labels) => `**Feishu API:** ${month}${quota} this month · ${today} today${labels}`,
 
   cancel: 'Cancel',
   confirm: 'Confirm',

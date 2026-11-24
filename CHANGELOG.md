@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修复：`/status` 卡片没有 API 用量计数（走的是另一条渲染路径）（`src/index.ts` / `src/i18n.ts`，2026-11-24）
+
+- **现场**：使用者按我上一轮说的去 `/status` 看今日调用数，卡片里没有这一行。
+- **根因**：`/status` 在 `executeSlashCommand` 里就被**直接接管**并渲染成卡片（`renderStatusCard`，带权限/繁忙模式/智能体状态这些更丰富的信息），命令运行时那条带 `apiUsage` 的 `handleStatusCommand`（`src/commands.ts` → `t.statusOutput(meta, apiUsage)`）**永远走不到**。所以计数只在「另一条死路径」里有。
+- **修法**：`renderStatusCard` 增加一个可选的用量参数，在卡片末尾输出 `**飞书 API:** 本月 350.9K / 1M (35%) 次 · 今天 235.8K 次 · <按调用点拆分>`；数据由一个模块级单元（`setActiveApiUsage`，与 `setActiveCommandTranslations` 同款模式）从 `apply` 的计数器喂入，避免往 `executeSlashCommand` 已经 26 个的位置参数里再加一个。
+- 测试：新增 `tests/status-card.spec.ts`（有用量时输出该行、无用量时不输出）；全量 83 文件 / 1,615 用例、typecheck、build、privacy 全绿。
+
+**English**: `/status` never showed the Feishu call counter I had quoted. It is answered by `executeSlashCommand`, which repaints a richer card (`renderStatusCard`: permission, busy mode, agent state) and therefore never reaches the command-runtime `handleStatusCommand` that builds the counter line from `t.statusOutput(meta, apiUsage)`. `renderStatusCard` now takes an optional usage snapshot and appends `**Feishu API:** <month> / <quota> (<pct>) this month · <today> today · <per-call-site breakdown>`; the snapshot is fed through a module-level cell (`setActiveApiUsage`, the same pattern as `setActiveCommandTranslations`) so `executeSlashCommand`'s 26 positional parameters stay as they are. `tests/status-card.spec.ts` covers the line with and without usage; 83 files / 1,615 tests, typecheck, build and privacy gate green.
+
 ### 修复：被丢弃的卡片还在每 5 秒自我重绘（今天 API 用量暴涨的根因之一）（`src/feishu-progress.ts`，2026-11-24）
 
 - **现象**：2026-11-24 12:40 启动日志 `feishu API calls this month: 350892 (today 235743)` —— 半天用掉 23.5 万次，而此前 20 天累计才约 6 万次。

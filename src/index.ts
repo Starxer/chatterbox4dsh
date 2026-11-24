@@ -259,6 +259,9 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   // `locale` field.
   const refreshLocale = (): void => setActiveCommandTranslations(currentLocale().id)
   refreshLocale()
+  // Same pattern for the `/status` card's API counter: the card is rendered by
+  // the module-level `executeSlashCommand`, which never sees `apiUsage`.
+  setActiveApiUsage(() => ({ ...apiUsage.snapshot(), quota: currentSettings().apiQuotaPerMonth ?? 0 }))
 
   // The bridge is recreated every time the Lark channel reconciles; hold it
   // in a single-cell so the `/model` command always reaches the bridge that
@@ -1807,13 +1810,35 @@ let activeCommandTranslations: CommandTranslations = commandTranslationsFor('zh'
 function setActiveCommandTranslations(locale: 'zh' | 'en'): void {
   activeCommandTranslations = commandTranslationsFor(locale)
 }
+/**
+ * Live Feishu API-usage counter for the `/status` card.
+ *
+ * `/status` is answered by `executeSlashCommand` before the command runtime ever
+ * sees it, so the `t.statusOutput(..., apiUsage)` line that `src/commands.ts`
+ * builds is unreachable — the card is `renderStatusCard`'s. The counter is fed
+ * here (set from `apply`) instead of being threaded through
+ * `executeSlashCommand`'s already-long positional signature (2026-11-24: the
+ * operator asked why `/status` has no call counter).
+ */
+let activeApiUsage: (() => ApiUsageLike | undefined) | undefined
+function setActiveApiUsage(source: (() => ApiUsageLike | undefined) | undefined): void {
+  activeApiUsage = source
+}
+/** The part of `ApiUsageSnapshot` the status card renders. */
+interface ApiUsageLike {
+  month: number
+  today: number
+  labels: ReadonlyArray<{ label: string; count: number }>
+  quota?: number | undefined
+}
 
 /** Render the /status result as a Feishu interactive card. */
-function renderStatusCard(meta: {
+export function renderStatusCard(meta: {
   sessionId: string; workspace: string; agentPreset: string; model: string; reasoningEffort: string; title: string
   turns: number; steps: number; toolCalls: number; inputTokens: number; outputTokens: number
   contextWindow: number; lastInputTokens: number
-}, agentRunning: boolean, sandboxMode?: string, busyMode?: string, t: Translations = translationsFor('zh')): object {
+}, agentRunning: boolean, sandboxMode?: string, busyMode?: string, t: Translations = translationsFor('zh'),
+  apiUsage?: ApiUsageLike): object {
   const fields: string[] = []
   fields.push(`**${t.statusSessionLabel}:** \`${meta.sessionId}\``)
   if (meta.title !== '') fields.push(`**${t.statusTitleLabel}:** ${meta.title}`)
@@ -1842,6 +1867,18 @@ function renderStatusCard(meta: {
   if (meta.contextWindow > 0) {
     const pct = Math.min(100, Math.round(meta.lastInputTokens / meta.contextWindow * 100))
     fields.push(`**${t.statusContextLabel}:** ${t.statusContextLine(formatTokenCount(meta.lastInputTokens), formatTokenCount(meta.contextWindow), pct)}`)
+  }
+  if (apiUsage !== undefined) {
+    const quota = apiUsage.quota !== undefined && apiUsage.quota > 0 ? apiUsage.quota : 0
+    const quotaText = quota > 0
+      ? ` / ${formatTokenCount(quota)} (${Math.min(100, Math.round(apiUsage.month / quota * 100))}%)`
+      : ''
+    const labels = apiUsage.labels.length === 0
+      ? ''
+      : ` · ${apiUsage.labels.map(item => `${item.label} ${item.count}`).join(' · ')}`
+    fields.push(t.statusApiLine(
+      formatTokenCount(apiUsage.month), quotaText, formatTokenCount(apiUsage.today), labels,
+    ))
   }
   if (agentRunning) {
     fields.push('')
@@ -2043,7 +2080,7 @@ async function executeSlashCommand(
     const session = agents?.get(sessionId)?.session as any
     const sandboxMode = sandboxPolicy?.resolve?.({ session })?.mode
     const busyMode = bridge.busyMode(chatMessage)
-    return { kind: 'success', text: '', card: renderStatusCard(meta, agentRunning, sandboxMode, busyMode, translationsFor(localeControl?.current().id ?? 'zh')) }
+    return { kind: 'success', text: '', card: renderStatusCard(meta, agentRunning, sandboxMode, busyMode, translationsFor(localeControl?.current().id ?? 'zh'), activeApiUsage?.()) }
   }
   if (parsed.name === 'lang') {
     const arg = parsed.rawInput.trim().toLowerCase()

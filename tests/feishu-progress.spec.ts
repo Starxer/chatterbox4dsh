@@ -1446,7 +1446,7 @@ describe('createProgressCards', () => {
     cards.toolStarted('s1', 'bash', 'c1', t0)
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS + PROGRESS_WRITE_GAP_MS)
     const writesOf = (cardId: string): number =>
-      channel.updateCardInstance.mock.calls.filter(call => call[0] === cardId).length
+      (channel.updateCardInstance.mock.calls as unknown[][]).filter(call => call[0] === cardId).length
     expect(writesOf('card-1')).toBeGreaterThan(0)
     // The next turn starts without the previous one ending.
     cards.beginTurn(chat, 's1', t0 + 60_000)
@@ -1469,7 +1469,7 @@ describe('createProgressCards', () => {
     cards.toolStarted('s1', 'bash', 'c1', t0)
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS + PROGRESS_WRITE_GAP_MS)
     const writesOf = (cardId: string): number =>
-      channel.updateCardInstance.mock.calls.filter(call => call[0] === cardId).length
+      (channel.updateCardInstance.mock.calls as unknown[][]).filter(call => call[0] === cardId).length
     expect(writesOf('card-1')).toBeGreaterThan(0)
     // Same step number twice: the self-heal treats it as a new turn and drops
     // the card — its timer must go with it.
