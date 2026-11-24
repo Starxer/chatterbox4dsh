@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 变更：紧凑卡的步头改成 `▸ **[N]**`（更短，且长回合不破相）（`src/i18n.ts`，2026-11-25）
+
+- 使用者的选择：步号写成方括号形式。`▸ **第 3 步** · 8.6s` → `▸ **[3]** · 8.6s`（英文同样是 `**[3]**`），省两个字宽，30+ 步的回合也不会有圈号破相的问题；失败标记仍跟在后面（`▸ **[6]** · 22.3s · ❌ 失败`）。
+- 测试：三条把步头写死的用例改为新形态；全量 83 文件 / 1,624 用例、typecheck、build、privacy 全绿。
+
+**English**: The compact turn card's step header is now `▸ **[3]** · 8.6s` (was `▸ **第 3 步** · 8.6s`) — two characters shorter, and it does not break on turns with 30+ steps the way circled digits would; the failure suffix still follows (`▸ **[6]** · 22.3s · ❌ 失败`). Three tests that hard-coded the old header were updated; 83 files / 1,624 tests, typecheck, build and privacy gate green.
+
 ### 变更：紧凑卡的「深度思考」面板标题不再带步号（`src/i18n.ts` / `src/feishu-progress.ts`，2026-11-25）
 
 - 使用者的判断：面板就贴在步头下面，再写一次「第 N 步」是重复信息、只占宽度。标题现在是固定的 `💬 **深度思考**`（英文 `💬 **Deep Thinking**`），每步一样。

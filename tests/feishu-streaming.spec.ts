@@ -2921,9 +2921,9 @@ describe('turn progress card wiring', () => {
     // settled row are on the fresh card even though that step started before the
     // interruption.
     const second = (ch.createCardInstance!.mock.calls[1] as any)[0]
-    expect(mdOf(second)).toContain('第 1 步')
+    expect(mdOf(second)).toContain('**[1]**')
     expect(mdOf(second)).toContain('`bash`')
-    expect(mdOf(second)).toContain('第 2 步')
+    expect(mdOf(second)).toContain('**[2]**')
     streaming.stop()
   })
 
@@ -2949,7 +2949,7 @@ describe('turn progress card wiring', () => {
     expect(panel.expanded).toBe(false)
     expect(String(panel.elements[0].content)).toContain('先想清楚，再动手。')
     // Header → panel → rows: the same order the real execution has.
-    const header = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('**第 1 步**'))
+    const header = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('**[1]**'))
     const panelIndex = elements.indexOf(panel)
     const rows = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('`bash`'))
     expect(header).toBeLessThan(panelIndex)
@@ -3055,7 +3055,7 @@ describe('turn progress card wiring', () => {
     // The elapsed time is read from the clock, so asserting the title pinned to
     // `0ms` was flaky (observed 2026-10-14); assert the row's shape instead.
     expect(mdOf(progressRenders(ch).find(card => mdOf(card).includes('⏳ `bash`'))!))
-      .toMatch(/▸ \*\*第 1 步\*\* · 🔧 工具调用中 · \d+ms…/)
+      .toMatch(/▸ \*\*\[1\]\*\* · 🔧 工具调用中 · \d+ms…/)
 
     emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
     // The answer opens a step card of its own — carrying the text and NOTHING
@@ -3396,7 +3396,7 @@ describe('turn progress card wiring', () => {
     const md = mdOf(last)
     // The failing step is named, and the call it was making is visible even
     // though it never ran (the user's report, 2026-10-14).
-    expect(md).toMatch(/▸ \*\*第 2 步\*\* · [\d.]+m?s · ❌ 失败/)
+    expect(md).toMatch(/▸ \*\*\[2\]\*\* · [\d.]+m?s · ❌ 失败/)
     expect(md).toContain(t.turnCardCallUnrun('edit'))
     // It is not a tool row and not a tool count: only `read` ran.
     expect(md).not.toContain('`edit` · 4')

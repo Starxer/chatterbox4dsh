@@ -1496,7 +1496,7 @@ describe('createProgressCards', () => {
     }
     const card = renderProgressCard(t, facts, 'tool') as any
     const elements: any[] = card.body.elements
-    const header = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('**第 1 步**'))
+    const header = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('**[1]**'))
     const panel = elements.findIndex(el => el.tag === 'collapsible_panel')
     const rows = elements.findIndex(el => el.tag === 'markdown' && String(el.content).includes('`bash`'))
     expect(header).toBeGreaterThanOrEqual(0)

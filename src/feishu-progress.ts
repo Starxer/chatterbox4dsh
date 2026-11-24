@@ -25,7 +25,7 @@
  * - **The step that is still running carries a live light.** The step header is
  *   the only line of this card about the PRESENT (the rows below it are what
  *   already happened), so that is where "what the model is doing right now" read
- *   belongs: `▸ **第 2 步** · 🧠 思考中 · 4.8s…`. The phase comes from the transient
+ *   belongs: `▸ **[2]** · 🧠 思考中 · 4.8s…`. The phase comes from the transient
  *   `agent/assistant-stream` frames — the module's only live signal — and a tool
  *   still waiting for its result outranks it. Frames arrive per token, but only
  *   a PHASE CHANGE repaints, so a long reasoning phase costs one write.
@@ -430,7 +430,7 @@ function toolLine(
  * The marker that puts a step's CONTENT inside one quote block, so the shape is
  * one decision in one place (chosen by the user on rendered samples, 2026-10-12).
  *
- * A step reads as `▸ **第 N 步** · 4.8s` — the heading, OUTSIDE the block —
+ * A step reads as `▸ **[N]** · 4.8s` — the heading, OUTSIDE the block —
  * followed by its content: the injection notices, the narration and the tool
  * rows, all quoted. The heading stays plain so it is the section's title rather
  * than the first line of a quotation; everything under it is what the step did.

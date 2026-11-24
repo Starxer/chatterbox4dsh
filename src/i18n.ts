@@ -259,15 +259,15 @@ export interface Translations {
   /** Title when the turn ended in an error (the reason rides the failure card). */
   turnCardTitleFailed: (calls: number, elapsed: string) => string
   /**
-   * Section header of one step, e.g. `**第 2 步** · 8.9s`. `light` is the live
+   * Section header of one step, e.g. `**[2]** · 8.9s`. `light` is the live
    * phase of a step that is STILL RUNNING and is inserted between the step number
-   * and the clock (`**第 2 步** · 🧠 思考中 · 8.9s…`); it is absent for a step that
+   * and the clock (`**[2]** · 🧠 思考中 · 8.9s…`); it is absent for a step that
    * ended, which is exactly what the callers pass.
    */
   turnCardStep: (step: number, elapsed: string, light?: string) => string
   /**
    * Suffix naming the step the turn DIED in, appended to {@link turnCardStep}:
-   * `▸ **第 6 步** · 22.3s · ❌ 失败`. Carries its own icon because it is a status
+   * `▸ **[6]** · 22.3s · ❌ 失败`. Carries its own icon because it is a status
    * mark, not a phase (`turnCardPhaseTool` already owns `🔧`).
    */
   turnCardStepFailed: string
@@ -313,7 +313,7 @@ export interface Translations {
   turnCardOlderSteps: (steps: number) => string
   /**
    * The live light on the step that is still running: what the model is doing
-   * RIGHT NOW, as the step header's suffix (`▸ **第 2 步** · 🧠 思考中 · 4.8s…`).
+   * RIGHT NOW, as the step header's suffix (`▸ **[2]** · 🧠 思考中 · 4.8s…`).
    *
    * Three phases plus the tool state, one per line the stream can be in. The
    * wording deliberately reuses the content-free step card's placeholder titles
@@ -1131,7 +1131,7 @@ export const zh = {
   turnCardTitleDone: (calls, failed, elapsed) =>
     `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
-  turnCardStep: (step, elapsed, light) => `▸ **第 ${step} 步**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
+  turnCardStep: (step, elapsed, light) => `▸ **[${step}]**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
   turnCardStepFailed: '❌ 失败',
   turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
   turnCardStepNote: note => `💬 ${note}`,
@@ -1775,7 +1775,7 @@ export const en: Translations = {
     `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
   turnCardTitleFailed: (calls, elapsed) =>
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
-  turnCardStep: (step, elapsed, light) => `▸ **Step ${step}**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
+  turnCardStep: (step, elapsed, light) => `▸ **[${step}]**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
   turnCardStepFailed: '❌ failed',
   turnCardStepThinking: '💬 **Deep Thinking**',
   turnCardThinkingTruncated: chars => `*…${chars} more characters omitted; switch to the "detailed" level for the full chain.*`,
