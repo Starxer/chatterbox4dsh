@@ -1430,6 +1430,56 @@ describe('createProgressCards', () => {
     expect(cards.hasTurn('s1')).toBe(true)
   })
 
+  it('stops the elapsed tick of a card the next turn drops (interrupted turn)', async () => {
+    // A turn that never got its `turn/end` (interrupted, auto-resent) leaves its
+    // card entry behind with a self-rearming tick. Forgetting the entry used to
+    // leave that timer running for the life of the process — one Feishu API call
+    // every `elapsedRefreshSeconds`, per orphaned card (2026-11-24: 348,734 card
+    // updates in a month against 736 created cards).
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    let created = 0
+    channel.createCardInstance.mockImplementation(async () => `card-${++created}`)
+    const t0 = Date.now()
+    cards.beginTurn(chat, 's1', t0)
+    cards.stepStarted('s1', 1, t0)
+    cards.toolStarted('s1', 'bash', 'c1', t0)
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS + PROGRESS_WRITE_GAP_MS)
+    const writesOf = (cardId: string): number =>
+      channel.updateCardInstance.mock.calls.filter(call => call[0] === cardId).length
+    expect(writesOf('card-1')).toBeGreaterThan(0)
+    // The next turn starts without the previous one ending.
+    cards.beginTurn(chat, 's1', t0 + 60_000)
+    cards.stepStarted('s1', 1, t0 + 60_000)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const before = writesOf('card-1')
+    // Ten more tick intervals must not touch the dropped card again.
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 10)
+    expect(writesOf('card-1')).toBe(before)
+  })
+
+  it('stops the elapsed tick of the card a backwards step number drops', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness()
+    let created = 0
+    channel.createCardInstance.mockImplementation(async () => `card-${++created}`)
+    const t0 = Date.now()
+    cards.beginTurn(chat, 's1', t0)
+    cards.stepStarted('s1', 1, t0)
+    cards.toolStarted('s1', 'bash', 'c1', t0)
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS + PROGRESS_WRITE_GAP_MS)
+    const writesOf = (cardId: string): number =>
+      channel.updateCardInstance.mock.calls.filter(call => call[0] === cardId).length
+    expect(writesOf('card-1')).toBeGreaterThan(0)
+    // Same step number twice: the self-heal treats it as a new turn and drops
+    // the card — its timer must go with it.
+    cards.stepStarted('s1', 1, t0 + 60_000)
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
+    const before = writesOf('card-1')
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 10)
+    expect(writesOf('card-1')).toBe(before)
+  })
+
   it('keeps a closed segment\'s clock alive without adding rows to it', async () => {
     vi.useFakeTimers()
     const interleave = createCardInterleave()

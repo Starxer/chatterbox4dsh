@@ -1102,10 +1102,43 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     cards.set(entry.sessionId, entry)
   }
 
+  /**
+   * Forget one card WITHOUT writing to it again: both timers off, and every
+   * in-flight/queued write disarmed.
+   *
+   * Dropping an entry from its map is not enough — the elapsed-time tick is a
+   * self-rearming `setTimeout` that holds its own reference to the entry, so a
+   * forgotten card keeps repainting itself every `elapsedRefreshSeconds`
+   * FOREVER. That is not a cosmetic leak: it burns one Feishu API call per tick
+   * per orphaned card. On 2026-11-24 the account had spent 348,734
+   * `update card instance` calls this month (~5 calls/second all day), while
+   * only 736 cards had been created — the imbalance is orphaned ticks (the
+   * segment-closing bug fixed in 9add12f, plus the turn-without-`turn/end` path
+   * below).
+   */
+  const dropEntry = (entry: CardEntry): void => {
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer)
+      entry.timer = undefined
+    }
+    if (entry.runningTick !== undefined) {
+      clearTimeout(entry.runningTick)
+      entry.runningTick = undefined
+    }
+    entry.superseded = true
+    entry.dirty = false
+  }
+
   const beginTurn = (chat: ConversationMessage, sessionId: string, at: number): void => {
     if (stopped) return
     // A new turn owns a new card: the previous one is a historical record and a
-    // card entity may only be sent once, so it is simply forgotten here.
+    // card entity may only be sent once, so it is simply forgotten here — after
+    // freezing it. A previous turn that never got its `turn/end` (interrupted,
+    // or auto-resent) leaves entries behind with a running tick; dropping the
+    // map entry alone would orphan that timer for the life of the process.
+    const previous = cards.get(sessionId)
+    if (previous !== undefined) dropEntry(previous)
+    for (const closed of closedSegments.get(sessionId) ?? []) dropEntry(closed)
     cards.delete(sessionId)
     closedSegments.delete(sessionId)
     turns.set(sessionId, {
@@ -1131,6 +1164,9 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       turn.facts.failed = 0
       turn.facts.failedTurn = false
       turn.facts.turnStart = at
+      const stale = cards.get(sessionId)
+      if (stale !== undefined) dropEntry(stale)
+      for (const closed of closedSegments.get(sessionId) ?? []) dropEntry(closed)
       cards.delete(sessionId)
       closedSegments.delete(sessionId)
     }
@@ -1456,7 +1492,15 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     cards.delete(sessionId)
     const closed = closedSegments.get(sessionId) ?? []
     closedSegments.delete(sessionId)
-    if (turn === undefined) return false
+    if (turn === undefined) {
+      // Nothing describes this turn any more (a re-mounted plugin, a mode switch
+      // between turns) but the card entries just dropped may still own a running
+      // tick: freeze them, or they repaint themselves for the life of the
+      // process (one Feishu API call each, every `elapsedRefreshSeconds`).
+      if (entry !== undefined) dropEntry(entry)
+      for (const frozen of closed) dropEntry(frozen)
+      return false
+    }
     const facts = turn.facts
     facts.now = at
     facts.endedAt = at

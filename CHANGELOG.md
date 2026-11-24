@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 修复：被丢弃的卡片还在每 5 秒自我重绘（今天 API 用量暴涨的根因之一）（`src/feishu-progress.ts`，2026-11-24）
+
+- **现象**：2026-11-24 12:40 启动日志 `feishu API calls this month: 350892 (today 235743)` —— 半天用掉 23.5 万次，而此前 20 天累计才约 6 万次。
+- **取证**：插件自计数文件里 `update card instance` 占本月 **348,734 / 350,911（99.4%）**，而本月只创建过 **736 张卡**——平均一张卡被改写 474 次，这不可能是真实交互。原因是耗时刷新是一个**自我重排的 `setTimeout`**（每个 `elapsedRefreshSeconds` 一次），它自己持有卡片 entry 的引用；只要 entry 被从 `cards`/`closedSegments` 里「忘掉」而没有清计时器，这张卡就会在进程余下的**整个生命周期里持续自我重绘**（每 5 秒一次真正的飞书 API 调用），而屏幕上它看起来是一张静止的旧卡。
+- **两条丢弃路径**（都不清计时器）：① `beginTurn()` 在上一回合没有收到 `turn/end`（回合被打断、自动重发）时直接 `cards.delete`/`closedSegments.delete`；② 回退步号自愈与 `finish()` 里 `turn === undefined` 的早退分支同样丢弃 entry。加上昨天已修的「打断分段被懒开卡清掉」那条（`9add12f`），三条路径共同造成孤儿计时器累积：按 18 万次 / 每孤儿每小时 720 次估算，旧进程里平均有 **~20 张卡**在空转。
+- **修法**：新增 `dropEntry()`（清两个计时器 + `superseded` + 清 dirty），三处丢弃路径都先冻结再删表。
+- **实测**（修好后同一进程内）：活跃回合约 **36 次/分**（一张实时卡 + 工具事件的正常刷新），空闲约 **1.6 次/分**；事故期的日均是 **~300 次/分**。
+- 测试：新增两条回归用例（下一回合丢弃上一回合的卡后、十次刷新窗口内旧卡不再被写；回退步号丢弃的卡同样不再被写）；全量 82 文件 / 1,613 用例、typecheck、build、privacy 全绿。
+
+**English**: The month's 350,911 Feishu calls were 99.4% `update card instance` (348,734) against only 736 cards created — 474 rewrites per card, which cannot be real interaction. The elapsed-time refresh is a self-rearming `setTimeout` that holds its own reference to the card entry, so forgetting an entry (dropping it from `cards`/`closedSegments` WITHOUT clearing the timer) leaves that card repainting itself every `elapsedRefreshSeconds` for the rest of the process — one real API call each time, while the card looks静止 to the operator. Three drop paths did exactly that: `beginTurn()` when the previous turn never got its `turn/end` (interrupted / auto-resent), the backwards-step self-heal, and `finish()`'s `turn === undefined` early return; together with yesterday's `9add12f` (closed segments dropped by the lazy opener) they accumulated orphaned tickers — roughly 20 cards spinning on average in the old process at 720 calls per orphan-hour. A new `dropEntry()` (both timers off, `superseded`, dirty cleared) is now used by all three paths. Measured in the fixed process: ~36 calls/min during an active turn, ~1.6/min idle, against ~300/min for the day's average. Two regression tests added; 82 files / 1,613 tests, typecheck, build and privacy gate green.
+
 ### 修复：问题卡超时/等待结束时不再刷成看不懂的灰色「已失效」卡（`src/feishu-questions.ts` / `src/i18n.ts`，2026-11-24）
 
 - **现场**：2026-11-24 11:21:54 发到群里的问题卡（从 `run_code` 程序里调起的 `ask_user_question`），使用者没有作答；11:31:54 请求被中止，卡片被就地刷成通用灰色卡「⬆️ 此卡片已失效 / 请使用**最新的卡片**继续」——**下面根本没有新卡**，也一个字没提「超时」，使用者读成了故障而不是「你的作答窗口关了」。
