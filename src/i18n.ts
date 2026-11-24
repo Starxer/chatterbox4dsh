@@ -284,9 +284,14 @@ export interface Translations {
   turnCardStepNote: (note: string) => string
   /**
    * Header of the folded panel that carries one step's thinking chain on the
-   * compact turn card (the panel sits between the step header and its rows).
+   * compact turn card.
+   *
+   * Deliberately carries NO step number (operator, 2026-11-25): the panel sits
+   * directly under the step's own header, so repeating "第 N 步" costs width and
+   * renders as noise; and with the number gone the header stays identical for
+   * every step.
    */
-  turnCardStepThinking: (step: number) => string
+  turnCardStepThinking: string
   /**
    * The line that closes a thinking panel whose chain did not fit the card's
    * byte budget: `chars` characters were dropped, and the full text lives at the
@@ -1130,7 +1135,7 @@ export const zh = {
   turnCardStepFailed: '❌ 失败',
   turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
   turnCardStepNote: note => `💬 ${note}`,
-  turnCardStepThinking: step => `💬 **深度思考** · 第 ${step} 步`,
+  turnCardStepThinking: '💬 **深度思考**',
   turnCardThinkingTruncated: chars => `*…其余 ${chars} 字已省略；切到「详细」模式可看完整思考。*`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: '执行中',
@@ -1772,7 +1777,7 @@ export const en: Translations = {
     `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
   turnCardStep: (step, elapsed, light) => `▸ **Step ${step}**${light === undefined ? '' : ` · ${light}`} · ${elapsed}`,
   turnCardStepFailed: '❌ failed',
-  turnCardStepThinking: step => `💬 **Deep thinking** · step ${step}`,
+  turnCardStepThinking: '💬 **Deep Thinking**',
   turnCardThinkingTruncated: chars => `*…${chars} more characters omitted; switch to the "detailed" level for the full chain.*`,
   turnCardCallUnrun: name => `⚠️ \`${name}\` · not run`,
   turnCardStepNote: note => `💬 ${note}`,

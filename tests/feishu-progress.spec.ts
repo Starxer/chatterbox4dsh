@@ -1503,7 +1503,7 @@ describe('createProgressCards', () => {
     expect(panel).toBeGreaterThan(header)
     expect(rows).toBeGreaterThan(panel)
     expect(elements[panel].expanded).toBe(false)
-    expect(elements[panel].header.title.content).toBe(t.cardFoldTitle(t.turnCardStepThinking(1)))
+    expect(elements[panel].header.title.content).toBe(t.cardFoldTitle(t.turnCardStepThinking))
     expect(String(elements[panel].elements[0].content)).toContain('先想清楚要做什么')
   })
 

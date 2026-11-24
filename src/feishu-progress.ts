@@ -831,7 +831,7 @@ export function renderProgressCard(
       const header = newline < 0 ? group.content : group.content.slice(0, newline)
       const rest = newline < 0 ? '' : group.content.slice(newline + 1)
       elements.push({ tag: 'markdown', content: header })
-      elements.push(foldedPanel(t, t.turnCardStepThinking(group.step), [
+      elements.push(foldedPanel(t, t.turnCardStepThinking, [
         { tag: 'markdown', content: thinking },
       ]))
       if (rest !== '') elements.push({ tag: 'markdown', content: rest })

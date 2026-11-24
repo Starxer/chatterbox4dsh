@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 变更：紧凑卡的「深度思考」面板标题不再带步号（`src/i18n.ts` / `src/feishu-progress.ts`，2026-11-25）
+
+- 使用者的判断：面板就贴在步头下面，再写一次「第 N 步」是重复信息、只占宽度。标题现在是固定的 `💬 **深度思考**`（英文 `💬 **Deep Thinking**`），每步一样。
+- 测试：进度卡用例改为断言固定标题；全量 83 文件 / 1,624 用例、typecheck、build、privacy 全绿。
+
+**English**: The folded panel that carries a step's thinking chain on the compact turn card no longer repeats the step number — it sits directly under the step's own header, so "第 N 步" was duplicate information that only cost width. The title is now the constant `💬 **深度思考**` (`💬 **Deep Thinking**`); the progress-card test asserts the fixed title. 83 files / 1,624 tests, typecheck, build and privacy gate green.
+
 ### 新增：紧凑回合卡里每步显示「深度思考」（折叠块，默认显示、可关）（`src/display-level.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/feishu-display.ts` / `src/commands*.ts` / `src/i18n.ts`，2026-11-25）
 
 - **需求**：`compact` 模式下也能看到模型的思考内容，**默认折叠**，并且有开关（使用者 2026-11-25 提，样板确认后实施）。
