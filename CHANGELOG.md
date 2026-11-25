@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 文档：同步「极简模式」与这一批展示改动的现状口径（`docs/architecture.md` / `docs/display-modes-design.md` / `docs/README.md` / `README.md`，2026-11-25）
+
+- `docs/architecture.md`：展示模型从「`compact` 一个模式 + 正交开关」更新为**三模式**（极简/紧凑/详细）；`/display` 卡按模式裁剪哪些行；回合过程卡章节改写成 `compact / minimal` 共用，补齐极简的懒开卡、`💬`/`✅❌⏳` 两类行、全文不截断、媒体走同一 hydrator、PTC 只渲染程序行、不按时钟刷新、结束标题「第 N 轮 · 总步数」、历史步骤的折叠/分页规则（含 16 KB 字节安全阀与换页前补写最终快照）；Turn Complete 改为「仅详细模式发」；后台任务面板任务列改为模型写的 description。
+- `docs/display-modes-design.md`：状态行与模式表加入第三个模式，新增「二之二、极简模式」小节（卡上有什么、三条硬约束、省在哪、入口与开关裁剪），并在「不做的边界」与「决策记录」补 2026-11-25 的两条决策。
+- `docs/README.md` 索引与 `README.md` 的「过程看得见」一条同步新口径。
+- 纯文档改动；`npm run privacy` 通过。
+
+**English**: Documentation catch-up for this batch: `docs/architecture.md` now describes three card modes (`minimal` / `compact` / `detailed`), the per-mode `/display` row pruning, the shared compact/minimal turn card (lazy open, `💬` reply + `✅/❌/⏳` description lines, untruncated reply, media hydrated through the same pipeline, PTC program line only, no timer repaint, round + total-step title, fold/page rules with the 16 KB byte safety valve and the page-final flush), "Turn Complete is detailed-only", and the job panel's description-based task column. `docs/display-modes-design.md` gains the third mode in its status/mode table plus a new "minimal" section and two 2026-11-25 decision-log entries; `docs/README.md` and `README.md` follow. Docs only; `npm run privacy` is clean.
+
 ### 修复：通道停止时不再补发回复卡（重启撞上回合收尾导致的重复「完成」卡）（`src/channel.ts`，2026-11-25）
 
 - 使用者现场（17:01）：又收到**两张正文相同、只有 footer 不同**的完成卡片。

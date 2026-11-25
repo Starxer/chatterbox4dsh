@@ -51,7 +51,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 | 文件 | 职责 |
 |---|---|
 | [步骤卡](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-streaming.ts>) | 持久事件消费、相位、内容渲染、更新节流、送达记账、溢出续卡 |
-| [档位策略](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/display-level.ts>) | `transcriptView` + 四开关投影成渲染策略 |
+| [档位策略](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/display-level.ts>) | `transcriptView`（极简 / 紧凑 / 详细三模式）+ 正交开关投影成渲染策略 |
 | [回合过程卡](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-progress.ts>) | compact 工具/叙述/注入时间线、状态灯、窗口、折叠与分段 |
 | [压缩卡](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/feishu-compaction.ts>) / [注入提示](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/injection-notice.ts>) | 压缩事务状态与摘要；只渲染注入来源元数据 |
 | [穿插通知](<https://github.com/Starxer/chatterbox4dsh/blob/main/src/card-interleave.ts>) | 其它卡片落入聊天时关闭长寿命卡的当前分段 |
@@ -94,7 +94,7 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 |---|---|
 | `turn/start` | 清回合状态，开始本轮来源判别 |
 | 首条 `user/message` 的 `source` | 逐回合认飞书/Web/自动化来源；注入提示只读元数据 |
-| `step/start` | 记录步骤开始；非 compact 档可显示“正在分析请求”占位 |
+| `step/start` | 记录步骤开始；步骤卡模式（`detailed`）才显示“正在分析请求”占位，极简/紧凑在这里只更新过程卡（极简无内容时连卡都不开） |
 | `request/context` | 记模型路线；事件只在变化时出现，不能当作唯一事实源 |
 | `agent/assistant-stream`（瞬时、global 监听） | `start` → 等待输出，reasoning delta → 思考中，text delta → 回复中；仅相位变化重绘，不逐 token 上屏 |
 | `assistant/message` | 经 `expandAssistantStream` 重建已提交 reasoning/text 与 usage；这是权威内容来源 |
@@ -111,18 +111,22 @@ DSH Agent (model, tools, approvals, questions, durable session log)
 
 每个可见步骤共享同一张无交互卡：占位 → reasoning/text → 工具 → 结果 → 终态。首发与更新使用 150ms 合并窗口；快步骤只发一张。CardKit 实例先创建再发送引用，更新必须等 message id 落地并保持 sequence 单调；能力缺失则退回普通发送/patch。
 
-正文按块切分，步骤首片预算 3,000 字符，溢出最多 30 张续卡；代码块闭合重开、表格重复表头。步骤卡上的思考内容块叫**深度思考**（2026-11-20 由「推理」改名；`/reasoning` 命令的「推理等级」说的是模型的 reasoning effort，不是这个块）：**整条链全文，永不截断**。默认收进折叠面板（`/display fold off` 或卡片按钮可切成平铺直出）；面板正文是**普通 markdown 元素，不是代码块**——代码块不软换行，长链在手机上只能横向滚。一张卡装不下时按 **20 KB（UTF-8）** 预算切分（`chunkTextByBytes`，复用块感知分片，代码块闭合重开、表格重复表头）：第一片进面板，其余在 `step/end` 之后作为**思考续卡**发出（标题 `💬 深度思考（第 N 步 · 续 2/3）`，等步骤卡 message 落地再发，顺序紧跟该步）。**展示模型（2026-11-20，预设已移除）**：`transcriptView` 只剩 `compact` 这一个**模式**（卡片拓扑：一回合一张过程卡 + 答案卡）；其余全是正交开关：`showReasoning`、`reasoningFold`、`toolDetail`（`off`/`count`/`summary`/`full`）、`toolOutputFull`（布尔）、`showToolArgs`、`showToolResults`，外加两个截断长度 `argsPreviewChars`、`resultPreviewChars`。**不发送任何流式更新**：思考块与最终回答都整卡呈现（原因与实测见 [feishu-streaming-experiments.md](./feishu-streaming-experiments.md)）。旧档位名（`standard` / `verbose` / `normal` / `expanded`）只作为**迁移读法**：没存过对应开关时按它的历史默认取值（`standard`→一行摘要、`verbose`→不截断），从不写回。`/display` 卡为「模式（2）/ 思考（内容·折叠·预览）/ 工具明细（4）/ 工具输出（截断·不截断）/ 三个长度行 / 紧凑工具行 / 刷新间隔」，简洁模式不显示对它无效的开关；`/display length reasoning|args|result <字数>` 改截断长度。
+正文按块切分，步骤首片预算 3,000 字符，溢出最多 30 张续卡；代码块闭合重开、表格重复表头。步骤卡上的思考内容块叫**深度思考**（2026-11-20 由「推理」改名；`/reasoning` 命令的「推理等级」说的是模型的 reasoning effort，不是这个块）：**整条链全文，永不截断**。默认收进折叠面板（`/display fold off` 或卡片按钮可切成平铺直出）；面板正文是**普通 markdown 元素，不是代码块**——代码块不软换行，长链在手机上只能横向滚。一张卡装不下时按 **20 KB（UTF-8）** 预算切分（`chunkTextByBytes`，复用块感知分片，代码块闭合重开、表格重复表头）：第一片进面板，其余在 `step/end` 之后作为**思考续卡**发出（标题 `💬 深度思考（第 N 步 · 续 2/3）`，等步骤卡 message 落地再发，顺序紧跟该步）。**展示模型（2026-11-25：三个模式 + 正交开关，预设已移除）**：`transcriptView` 有**三个模式**——`minimal`（极简：一轮一张过程卡，卡上只有每步的 `💬` 回复和 `✅/❌/⏳` 工具说明行，**只此一种过程卡形态**，见「回合过程卡」）、`compact`（紧凑：一轮一张过程卡 + 答案卡，卡上承载工具时间线/思考折叠块/注入提示）、`detailed`（详细：每步一张步骤卡）；其余全是正交开关：`showReasoning`、`reasoningFold`、`toolDetail`（`off`/`count`/`summary`/`full`）、`toolOutputFull`（布尔）、`showToolArgs`、`showToolResults`、`stepsFold`（回合卡历史步骤折叠 / 分页），外加两个截断长度 `argsPreviewChars`、`resultPreviewChars`。**不发送任何流式更新**：思考块与最终回答都整卡呈现（原因与实测见 [feishu-streaming-experiments.md](./feishu-streaming-experiments.md)）。旧档位名（`standard` / `verbose` / `normal` / `expanded`）只作为**迁移读法**：没存过对应开关时按它的历史默认取值（`standard`→一行摘要、`verbose`→不截断），从不写回。`/display` 卡按模式裁剪：模式行三选一；思考两开关在极简下隐藏（极简不渲染思考）；工具明细/输出/长度只在详细；紧凑工具行与「回合卡步骤」只在紧凑；**耗时刷新**在极简下隐藏（极简不按时钟重绘）。`/display steps on|off` 切回合卡历史步骤的折叠/分页。
 
 **（已移除）思考期预览**：从 `agent/assistant-stream` 的 `reasoning-delta` 累积尾部（上限约 2× 预览长度），每 **1.5 秒**把「最后 N 字 + 🧠 正在思考中…」推到卡片专用元素（`cardkit.v1.cardElement.content`；建卡时即开 `streaming_mode`，`print_frequency_ms: 30`、`print_strategy: delay`），客户端做打字机动画。思考一落定（`assistant/message`）就停止推送并 `card.settings` 关流式，卡整卡重写为「折叠面板 + 全文」；流式被拒（如 `300309`）时本步永久降级为整卡刷新，不打断回合。工具参数/结果则仍有 2,000/1,500 或 6,000/6,000 字符上限。
 
 footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完整上下文只在 `📊` 显示。推理 token 只有上游提供才显示，当前验证基线没有生产者，不估算（关键坑 49）。
 
-### 回合过程卡：compact
+### 回合过程卡：compact / minimal
 
-- 首次工具调用懒创建，工具全关或整轮无工具则没有过程卡。最终答案仍有自己的卡；同消息带工具调用的叙述只作为过程行。
-- 注入提示优先放所属步骤的过程行；无过程卡时保留在答案卡上，不为注入强制另发步骤卡。
-- 写入合并间隔 900ms，一卡一次在飞，仅保留最新快照；运行标题 `🐳 深度求索中 · 耗时`；运行步骤表头显示等待/思考/回复状态，**尚有工具未结算时工具态优先**。结束即熄灯，时钟默认每 5 秒刷新，可设置为 3／5／10／30 秒。
-- 显示最新最多 5 步、40 行，按整步折叠更早内容，折叠区另限 60 行。**折叠只省屏，不省 JSON 字节**。
+- **创建时机**：紧凑在 `step/start` 就开卡（用户能看到「等待输出」而不是静默）；**极简懒开**——`step/start` 只记录步骤，第一行内容（`💬` 回复或工具说明）出现时才建卡，避免一张只有标题的空卡。
+- 紧凑：首次工具调用前已有卡则沿用；工具全关或整轮无工具则没有过程卡。最终答案仍有自己的卡；同消息带工具调用的叙述只作为过程行。
+- 极简：过程卡**只有两类行**——每步的 `💬` 完整回复（全文、保留换行，不再压成一行/80 字）与每次调用的 `✅/❌/⏳ + description`（无工具名、无参数/结果、无步头/相位/耗时、无思考、无注入行）。没有 `description` 的调用回退显示工具名。PTC 只渲染 `run_code` 程序那一行（程序派发的内层调用没有自己的 description）。
+- 注入提示优先放所属步骤的过程行（紧凑）；无过程卡时保留在答案卡上，不为注入强制另发步骤卡。极简不渲染注入行。
+- 写入合并间隔 900ms，一卡一次在飞，仅保留最新快照；运行标题 `🐳 深度求索中 · 耗时`；运行步骤表头显示等待/思考/回复状态，**尚有工具未结算时工具态优先**。结束即熄灯，时钟默认每 5 秒刷新，可设置为 3／5／10／30 秒；**极简不装定时刷新**（卡上没有时钟与相位，只有事件才写），也不推只为紧凑卡存在的相位/思考/注入/未执行标记写入。
+- **结束标题写轮次与总步数**：`⚙️ 第 N 轮 · X 步 · 耗时`（失败 `第 N 轮失败 · X 步`，有工具失败再附 `· M 个失败`）。步数取整轮 `facts.steps.length`，所以分页时每张卡报的都是同一轮总数；拿不到回合号的卡省略该段，不写「第 0 轮」。
+- **媒体仍然内联**（极简/紧凑都适用）：过程卡写入前过与步骤卡/答案卡同一个 `cardImages.hydrate`，回复里的 `![](路径)` 会真的变成内联图片/视频，而不是降级成 `🖼 路径` 文字；没有接 hydrator 的部署才回退到中和为文本（关键坑 39 的保护网）。
+- **历史步骤：折叠或分页**（`stepsFold`，默认折叠）——折叠：显示最新最多 5 步、40 行，按整步折叠更早内容，折叠区另限 60 行，**折叠只省屏、不省 JSON 字节**；分页（`/display steps off`）：不折叠，10 步或渲染超过 16 KB 字节预算（先到先换）就在**步边界**冻结当前页并新开一张，冻结页先补写一次最终快照（否则最后一步会停在「运行中」），`turn/end` 时再补整轮结局。字节检查只可能超调一个步骤的增量，因为一个步骤永远不会被拆开。
 - `groupByStep()` 供可见与折叠区共用：每步通常一个 markdown 元素；行内标记不成对的叙述单独拆出。标题不带 `>`，每条内容行显式带 `> `；**元素边界阻断跨步引用延续**，折叠区不能拼成一个大元素（关键坑 60 / 63 / 65）。可见步间使用原生 `hr`，折叠区不加步间 `hr`。
 - 文件工具摘要只写裸文件名，脚本工具写可可靠解析的程序名；合并同名调用累加耗时与次数，细节去重最多 3 个。同名文件在这份摘要里可能不可区分，需查原调用。
 - **回合失败时标出死在哪一步**：`turn/end` 报错就给最新一步加 `❌ 失败`，并列出这一步**流式生成过、但没真正执行**的工具调用（`⚠️ \`edit\` · 未执行`）。DSH 只在尝试**未提交**时追加 `assistant/attempt`，那是这类调用唯一的去处——失败的那一步因此不再只剩一个光秃秃的步头。这些调用不是工具行：没有状态与耗时，也**不计入标题的工具数**；重试提交或真出现 `tool/call` 时标记会被清掉，避免“恢复过的一步还在说自己什么都没跑”。
@@ -133,7 +137,7 @@ footer 中 `📥` 是未缓存输入 + 缓存写入，不含缓存读取；完�
 
 | 卡片类型 | 策略 |
 |---|---|
-| Turn Complete | 非紧凑档在回合末发一张：交付文件行 + 统计 + 元信息；`compact` 不发（见上） |
+| Turn Complete | 只有 `detailed` 在回合末发一张：交付文件行 + 统计 + 元信息；`compact` / `minimal` 不发，摘要折进承载答案的那张卡（`foldsSummaryIntoAnswerCard`） |
 | 压缩 | 一次事务一张无按钮卡，start → summary/prune → end；摘要正文最多 22,000 UTF-8 字节，切口避开字形簇，截断有说明；不提供全文文件按钮 |
 | 问题 | 单选点选即记答案并结算问题卡；非最后题发可返回重答的回执；所有题完成后最终卡是唯一提交点。N 题通常为 N 问题卡 + N−1 回执 + 1 最终卡（重答会增加卡片） |
 | 多选 | 每个选项一个 `checker`，各有 name；一次表单提交全部勾选，中途不重绘 |
