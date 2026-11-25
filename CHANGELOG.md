@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：通道停止时不再补发回复卡（重启撞上回合收尾导致的重复「完成」卡）（`src/channel.ts`，2026-11-25）
+
+- 使用者现场（17:01）：又收到**两张正文相同、只有 footer 不同**的完成卡片。
+- **取证**（journal）：17:01:02 答案卡创建、17:01:04 发送并 `[update] seq=1`；同一秒 `channel down (socket closed, pipeline drained)`（5 秒重启到点）；随后 `flushed(...) delivered=0 failed=0 keepNote=false` → `[reply] no step card carried the text → posting 1 reply card(s)`。即答案卡已经上屏，但**送达确认被重启切断**，channel 的回复流程仍按「没上屏」补发了一张兜底回复卡（它的 footer 是兜底回复卡自己的那一套，所以两张卡只有 footer 不同）。
+- **修法**：`channel.ts` 的回复收尾流程在 `stopped` 为真时（`stop()` 第一行就置位，早于 `disconnect()`）**不再发任何卡片**，并打一行 `[reply] channel is stopping → posting no cards for this turn`。被中断的回合仍由持久化的 pending-turn 记录交给下一个实例处理，不会丢消息。
+- 与上一版 `e952f11`（流式模块 `stopped` 时不撤回送达标记）互补：一个管「别让 channel 补发」，一个管「别让 flushed 误判」。触发条件都是「重启落在回合收尾的 1～2 秒窗口内」。
+- 测试：全量 83 文件 / 1,664 用例、typecheck、build、privacy 全绿（新增的是早退分支，不改变既有路径）。
+
+**English**: The reply-tail flow in channel.ts now posts NOTHING when `stopped` is set (`stop()` sets it on its first line, before `disconnect()`): a restart that lands while a turn is finishing can otherwise duplicate an answer card that already reached the chat, because the shutdown cut the delivery confirmation and `flushed()` reported `delivered=0`. It logs `[reply] channel is stopping → posting no cards for this turn`; the persisted pending-turn record still hands the interrupted turn to the next instance. Complementary to e952f11 (streaming keeps its delivery note once disposed). Root trigger: a restart inside the 1–2 s turn-end window. 83 files / 1,664 tests, typecheck, build and privacy gate green.
+
 ### 变更：回合卡结束标题改显示「本轮总步数」，不再显示工具数（`src/i18n.ts` / `src/feishu-progress.ts`，2026-11-25）
 
 - 使用者的要求：结束（动结）的回合卡标题不要写工具数，写本轮的**总步骤数**。

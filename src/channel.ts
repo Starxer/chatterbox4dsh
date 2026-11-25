@@ -903,6 +903,17 @@ export async function startChannel(
             },
           }).then(async (text) => {
             settlePendingTurn()
+            // The channel is stopping (a restart landed while this turn was
+            // finishing): posting cards now can only duplicate what is already on
+            // screen. On 2026-11-25 a restart cut the delivery confirmation of an
+            // answer card that HAD landed; `flushed()` therefore reported "not
+            // delivered" and the fallback reply below posted a second card with
+            // the same body (only its footer differed). The pending-turn record
+            // survives a stop, so the next instance still owns the resend.
+            if (stopped) {
+              console.log('dsh-feishu: [reply] channel is stopping → posting no cards for this turn')
+              return
+            }
             // A steered message produces no reply of its own: the running turn's
             // reply card already answers it (otherwise the user gets two cards
             // for one turn).
