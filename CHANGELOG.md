@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 变更：极简卡没有 `description` 的调用改显示「预制动作名 + 对象」（`src/i18n.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-25）
+
+- 使用者发现的问题：没有 `description` 的调用只回退显示工具名（`✅ read`），而极简卡本来不显示工具名；使用者又明确否掉了「只列文件名」——看不出是 read 还是 edit。两条路都不成立。
+- 现在：**按插件语言预制一张动作名表**（`ZH_TOOL_ACTIONS` / `EN_TOOL_ACTIONS`，覆盖 49 个工具：读取 / 编辑 / 搜索 / 发送文件 / 查看后台任务 / 委派任务……），没有 description 的调用渲染成「动作名 + 它碰到的对象」：`✅ 读取 feishu-progress.ts`、`✅ 编辑 config.ts`、`✅ 搜索 renderMinimalProgressCard`、`✅ 发送文件 report.pdf`；模型自己写了 description 的调用（`bash`、`ssh_*`、`subagent` 等）保持原样，因为那已经是对话语言的整句。表里没有的工具（插件自带工具）降级成 `工具名 · 对象`，没有对象就只写工具名——不会变成空行。
+- 对象来源是**极简专用的更宽派生**（`minimalToolDetail`）：文件名 / shell 程序名 / 检索词 / URL host，外加 `feishu_send_file`、`present`、`create_worktree`、`skill`、`schedule_*` 等工具的具名参数。它单独走 `ProgressTool.minimalDetail`，**不改紧凑卡的 `detail`**（紧凑仍只显示文件名/程序名）。
+- 语言跟随插件：同一份数据在英文界面渲成 `Read a.ts` / `Edit a.ts`；模型写的 description 不翻译（它本来就是对话语言）。
+- 文档同步：`docs/display-modes-design.md`（极简小节的取值/回退表、取舍说明、决策记录）、`docs/architecture.md`、`README.md`。
+- 测试：+2 组（极简行三档回退 + 双语动作名；`minimalToolDetail` 的文件/检索词/host/裸参数/无对象/转义）。全量 83 文件 / 1,669 用例、typecheck、build、privacy 全绿。
+
+**English**: A minimal-card row for a call that wrote no `description` used to fall back to the bare tool name (`✅ read`). The operator rejected both halves of that: a file name alone cannot tell `read` from `edit`, and the raw tool name is a machine word on a Chinese card. Rows now use a **curated action table in the plugin's language** (`ZH_TOOL_ACTIONS` / `EN_TOOL_ACTIONS`, 49 tools) plus the object the call touched: `✅ 读取 feishu-progress.ts`, `✅ 编辑 config.ts`, `✅ 搜索 renderMinimalProgressCard`, `✅ 发送文件 report.pdf`. A call that DID write a description keeps it (it is already a sentence in the conversation's language), a tool the table does not know degrades to `name · object`, then to the bare name. The object comes from a minimal-only wider derivation (`minimalToolDetail`: bare file, shell program, search pattern, URL host, plus named arguments for `feishu_send_file` / `present` / `create_worktree` / …), carried in `ProgressTool.minimalDetail` so the compact row's `detail` is untouched. Same data renders `Read a.ts` under `en`. Docs and tests updated; 83 files / 1,669 tests, typecheck, build and privacy gate green.
+
 ### 修复：`api-usage` 的日/月跨桶测试依赖时区，CI（UTC）必红（`tests/api-usage.spec.ts`，2026-11-25）
 
 - 首次推送 57 个积压提交后 CI 三个 job 全在 `Run tests` 失败：`tests/api-usage.spec.ts` 2 条（`rolls the day bucket over…` / `resets the month…`）；本机（UTC+8）同一批测试全绿。

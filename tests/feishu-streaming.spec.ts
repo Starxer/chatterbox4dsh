@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCardSendBarrier } from '../src/card-send-barrier.ts'
-import { deriveToolSummary, progressSubtoolDetails, progressToolDetails, renderStepCard, startFeishuStreaming, TURN_ACTIVE_STALE_MS, uncommittedToolNames } from '../src/feishu-streaming.ts'
+import { deriveToolSummary, minimalToolDetail, progressSubtoolDetails, progressToolDetails, renderStepCard, startFeishuStreaming, TURN_ACTIVE_STALE_MS, uncommittedToolNames } from '../src/feishu-streaming.ts'
 import { PROGRESS_MAX_DETAILS } from '../src/feishu-progress.ts'
 import { translationsFor } from '../src/i18n.ts'
 import type { DisplayMode } from '../src/display-level.ts'
@@ -233,6 +233,40 @@ describe('progressSubtoolDetails', () => {
   it('keeps a sub-call row shorter than a narration row', () => {
     const [row] = progressSubtoolDetails('grep', JSON.stringify({ pattern: 'p'.repeat(120) }))!
     expect(row!.length).toBeLessThanOrEqual(41)
+  })
+})
+
+describe('minimalToolDetail', () => {
+  // The minimal card names ONE object next to the tool's action (`读取 a.ts`) and
+  // shows no tool name, so it needs the wider derivation the compact row does not
+  // use (the compact row would then print a search pattern too, 2026-11-25).
+  it('reuses the file / shell / search rows', () => {
+    expect(minimalToolDetail('read', JSON.stringify({ path: '/w/repo/src/a.ts' }))).toEqual(['a.ts'])
+    expect(minimalToolDetail('bash', JSON.stringify({ command: 'npm test' }))).toEqual(['npm'])
+    expect(minimalToolDetail('grep', JSON.stringify({ pattern: 'TODO' }))).toEqual(['TODO'])
+    expect(minimalToolDetail('web_fetch', JSON.stringify({ url: 'https://github.com/a/b' }))).toEqual(['github.com'])
+  })
+
+  it('names a file a tool passes as a path even when the tool is not a file tool', () => {
+    // `feishu_send_file` takes a path, `present` an array of them: the row says
+    // WHICH file was sent, and the bare name is enough (the directory is not the
+    // part that changed).
+    expect(minimalToolDetail('feishu_send_file', JSON.stringify({ path: '/w/report.pdf' }))).toEqual(['report.pdf'])
+    expect(minimalToolDetail('present', JSON.stringify({ paths: ['/w/a.png', '/w/b.png'], path: '/w/c.png' })))
+      .toEqual(['a.png', 'b.png'])
+    expect(minimalToolDetail('create_worktree', JSON.stringify({ name: 'fix-login-retry' }))).toEqual(['fix-login-retry'])
+  })
+
+  it('says nothing when the only arguments name no object a reader asks about', () => {
+    // An id is noise on a one-line row; the action name alone reads better.
+    expect(minimalToolDetail('job_output', JSON.stringify({ jobId: 'job-3f9a' }))).toBeUndefined()
+    expect(minimalToolDetail('todo_write', JSON.stringify({ todos: [] }))).toBeUndefined()
+    expect(minimalToolDetail('read', 'not json')).toBeUndefined()
+  })
+
+  it('keeps the row fragment safe for the card markdown', () => {
+    const [row] = minimalToolDetail('grep', JSON.stringify({ pattern: '**/*.ts' }))!
+    expect(row).toBe('&#42;&#42;/&#42;.ts')
   })
 })
 

@@ -402,7 +402,7 @@ describe('renderProgressCard', () => {
           step: 2, startedAt: 1_000,
           tools: [
             { name: 'bash', startedAt: 1_100, description: '跑单测' },
-            { name: 'read', startedAt: 1_200 }, // no description → the tool name
+            { name: 'read', startedAt: 1_200 }, // no description, no object → the action name
           ],
         },
       ],
@@ -412,15 +412,15 @@ describe('renderProgressCard', () => {
     const card: any = renderMinimalProgressCard(t, factsMinimal)
     expect(card.header.title.content).toBe(t.turnCardTitleRunning('3.0s'))
     const md = mdOf(card)
-    // The reply line, then one line per call: status marker + description (name
-    // when the call wrote none).
+    // The reply line, then one line per call: status marker + the model's
+    // description, or the tool's curated action when the call wrote none.
     // The reply is marked with the speech bubble; a call line has only its
     // status marker (no arrow, no indent).
     expect(md).toContain('💬 先看现有渲染逻辑')
     expect(md).toContain('✅ 查渲染代码')
     expect(md).toContain('❌ 找任务列')
     expect(md).toContain('⏳ 跑单测')
-    expect(md).toContain('⏳ read')
+    expect(md).toContain('⏳ 读取')
     expect(md).not.toContain('↳')
     // Nothing else of the compact card: no step headers, phases, tool names in
     // code spans, clocks or the thinking panel.
@@ -430,6 +430,36 @@ describe('renderProgressCard', () => {
     // The settled title still names the round and counts the calls.
     const done: any = renderMinimalProgressCard(t, { ...factsMinimal, endedAt: 3_000 })
     expect(done.header.title.content).toBe(t.turnCardTitleDone(4, 2, 0, '3.0s'))
+  })
+
+  it('names the action a minimal row took, and the object it touched', () => {
+    const render = (tools: ProgressFacts['steps'][number]['tools'], locale = t): string =>
+      mdOf(renderMinimalProgressCard(locale, facts({
+        turn: 1,
+        endedAt: 1_000,
+        steps: [{ step: 1, startedAt: 0, endedAt: 1_000, tools }],
+        calls: tools.length,
+        now: 2_000,
+      })))
+    // A curated action plus the object it touched: a file name ALONE cannot tell
+    // `read` from `edit`, which is what the operator rejected (2026-11-25).
+    expect(render([{ name: 'read', startedAt: 0, elapsed: 10, minimalDetail: ['a.ts'] }])).toContain('✅ 读取 a.ts')
+    expect(render([{ name: 'edit', startedAt: 0, elapsed: 10, minimalDetail: ['a.ts'] }])).toContain('✅ 编辑 a.ts')
+    expect(render([{ name: 'grep', startedAt: 0, elapsed: 10, minimalDetail: ['renderCard'] }])).toContain('✅ 搜索 renderCard')
+    // Action alone when the plugin can name no object.
+    expect(render([{ name: 'grep', startedAt: 0, elapsed: 10 }])).toContain('✅ 搜索')
+    // A tool the table does not know falls back to `name · object`, so a
+    // plugin-provided tool still says something (the operator's rule).
+    expect(render([{ name: 'plugin_tool', startedAt: 0, elapsed: 10, minimalDetail: ['a.ts'] }])).toContain('✅ plugin_tool · a.ts')
+    expect(render([{ name: 'plugin_tool', startedAt: 0, elapsed: 10 }])).toContain('✅ plugin_tool')
+    // The model's own description still wins over the table: it is already a
+    // sentence in the conversation's language.
+    expect(render([{ name: 'read', startedAt: 0, elapsed: 10, description: '看渲染器', minimalDetail: ['a.ts'] }]))
+      .toContain('✅ 看渲染器')
+    // The table follows the PLUGIN's language, not the model's.
+    const en = translationsFor('en')
+    expect(render([{ name: 'read', startedAt: 0, elapsed: 10, minimalDetail: ['a.ts'] }], en)).toContain('✅ Read a.ts')
+    expect(render([{ name: 'edit', startedAt: 0, elapsed: 10, minimalDetail: ['a.ts'] }], en)).toContain('✅ Edit a.ts')
   })
 
   it('shows the minimal card\'s reply in full: no truncation, line breaks kept', () => {

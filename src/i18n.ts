@@ -294,6 +294,17 @@ export interface Translations {
    */
   turnCardStepNote: (note: string) => string
   /**
+   * The curated short action the MINIMAL card puts in front of a call that wrote
+   * no description of its own: `读取` / `Read`, `编辑` / `Edit`, `搜索` / `Search`.
+   *
+   * A table, not a translation of the raw name: `feishu_doc_read` or `job_output`
+   * are machine words, and this card is the one surface that has to stay quiet.
+   * The name follows the PLUGIN's language, and a tool with no entry returns
+   * `undefined` so the renderer can fall back to the bare tool name (a
+   * plugin-provided tool still says something ran).
+   */
+  turnCardToolAction: (name: string) => string | undefined
+  /**
    * Header of the folded panel that carries one step's thinking chain on the
    * compact turn card.
    *
@@ -985,6 +996,131 @@ export interface Translations {
   teamTaskCompleted: string
 }
 
+/**
+ * Short action names for the MINIMAL turn card's tool rows (see
+ * {@link Translations.turnCardToolAction}).
+ *
+ * Covers the tools this plugin is built against plus the shell/program shapes a
+ * non-Linux host adds (`pwsh`, PTC `run_code`). Names that already carry a
+ * model-written `description` never reach this table — `bash` keeps its sentence —
+ * so an entry here is the FALLBACK wording, which is why they read as a verb
+ * alone (`读取`, `发送文件`) and let the renderer append the object (a file name, a
+ * search pattern) when one is known.
+ *
+ * A tool this table does not know is rendered as `name · object` instead, so a
+ * plugin-provided tool degrades to its own name rather than to nothing.
+ */
+const ZH_TOOL_ACTIONS: Readonly<Record<string, string>> = {
+  // Files, search and the shell.
+  read: '读取',
+  read_image: '查看图片',
+  write: '写入',
+  edit: '编辑',
+  glob: '查找文件',
+  grep: '搜索',
+  web_fetch: '获取网页',
+  web_search: '搜索网页',
+  bash: '运行命令',
+  pwsh: '运行命令',
+  run_code: '运行程序',
+  // Jobs and delegation.
+  job_list: '查看后台任务',
+  job_output: '读取后台输出',
+  job_kill: '停止后台任务',
+  subagent: '委派任务',
+  subagent_fork: '委派任务',
+  list_agents: '查看代理',
+  send_message: '发送消息',
+  wait_agent: '等待代理',
+  list_subagent_models: '查看可用模型',
+  // Goals, plans and skills.
+  create_goal: '建立目标',
+  get_goal: '查看目标',
+  update_goal: '更新目标',
+  todo_write: '更新待办',
+  skill: '加载技能',
+  workflow: '运行工作流',
+  create_worktree: '创建分支',
+  working_directory: '切换目录',
+  // DSH scheduling and plugins.
+  schedule_create: '创建定时任务',
+  schedule_edit: '修改定时任务',
+  schedule_list: '查看定时任务',
+  schedule_view: '查看定时任务',
+  plugin_manager: '管理插件',
+  plugin_market: '浏览插件市场',
+  cordis_inspect_list: '查看运行检查器',
+  cordis_inspect_query: '查询运行状态',
+  // Feishu surface.
+  ask_user_question: '向你提问',
+  present: '交付文件',
+  feishu_doc_read: '读取飞书文档',
+  feishu_doc_write: '写入飞书文档',
+  feishu_doc_blocks: '读取文档块',
+  feishu_doc_comments: '查看文档评论',
+  feishu_receive_file: '接收文件',
+  feishu_send_file: '发送文件',
+  // Remote hosts.
+  ssh_connections: '连接 SSH',
+  ssh_exec: '执行远程命令',
+  ssh_job_cancel: '取消远程任务',
+  ssh_job_output: '读取远程输出',
+  ssh_job_release: '释放远程任务',
+}
+
+/** The en twin of {@link ZH_TOOL_ACTIONS} (same keys, same fallback rule). */
+const EN_TOOL_ACTIONS: Readonly<Record<string, string>> = {
+  read: 'Read',
+  read_image: 'View image',
+  write: 'Write',
+  edit: 'Edit',
+  glob: 'Find files',
+  grep: 'Search',
+  web_fetch: 'Fetch page',
+  web_search: 'Search web',
+  bash: 'Run command',
+  pwsh: 'Run command',
+  run_code: 'Run program',
+  job_list: 'List jobs',
+  job_output: 'Read job output',
+  job_kill: 'Stop job',
+  subagent: 'Delegate task',
+  subagent_fork: 'Delegate task',
+  list_agents: 'List agents',
+  send_message: 'Send message',
+  wait_agent: 'Wait for agent',
+  list_subagent_models: 'List models',
+  create_goal: 'Create goal',
+  get_goal: 'View goal',
+  update_goal: 'Update goal',
+  todo_write: 'Update todo',
+  skill: 'Load skill',
+  workflow: 'Run workflow',
+  create_worktree: 'Create worktree',
+  working_directory: 'Change directory',
+  schedule_create: 'Create schedule',
+  schedule_edit: 'Edit schedule',
+  schedule_list: 'List schedules',
+  schedule_view: 'View schedule',
+  plugin_manager: 'Manage plugins',
+  plugin_market: 'Browse plugin market',
+  cordis_inspect_list: 'List inspectors',
+  cordis_inspect_query: 'Query runtime',
+  ask_user_question: 'Ask you',
+  present: 'Deliver files',
+  feishu_doc_read: 'Read Feishu doc',
+  feishu_doc_write: 'Write Feishu doc',
+  feishu_doc_blocks: 'Read doc blocks',
+  feishu_doc_comments: 'Doc comments',
+  feishu_receive_file: 'Receive file',
+  feishu_send_file: 'Send file',
+  ssh_connections: 'Connect SSH',
+  ssh_exec: 'Run remote command',
+  ssh_job_cancel: 'Cancel remote job',
+  ssh_job_output: 'Read remote output',
+  ssh_job_release: 'Release remote job',
+}
+
 /** The zh dictionary: terminology aligned with the DSH native UI. */
 export const zh = {
   cardSupersededTitle: '⬆️ 此卡片已失效',
@@ -1156,6 +1292,7 @@ export const zh = {
   turnCardStepFailed: '❌ 失败',
   turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
   turnCardStepNote: note => `💬 ${note}`,
+  turnCardToolAction: name => ZH_TOOL_ACTIONS[name],
   turnCardStepThinking: '🐳 **深度思考**',
   turnCardThinkingTruncated: chars => `*…其余 ${chars} 字已省略；切到「详细」模式可看完整思考。*`,
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
@@ -1811,6 +1948,7 @@ export const en: Translations = {
   turnCardThinkingTruncated: chars => `*…${chars} more characters omitted; switch to the "detailed" level for the full chain.*`,
   turnCardCallUnrun: name => `⚠️ \`${name}\` · not run`,
   turnCardStepNote: note => `💬 ${note}`,
+  turnCardToolAction: name => EN_TOOL_ACTIONS[name],
   turnCardToolRunning: (label, elapsed) => `⏳ ${label} · ${elapsed}…`,
   turnCardRunningLabel: 'running',
   turnCardToolDone: (label, elapsed) => `✅ ${label} · ${elapsed}`,

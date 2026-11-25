@@ -192,6 +192,17 @@ export interface ProgressTool {
    */
   description?: string | undefined
   /**
+   * The "what" the MINIMAL card may print next to a call's action name, derived
+   * by the streaming layer with the WIDER rule that card wants
+   * (`minimalToolDetail`: a shell program, a bare file name, a search pattern, a
+   * URL host). Kept apart from {@link detail} because the compact row shows only
+   * the file/program names: widening THAT would change the compact card too.
+   *
+   * Absent when the minimal card can name nothing (an id, a flag), in which case
+   * the row falls back to the bare tool name.
+   */
+  minimalDetail?: readonly string[] | undefined
+  /**
    * The calls THIS call made on its own, i.e. the tools a PTC `run_code`
    * program dispatched (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`).
    *
@@ -997,8 +1008,42 @@ export function renderProgressCard(
 }
 
 /**
+ * The row text of one call on the MINIMAL card: `✅ ` + this.
+ *
+ * Three shapes, in this order (the operator's rule, 2026-11-25):
+ *
+ * 1. the model's own `description` when the call wrote one — it is already a
+ *    sentence in the conversation's language (`查最近的提交与工作区状态`);
+ * 2. the curated action name for the tool (`读取`, `编辑`, `搜索`) plus the object
+ *    it touched when the plugin can name one (`读取 feishu-progress.ts`, `搜索
+ *    progressToolDetails`) — a file name alone would not say WHICH tool ran, which
+ *    is exactly what the operator rejected;
+ * 3. `name · object` for a tool the table does not know (a plugin-provided one),
+ *    and the bare name when there is no object either.
+ *
+ * The object goes through {@link progressRowText}, the same sanitizer model prose
+ * uses: a file name or a search pattern is still foreign text to the card
+ * markdown (关键坑 39/60).
+ *
+ * @param t - active locale strings (the action table follows the plugin language).
+ * @param tool - the call as the card knows it.
+ * @returns the row text, never empty.
+ */
+export function minimalToolRowText(t: Translations, tool: ProgressTool): string {
+  const description = tool.description?.trim() ?? ''
+  if (description !== '') return progressRowText(description, PROGRESS_NOTE_MAX)
+  const objects = (tool.minimalDetail ?? tool.detail ?? [])
+    .map(item => progressRowText(item, PROGRESS_NOTE_MAX))
+    .filter(item => item !== '')
+  const what = objects.join(' / ')
+  const action = t.turnCardToolAction(tool.name)
+  if (action !== undefined) return what === '' ? action : `${action} ${what}`
+  return what === '' ? tool.name : `${tool.name} · ${what}`
+}
+
+/**
  * The `minimal` process card: each step's reply line, then one line per tool call
- * carrying only its `description` with a status marker.
+ * carrying only its action (with the object it touched) and a status marker.
  *
  * This is the whole card — no step headers, phase icons, durations, tool names,
  * arguments, results, PTC child rows, injection notices or thinking (the operator
@@ -1016,8 +1061,9 @@ export function renderProgressCard(
  * construction.
  *
  * Deliberate detail choices:
- * - a call with no `description` falls back to its tool NAME, so the line still
- *   says something ran (the same fallback the description-only row style uses);
+ * - a call with no `description` shows the tool's curated action plus the object
+ *   it touched (`读取 feishu-progress.ts`), and a tool the table does not know
+ *   falls back to `name · object` (see {@link minimalToolRowText});
  * - a reply line whose inline markup is unbalanced gets its own element, or it
  *   would pair its `**` with the next step's line (关键坑 60);
  * - descriptions go through `progressRowText`, the same sanitizer the compact
@@ -1056,12 +1102,9 @@ export function renderMinimalProgressCard(
     const lines: string[] = []
     for (const tool of step.tools) {
       const icon = tool.elapsed === undefined ? '⏳' : tool.isError === true ? '❌' : '✅'
-      const description = tool.description === undefined || tool.description === ''
-        ? ''
-        : progressRowText(tool.description, PROGRESS_NOTE_MAX)
       // No arrow and no indent: the status marker IS the line's only prefix
       // (2026-11-25, the operator's call — the reduced card keeps no hierarchy).
-      lines.push(`${icon} ${description === '' ? tool.name : description}`)
+      lines.push(`${icon} ${minimalToolRowText(t, tool)}`)
     }
     if (reply !== undefined && reply !== '') {
       // The reply line is marked with the SAME speech bubble the compact card
@@ -1219,6 +1262,9 @@ export interface ProgressCardsHandle {
    *                 call has nothing short and useful to name.
    * @param description - the model's own one-line description of the call, when
    *                 it wrote one; rendered by the row styles that show it.
+   * @param minimalDetail - the WIDER "what" the minimal card may print next to
+   *                 the action name (a search pattern, a URL host, a file);
+   *                 compact rows keep using `detail` alone.
    */
   toolStarted(
     sessionId: string,
@@ -1227,6 +1273,7 @@ export interface ProgressCardsHandle {
     at: number,
     detail?: readonly string[],
     description?: string,
+    minimalDetail?: readonly string[],
   ): void
   /** `tool/result`: settle the row with that call id (fallback: oldest running). */
   toolFinished(sessionId: string, callId: string, elapsed: number, isError: boolean, at: number): void
@@ -1889,6 +1936,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     at: number,
     detail?: readonly string[],
     description?: string,
+    minimalDetail?: readonly string[],
   ): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
@@ -1910,6 +1958,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       startedAt: at,
       ...detail === undefined || detail.length === 0 ? {} : { detail },
       ...description === undefined || description === '' ? {} : { description },
+      ...minimalDetail === undefined || minimalDetail.length === 0 ? {} : { minimalDetail },
     })
     facts.calls += 1
     facts.now = at

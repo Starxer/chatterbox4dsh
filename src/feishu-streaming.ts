@@ -2010,6 +2010,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           if (!minimalProgress()) {
             progressCards.stepAttempt(sessionId, state.stepNumber, [], toolCall.startedAt)
           }
+          // The arguments as the events carry them, parsed by the derivations
+          // below: this is the last place they exist before the card holds rows.
+          const argsRaw = typeof args === 'string' ? args : JSON.stringify(args ?? '')
           progressCards.toolStarted(
             sessionId,
             toolName,
@@ -2017,10 +2020,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             toolCall.startedAt,
             // The row's "what" (file / shell programs) is derived HERE because
             // this is where the arguments are; the card module only renders it.
-            progressToolDetails(toolName, typeof args === 'string' ? args : JSON.stringify(args ?? '')),
+            // The compact row shows this narrow set and nothing else, so the wider
+            // one the minimal card wants is derived alongside it, not instead.
+            progressToolDetails(toolName, argsRaw),
             // The model's own one-liner, when the tool took one (`bash` does).
             // The card's row style decides whether and where it is rendered.
             toolCallDescription(args),
+            minimalToolDetail(toolName, argsRaw),
           )
         }
 
@@ -3497,6 +3503,72 @@ export function progressSubtoolDetails(toolName: string, argsRaw: string): strin
     }
   }
   return undefined
+}
+
+/**
+ * Argument keys the MINIMAL card may name for tools whose own schema has no
+ * `description` argument (`src/i18n.ts`'s `ZH_TOOL_ACTIONS` / `EN_TOOL_ACTIONS`
+ * give the verb; this gives the object it acted on).
+ *
+ * Only tools where the first meaningful argument IS what the reader wants are
+ * listed. Ids and booleans are deliberately absent: `job_output`'s `job_id`, a
+ * `confirmed: true` flag or a doc token name nothing a human is asking about, and
+ * a row that reads `读取后台输出 job-3f9a…` is worse than `读取后台输出`.
+ */
+const MINIMAL_DETAIL_KEYS: Readonly<Record<string, readonly string[]>> = {
+  read_image: ['path', 'file_path', 'url'],
+  feishu_send_file: ['file_name', 'path', 'file_path'],
+  feishu_receive_file: ['file_name'],
+  present: ['paths', 'path'],
+  create_worktree: ['name'],
+  skill: ['name'],
+  schedule_create: ['title'],
+  schedule_edit: ['title'],
+  send_message: ['agent'],
+  wait_agent: ['agent'],
+  plugin_manager: ['target'],
+  plugin_market: ['query', 'target'],
+}
+
+/**
+ * The "what" a MINIMAL card row may print next to its action name.
+ *
+ * Wider than {@link progressToolDetails} on purpose: that one feeds the COMPACT
+ * row, which names only a file or a shell program, so widening it would change a
+ * card nobody asked to change. Here the card shows one line per call and no tool
+ * name, so the object is what tells `读取` from `编辑`.
+ *
+ * Order: the sub-call derivation first (it already handles a file, a shell program,
+ * a search pattern and a URL host), then {@link MINIMAL_DETAIL_KEYS}. Values that
+ * look like paths are cut to their bare name — the directory is not what changed.
+ *
+ * @param toolName - the tool the call ran.
+ * @param argsRaw - the call's raw arguments JSON.
+ * @returns the names, or undefined when nothing short and human is in the args.
+ */
+export function minimalToolDetail(toolName: string, argsRaw: string): string[] | undefined {
+  const wider = progressSubtoolDetails(toolName, argsRaw)
+  if (wider !== undefined) return wider
+  const keys = MINIMAL_DETAIL_KEYS[toolName]
+  if (keys === undefined) return undefined
+  const parsed = parseToolArgs(argsRaw)
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const args = parsed as Record<string, unknown>
+  const names: string[] = []
+  for (const key of keys) {
+    const value = args[key]
+    const items = Array.isArray(value) ? value : [value]
+    for (const item of items) {
+      if (typeof item !== 'string' || item.trim() === '') continue
+      const line = firstLine(item).trim()
+      const shown = /path|file/iu.test(key) ? bareFileName(line) : rowText(line, PROGRESS_NOTE_MAX)
+      if (shown !== '' && !names.includes(shown)) names.push(shown)
+      if (names.length >= 2) return names
+    }
+    // One key answered: later keys describe the same call, not another object.
+    if (names.length > 0) return names
+  }
+  return names.length === 0 ? undefined : names
 }
 
 /**
