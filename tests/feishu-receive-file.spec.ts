@@ -106,9 +106,11 @@ describe('startFeishuReceiveFileTool', () => {
     })
 
     const tool = fake.registered.find((t: any) => t.name === 'feishu_receive_file') as any
+    // The cards print this argument verbatim; required, or the model skips it.
+    expect((tool.parameters as any).required).toContain('description')
     const agent = { id: 'sess_1' }
     const result = await tool.execute(
-      { message_id: 'om_9', file_key: 'fkey_x', file_name: 'paper.pdf' },
+      { description: '接收测试文件', message_id: 'om_9', file_key: 'fkey_x', file_name: 'paper.pdf' },
       { agent, signal: { throwIfAborted: () => undefined } },
     )
 
@@ -141,7 +143,7 @@ describe('startFeishuReceiveFileTool', () => {
     })
     const tool = fake.registered.find((t: any) => t.name === 'feishu_receive_file') as any
     await expect(tool.execute(
-      { message_id: 'om', file_key: 'fk' },
+      { description: '接收测试文件', message_id: 'om', file_key: 'fk' },
       { agent: { id: 'sess_x' }, signal: { throwIfAborted: () => undefined } },
     )).rejects.toThrow('not bound to a Feishu chat')
   })
@@ -161,7 +163,7 @@ describe('startFeishuReceiveFileTool', () => {
     })
     const tool = fake.registered.find((t: any) => t.name === 'feishu_receive_file') as any
     await expect(tool.execute(
-      { message_id: 'om', file_key: 'fk' },
+      { description: '接收测试文件', message_id: 'om', file_key: 'fk' },
       { agent: { id: 'sess_x' }, signal: { throwIfAborted: () => undefined } },
     )).rejects.toThrow('empty file')
   })

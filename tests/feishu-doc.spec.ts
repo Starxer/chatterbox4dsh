@@ -207,7 +207,9 @@ describe('feishu_doc_read', () => {
   it('reads a docx link as markdown with its title', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).read!
-    const value = await tool.execute({ target: 'https://acme.feishu.cn/docx/doxcnAbCdEf' }, execCtx())
+    // The cards print this argument verbatim; required, or the model skips it.
+    expect((tool.parameters as any).required).toContain('description')
+    const value = await tool.execute({ description: '测试调用', target: 'https://acme.feishu.cn/docx/doxcnAbCdEf' }, execCtx())
     expect(value.document_id).toBe('doxcnAbCdEf')
     expect(value.title).toBe('Test Doc')
     expect(value.content).toBe('# Hello\n\nworld')
@@ -218,7 +220,7 @@ describe('feishu_doc_read', () => {
   it('resolves a wiki link to the underlying document', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).read!
-    const value = await tool.execute({ target: 'https://acme.feishu.cn/wiki/wikcn12345' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'https://acme.feishu.cn/wiki/wikcn12345' }, execCtx())
     expect(client.wiki.v2.space.getNode).toHaveBeenCalledWith({ params: { token: 'wikcn12345' } })
     expect(client.docs.v1.content.get).toHaveBeenCalledWith({
       params: { doc_token: 'doxcnWIKI', doc_type: 'docx', content_type: 'markdown' },
@@ -232,7 +234,7 @@ describe('feishu_doc_read', () => {
       docs: { v1: { content: { get: vi.fn(async () => { throw new Error('Access denied') }) } } },
     })
     const tool = toolsOver(channel).read!
-    const value = await tool.execute({ target: 'doxcn12345678' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'doxcn12345678' }, execCtx())
     expect(client.docx.v1.document.rawContent).toHaveBeenCalledWith({ path: { document_id: 'doxcn12345678' } })
     expect(value.content).toBe('plain text body')
     expect(value.format).toBe('text')
@@ -247,7 +249,7 @@ describe('feishu_doc_read', () => {
       data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: 'img_v3_x' } }], has_more: false },
     }))
     const tool = toolsOver(channel).read!
-    const value = await tool.execute({ target: 'doxcn12345678' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'doxcn12345678' }, execCtx())
 
     expect(value.revision_id).toBe(7)
     expect(value.images).toEqual([{ block_id: 'imgblk', token: 'img_v3_x', url: 'https://x/img' }])
@@ -278,7 +280,7 @@ describe('feishu_doc_read', () => {
       data: { tmp_download_urls: [{ file_token: 'tok', tmp_download_url: 'https://x/img.png' }] },
     }))
     const tool = toolsOver(channel).read!
-    const value = await tool.execute({ target: 'doxcn12345678', download_images: true }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'doxcn12345678', download_images: true }, execCtx())
     const path = value.images?.[0]?.path
     expect(path).toBeTruthy()
     expect((await readFile(path as string)).length).toBe(PNG_1X1.length)
@@ -298,7 +300,7 @@ describe('feishu_doc_read', () => {
       throw new Error('Access denied. One of the following scopes is required: [drive:file:download] (99991672)')
     })
     const tool = toolsOver(channel).read!
-    const value = await tool.execute({ target: 'doxcn12345678', download_images: true }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'doxcn12345678', download_images: true }, execCtx())
     // The image is still listed (the model can name it), but the result now says
     // WHY the file is missing instead of silently dropping the path.
     expect(value.images?.[0]?.path).toBeUndefined()
@@ -311,12 +313,12 @@ describe('feishu_doc_read', () => {
       docs: { v1: { content: { get: vi.fn(async () => ({ data: { content: 'abcdefghij' } })) } } },
     })
     const tool = toolsOver(channel).read!
-    const first = await tool.execute({ target: 'doxcn12345678', max_chars: 4 }, execCtx())
+    const first = await tool.execute({ description: '测试调用', target: 'doxcn12345678', max_chars: 4 }, execCtx())
     expect(first.content).toBe('abcd')
     expect(first.total_chars).toBe(10)
     expect(first.truncated).toBe(true)
     expect(first.next_offset).toBe(4)
-    const second = await tool.execute({ target: 'doxcn12345678', offset: first.next_offset, max_chars: 100 }, execCtx())
+    const second = await tool.execute({ description: '测试调用', target: 'doxcn12345678', offset: first.next_offset, max_chars: 100 }, execCtx())
     expect(second.content).toBe('efghij')
     expect(second.truncated).toBe(false)
   })
@@ -326,7 +328,7 @@ describe('feishu_doc_write', () => {
   it('appends converted blocks at the end of an existing document', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).write!
-    const value = await tool.execute({
+    const value = await tool.execute({ description: '测试调用',
       mode: 'append',
       target: 'https://acme.feishu.cn/docx/doxcnAbCdEf',
       markdown: '# Title\n\nbody',
@@ -355,7 +357,7 @@ describe('feishu_doc_write', () => {
     const { channel, client } = fakeChannel()
     client.docx.v1.document.get = vi.fn(async () => ({ data: { document: { title: 'T', revision_id: 2 } } }))
     const tool = toolsOver(channel).write!
-    await tool.execute({ mode: 'replace', target: 'doxcnAbCdEf', markdown: 'new body', revision: 2 }, execCtx())
+    await tool.execute({ description: '测试调用', mode: 'replace', target: 'doxcnAbCdEf', markdown: 'new body', revision: 2 }, execCtx())
 
     expect(client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalledWith({
       path: { document_id: 'doxcnAbCdEf', block_id: 'doxcnAbCdEf' },
@@ -369,7 +371,7 @@ describe('feishu_doc_write', () => {
   it('creates a document and returns its url', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).write!
-    const value = await tool.execute({ mode: 'create', title: 'New Doc', markdown: 'hello' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', mode: 'create', title: 'New Doc', markdown: 'hello' }, execCtx())
 
     expect(client.docx.v1.document.create).toHaveBeenCalledWith({ data: { title: 'New Doc' } })
     expect(client.docs.v1.content.get).not.toHaveBeenCalled()
@@ -385,7 +387,7 @@ describe('feishu_doc_write', () => {
       data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: '' } }], has_more: false },
     }))
     const tool = toolsOver(channel).write!
-    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: `![pic](${path})`, revision: 1 }, execCtx())
+    const value = await tool.execute({ description: '测试调用', mode: 'append', target: 'doxcnAbCdEf', markdown: `![pic](${path})`, revision: 1 }, execCtx())
 
     expect(client.drive.v1.media.uploadAll).toHaveBeenCalledWith({
       data: expect.objectContaining({ parent_node: 'imgblk', parent_type: 'docx_image', file: expect.any(Buffer) }),
@@ -401,7 +403,7 @@ describe('feishu_doc_write', () => {
   it('skips remote images without fetching them', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).write!
-    const value = await tool.execute({
+    const value = await tool.execute({ description: '测试调用',
       mode: 'append',
       target: 'doxcnAbCdEf',
       markdown: '![x](https://example.com/a.png)',
@@ -420,7 +422,7 @@ describe('feishu_doc_write', () => {
       lastSenderFor: () => 'ou_requester',
     } as unknown as HarnessConversationService
     const tool = toolsOver(channel, bridge).write!
-    const value = await tool.execute({ mode: 'create', markdown: 'hello' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', mode: 'create', markdown: 'hello' }, execCtx())
 
     expect(client.drive.v1.permissionMember.create).toHaveBeenCalledWith({
       path: { token: 'doxcnNEW' },
@@ -437,7 +439,7 @@ describe('feishu_doc_write', () => {
       lastSenderFor: () => 'ou_requester',
     } as unknown as HarnessConversationService
     const tool = toolsOver(channel, bridge).write!
-    const value = await tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 1 }, execCtx())
+    const value = await tool.execute({ description: '测试调用', mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 1 }, execCtx())
 
     expect(client.drive.v1.permissionMember.create).not.toHaveBeenCalled()
     expect(value.shared).toBe(false)
@@ -447,7 +449,7 @@ describe('feishu_doc_write', () => {
     const { channel, client } = fakeChannel()
     client.docx.v1.document.get = vi.fn(async () => ({ data: { document: { title: 'T', revision_id: 9 } } }))
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 8 }, execCtx()))
+    await expect(tool.execute({ description: '测试调用', mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 8 }, execCtx()))
       .rejects.toThrow(/changed since it was read/)
     expect(client.docx.v1.documentBlockDescendant.create).not.toHaveBeenCalled()
   })
@@ -455,7 +457,7 @@ describe('feishu_doc_write', () => {
   it('requires a revision for replace mode', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({ mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx()))
+    await expect(tool.execute({ description: '测试调用', mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx()))
       .rejects.toThrow(/needs the `revision_id`/)
   })
 
@@ -471,7 +473,7 @@ describe('feishu_doc_write', () => {
       data: { items: [{ block_id: 'imgblk', block_type: 27, image: { token: '' } }], has_more: false },
     }))
     const tool = toolsOver(channel).write!
-    const value = await tool.execute({ mode: 'create', path: mdPath }, execCtx())
+    const value = await tool.execute({ description: '测试调用', mode: 'create', path: mdPath }, execCtx())
 
     expect(client.drive.v1.media.uploadAll).toHaveBeenCalledWith({
       data: expect.objectContaining({ parent_node: 'imgblk', parent_type: 'docx_image' }),
@@ -498,7 +500,7 @@ describe('feishu_doc_write', () => {
         return { data: {} }
       })
       const tool = toolsOver(channel).write!
-      const pending = tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 1 }, execCtx())
+      const pending = tool.execute({ description: '测试调用', mode: 'append', target: 'doxcnAbCdEf', markdown: 'x', revision: 1 }, execCtx())
       await vi.advanceTimersByTimeAsync(2_500)
       const value = await pending
       expect(client.docx.v1.documentBlockDescendant.create).toHaveBeenCalledTimes(3)
@@ -511,7 +513,7 @@ describe('feishu_doc_write', () => {
   it('refuses append without a revision', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({ mode: 'append', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx()))
+    await expect(tool.execute({ description: '测试调用', mode: 'append', target: 'doxcnAbCdEf', markdown: 'x' }, execCtx()))
       .rejects.toThrow(/needs the `revision_id`/)
   })
 
@@ -521,12 +523,12 @@ describe('feishu_doc_write', () => {
       data: { items: [{ block_id: 'cb', block_type: 19, callout: {} }], has_more: false },
     }))
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({
+    await expect(tool.execute({ description: '测试调用',
       mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x', revision: 1,
     }, execCtx())).rejects.toThrow(/Markdown cannot reproduce \(callout\)/)
     expect(client.docx.v1.documentBlockChildren.batchDelete).not.toHaveBeenCalled()
 
-    const value = await tool.execute({
+    const value = await tool.execute({ description: '测试调用',
       mode: 'replace', target: 'doxcnAbCdEf', markdown: 'x', revision: 1, allow_format_loss: true,
     }, execCtx())
     expect(value.mode).toBe('replace')
@@ -536,7 +538,7 @@ describe('feishu_doc_write', () => {
   it('requires a target outside create mode', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({ mode: 'append', markdown: 'x', revision: 1 }, execCtx())).rejects.toThrow(/target is required/)
+    await expect(tool.execute({ description: '测试调用', mode: 'append', markdown: 'x', revision: 1 }, execCtx())).rejects.toThrow(/target is required/)
   })
 })
 
@@ -603,14 +605,14 @@ describe('feishu_doc_write publish', () => {
 
   it('creates once, then re-publishes into the same document', async () => {
     const fixture = await publishFixture()
-    const first = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    const first = await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
     expect(first.mode).toBe('publish')
     expect(first.created).toBe(true)
     expect(first.document_id).toBe('doxcnNEW')
     expect(fixture.client.docx.v1.document.create).toHaveBeenCalledTimes(1)
 
     await writeFile(fixture.mdPath, '# 笔记\n\n第二版')
-    const second = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    const second = await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
     expect(second.created).toBe(false)
     expect(second.document_id).toBe('doxcnNEW')
     expect(fixture.client.docx.v1.document.create).toHaveBeenCalledTimes(1)
@@ -622,36 +624,36 @@ describe('feishu_doc_write publish', () => {
 
   it('refuses to overwrite a document someone edited, and takes an override', async () => {
     const fixture = await publishFixture()
-    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
 
     fixture.setRevision(7)
-    await expect(fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx()))
+    await expect(fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx()))
       .rejects.toThrow(/changed since this plugin last wrote it/)
     expect(fixture.client.docx.v1.documentBlockChildren.batchDelete).not.toHaveBeenCalled()
 
-    const forced = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath, allow_foreign_edits: true }, execCtx())
+    const forced = await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath, allow_foreign_edits: true }, execCtx())
     expect(forced.created).toBe(false)
     expect(fixture.client.docx.v1.documentBlockChildren.batchDelete).toHaveBeenCalled()
   })
 
   it('accepts a fresh revision instead of the override flag', async () => {
     const fixture = await publishFixture()
-    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
     fixture.setRevision(9)
-    const value = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath, revision: 9 }, execCtx())
+    const value = await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath, revision: 9 }, execCtx())
     expect(value.created).toBe(false)
   })
 
   it('refuses plain create for a file that is already published', async () => {
     const fixture = await publishFixture()
-    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
-    await expect(fixture.write.execute({ mode: 'create', path: fixture.mdPath }, execCtx()))
+    await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
+    await expect(fixture.write.execute({ description: '测试调用', mode: 'create', path: fixture.mdPath }, execCtx()))
       .rejects.toThrow(/already published/)
   })
 
   it('adopts an existing document when target is given on the first publish', async () => {
     const fixture = await publishFixture()
-    const value = await fixture.write.execute({
+    const value = await fixture.write.execute({ description: '测试调用',
       mode: 'publish',
       path: fixture.mdPath,
       target: 'https://acme.feishu.cn/docx/doxcnOld',
@@ -663,7 +665,7 @@ describe('feishu_doc_write publish', () => {
 
   it('creates a fresh document when the recorded one disappeared', async () => {
     const fixture = await publishFixture()
-    await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
     fixture.setRevision(2)
     let calls = 0
     fixture.client.docx.v1.document.get = vi.fn(async () => {
@@ -671,7 +673,7 @@ describe('feishu_doc_write publish', () => {
       if (calls === 1) throw new Error('not found')
       return { data: { document: { title: '笔记', revision_id: 2 } } }
     })
-    const value = await fixture.write.execute({ mode: 'publish', path: fixture.mdPath }, execCtx())
+    const value = await fixture.write.execute({ description: '测试调用', mode: 'publish', path: fixture.mdPath }, execCtx())
     expect(value.created).toBe(true)
     expect(fixture.client.docx.v1.document.create).toHaveBeenCalledTimes(2)
   })
@@ -681,7 +683,7 @@ describe('feishu_doc_write path handling', () => {
   it('names the absolute-path rule when a relative path is passed', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).write!
-    await expect(tool.execute({ mode: 'create', path: 'notes/relative.md' }, execCtx()))
+    await expect(tool.execute({ description: '测试调用', mode: 'create', path: 'notes/relative.md' }, execCtx()))
       .rejects.toThrow(/pass the absolute path/)
   })
 })
@@ -706,7 +708,7 @@ describe('feishu_doc_write formulas', () => {
     })
     const tool = toolsOver(channel).write!
     const markdown = '质心 $x^2+y^2$ 的值\n\n$$E=mc^2$$\n'
-    const value = await tool.execute({ mode: 'create', markdown }, execCtx())
+    const value = await tool.execute({ description: '测试调用', mode: 'create', markdown }, execCtx())
 
     expect(value.formulas).toBe(2)
     expect(value.content_chars).toBe(markdown.length)

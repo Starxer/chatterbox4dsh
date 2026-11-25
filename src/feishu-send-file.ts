@@ -48,6 +48,7 @@ import { sniffAudioContainer, sniffImageMime, sniffVideoContainer } from './medi
 import { withLinkTimeout } from './outbound-timeout.ts'
 import { FEISHU_MAX_FILE_BYTES, FEISHU_MAX_IMAGE_BYTES, noteDeliveredFile } from './deliver-files.ts'
 import { hasMediaBinary } from './media-binaries.ts'
+import { TOOL_CAPTION_PARAM } from './tool-caption.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -339,6 +340,8 @@ export function startFeishuSendFileTool(deps: FeishuSendFileDeps): () => void {
       + 'cannot play — is sent as a file the user opens. Only works when the current session is bound to a Feishu chat; otherwise '
       + 'it fails with a clear error and you should just tell the user the file path instead.',
     parameters: {
+      // The row caption every card prints (required: see src/tool-caption.ts).
+      description: TOOL_CAPTION_PARAM,
       path: {
         type: 'string',
         required: true,

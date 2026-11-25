@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：插件自己的 6 个飞书工具全部要求必填 `description`（`src/tool-caption.ts` + 4 个工具文件，2026-11-25）
+
+- 使用者要求：飞书插件自带的工具「全部要求 description」。同时反馈过程卡上有些说明太口语化（例：「跑 typecheck 与单测」）。
+- 做法：新增 `src/tool-caption.ts` 的 `TOOL_CAPTION_PARAM`，与宿主 `bash` / `subagent` 同一契约——`type: 'string'`、**`required: true`**、5–10 词、主动语态、卡片原样显示；参数说明里明确要求**中性措辞**（不用第一人称、不用 "just"/"quickly" 这类填充词、结尾不加标点），并跟随当前对话语言。接进 `feishu_doc_read` / `feishu_doc_write` / `feishu_doc_blocks` / `feishu_doc_comments` / `feishu_receive_file` / `feishu_send_file` 六个工具（可选参数正是模型会跳过的那个，跳过之后卡上只剩 `读取`）。
+- 效果：极简/紧凑回合卡上的这 6 个工具调用永远有一句模型写的说明，不再依赖预制动作名回退（回退只对宿主工具 `read` / `edit` / `grep` 等生效）。
+- 测试：4 个 spec 的 55 处 `execute(...)` 补上该参数，并各加一条断言「`parameters.required` 含 `description`」，防止以后被误删。全量 83 文件 / 1,669 用例、typecheck、build、privacy 全绿。
+
+**English**: Every tool this plugin registers now requires a `description` argument, on the same contract the host's `bash` / `subagent` carry: 5–10 words, active voice, printed verbatim by the chat UI. The shared schema entry lives in `src/tool-caption.ts` (`TOOL_CAPTION_PARAM`, `required: true`) and asks for **neutral** wording — no first person, no filler like "just" / "quickly", no trailing punctuation — in the language of the current conversation, because the operator found model prose such as "跑 typecheck 与单测" too colloquial for a card. Wired into `feishu_doc_read` / `feishu_doc_write` / `feishu_doc_blocks` / `feishu_doc_comments` / `feishu_receive_file` / `feishu_send_file`; the curated action-name fallback now only covers host tools (`read` / `edit` / `grep` …). 55 test call sites pass the new argument and each spec asserts `parameters.required` still contains `description`. 83 files / 1,669 tests, typecheck, build and privacy gate green.
+
 ### 变更：极简卡没有 `description` 的调用改显示「预制动作名 + 对象」（`src/i18n.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-25）
 
 - 使用者发现的问题：没有 `description` 的调用只回退显示工具名（`✅ read`），而极简卡本来不显示工具名；使用者又明确否掉了「只列文件名」——看不出是 read 还是 edit。两条路都不成立。

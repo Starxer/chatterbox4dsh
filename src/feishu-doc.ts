@@ -33,6 +33,7 @@ import { errorText } from './error-text.ts'
 import { sniffImageMime } from './media-sniff.ts'
 import type { HarnessConversationService } from './harness.ts'
 import { createDocRegistry, type DocRegistry } from './doc-registry.ts'
+import { TOOL_CAPTION_PARAM } from './tool-caption.ts'
 import { applyFormulas, extractFormulas } from './doc-formula.ts'
 import { resolveDshHome } from './dsh-home.ts'
 import { isLocalAbsolutePath } from './local-path.ts'
@@ -1037,6 +1038,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'which the Markdown body never includes. '
       + 'The Feishu app must be able to read the document, otherwise the call fails and says what to fix.',
     parameters: {
+      // The row caption every card prints (required: see src/tool-caption.ts).
+      description: TOOL_CAPTION_PARAM,
       target: {
         type: 'string',
         required: true,
@@ -1186,6 +1189,8 @@ export function startFeishuDocTools(deps: FeishuDocToolsDeps): () => void {
       + 'accept that). The Feishu app must be able to edit the target document. Prefer `append`, or '
       + '`publish` when a Markdown file is the source of truth.',
     parameters: {
+      // The row caption every card prints (required: see src/tool-caption.ts).
+      description: TOOL_CAPTION_PARAM,
       mode: {
         type: 'string',
         enum: ['create', 'append', 'replace', 'publish'],

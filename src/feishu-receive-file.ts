@@ -26,6 +26,7 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk'
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { HarnessConversationService } from './harness.ts'
 import { downloadMessageResource } from './feishu-resource.ts'
+import { TOOL_CAPTION_PARAM } from './tool-caption.ts'
 
 /** Feishu file-message ceiling (`resource.get` rejects > 30 MB upstream). */
 const MAX_FILE_BYTES = 30 * 1024 * 1024
@@ -97,6 +98,8 @@ export function startFeishuReceiveFileTool(deps: FeishuReceiveFileDeps): () => v
       + 'agent can then open with its file tools. Only works when the current '
       + 'session is bound to a Feishu chat.',
     parameters: {
+      // The row caption every card prints (required: see src/tool-caption.ts).
+      description: TOOL_CAPTION_PARAM,
       message_id: {
         type: 'string',
         required: true,

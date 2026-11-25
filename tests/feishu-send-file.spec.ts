@@ -106,7 +106,9 @@ describe('sendWorkspaceFile (the shared bounded sender)', () => {
     const p = await tempFile(TXT_BYTES, 'note.txt')
     const ch = fakeChannel()
     const tool = toolOver(ch)
-    await tool.execute({ path: p }, execCtx())
+    // The cards print this argument verbatim; required, or the model skips it.
+    expect(((tool as any).parameters as any).required).toContain('description')
+    await tool.execute({ description: '测试调用', path: p }, execCtx())
     // The tracker is keyed on the REAL path, which is what the delivery planner
     // validates and records.
     expect(wasDeliveredFile('session-1', p)).toBe(true)
@@ -130,7 +132,7 @@ describe('startFeishuSendFileTool', () => {
     const p = await tempFile(PNG_BYTES, 'pic.png')
     const ch = fakeChannel()
     const tool = toolOver(ch)
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
     expect(ch.send).toHaveBeenCalledWith(
       'oc_x',
       expect.objectContaining({ image: expect.objectContaining({ source: expect.any(Buffer) }) }),
@@ -145,7 +147,7 @@ describe('startFeishuSendFileTool', () => {
     const p = await tempFile(TXT_BYTES, 'note.txt')
     const ch = fakeChannel()
     const tool = toolOver(ch)
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
     expect(ch.send).toHaveBeenCalledWith(
       'oc_x',
       expect.objectContaining({ file: expect.objectContaining({ source: expect.any(Buffer), fileName: 'note.txt' }) }),
@@ -160,7 +162,7 @@ describe('startFeishuSendFileTool', () => {
     const ch = fakeChannel()
     const extractCoverFrame = vi.fn(async () => COVER_JPEG)
     const tool = toolOver(ch, { extractCoverFrame })
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect(extractCoverFrame).toHaveBeenCalledWith(p)
     expect((ch.rawClient as any).im.v1.image.create).toHaveBeenCalledWith({
@@ -181,7 +183,7 @@ describe('startFeishuSendFileTool', () => {
     const p = await tempFile(MP4_BYTES, 'clip.mp4')
     const ch = fakeChannel()
     const tool = toolOver(ch, { extractCoverFrame: async () => undefined })
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     const payload = (ch.send as any).mock.calls[0][1]
     expect(payload.video).toEqual({ source: expect.any(Buffer) })
@@ -195,7 +197,7 @@ describe('startFeishuSendFileTool', () => {
     const ch = fakeChannel()
     ;(ch.rawClient as any).im.v1.image.create = vi.fn(async () => { throw new Error('boom') })
     const tool = toolOver(ch, { extractCoverFrame: async () => COVER_JPEG })
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect((ch.send as any).mock.calls[0][1].video.coverImageKey).toBeUndefined()
     expect(result.sent_as).toBe('video')
@@ -206,7 +208,7 @@ describe('startFeishuSendFileTool', () => {
     const ch = fakeChannel()
     ;(ch.send as any).mockRejectedValueOnce(new Error('duration could not be determined for video'))
     const tool = toolOver(ch, { extractCoverFrame: async () => undefined })
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect((ch.send as any).mock.calls).toHaveLength(2)
     expect((ch.send as any).mock.calls[1][1]).toEqual(
@@ -226,7 +228,7 @@ describe('startFeishuSendFileTool', () => {
       new Error('Failed to create card content, ext=ErrCode: 234039; ErrMsg: Image resolution exceeds limit'),
     )
     const tool = toolOver(ch)
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect((ch.send as any).mock.calls).toHaveLength(2)
     expect((ch.send as any).mock.calls[0][1]).toEqual(expect.objectContaining({ image: expect.anything() }))
@@ -241,7 +243,7 @@ describe('startFeishuSendFileTool', () => {
     const p = await tempFile(PRORES_BYTES, 'graded.mov')
     const ch = fakeChannel()
     const tool = toolOver(ch, { extractCoverFrame: async () => COVER_JPEG })
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect((ch.send as any).mock.calls[0][1]).toEqual(
       expect.objectContaining({ file: expect.objectContaining({ fileName: 'graded.mov' }) }),
@@ -253,7 +255,7 @@ describe('startFeishuSendFileTool', () => {
     const p = await tempFile(OPUS_BYTES, 'voice.opus')
     const ch = fakeChannel()
     const tool = toolOver(ch)
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect(ch.send).toHaveBeenCalledWith(
       'oc_x',
@@ -268,7 +270,7 @@ describe('startFeishuSendFileTool', () => {
     const ch = fakeChannel()
     ;(ch.send as any).mockRejectedValueOnce(new Error('duration could not be determined for audio'))
     const tool = toolOver(ch)
-    const result: any = await tool.execute({ path: p }, execCtx())
+    const result: any = await tool.execute({ description: '测试调用', path: p }, execCtx())
 
     expect((ch.send as any).mock.calls[1][1]).toEqual(
       expect.objectContaining({ file: expect.objectContaining({ fileName: 'voice.opus' }) }),

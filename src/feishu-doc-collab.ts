@@ -32,6 +32,7 @@ import { withLinkTimeout } from './outbound-timeout.ts'
 import { errorText } from './error-text.ts'
 import { parseDocTarget, resolveDoc } from './feishu-doc.ts'
 import { textElementsFromMarkdown } from './inline-markdown.ts'
+import { TOOL_CAPTION_PARAM } from './tool-caption.ts'
 
 /** Budget for one document API call. */
 const DOC_REQUEST_TIMEOUT_MS = 30_000
@@ -212,6 +213,8 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
       + '`text`. Feishu only supports whole-document comments for API creation, and replies to such '
       + 'comments are rejected by the platform, so this tool does not reply inside a thread.',
     parameters: {
+      // The row caption every card prints (required: see src/tool-caption.ts).
+      description: TOOL_CAPTION_PARAM,
       target: {
         type: 'string',
         required: true,
@@ -417,6 +420,8 @@ export function startFeishuDocCollabTools(deps: FeishuDocCollabDeps): () => void
       + '`$…$` formulas are applied. Content that is not supported inline (headings, lists, tables, '
       + 'superscript/subscript outside a formula) stays literal — use feishu_doc_write for block structure.',
     parameters: {
+      // The row caption every card prints (required: see src/tool-caption.ts).
+      description: TOOL_CAPTION_PARAM,
       target: {
         type: 'string',
         required: true,

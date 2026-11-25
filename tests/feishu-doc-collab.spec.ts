@@ -97,7 +97,9 @@ describe('feishu_doc_comments', () => {
   it('lists comment threads with their replies', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).comments!
-    const value = await tool.execute({ target: 'doxcnDoc', action: 'list' }, execCtx())
+    // The cards print this argument verbatim; required, or the model skips it.
+    expect((tool.parameters as any).required).toContain('description')
+    const value = await tool.execute({ description: '测试调用', target: 'doxcnDoc', action: 'list' }, execCtx())
 
     expect(value.document_id).toBe('doxcnDoc')
     expect(value.comments).toEqual([
@@ -118,7 +120,7 @@ describe('feishu_doc_comments', () => {
   it('creates a whole-document comment', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).comments!
-    const value = await tool.execute({ target: 'doxcnDoc', action: 'create', text: '已经补上' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'doxcnDoc', action: 'create', text: '已经补上' }, execCtx())
 
     expect(client.drive.v1.fileComment.create).toHaveBeenCalledWith({
       path: { file_token: 'doxcnDoc' },
@@ -131,7 +133,7 @@ describe('feishu_doc_comments', () => {
   it('requires text when creating', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).comments!
-    await expect(tool.execute({ target: 'doxcnDoc', action: 'create' }, execCtx())).rejects.toThrow(/text is required/)
+    await expect(tool.execute({ description: '测试调用', target: 'doxcnDoc', action: 'create' }, execCtx())).rejects.toThrow(/text is required/)
   })
 })
 
@@ -139,7 +141,7 @@ describe('feishu_doc_blocks', () => {
   it('lists blocks with type, preview and image token', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).blocks!
-    const value = await tool.execute({ target: 'doxcnDoc', action: 'list' }, execCtx())
+    const value = await tool.execute({ description: '测试调用', target: 'doxcnDoc', action: 'list' }, execCtx())
 
     expect(value.blocks).toEqual([
       { block_id: 'b-heading', type: 'heading1', text: '标题' },
@@ -152,7 +154,7 @@ describe('feishu_doc_blocks', () => {
   it('updates one block in place, keeping inline Markdown formatting', async () => {
     const { channel, client } = fakeChannel()
     const tool = toolsOver(channel).blocks!
-    const value = await tool.execute({
+    const value = await tool.execute({ description: '测试调用',
       target: 'doxcnDoc',
       action: 'update',
       block_id: 'b-text',
@@ -178,7 +180,7 @@ describe('feishu_doc_blocks', () => {
   it('requires block_id and text when updating', async () => {
     const { channel } = fakeChannel()
     const tool = toolsOver(channel).blocks!
-    await expect(tool.execute({ target: 'doxcnDoc', action: 'update', text: 'x' }, execCtx())).rejects.toThrow(/block_id is required/)
-    await expect(tool.execute({ target: 'doxcnDoc', action: 'update', block_id: 'b1' }, execCtx())).rejects.toThrow(/text is required/)
+    await expect(tool.execute({ description: '测试调用', target: 'doxcnDoc', action: 'update', text: 'x' }, execCtx())).rejects.toThrow(/block_id is required/)
+    await expect(tool.execute({ description: '测试调用', target: 'doxcnDoc', action: 'update', block_id: 'b1' }, execCtx())).rejects.toThrow(/text is required/)
   })
 })
