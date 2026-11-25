@@ -96,6 +96,13 @@ export interface DetachedJobNotice {
   chat: ConversationMessage
   /** Session whose tool result this is, used as an ownership guard. */
   sessionId: string
+  /**
+   * The model's own one-line `description` of the creating call, when the tool
+   * schema has one (`bash` / `pwsh` require it). The task cell prefers it over
+   * the command; absent for producers such as `workflow`, whose label already
+   * reads like a name.
+   */
+  description?: string
 }
 
 /** Handle returned by {@link startFeishuJobs}. */
@@ -146,6 +153,13 @@ export interface JobPanelRow {
   view: JobViewLike
   /** Epoch ms the row reached a terminal state; absent while live. */
   settledAt: number | undefined
+  /**
+   * Model-written one-line description of the call that started this job, when
+   * the producer's tool takes one. The task cell shows it instead of the
+   * command; the full command keeps the detail block (unchanged rule: only a
+   * cell that had to be cut gets one).
+   */
+  description?: string
 }
 
 /** One chat's roster. */
@@ -275,12 +289,14 @@ export function detachedJobIdFromToolResult(toolName: string, resultText: string
  */
 export function jobRosterSignature(rows: readonly JobPanelRow[]): string {
   return [...rows]
-    .map(row => [row.view.id, row.view.status, row.view.label, row.view.progress ?? '', row.view.detail ?? ''].join('\u0001'))
+    .map(row => [
+      row.view.id, row.view.status, row.view.label, row.view.progress ?? '', row.view.detail ?? '', row.description ?? '',
+    ].join('\u0001'))
     .sort()
     .join('\u0002')
 }
 
-/** Longest task cell the table keeps; a longer command moves to a detail block. */
+/** Longest task cell the table keeps; a longer command OR description is cut. */
 const JOB_LABEL_TABLE_MAX = 48
 
 /**
@@ -347,11 +363,16 @@ export function jobNeedsDetail(view: JobViewLike): boolean {
 /**
  * Render the background-task panel card: one row per known background task.
  *
- * A task's label is the producer's command, and the table has to stay readable,
- * so its cell is capped at {@link JOB_LABEL_TABLE_MAX}. A command longer than
- * that is printed in full BELOW the table (fenced, line breaks preserved) — the
- * user could not read it otherwise (report 2026-10-19: "后台任务表看不见完整
- * 命令"). Short commands are not repeated.
+ * The task cell prefers the model's own `description` of the creating call (a
+ * sentence like "跑一遍插件单测") over the producer's command: the command is
+ * the machine-facing fact and can be a long script, while the description is
+ * what the chat reader actually wants. A job without one (a `workflow` names
+ * itself) falls back to the label, and a label-less job to the untitled mark.
+ *
+ * The command still gets its full detail block exactly as before — only when
+ * the TABLE could not carry it (cut, or line breaks flattened into one line),
+ * printed BELOW the table, fenced, line breaks preserved (report 2026-10-19:
+ * "后台任务表看不见完整命令"). Short commands are not repeated.
  *
  * @param rows - the roster's rows.
  * @param t - the active locale's strings.
@@ -372,14 +393,17 @@ export function renderJobPanelCard(
   const sorted = [...rows].sort((a, b) => a.view.startedAt - b.view.startedAt)
   const shown = sorted.slice(-PANEL_MAX_ROWS)
   const headers = [t.jobPanelColStatus, t.jobPanelColTask, t.jobPanelColId, t.jobPanelColDuration, t.jobPanelColProgress]
-  const body = shown.map(({ view }) => {
+  const body = shown.map(({ view, description }) => {
     const status = statusPresentation(view.status, t)
     const end = view.finishedAt ?? now
     const dynamic = isTerminal(view.status) ? view.detail ?? '' : view.progress ?? ''
     const label = view.label.trim()
+    const described = (description ?? '').trim()
     return [
       `${status.icon} ${status.text}`,
-      tableCell(label === '' ? t.jobUntitled : label, { code: true, max: JOB_LABEL_TABLE_MAX }),
+      described === ''
+        ? tableCell(label === '' ? t.jobUntitled : label, { code: true, max: JOB_LABEL_TABLE_MAX })
+        : tableCell(described, { max: JOB_LABEL_TABLE_MAX }),
       tableCell(view.id, { code: true }),
       formatDuration(end - view.startedAt),
       dynamic.trim() === '' ? '—' : tableCell(dynamic, { max: 48 }),
@@ -633,6 +657,11 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
       }
       const key = conversationKey(notice.chat)
       confirmed.set(jobId, { key, sessionId: notice.sessionId })
+      // The model's own description of the call becomes the task cell; blank
+      // means "no description" and the cell falls back to the command.
+      const description = typeof notice.description === 'string' && notice.description.trim() !== ''
+        ? notice.description.trim()
+        : undefined
       let roster = rosters.get(key)
       if (roster === undefined) {
         roster = { chat: notice.chat, rows: new Map() }
@@ -642,7 +671,11 @@ export function startFeishuJobs(deps: FeishuJobsDeps): FeishuJobsHandle {
         // after the first card; 关键坑 25).
         roster.chat = notice.chat
       }
-      roster.rows.set(jobId, { view, settledAt: isTerminal(view.status) ? Date.now() : undefined })
+      roster.rows.set(jobId, {
+        view,
+        settledAt: isTerminal(view.status) ? Date.now() : undefined,
+        ...(description === undefined ? {} : { description }),
+      })
       refresh(key, true)
     } catch (error: unknown) {
       warn('job confirmation handling failed', error)

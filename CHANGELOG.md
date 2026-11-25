@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 变更：后台任务面板的「任务」列改显示模型写的说明，完整命令保持原规则（`src/feishu-jobs.ts` / `src/feishu-streaming.ts`，2026-11-25）
+
+- 使用者从样板 A/B 里选了 B，并补一条约束：「完整命令还是保持原来的逻辑」。
+- **任务列**不再印命令原文，改印模型创建该任务时写的 `description`（例如 `跑一遍插件单测`）；没有 description 的（`workflow` 这类 label 本来就是名字）回退到 label，空 label 仍是「未命名任务」。说明与命令一样按 48 字截断。
+- **命令的详情块规则一点没动**：只有表格放不下（被截断 / 多行脚本）才在表格下面「📜 完整命令」里全文打印，且一个 job 只在首次出卡时带一次（`detailJobIds` 去重），短命令依旧不重复 —— 所以短命令在换了说明列之后不再出现在卡上（身份由编号 + 说明承担）。
+- **数据来源**：description 属于「创建这次调用」，不在 job 记录里（宿主 `JobView` 只有 `label`，`bash`/`pwsh` 把 label 设成命令）。插件在 `tool/call` 时已存 `arguments`，`noteDetached` 时用同一套 `toolCallDescription()` 取出（PTC 内层调用走 dispatch 的 `arguments`），随 notice 传给 job 镜像；说明挂在 roster 行上，后续快照继续显示。
+- `jobRosterSignature` 计入 description，说明变化会触发新快照。
+- 测试：+6（渲染 4：说明替换命令 / 说明不额外开详情块 / 空说明回退命令 / 长说明按 48 字截断；签名 1；端到端 1：说明进入任务列并在后续快照保留）＋ 两条 streaming 断言补 `description`（含 PTC 内层）；全量 83 文件 / 1,634 用例、typecheck、build、privacy 全绿。
+
+**English**: The background-job panel's task cell now shows the model's own one-line `description` of the creating call (the operator picked sample B, with the constraint that the full-command rule stays untouched) instead of the raw command; a job without one (a `workflow` already labels itself with its name) falls back to the label, and a blank label to the untitled mark. Both cells cap at 48 characters. The command's detail block is unchanged: it appears only when the table cannot carry the command (cut, or a multi-line script flattened), is printed below the table, and is delivered once per job (`detailJobIds`). The description lives on the CREATING CALL, not in the job record (the host `JobView` carries only `label`, which `bash`/`pwsh` set to the command), so it travels from the stored `tool/call` arguments through `noteDetached` into the roster row (PTC sub-calls read the dispatch arguments), and every later snapshot keeps showing it. `jobRosterSignature` now includes it. Six tests added, two streaming assertions extended; 83 files / 1,634 tests, typecheck, build and privacy gate green.
+
 ### 变更：步头的分阶段耗时按真实时间顺序排列（`📡 等待 → 🧠 思考 → ✍️ 回复 → 🔧 工具`）（`src/feishu-progress.ts`，2026-11-25）
 
 - 使用者的意见：顺序应当按这一步真实发生的过程排，而不是按固定词表排。

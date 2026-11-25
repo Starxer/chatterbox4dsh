@@ -1698,7 +1698,7 @@ describe('thinking placeholder', () => {
     const channel = plainChannel()
     const h = stepHarness(channel, {}, { noteDetachedJob })
     h.emit('step/start', { turn: 1, step: 1 })
-    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"x","run_in_background":true}' })
+    h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"x","description":"跑一遍测试","run_in_background":true}' })
     h.emit('tool/result', {
       message: { toolCallId: 'c1', content: [{ type: 'text', text: 'started background job bash-9' }], isError: false },
     })
@@ -1706,6 +1706,8 @@ describe('thinking placeholder', () => {
       toolName: 'bash',
       resultText: 'started background job bash-9',
       sessionId: 's-1',
+      // The panel's task cell shows this instead of the command.
+      description: '跑一遍测试',
     }))
     h.streaming.stop()
   })
@@ -1725,13 +1727,15 @@ describe('thinking placeholder', () => {
     })
     h.emit('tool/ptc-dispatch', {
       rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'bash',
-      arguments: { command: 'sleep 9', run_in_background: true },
+      arguments: { command: 'sleep 9', description: '后台跑一会儿', run_in_background: true },
       isError: false, content: [{ type: 'text', text: 'started background job bash-abc123' }],
     })
     expect(noteDetachedJob).toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'bash',
       resultText: 'started background job bash-abc123',
       sessionId: 's-1',
+      // The INNER call's description, read from the dispatch arguments.
+      description: '后台跑一会儿',
     }))
     h.streaming.stop()
   })

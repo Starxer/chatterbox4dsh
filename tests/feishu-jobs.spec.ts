@@ -285,6 +285,43 @@ describe('renderJobPanelCard', () => {
     expect(text).toContain(zh.jobPanelCommandTruncated(command.length))
     expect(text.length).toBeLessThan(4_000)
   })
+
+  it('shows the model-written description instead of the command in the task cell', () => {
+    const command = 'python3 scripts/audit.py --workspace /srv/app --since 2026-10-01 --strict --report out.json'
+    const described: JobPanelRow = { ...row({ label: command }), description: '扫一遍审计日志' }
+    const text = markdownOf(renderJobPanelCard([described], zh, 2_000) as any)
+    // The cell carries the description, never the command.
+    expect(text).toContain('| 扫一遍审计日志 |')
+    expect(text).not.toContain('`python3 scripts/audit.py')
+    // The full command keeps the OLD rule: printed below the table because the
+    // cell had to be cut, exactly as if no description existed.
+    expect(text).toContain(zh.jobPanelFullCommands)
+    expect(text).toContain(command)
+  })
+
+  it('does not open a detail block just because a description exists', () => {
+    // The detail rule is unchanged: a short command has nothing to expand, so
+    // the command simply does not appear when a description replaced its cell.
+    const described: JobPanelRow = { ...row({ label: 'npm run typecheck' }), description: '类型检查' }
+    const text = markdownOf(renderJobPanelCard([described], zh, 2_000) as any)
+    expect(text).not.toContain(zh.jobPanelFullCommands)
+    expect(text).toContain('类型检查')
+    expect(text).not.toContain('npm run typecheck')
+  })
+
+  it('falls back to the command when the description is blank', () => {
+    const described: JobPanelRow = { ...row({ label: 'sleep 30' }), description: '   ' }
+    const text = markdownOf(renderJobPanelCard([described], zh, 2_000) as any)
+    expect(text).toContain('`sleep 30`')
+  })
+
+  it('caps a long description like a long command, with an ellipsis', () => {
+    const description = `x${'x'.repeat(79)}`
+    const described: JobPanelRow = { ...row({ label: 'npm run build' }), description }
+    const text = markdownOf(renderJobPanelCard([described], zh, 2_000) as any)
+    expect(text).toContain(`${'x'.repeat(47)}…`)
+    expect(text).not.toContain(description)
+  })
 })
 
   it('carries a job\'s full command once, on the card that introduces it', async () => {
@@ -322,6 +359,11 @@ describe('jobRosterSignature', () => {
     expect(jobRosterSignature(base)).not.toBe(jobRosterSignature([row({ progress: '2/2' })]))
     expect(jobRosterSignature(base)).not.toBe(jobRosterSignature([row({ status: 'completed', progress: '1/2' })]))
   })
+
+  it('follows the task description, which the table shows', () => {
+    const base = [row()]
+    expect(jobRosterSignature(base)).not.toBe(jobRosterSignature([{ ...row(), description: '跑一遍单测' }]))
+  })
 })
 
 describe('startFeishuJobs', () => {
@@ -352,6 +394,21 @@ describe('startFeishuJobs', () => {
     h.mirror.dispose()
   })
 
+  it('puts the model-written description in the task cell and keeps it on later snapshots', async () => {
+    const h = buildHarness()
+    const command = 'python3 scripts/audit.py --workspace /srv/app --since 2026-10-01 --strict'
+    h.emit({ type: 'registered', job: job({ label: command }) })
+    h.confirm('bash-1', { description: '扫一遍审计日志' })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(1) })
+    expect(markdownOf(h.sent[0]!.card)).toContain('扫一遍审计日志')
+    expect(markdownOf(h.sent[0]!.card)).not.toContain('`python3 scripts/audit.py')
+    // The description belongs to the ROW: every later snapshot of the same job
+    // keeps showing it (the detail block still follows the old once-only rule).
+    h.emit({ type: 'progress', job: job({ label: command, progress: '2/9' }) })
+    await vi.waitFor(() => { expect(h.sent).toHaveLength(2) })
+    expect(markdownOf(h.sent[1]!.card)).toContain('扫一遍审计日志')
+    h.mirror.dispose()
+  })
   it('builds the first card from the projection cached before the confirmation', async () => {
     // The result lands after `registered` and possibly after `progress`, so the
     // card must render the LATEST known projection.

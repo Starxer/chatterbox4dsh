@@ -2009,13 +2009,17 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
           // A result that hands the model a background job id is the ONLY fact
           // that separates real background work from the foreground calls DSH
           // also registers as jobs (关键坑 37). Forward it to the job mirror,
-          // which owns the matching and the gate.
+          // which owns the matching and the gate. The model's own description
+          // of the call rides along: the panel's task cell shows it instead of
+          // the raw command (the command keeps the detail block).
+          const jobDescription = toolCallDescription(toolCall.arguments)
           try {
             noteDetachedJob?.({
               toolName: toolCall.toolName,
               resultText: typeof result === 'string' ? result : '',
               chat,
               sessionId,
+              ...(jobDescription === undefined ? {} : { description: jobDescription }),
             })
           } catch (error: unknown) {
             console.log(`dsh-feishu: [result] job notification failed: ${describeError(error)}`)
@@ -2106,12 +2110,14 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             // A settled sub-call can hand the model a background job id exactly
             // like a native result can; the job mirror owns the matching and the
             // gate, so forward it with the INNER tool name (关键坑 37).
+            const jobDescription = toolCallDescription(data.arguments)
             try {
               noteDetachedJob?.({
                 toolName: name,
                 resultText: resultContentText(data.content),
                 chat,
                 sessionId,
+                ...(jobDescription === undefined ? {} : { description: jobDescription }),
               })
             } catch (error: unknown) {
               console.log(`dsh-feishu: [ptc] job notification failed: ${describeError(error)}`)
