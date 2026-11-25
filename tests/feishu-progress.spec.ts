@@ -214,7 +214,7 @@ describe('renderProgressCard', () => {
     expect(visibleLines(card)).toContain(t.turnCardStepDetail(5, '1.0s'))
     // A call that never ran is NOT one of the turn's tool calls: the title still
     // counts the one that did.
-    expect(card.header.title.content).toBe(t.turnCardTitleFailed(0, 1, '2.0s'))
+    expect(card.header.title.content).toBe(t.turnCardTitleFailed(0, 2, '2.0s'))
   })
 
   it('merges consecutive same-named calls into one row with a summed duration', () => {
@@ -429,7 +429,7 @@ describe('renderProgressCard', () => {
     expect(tagsOf(card)).not.toContain('collapsible_panel')
     // The settled title still names the round and counts the calls.
     const done: any = renderMinimalProgressCard(t, { ...factsMinimal, endedAt: 3_000 })
-    expect(done.header.title.content).toBe(t.turnCardTitleDone(4, 4, 0, '3.0s'))
+    expect(done.header.title.content).toBe(t.turnCardTitleDone(4, 2, 0, '3.0s'))
   })
 
   it('shows the minimal card\'s reply in full: no truncation, line breaks kept', () => {

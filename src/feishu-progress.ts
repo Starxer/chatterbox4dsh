@@ -879,8 +879,8 @@ export function renderProgressCard(
   const title = running
     ? t.turnCardTitleRunning(total)
     : facts.failedTurn
-      ? t.turnCardTitleFailed(facts.turn ?? 0, facts.calls, total)
-      : t.turnCardTitleDone(facts.turn ?? 0, facts.calls, facts.failed, total)
+      ? t.turnCardTitleFailed(facts.turn ?? 0, facts.steps.length, total)
+      : t.turnCardTitleDone(facts.turn ?? 0, facts.steps.length, facts.failed, total)
   const template = running ? 'grey' : facts.failedTurn ? 'red' : 'green'
 
   // This card owns the turn from `segmentFrom` on: an earlier card — one that is
@@ -1038,8 +1038,8 @@ export function renderMinimalProgressCard(
   const title = running
     ? t.turnCardTitleRunning(total)
     : facts.failedTurn
-      ? t.turnCardTitleFailed(facts.turn ?? 0, facts.calls, total)
-      : t.turnCardTitleDone(facts.turn ?? 0, facts.calls, facts.failed, total)
+      ? t.turnCardTitleFailed(facts.turn ?? 0, facts.steps.length, total)
+      : t.turnCardTitleDone(facts.turn ?? 0, facts.steps.length, facts.failed, total)
   const template = running ? 'grey' : facts.failedTurn ? 'red' : 'green'
   const elements: object[] = []
   for (const step of facts.steps.slice(facts.segmentFrom ?? 0)) {
@@ -2234,6 +2234,6 @@ function renderTitle(t: Translations, facts: ProgressFacts): string {
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
   if (facts.endedAt === undefined) return t.turnCardTitleRunning(total)
-  if (facts.failedTurn) return t.turnCardTitleFailed(facts.turn ?? 0, facts.calls, total)
-  return t.turnCardTitleDone(facts.turn ?? 0, facts.calls, facts.failed, total)
+  if (facts.failedTurn) return t.turnCardTitleFailed(facts.turn ?? 0, facts.steps.length, total)
+  return t.turnCardTitleDone(facts.turn ?? 0, facts.steps.length, facts.failed, total)
 }

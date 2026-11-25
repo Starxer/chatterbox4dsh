@@ -3528,8 +3528,9 @@ describe('turn progress card wiring', () => {
     expect(md).toContain(t.turnCardCallUnrun('edit'))
     // It is not a tool row and not a tool count: only `read` ran.
     expect(md).not.toContain('`edit` · 4')
-    expect(last.header.title.content).toMatch(/^⚙️ 第 \d+ 轮失败 · 1 个工具 · /)
-    expect(last.header.title.content).not.toContain('2 个工具')
+    // The title counts the turn's STEPS now (two of them), never its tools.
+    expect(last.header.title.content).toMatch(/^⚙️ 第 \d+ 轮失败 · 2 步 · /)
+    expect(last.header.title.content).not.toContain('个工具')
     streaming.stop()
   })
 

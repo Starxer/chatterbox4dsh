@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：回合卡结束标题改显示「本轮总步数」，不再显示工具数（`src/i18n.ts` / `src/feishu-progress.ts`，2026-11-25）
+
+- 使用者的要求：结束（动结）的回合卡标题不要写工具数，写本轮的**总步骤数**。
+- 现在：`⚙️ 第 N 轮 · 12 步 · 12.3s`（原来 `· 12 个工具 ·`），失败态 `⚙️ 第 N 轮失败 · 12 步 · 12.3s`；有失败工具时仍附 `· M 个失败`。步数取这一轮 `facts.steps.length`（含被折叠/分页到别的卡上的步骤），所以任何一张分页卡都报同一轮的总步数。
+- 没有回合号时仍是省略式（`⚙️ · 12 步 · …`），不写「第 0 轮」。
+- 测试：更新 3 处标题断言（步数语义）；全量 83 文件 / 1,664 用例、typecheck、build、privacy 全绿。
+
+**English**: The finished turn-card title now shows the turn's TOTAL STEP count instead of the tool count: `⚙️ 第 N 轮 · 12 步 · 12.3s` / `Turn 12 · 12 steps · 12.3s` (failed: `第 N 轮失败 · 12 步`), keeping the `· M 个失败` marker when calls failed. The count is `facts.steps.length` for the whole turn, so every paginated card reports the same total; a card that never learned the round number still omits it rather than printing "第 0 轮". Three title assertions updated; 83 files / 1,664 tests, typecheck, build and privacy gate green.
+
 ### 修复：重启打断回合收尾时，回复卡与兜底回复卡重复（`src/feishu-streaming.ts`，2026-11-25）
 
 - 使用者现场（16:47）：一轮末尾收到**两张卡片，正文完全一样** —— 一张是答案卡，一张是 channel 的兜底回复卡。
