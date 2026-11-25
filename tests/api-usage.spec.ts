@@ -17,9 +17,22 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+/**
+ * A wall-clock time in the runner's own timezone.
+ *
+ * The counter keys its buckets by LOCAL date (the Feishu console reports local
+ * months), so the fixtures must be built the same way. A literal `+08:00` offset
+ * reads as the same instant everywhere, but its local day/month differs between
+ * a UTC+8 developer machine and a UTC CI runner — that made the rollover tests
+ * pass locally and fail in CI.
+ */
+function local(year: number, month: number, day: number, hour = 0, minute = 0): number {
+  return new Date(year, month - 1, day, hour, minute).getTime()
+}
+
 /** A clock the test can move. */
-function clock(start: string) {
-  let current = Date.parse(start)
+function clock(start: number) {
+  let current = start
   return {
     now: () => current,
     advance(ms: number): void { current += ms },
@@ -28,7 +41,7 @@ function clock(start: string) {
 
 describe('api usage counter', () => {
   it('starts empty and counts one increment per call', () => {
-    const usage = createApiUsage({ now: () => Date.parse('2026-11-20T10:00:00+08:00'), flushDelayMs: 0 })
+    const usage = createApiUsage({ now: () => local(2026, 11, 20, 10, 0), flushDelayMs: 0 })
     expect(usage.snapshot()).toMatchObject({ month: 0, today: 0, labels: [] })
     usage.record('send message')
     usage.record('send message')
@@ -44,7 +57,7 @@ describe('api usage counter', () => {
   })
 
   it('keeps at most three labels in a snapshot, busiest first', () => {
-    const usage = createApiUsage({ now: () => Date.parse('2026-11-20T10:00:00+08:00'), flushDelayMs: 0 })
+    const usage = createApiUsage({ now: () => local(2026, 11, 20, 10, 0), flushDelayMs: 0 })
     for (const [label, times] of [['a', 5], ['b', 3], ['c', 2], ['d', 1]] as const) {
       for (let index = 0; index < times; index += 1) usage.record(label)
     }
@@ -53,7 +66,7 @@ describe('api usage counter', () => {
   })
 
   it('rolls the day bucket over without touching the month', () => {
-    const time = clock('2026-11-20T23:59:00+08:00')
+    const time = clock(local(2026, 11, 20, 23, 59))
     const usage = createApiUsage({ now: time.now, flushDelayMs: 0 })
     usage.record('send message')
     time.advance(2 * 60_000)
@@ -64,7 +77,7 @@ describe('api usage counter', () => {
   })
 
   it('resets the month (and its labels) when the month changes', () => {
-    const time = clock('2026-11-30T23:00:00+08:00')
+    const time = clock(local(2026, 11, 30, 23, 0))
     const usage = createApiUsage({ now: time.now, flushDelayMs: 0 })
     usage.record('send message')
     time.advance(2 * 60 * 60_000)
@@ -74,12 +87,12 @@ describe('api usage counter', () => {
 
   it('persists across instances, including the day history', () => {
     const file = tempFile()
-    const first = createApiUsage({ file, now: () => Date.parse('2026-11-20T10:00:00+08:00'), flushDelayMs: 0 })
+    const first = createApiUsage({ file, now: () => local(2026, 11, 20, 10, 0), flushDelayMs: 0 })
     first.record('send message')
     first.record('upload card image')
     first.dispose()
 
-    const second = createApiUsage({ file, now: () => Date.parse('2026-11-20T11:00:00+08:00'), flushDelayMs: 0 })
+    const second = createApiUsage({ file, now: () => local(2026, 11, 20, 11, 0), flushDelayMs: 0 })
     expect(second.snapshot()).toMatchObject({ month: 2, today: 2 })
     const stored = JSON.parse(readFileSync(file, 'utf8')) as { days: Record<string, number>; labels: Record<string, number> }
     expect(stored.days['2026-11-20']).toBe(2)
@@ -89,7 +102,7 @@ describe('api usage counter', () => {
 
   it('writes pending counts on dispose even with a pending debounce', async () => {
     const file = tempFile()
-    const usage = createApiUsage({ file, now: () => Date.parse('2026-11-20T10:00:00+08:00') })
+    const usage = createApiUsage({ file, now: () => local(2026, 11, 20, 10, 0) })
     usage.record('send message')
     // The debounce has not fired yet; dispose must not lose the count.
     usage.dispose()
@@ -104,7 +117,7 @@ describe('api usage counter', () => {
     const file = tempFile()
     writeFileSync(file, '{not json', 'utf8')
     const log = vi.fn()
-    const usage = createApiUsage({ file, now: () => Date.parse('2026-11-20T10:00:00+08:00'), log, flushDelayMs: 0 })
+    const usage = createApiUsage({ file, now: () => local(2026, 11, 20, 10, 0), log, flushDelayMs: 0 })
     expect(usage.snapshot()).toMatchObject({ month: 0, today: 0 })
     expect(log).toHaveBeenCalledTimes(1)
     expect(readdirSync(join(file, '..')).some(name => name.includes('.corrupt-'))).toBe(true)
@@ -117,13 +130,13 @@ describe('api usage counter', () => {
     const file = tempFile()
     const days: Record<string, number> = {}
     for (let index = 0; index < 60; index += 1) {
-      const date = new Date(Date.parse('2026-11-20T00:00:00Z') - index * 86_400_000)
+      const date = new Date(local(2026, 11, 20) - index * 86_400_000)
       days[`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`] = 1
     }
     writeFileSync(file, JSON.stringify({
       version: 1, monthKey: '2026-11', month: 60, dayKey: '2026-11-20', today: 1, days, labels: {},
     }), 'utf8')
-    const usage = createApiUsage({ file, now: () => Date.parse('2026-11-20T10:00:00+08:00'), flushDelayMs: 0 })
+    const usage = createApiUsage({ file, now: () => local(2026, 11, 20, 10, 0), flushDelayMs: 0 })
     usage.record('send message')
     usage.dispose()
     const stored = JSON.parse(readFileSync(file, 'utf8')) as { days: Record<string, number> }
@@ -131,7 +144,7 @@ describe('api usage counter', () => {
   })
 
   it('formats local-time keys', () => {
-    const at = Date.parse('2026-11-20T09:30:00+08:00')
+    const at = local(2026, 11, 20, 9, 30)
     expect(monthKeyOf(at)).toBe('2026-11')
     expect(dayKeyOf(at)).toBe('2026-11-20')
   })

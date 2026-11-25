@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：`api-usage` 的日/月跨桶测试依赖时区，CI（UTC）必红（`tests/api-usage.spec.ts`，2026-11-25）
+
+- 首次推送 57 个积压提交后 CI 三个 job 全在 `Run tests` 失败：`tests/api-usage.spec.ts` 2 条（`rolls the day bucket over…` / `resets the month…`）；本机（UTC+8）同一批测试全绿。
+- **根因**：计数器按**本地日期**分桶（`monthKeyOf` / `dayKeyOf` 用 `getFullYear` / `getMonth` / `getDate`，因为飞书控制台报的是本地月），而测试夹具写的是固定偏移的**瞬时时刻**（`Date.parse('2026-11-20T23:59:00+08:00')`）。同一瞬时在 UTC+8 是 11-20 23:59，在 UTC 是 11-20 15:59 —— 夹具往前推 2 分钟/2 小时，在 UTC 上根本没跨过本地午夜/月初，于是「跨桶」断言必失败。本机时区恰好与夹具偏移一致，所以本地永远看不到。
+- **修法**：夹具改用**本地时间构造器** `new Date(y, m-1, d, h, min)`（新增 `local()` 助手，`clock()` 改为接收毫秒数），跑在哪个时区就代表哪个时区的墙上时间 —— 与生产口径同源，因此任何时区都成立。
+- 验证：`TZ=UTC` / `TZ=Asia/Shanghai` / `TZ=America/Los_Angeles` / `TZ=Pacific/Kiritimati` 四种时区各跑一遍全绿；`TZ=UTC npm test` 全量 83 文件 / 1,664 用例、typecheck、privacy 全绿。
+- 纯测试改动，不影响任何运行时行为。
+
+**English**: CI went red on the first push of the 57 backlog commits: two `tests/api-usage.spec.ts` rollover cases failed on the UTC runners while passing locally (UTC+8). The counter keys day/month buckets by LOCAL date (the Feishu console reports local months), but the fixtures pinned a fixed offset (`…T23:59:00+08:00`): the same instant is 23:59 local in UTC+8 and 15:59 local in UTC, so advancing 2 minutes/2 hours never crossed local midnight / the month boundary on CI. Fixtures now use local-time constructors (`new Date(y, m-1, d, h, min)` via a new `local()` helper, and `clock()` takes milliseconds), the same convention the production code uses, so they hold in any timezone. Verified green under UTC, UTC+8, UTC−8 and UTC+14, plus `TZ=UTC npm test` (83 files / 1,664 tests), typecheck and the privacy gate. Test-only change.
+
 ### 文档：同步「极简模式」与这一批展示改动的现状口径（`docs/architecture.md` / `docs/display-modes-design.md` / `docs/README.md` / `README.md`，2026-11-25）
 
 - `docs/architecture.md`：展示模型从「`compact` 一个模式 + 正交开关」更新为**三模式**（极简/紧凑/详细）；`/display` 卡按模式裁剪哪些行；回合过程卡章节改写成 `compact / minimal` 共用，补齐极简的懒开卡、`💬`/`✅❌⏳` 两类行、全文不截断、媒体走同一 hydrator、PTC 只渲染程序行、不按时钟刷新、结束标题「第 N 轮 · 总步数」、历史步骤的折叠/分页规则（含 16 KB 字节安全阀与换页前补写最终快照）；Turn Complete 改为「仅详细模式发」；后台任务面板任务列改为模型写的 description。
