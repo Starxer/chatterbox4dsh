@@ -262,6 +262,13 @@ export interface ProgressStep {
    */
   note?: string | undefined
   /**
+   * The FULL assistant text of the narration step, untruncated and preserving
+   * its line breaks. Only the `minimal` card renders it: that card shows what
+   * the model SAID in full (the operator's rule, 2026-11-25), while the compact
+   * card keeps the condensed one-line `note`. Absent when the step said nothing.
+   */
+  reply?: string | undefined
+  /**
    * This step's thinking chain (the whole thing, not a digest), set by
    * {@link ProgressCardsHandle.stepReasoning} from `assistant/message`.
    *
@@ -1032,7 +1039,14 @@ export function renderMinimalProgressCard(t: Translations, facts: ProgressFacts)
   const template = running ? 'grey' : facts.failedTurn ? 'red' : 'green'
   const elements: object[] = []
   for (const step of facts.steps.slice(facts.segmentFrom ?? 0)) {
-    const reply = step.note?.trim()
+    // The FULL reply, not the condensed one-liner: this card exists to show what
+    // the model said, so it is not truncated (2026-11-25, the operator's rule).
+    // Neutralized anyway: a model-written image/link would reject the WHOLE card
+    // (关键坑 39), and that is not truncation, it is protection.
+    const rawReply = step.reply?.trim()
+    const reply = rawReply === undefined || rawReply === ''
+      ? step.note?.trim()
+      : neutralizeCardMarkdown(rawReply)
     const lines: string[] = []
     for (const tool of step.tools) {
       const icon = tool.elapsed === undefined ? '⏳' : tool.isError === true ? '❌' : '✅'
@@ -1527,11 +1541,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
    */
   const pageOverflows = (facts: ProgressFacts): boolean => {
     try {
-      const card = renderProgressCard(getTranslations(), facts, rowStyle(), {
-        thinking: deps.showReasoning?.() ?? true,
-        foldSteps: false,
-      })
-      return Buffer.byteLength(JSON.stringify(card), 'utf8') > PROGRESS_PAGE_MAX_BYTES
+      // Render through the SAME path the card uses, so the number is the bytes
+      // Feishu would actually receive (the minimal card has its own shape and
+      // untruncated replies).
+      return Buffer.byteLength(JSON.stringify(renderCard(facts)), 'utf8') > PROGRESS_PAGE_MAX_BYTES
     } catch {
       // A render that throws (malformed model text reaching a helper) must not
       // take the rotation decision down with it; the step count still bounds
@@ -1618,11 +1631,15 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     // budget — whichever comes first. The step count alone is not safe: ten
     // steps each carrying a 4 KB thinking body pass Feishu's ~30 KB card limit
     // and the card is refused whole (关键坑 42).
-    if (deps.minimal?.() !== true
-      && deps.foldSteps?.() === false
-      && (turn.facts.steps.length - (turn.facts.segmentFrom ?? 0) >= COMPACT_PAGE_STEPS
-        || pageOverflows(turn.facts))) {
-      rotatePage(sessionId, turn, at)
+    if (turn.facts.steps.length > (turn.facts.segmentFrom ?? 0)) {
+      const minimal = deps.minimal?.() === true
+      const tooManySteps = !minimal
+        && deps.foldSteps?.() === false
+        && turn.facts.steps.length - (turn.facts.segmentFrom ?? 0) >= COMPACT_PAGE_STEPS
+      // A minimal page has no step-count cap (its lines are few), but a long
+      // reply must not build a card Feishu would refuse whole: the byte budget
+      // is checked in BOTH paginated shapes, at step boundaries only.
+      if (tooManySteps || pageOverflows(turn.facts)) rotatePage(sessionId, turn, at)
     }
     turn.facts.steps.push({ step, startedAt: at, tools: [] })
     turn.facts.now = at
@@ -1692,8 +1709,14 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       target = { step, startedAt: at, tools: [] }
       facts.steps.push(target)
     }
-    if (target.note === note) return
+    // The compact card renders the condensed one-liner; the minimal card shows
+    // the whole text, so both are kept (the raw text is also the source the
+    // condensed form came from — no second parse).
+    const reply = text.trim()
+    if (target.note === note && target.reply === reply) return
     target.note = note
+    if (reply !== '') target.reply = reply
+    else delete target.reply
     facts.now = at
     const entry = cards.get(sessionId)
     if (entry !== undefined) {

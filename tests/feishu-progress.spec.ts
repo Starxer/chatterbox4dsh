@@ -432,6 +432,25 @@ describe('renderProgressCard', () => {
     expect(done.header.title.content).toBe(t.turnCardTitleDone(4, 4, 0, '3.0s'))
   })
 
+  it('shows the minimal card\'s reply in full: no truncation, line breaks kept', () => {
+    // The compact card condenses a narration to one 80-char row; the minimal card
+    // shows what the model said, complete (2026-11-25, the operator's rule).
+    const long = '第一行：我要先确认后台任务面板的渲染路径，然后再改任务列。\n第二行：另外要补一条回归测试。'
+    const card: any = renderMinimalProgressCard(t, facts({
+      endedAt: undefined,
+      steps: [{ step: 1, startedAt: 0, note: condenseStepNote(long), reply: long, tools: [] }],
+      calls: 0,
+      now: 100,
+    }))
+    const md = mdOf(card)
+    expect(md).toContain('第一行：我要先确认后台任务面板的渲染路径，然后再改任务列。')
+    expect(md).toContain('第二行：另外要补一条回归测试。')
+    // No ellipsis from a cap: the whole text is there.
+    expect(md).not.toContain('…')
+    // It rides behind the same 💬 marker as the condensed form.
+    expect(md.startsWith('💬 ')).toBe(true)
+  })
+
   it('gives an unbalanced reply line its own element in the minimal card', () => {
     // 关键坑 60: an odd `**` would pair with the next element's line.
     const factsMinimal = facts({
@@ -1598,6 +1617,25 @@ describe('createProgressCards', () => {
     const writes = channel.updateCardInstance.mock.calls.length
     await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 6)
     expect(channel.updateCardInstance.mock.calls.length).toBe(writes)
+  })
+
+  it('pages a minimal turn on the byte budget when full replies get long', async () => {
+    // Minimal never pages on the step count, but an untruncated reply must not
+    // build a card Feishu would refuse whole: the byte check applies here too,
+    // and only at step boundaries (a step is never split).
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ minimal: () => true })
+    let created = 0
+    channel.createCardInstance.mockImplementation((async () => `card-${++created}`) as any)
+    cards.beginTurn(chat, 's1', 0)
+    const long = '说'.repeat(2_000) // ~6 KB of UTF-8 per reply
+    for (let step = 1; step <= 4; step++) {
+      cards.stepStarted('s1', step, step * 1_000)
+      cards.stepNote('s1', step, long, step * 1_000 + 100)
+      cards.stepEnded('s1', step * 1_000 + 900)
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(created).toBeGreaterThanOrEqual(2)
   })
 
   it('opens a NEW card after another module posts one, showing only new rows', async () => {

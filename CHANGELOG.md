@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 变更：极简模式的中间回复完整显示，不再截断（`src/feishu-progress.ts`，2026-11-25）
+
+- 使用者的要求：极简模式里的中间回复不该截断，要完整展示。
+- 实现：`ProgressStep` 新增 `reply`（这一步 assistant 的**全文**，保留换行）；`stepNote` 同时存两份 —— 紧凑卡用的 `note`（压成一行、80 字上限）与极简卡用的 `reply`（原文）。极简卡的 `💬` 行改为渲染 `reply`，多行原样保留、不再加省略号。
+- 仍做**防护性中和**（`neutralizeCardMarkdown`，图片/链接语法改写成文本）：那不是截断，是避免一条模型写的图片引用让整张卡被拒（关键坑 39）。
+- 卡片字节安全阀：极简**不按步数分页**，但长回复可能把卡撑过飞书上限，所以把现有的字节预算（16KB，`PROGRESS_PAGE_MAX_BYTES`）也用在极简上 —— 只在步边界检查/换页，一个步骤永远不被拆开。
+- 测试：+2（极简回复全文 + 换行保留且无 `…`；4 步各 ~6KB 回复时按字节换页）；全量 83 文件 / 1,659 用例、typecheck、build、privacy 全绿。
+
+**English**: A minimal card's reply line now shows the WHOLE narration: `ProgressStep.reply` keeps the untruncated assistant text (line breaks included) next to the condensed `note` the compact card uses, so the `💬` line loses its first-line-only + 80-char cap. Markdown is still neutralized (`neutralizeCardMarkdown`) as protection against a model-written image/link rejecting the whole card (关键坑 39) — that is not truncation. Minimal never pages on the step count, but since an untruncated reply can outgrow Feishu's card limit, the existing 16 KB byte budget now applies there too, checked at step boundaries only, so a step is never split. Two tests added; 83 files / 1,659 tests, typecheck, build and privacy gate green.
+
 ### 变更：极简模式定稿 —— 回复行用 💬 标注、工具行去掉 `↳` 箭头（`src/feishu-progress.ts`，2026-11-25）
 
 - 使用者确认的形状：中间回复前面加 **`💬`**（与紧凑卡旁白同一个对话符号），工具行**去掉 `↳` 箭头**、只留 `✅`/`❌`/`⏳` + description，两者同级（极简卡不保留层级）。
