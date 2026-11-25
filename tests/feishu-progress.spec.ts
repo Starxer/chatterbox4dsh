@@ -414,11 +414,14 @@ describe('renderProgressCard', () => {
     const md = mdOf(card)
     // The reply line, then one line per call: status marker + description (name
     // when the call wrote none).
-    expect(md).toContain('先看现有渲染逻辑')
-    expect(md).toContain('↳ ✅ 查渲染代码')
-    expect(md).toContain('↳ ❌ 找任务列')
-    expect(md).toContain('↳ ⏳ 跑单测')
-    expect(md).toContain('↳ ⏳ read')
+    // The reply is marked with the speech bubble; a call line has only its
+    // status marker (no arrow, no indent).
+    expect(md).toContain('💬 先看现有渲染逻辑')
+    expect(md).toContain('✅ 查渲染代码')
+    expect(md).toContain('❌ 找任务列')
+    expect(md).toContain('⏳ 跑单测')
+    expect(md).toContain('⏳ read')
+    expect(md).not.toContain('↳')
     // Nothing else of the compact card: no step headers, phases, tool names in
     // code spans, clocks or the thinking panel.
     expect(md).not.toContain(t.turnCardStepDetail(1, '1.0s'))
@@ -438,8 +441,8 @@ describe('renderProgressCard', () => {
     })
     const card: any = renderMinimalProgressCard(t, factsMinimal)
     const contents = (card.body.elements as any[]).map((el: any) => String(el.content))
-    expect(contents).toContain('没闭合的**加粗')
-    expect(contents).toContain('↳ ✅ 跑一下')
+    expect(contents).toContain('💬 没闭合的**加粗')
+    expect(contents).toContain('✅ 跑一下')
   })
 
   it('carries no button and no tappable row (the card must stay updatable)', () => {    // 关键坑 11: a card carrying buttons stops delivering callbacks after 2-3
@@ -1563,8 +1566,8 @@ describe('createProgressCards', () => {
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const md = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
     // Every step's reply and every description line, nothing of the compact card.
-    expect(md).toContain('第 12 步的说明')
-    expect(md).toContain('↳ ✅ 跑第 12 步')
+    expect(md).toContain('💬 第 12 步的说明')
+    expect(md).toContain('✅ 跑第 12 步')
     expect(md).not.toContain('▸')
     expect(md).not.toContain('第 7 轮')
   })

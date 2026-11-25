@@ -995,7 +995,15 @@ export function renderProgressCard(
  *
  * This is the whole card — no step headers, phase icons, durations, tool names,
  * arguments, results, PTC child rows, injection notices or thinking (the operator
- * picked this shape from a sample, 2026-11-25). The card HEADER is unchanged, so
+ * picked this shape from a sample, 2026-11-25). A reply line carries the `💬`
+ * marker; a call line carries only its status marker.
+ *
+ * **PTC (`run_code`) is supported by omission**: a program's own dispatched
+ * calls have no `description` of their own (their derived "what" is args-derived,
+ * not model prose), so only the program's OWN line is rendered — the parent row
+ * with its description and the status of the whole program. The alternative
+ * (naming inner tools without a sentence) would put machine noise back into the
+ * one card that exists to stay quiet. The card HEADER is unchanged, so
  * "still running / which round / how many calls / total time" still reads at a
  * glance, and pagination/folding do not apply: the reduced card is small by
  * construction.
@@ -1031,19 +1039,25 @@ export function renderMinimalProgressCard(t: Translations, facts: ProgressFacts)
       const description = tool.description === undefined || tool.description === ''
         ? ''
         : progressRowText(tool.description, PROGRESS_NOTE_MAX)
-      lines.push(`↳ ${icon} ${description === '' ? tool.name : description}`)
+      // No arrow and no indent: the status marker IS the line's only prefix
+      // (2026-11-25, the operator's call — the reduced card keeps no hierarchy).
+      lines.push(`${icon} ${description === '' ? tool.name : description}`)
     }
     if (reply !== undefined && reply !== '') {
+      // The reply line is marked with the SAME speech bubble the compact card
+      // uses for a step's narration, so "what the model said" and "what it ran"
+      // read apart at a glance.
+      const marked = t.turnCardStepNote(reply)
       // An unbalanced `**` / backtick in model prose would pair with the next
       // element's line and bold the wrong thing (关键坑 60): give it its own
       // element instead of joining.
       if (!inlineMarkupBalanced(reply)) {
-        elements.push({ tag: 'markdown', content: reply })
+        elements.push({ tag: 'markdown', content: marked })
       } else if (lines.length > 0) {
-        elements.push({ tag: 'markdown', content: [reply, ...lines].join('\n') })
+        elements.push({ tag: 'markdown', content: [marked, ...lines].join('\n') })
         continue
       } else {
-        elements.push({ tag: 'markdown', content: reply })
+        elements.push({ tag: 'markdown', content: marked })
         continue
       }
       if (lines.length > 0) elements.push({ tag: 'markdown', content: lines.join('\n') })

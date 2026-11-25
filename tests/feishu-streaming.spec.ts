@@ -2895,12 +2895,42 @@ describe('turn progress card wiring', () => {
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls","description":"看目录"}' })
     emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
     emit('turn/end', { reason: { kind: 'completed' } })
-    await vi.waitFor(() => { expect(mdOf(progressRenders(ch).at(-1)!)).toContain('↳ ✅ 看目录') })
+    await vi.waitFor(() => { expect(mdOf(progressRenders(ch).at(-1)!)).toContain('✅ 看目录') })
     const md = mdOf(progressRenders(ch).at(-1)!)
-    // The reply line plus the description marker — nothing of the compact card.
-    expect(md).toContain('先看一下代码结构')
+    // The reply line carries 💬; the call line only its status marker.
+    expect(md).toContain('💬 先看一下代码结构')
+    expect(md).not.toContain('↳')
     expect(md).not.toContain('▸')
     expect(md).not.toContain('🔧')
+    streaming.stop()
+  })
+
+  it('keeps PTC to the program line in the minimal mode', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'minimal' as DisplayMode })
+    emit('turn/start', { turn: 1 })
+    emit('step/start', { turn: 1, step: 1 })
+    emit('tool/call', {
+      callId: 'c1',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'await tools.read({path:"AGENTS.md"})', description: '检查本地环境' }),
+    })
+    emit('tool/ptc-dispatch-start', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'read', arguments: { path: 'AGENTS.md' },
+    })
+    emit('tool/ptc-dispatch', {
+      rootCallId: 'c1', parentCallId: 'c1', subCallId: 'c1:ptc:1', name: 'read', arguments: { path: 'AGENTS.md' },
+      isError: false, content: [{ type: 'text', text: 'ok' }],
+    })
+    emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => { expect(mdOf(progressRenders(ch).at(-1)!)).toContain('✅ 检查本地环境') })
+    const md = mdOf(progressRenders(ch).at(-1)!)
+    // A program's own calls have no sentence of their own, so the reduced card
+    // names the PROGRAM once — no arrow, no inner tool names.
+    expect(md).not.toContain('↳')
+    expect(md).not.toContain('read')
+    expect(md).not.toContain('run_code')
     streaming.stop()
   })
 

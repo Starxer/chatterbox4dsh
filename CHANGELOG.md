@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：极简模式定稿 —— 回复行用 💬 标注、工具行去掉 `↳` 箭头（`src/feishu-progress.ts`，2026-11-25）
+
+- 使用者确认的形状：中间回复前面加 **`💬`**（与紧凑卡旁白同一个对话符号），工具行**去掉 `↳` 箭头**、只留 `✅`/`❌`/`⏳` + description，两者同级（极简卡不保留层级）。
+- 每步一块：`💬 这一句模型说的话` 后面跟该步的工具行；没有叙述的步骤只显示工具行。
+- **PTC（`run_code`）适配已确认**：程序自己派发的内层调用没有属于它自己的 `description`（它的“what”是参数推导出来的，不是模型写的话），所以极简只渲染**程序那一行**（`run_code` 的 description + 整个程序的状态），不渲染内层工具名——往这张“只为安静存在”的卡里塞机器噪音没有意义。已加回归用例（内层 `read` 不出现、无 `↳`）。
+- 测试：极简渲染/控制器/streaming 断言全部改为 `💬 …` / `✅ …`，并 +1 条 PTC 极简用例；全量 83 文件 / 1,657 用例、typecheck、build、privacy 全绿。
+
+**English**: Final shape of the minimal card: a reply line is marked with **`💬`** (the same bubble the compact card uses for narration), and a call line loses the `↳` arrow — just its `✅`/`❌`/`⏳` marker plus the description. No hierarchy is kept on this card. PTC support is confirmed by omission: a program's dispatched calls have no `description` of their own, so only the `run_code` line renders (its description and the program's overall status); inner tool names would be machine noise on the one card built to stay quiet. A regression test covers the PTC shape. 83 files / 1,657 tests, typecheck, build and privacy gate green.
+
 ### 修正：极简模式下 `/display` 隐藏「耗时刷新」等所有不起作用的项（`src/feishu-display.ts` / `src/commands.ts`，2026-11-25）
 
 - 使用者的意见：极简模式既然不按固定间隔刷新，`/display` 卡上的「耗时刷新」就不该出现。
