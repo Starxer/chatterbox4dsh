@@ -1421,6 +1421,72 @@ describe('createProgressCards', () => {
     expect(tagsOf(page2)).not.toContain('collapsible_panel')
   })
 
+  it('flushes a page\'s final state before opening the next one', async () => {
+    // The operator's report (2026-11-25): the LAST step of every page looked
+    // unfinished and then a new card appeared. The rotation happens at the next
+    // `step/start`, milliseconds after the previous `step/end`, so the write
+    // carrying that step's settled state was still pending in the throttle —
+    // and cancelling it left the page frozen mid-step.
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ foldSteps: () => false })
+    let created = 0
+    channel.createCardInstance.mockImplementation((async () => `card-${++created}`) as any)
+    const latest = (index: number): any => {
+      const id = `card-${index + 1}`
+      const writes = channel.updateCardInstance.mock.calls.filter((call: any[]) => call[0] === id)
+      return writes.length > 0
+        ? (writes.at(-1) as any[])[1]
+        : (channel.createCardInstance.mock.calls[index] as any[])[0]
+    }
+    cards.beginTurn(chat, 's1', 0)
+    for (let step = 1; step <= 10; step++) {
+      cards.stepStarted('s1', step, step * 1_000)
+      cards.stepEnded('s1', step * 1_000 + 900)
+    }
+    // No timer advanced: every settled state is still pending.
+    expect(created).toBe(1)
+    cards.stepStarted('s1', 11, 11_000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(created).toBe(2)
+    // The frozen page was flushed with the SETTLED last step, not with whatever
+    // happened to be on screen when the rotation interrupted it.
+    const page1 = latest(0)
+    expect(mdOf(page1)).toContain(t.turnCardStepDetail(10, '900ms'))
+    expect(mdOf(page1)).not.toContain(t.turnCardStepDetail(11, '0ms'))
+    await cards.finish('s1', 12_000, false)
+    const finished = latest(0)
+    expect(finished.header.template).toBe('green')
+    expect(mdOf(finished)).toContain(t.turnCardStepDetail(10, '900ms'))
+  })
+
+  it('pages early when a page would outgrow the card byte budget', async () => {
+    // Ten steps each holding the full 4 KB thinking body are ~40 KB of card
+    // JSON: Feishu refuses the whole card (关键坑 42), so the byte budget has to
+    // be able to end a page before the step count does.
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ foldSteps: () => false })
+    let created = 0
+    channel.createCardInstance.mockImplementation((async () => `card-${++created}`) as any)
+    const latest = (index: number): any => {
+      const id = `card-${index + 1}`
+      const writes = channel.updateCardInstance.mock.calls.filter((call: any[]) => call[0] === id)
+      return writes.length > 0
+        ? (writes.at(-1) as any[])[1]
+        : (channel.createCardInstance.mock.calls[index] as any[])[0]
+    }
+    cards.beginTurn(chat, 's1', 0)
+    const big = '思'.repeat(1_400) // ~4.2 KB of UTF-8, capped to the 4 KB panel budget
+    for (let step = 1; step <= 9; step++) {
+      cards.stepStarted('s1', step, step * 1_000)
+      cards.stepReasoning('s1', step, big, step * 1_000)
+      cards.stepEnded('s1', step * 1_000 + 900)
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    // Nine steps would still be ONE page under the step-count rule alone.
+    expect(created).toBeGreaterThanOrEqual(2)
+    expect(mdOf(latest(0))).not.toContain(t.turnCardStepDetail(9, '900ms'))
+  })
+
   it('opens a NEW card after another module posts one, showing only new rows', async () => {
     const interleave = createCardInterleave()
     const { channel, cards } = harness({ interleave })

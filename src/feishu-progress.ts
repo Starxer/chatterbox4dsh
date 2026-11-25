@@ -100,6 +100,24 @@ export const PROGRESS_MAX_FOLDED = 60
 export const PROGRESS_PAGE_MAX_ROWS = 60
 
 /**
+ * JSON byte budget of a PAGINATED card.
+ *
+ * A fixed step count alone is not safe: each step may carry a folded thinking
+ * body up to {@link PROGRESS_THINKING_MAX_BYTES} (4 KB) plus its rows, so ten
+ * such steps pass Feishu's ~30 KB card limit and the whole card is refused
+ * (关键坑 42). A page therefore also ends when its render passes this budget —
+ * whichever comes first, the step count or the bytes.
+ *
+ * 16 KB, not 24: the check runs at a step boundary and measures the page with
+ * the COMPLETED steps only, while the step that starts next still grows into it
+ * before the following boundary — up to 4 KB of thinking plus the rest of the
+ * {@link PROGRESS_PAGE_MAX_ROWS} row budget (~7 KB worst case). 16 + 11 stays
+ * under the ~30 KB refusal point; light pages never reach 16 KB, so the step
+ * count is still what ends them.
+ */
+export const PROGRESS_PAGE_MAX_BYTES = 16 * 1024
+
+/**
  * How often a still-running step repaints its elapsed clock. A step that settles
  * sooner never pays for a tick: the timer is dropped as soon as nothing on the
  * card is live any more (no tool waiting for its result and no stream frame
@@ -1402,6 +1420,28 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   }
 
   /**
+   * Whether the page rendered RIGHT NOW would exceed {@link PROGRESS_PAGE_MAX_BYTES}.
+   *
+   * Rendered from the same facts the card would use, so the answer is the bytes
+   * Feishu would actually receive. Called once per `step/start` in paginated
+   * mode only — one extra render per step, never per token.
+   */
+  const pageOverflows = (facts: ProgressFacts): boolean => {
+    try {
+      const card = renderProgressCard(getTranslations(), facts, rowStyle(), {
+        thinking: deps.showReasoning?.() ?? true,
+        foldSteps: false,
+      })
+      return Buffer.byteLength(JSON.stringify(card), 'utf8') > PROGRESS_PAGE_MAX_BYTES
+    } catch {
+      // A render that throws (malformed model text reaching a helper) must not
+      // take the rotation decision down with it; the step count still bounds
+      // the page.
+      return false
+    }
+  }
+
+  /**
    * Freeze the card of a FINISHED page and start the next page from scratch.
    *
    * Used only when the fold switch is off (`/display steps off`): the card shows
@@ -1418,11 +1458,27 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       // A write still in flight must not land the NEXT page's steps on this
       // card: freeze the facts it has rendered so far.
       entry.facts = { ...facts, steps: [...facts.steps] }
-      entry.superseded = true
       if (entry.timer !== undefined) {
         clearTimeout(entry.timer)
         entry.timer = undefined
       }
+      if (entry.runningTick !== undefined) {
+        clearTimeout(entry.runningTick)
+        entry.runningTick = undefined
+      }
+      entry.dirty = false
+      // Write the page's FINAL state now, before disarming it. The rotation
+      // happens at the very next `step/start`, milliseconds after the previous
+      // `step/end`, so the throttled write that carries that step's settled
+      // state (its elapsed time, its last tool row) is still pending — cancelling
+      // it is what left the last step of every page looking unfinished
+      // (2026-11-25, operator's report: "最后一个步骤显示不完整，没有更新最后
+      // 的状态，就发新的卡片"). `finish` would repaint the closed page, but only
+      // when the TURN ends, which can be minutes away.
+      entry.superseded = false
+      writeNow(entry)
+      // …and it never grows again: the write above is already in the chain.
+      entry.superseded = true
       const closed = closedSegments.get(sessionId) ?? []
       closed.push(entry)
       closedSegments.set(sessionId, closed)
@@ -1458,10 +1514,14 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       cards.delete(sessionId)
       closedSegments.delete(sessionId)
     }
-    // Paginated mode (`/display steps off`): nothing folds, so this page ends at
-    // COMPACT_PAGE_STEPS steps and the next step opens a new card below it.
+    // Paginated mode (`/display steps off`): nothing folds, so a page ends at
+    // COMPACT_PAGE_STEPS steps OR as soon as its render would outgrow the card
+    // budget — whichever comes first. The step count alone is not safe: ten
+    // steps each carrying a 4 KB thinking body pass Feishu's ~30 KB card limit
+    // and the card is refused whole (关键坑 42).
     if (deps.foldSteps?.() === false
-      && turn.facts.steps.length - (turn.facts.segmentFrom ?? 0) >= COMPACT_PAGE_STEPS) {
+      && (turn.facts.steps.length - (turn.facts.segmentFrom ?? 0) >= COMPACT_PAGE_STEPS
+        || pageOverflows(turn.facts))) {
       rotatePage(sessionId, turn, at)
     }
     turn.facts.steps.push({ step, startedAt: at, tools: [] })

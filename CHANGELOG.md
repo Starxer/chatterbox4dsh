@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：分页回合卡最后一步停在未完成状态就换卡；分页条件改为「步数或字节」先到（`src/feishu-progress.ts`，2026-11-25）
+
+- 使用者观察：每张分页卡**最后一个步骤显示不完整**，最后状态没更新就发了新卡片。
+- **根因**：换页发生在下一步的 `step/start`，而它距上一步的 `step/end` 只有几毫秒 —— 携带该步结算状态（结束耗时、最后一个工具结果）的那次写入还**压在写节流里没发出**，`rotatePage()` 清掉定时器并冻结卡片，于是那张卡停在「运行中」形态。`finish()` 会重画已经关闭的页，但要等**整轮结束**，可能是几分钟后。
+- **修法**：冻结前先**同步补写一次**该页的最终快照（绕过节流、只此一次，之后照旧不再增长），并停掉该页的运行时钟；`turn/end` 的收尾重画不变。
+- **分页条件改为「先到先换」**：原来只看步数（10 步）。但每步的思考块上限 4 KB，10 步就是 ~40 KB，超过飞书 ~30 KB 的整卡上限，卡会被**整张拒收** —— 所以现在**步数满 10 或渲染字节超过 16 KB**（`PROGRESS_PAGE_MAX_BYTES`，按真实渲染的 JSON 算）就换页；两者都只在**步边界**判断，所以一个步骤不会被拆到两张卡上。
+- 测试：+2（换页时补写最后状态：不推计时器、第 11 步触发换页后旧卡上第 10 步是 `900ms` 结算态，且 `finish` 后仍保留；字节预算：9 步各带 4 KB 思考时提前换页）；全量 83 文件 / 1,645 用例、typecheck、build、privacy 全绿。
+
+**English**: Fixed the paginated turn card leaving its LAST step unfinished when the next page opened: the rotation happens at the next `step/start`, milliseconds after the previous `step/end`, so the throttled write carrying that step's settled state (elapsed time, last tool row) was still pending and got cancelled — the page froze mid-step until `turn/end` repainted it minutes later. `rotatePage()` now flushes the page's final snapshot once (throttle bypassed, then the card never grows again). The page trigger also changed from "10 steps" to **whichever comes first: 10 steps or a render over 24 KB** (`PROGRESS_PAGE_MAX_BYTES`) — ten steps each carrying the 4 KB thinking body are ~40 KB of card JSON, past Feishu's ~30 KB limit where the card is refused whole. Both checks run only at step boundaries, so a step is never split across cards. Two tests added; 83 files / 1,645 tests, typecheck, build and privacy gate green.
+
 ### 变更：回合卡标题不再写「本回合」，改成写第几轮（`src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-11-25）
 
 - 使用者的意见：「本回合」含糊不清，卡片标题要写清是第几轮。
