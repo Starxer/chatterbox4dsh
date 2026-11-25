@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY, DISPLAY_MODES,
-  isCompactToolRowStyle, parseCompactToolRow, parseDisplayMode, parseTranscriptView, PREVIEW_LENGTH_CHOICES,
+  foldsSummaryIntoAnswerCard, isCompactToolRowStyle, parseCompactToolRow, parseDisplayMode, parseTranscriptView, PREVIEW_LENGTH_CHOICES,
   resolveDisplayPolicy, resolveDisplaySettings, TRANSCRIPT_VIEWS,
 } from '../src/display-level.ts'
 
@@ -170,6 +170,14 @@ describe('turn-card step fold', () => {
     // both modes so the settings UI can read one source.
     expect(resolveDisplayPolicy({ transcriptView: 'detailed', stepsFold: false }).stepsFold).toBe(false)
     expect(DETAILED_POLICY.stepsFold).toBe(true)
+  })
+})
+
+describe('turn-summary placement', () => {
+  it('folds the summary into the answer card for minimal and compact only', () => {
+    expect(foldsSummaryIntoAnswerCard('minimal')).toBe(true)
+    expect(foldsSummaryIntoAnswerCard('compact')).toBe(true)
+    expect(foldsSummaryIntoAnswerCard('detailed')).toBe(false)
   })
 })
 

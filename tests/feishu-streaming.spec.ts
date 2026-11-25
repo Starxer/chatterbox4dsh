@@ -3216,6 +3216,29 @@ describe('turn progress card wiring', () => {
     streaming.stop()
   })
 
+  it('folds the turn summary into the minimal answer card too (no Turn Complete card)', async () => {
+    // `minimal` shares compact's topology: the few stats ride the answer card,
+    // the legacy Turn Complete card is not posted (2026-11-25).
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'minimal' as DisplayMode })
+    emit('turn/start')
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    emit('assistant/message', { usage: { inputTokens: 10, outputTokens: 5 } })
+    await tick(20)
+    emit('turn/end', { reason: { kind: 'completed' } })
+    const renders = (): any[] => [
+      ...(ch.updateCardInstance?.mock.calls ?? []).map(call => call[1] as any),
+      ...(ch.updateCard?.mock.calls ?? []).map(call => call[1] as any),
+      ...(ch.createCardInstance?.mock.calls ?? []).map(call => call[0] as any),
+    ]
+    await vi.waitFor(() => {
+      expect(renders().some(card => String(card?.header?.title?.content ?? '').startsWith(t.turnSummaryTitle)
+        && mdOf(card).includes('the answer'))).toBe(true)
+    })
+    streaming.stop()
+  })
+
   it('folds the turn summary into the compact answer card instead of a Turn Complete card', async () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })

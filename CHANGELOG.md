@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：极简模式不再发遗留的 Turn Complete 卡片，摘要折进答案卡（`src/display-level.ts` / `src/index.ts` / `src/feishu-streaming.ts`，2026-11-25）
+
+- 使用者的观察：极简模式还在发一张和详细模式一样的 Turn Complete 卡，那是历史遗留；问有没有更好的做法。
+- **更好的做法**就是紧凑模式早就在用的那套：`display-level.ts` 新增 `foldsSummaryIntoAnswerCard(mode)`（`minimal`/`compact` = true，`detailed` = false），通道与外部回合两处「要不要发 Turn Complete 卡」的判断都改走它。于是极简/紧凑一样：回合摘要（过滤后的统计行 + 模型/耗时/tok-s 等）**折进承载答案的那张卡**，不再多发一张 `✅ 第 N 轮完成` 卡片。
+- 只有 `detailed` 保留独立的 Turn Complete 卡（那是它的档位形态）。纯回答回合、长答案分片、以及「streaming 没发出答案卡」的兜底路径都沿用同一套折页逻辑（后者本来就把摘要拼到最后一张 reply 卡上）。
+- 测试：+2（`foldsSummaryIntoAnswerCard` 三档；streaming：极简纯回答回合的答案卡里带摘要标题、不另发卡）；全量 83 文件 / 1,663 用例、typecheck、build、privacy 全绿。
+
+**English**: The minimal mode still posted the legacy Turn Complete card, exactly like detailed. It now uses what compact already did: a `foldsSummaryIntoAnswerCard(mode)` predicate (`minimal`/`compact` = true, `detailed` = false) drives both the channel footer decision and the mirrored-external-turn one, so minimal and compact fold the filtered turn summary into the card that carries the answer instead of posting an extra `✅ turn complete` card. Only `detailed` keeps the separate card. Pure-answer turns, split answers and the fallback path where streaming's answer card never made it all follow the same folding rule. Two tests added; 83 files / 1,663 tests, typecheck, build and privacy gate green.
+
 ### 修正：极简回复里的图片/视频走既有的媒体内联管线，而不是降级成文字（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-25）
 
 - 使用者的指正：媒体（图片/视频/音频）内联早就做过了，不该因为补齐「不截断」又把它降级成文字。

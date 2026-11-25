@@ -41,7 +41,7 @@ import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
 import { sendStartupNoticeOnce } from './feishu-startup-notice.ts'
-import { resolveDisplayPolicy, resolveDisplaySettings } from './display-level.ts'
+import { foldsSummaryIntoAnswerCard, resolveDisplayPolicy, resolveDisplaySettings } from './display-level.ts'
 import { noteDeliveredFile, wasDeliveredFile } from './deliver-files.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
@@ -185,6 +185,15 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     toolOutputFull: currentSettings().toolOutputFull,
   })
   const currentRevision = () => settings.describe({ redactSecrets: true }).find(item => item.ns === namespace)?.revision ?? 0
+  /**
+   * Whether this mode folds the turn summary into the card that carries the
+   * answer instead of posting the legacy Turn Complete card.
+   *
+   * `compact` and `minimal` share that topology: fewest cards, and the stats
+   * belong to the answer the reader is already looking at. Only `detailed`
+   * keeps the separate footer card.
+   */
+  const summaryOnAnswerCard = (): boolean => foldsSummaryIntoAnswerCard(currentSettings().transcriptView)
   let apiUpdateDepth = 0
 
   // The open platform bills a monthly quota of API calls per app, and this
@@ -891,10 +900,10 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
         // through `present` (TODO O3). Read per turn so a settings write applies
         // to the very next turn without a remount.
         () => currentSettings().produceCard ?? DEFAULT_PRODUCE_CARD,
-        // `compact` folds its summary into the answer card's footer instead of
-        // posting a Turn Complete card, and moves the deliverable rows to their
-        // own titled card (`src/turn-summary.ts`).
-        () => currentSettings().transcriptView === 'compact',
+        // `compact` / `minimal` fold their summary into the answer card's footer
+        // instead of posting a Turn Complete card, and move the deliverable rows
+        // to their own titled card (`src/turn-summary.ts`).
+        summaryOnAnswerCard,
         // Every message `channel.ts` posts — the reply, an overflow
         // continuation, the Turn Complete footer, a busy (steer/queue) notice, a
         // command result, an error line — ends the compact card's current
@@ -1297,8 +1306,8 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       // path's cards, so it goes through the same hydrator.
       hydrateCard: async (card, workspace) => cardImages.hydrate(card, workspace === undefined ? {} : { workspace }),
       enabled: () => currentSettings().mirrorExternalTurns ?? true,
-      // `compact`: no Turn Complete card; see `src/turn-summary.ts`.
-      compact: () => currentSettings().transcriptView === 'compact',
+      // `compact` / `minimal`: no Turn Complete card; see `src/turn-summary.ts`.
+      compact: summaryOnAnswerCard,
     })
     stopExternalTurns = externalTurns.stop
     consumeReasoning = streamingResult.consumeReasoning

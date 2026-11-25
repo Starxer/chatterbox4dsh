@@ -134,6 +134,18 @@ export type DisplayMode = 'minimal' | 'compact' | 'detailed'
 export const DISPLAY_MODES: readonly DisplayMode[] = ['minimal', 'compact', 'detailed']
 
 /**
+ * Whether this mode folds the turn summary into the card that carries the answer
+ * instead of posting the legacy Turn Complete card.
+ *
+ * `compact` and `minimal` share the "fewest cards" topology — the stats belong to
+ * the answer the reader is already looking at — and only `detailed` keeps the
+ * separate footer card.
+ */
+export function foldsSummaryIntoAnswerCard(mode: DisplayMode): boolean {
+  return mode !== 'detailed'
+}
+
+/**
  * What the retired LEVEL NAMES mean now.
  *
  * The four levels are gone: the operator sets the mode (card topology) and the
