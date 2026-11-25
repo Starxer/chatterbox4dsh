@@ -190,9 +190,9 @@ export const zhCommandTranslations: CommandTranslations = {
   displayFoldSet: name => `📇 思考块已设为「${name}」。`,
   displayFoldUsage: '用法：`/display fold on|off`（on = 折叠，off = 平铺）',
   displayStepsFoldLabel: '回合卡步骤',
-  displayStepsFoldName: folded => folded ? '折叠之前的步骤' : '每 10 步一张卡',
+  displayStepsFoldName: folded => folded ? '只展开最近 5 步' : '每 10 步一张新卡',
   displayStepsFoldSet: name => `📇 回合卡步骤已设为「${name}」。`,
-  displayStepsFoldUsage: '用法：`/display steps on|off`（on = 折叠之前的步骤；off = 不折叠，每 10 步一张新卡；仅紧凑模式）',
+  displayStepsFoldUsage: '用法：`/display steps on|off`（on = 最近 5 步展开、更早的折叠；off = 不折叠，每 10 步一张新卡；仅紧凑模式）',
   displayToolRowLabel: '工具行',
   displayToolRowName: style => ({
     tool: '仅工具',
@@ -355,9 +355,9 @@ export const enCommandTranslations: CommandTranslations = {
   displayFoldSet: name => `📇 Thinking block set to "${name}".`,
   displayFoldUsage: 'Usage: `/display fold on|off` (on = folded, off = flat)',
   displayStepsFoldLabel: 'Turn-card steps',
-  displayStepsFoldName: folded => folded ? 'fold earlier steps' : 'new card every 10 steps',
+  displayStepsFoldName: folded => folded ? 'only the newest 5 steps' : 'new card every 10 steps',
   displayStepsFoldSet: name => `📇 Turn-card steps set to "${name}".`,
-  displayStepsFoldUsage: 'Usage: `/display steps on|off` (on = fold earlier steps; off = no folding, a new card every 10 steps; compact only)',
+  displayStepsFoldUsage: 'Usage: `/display steps on|off` (on = newest 5 steps expanded, older ones folded; off = no folding, a new card every 10 steps; compact only)',
   displayToolRowLabel: 'Tool row',
   displayToolRowName: style => ({
     tool: 'Tool only',

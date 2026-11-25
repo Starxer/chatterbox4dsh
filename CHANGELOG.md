@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修正：回合卡步骤开关的文案说清「折叠的是哪些步骤」（`src/i18n.ts` / `src/commands-i18n.ts`，2026-11-25）
+
+- 使用者的反馈：「折叠之前的步骤」没写清楚 —— 到底折叠的是什么时候的步骤。
+- 现在两个选项直接写结论：**「只展开最近 5 步」**（卡面平铺最近 5 步，更早的步骤收进卡片顶部的折叠块，点开看全文）与 **「每 10 步一张新卡」**（完全不折叠）。提示行同时说明折叠块在卡片**顶部**、以及数字对应的两个常量（`PROGRESS_MAX_STEPS` = 5、`COMPACT_PAGE_STEPS` = 10）。
+- `/display steps` 的文本报告与用法行同步改口径。
+- 只改文案，行为不变；全量 83 文件 / 1,641 用例、typecheck、build、privacy 全绿。
+
+**English**: The switch used to read "fold earlier steps", which did not say WHICH steps fold. Both choices now state the outcome: **"only the newest 5 steps"** (those five stay flat on the card, every older step moves into a folded panel at the TOP of the card, tap to read) and **"new card every 10 steps"** (no folding at all). The hint names the panel's position and the two constants behind the numbers (`PROGRESS_MAX_STEPS` = 5, `COMPACT_PAGE_STEPS` = 10); the `/display steps` report and usage line were reworded to match. Copy only, no behavior change; 83 files / 1,641 tests, typecheck, build and privacy gate green.
+
 ### 新增：紧凑回合卡「之前的步骤」折叠开关，关掉就每 10 步一张新卡（`display-level.ts` / `config.ts` / `feishu-progress.ts` / `commands.ts` / `feishu-display.ts` / `i18n.ts` / `index.ts` / `feishu-streaming.ts`，2026-11-25）
 
 - 使用者的要求：紧凑模式的回合卡加一个开关，控制「之前的步骤是否锁起来（折叠）」；**关掉时每 10 个步骤一张卡片，满 10 步就发新卡**。
