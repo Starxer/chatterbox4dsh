@@ -755,17 +755,24 @@ export async function handleDisplayCommand(
   const raw = invocation.rawInput.trim().toLowerCase()
   if (raw === '') {
     const settings = display.getSettings()
+    // `minimal` renders no clock, no thinking and no tool payloads, so every row
+    // below the mode would be inert there — the report lists only the mode.
+    const others = settings.mode === 'minimal'
+      ? []
+      : [
+        `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`,
+        ...(settings.mode === 'compact' ? [t.displayFoldFixedCompact] : []),
+        ...(settings.mode === 'compact' ? [`${t.displayStepsFoldLabel}: ${t.displayStepsFoldName(display.getStepsFold())}`] : []),
+        `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
+        `${t.displayToolDetailLabel}: ${t.displayToolDetailName(settings.tools)}`,
+        `${t.displayOutputLabel}: ${t.displayOutputName(display.getOutputFull())}`,
+        `${t.displayLengthLabel}: ${t.displayLengthName('args', display.getPreviewChars('args'))}`
+          + ` · ${t.displayLengthName('result', display.getPreviewChars('result'))}`,
+        t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
+      ]
     const lines = [
       `${t.displayModeLabel}: ${t.displayModeName(settings.mode)}`,
-      `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`,
-      ...(settings.mode === 'compact' ? [t.displayFoldFixedCompact] : []),
-      ...(settings.mode === 'compact' ? [`${t.displayStepsFoldLabel}: ${t.displayStepsFoldName(display.getStepsFold())}`] : []),
-      `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
-      `${t.displayToolDetailLabel}: ${t.displayToolDetailName(settings.tools)}`,
-      `${t.displayOutputLabel}: ${t.displayOutputName(display.getOutputFull())}`,
-      `${t.displayLengthLabel}: ${t.displayLengthName('args', display.getPreviewChars('args'))}`
-        + ` · ${t.displayLengthName('result', display.getPreviewChars('result'))}`,
-      t.displayTickCurrent(parseElapsedRefreshSeconds(display.getElapsedRefreshSeconds())),
+      ...others,
     ]
     return { kind: 'success', text: `${t.displayHeader}\n${lines.join('\n')}` }
   }

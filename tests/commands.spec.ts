@@ -366,6 +366,28 @@ describe('/display command', () => {
     expect((await handleDisplayCommand(invocation('verbose'), translations, display)).kind).toBe('error')
   })
 
+  it('reports only the mode in the minimal mode, where the rest cannot apply', async () => {
+    const display = {
+      ...control(),
+      getSettings: () => ({
+        mode: 'minimal' as const,
+        reasoning: 'off' as const,
+        reasoningFold: true,
+        stepsFold: true,
+        tools: 'off' as const,
+        toolArgs: false,
+        toolResults: false,
+        toolOutputFull: false,
+      }),
+    }
+    const result = await handleDisplayCommand(invocation(''), translations, display)
+    expect(result.text).toContain('Mode: minimal')
+    // No inert rows: minimal has no clock, no thinking, no tool payloads.
+    for (const inert of ['refresh', 'Thinking block', 'Tool row', 'Tool detail', 'Output', 'Truncation']) {
+      expect(result.text).not.toContain(inert)
+    }
+  })
+
   it('switches to the minimal card mode by name', async () => {
     const display = control()
     const result = await handleDisplayCommand(invocation('minimal'), translations, display)

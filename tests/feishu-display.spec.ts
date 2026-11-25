@@ -250,8 +250,11 @@ describe('renderDisplayCard', () => {
     expect(lengthsOf(minimal)).toHaveLength(0)
     expect(toolRowsOf(minimal)).toHaveLength(0)
     expect(stepsFoldOf(minimal)).toHaveLength(0)
+    // No elapsed-refresh row either: minimal never repaints on a clock.
+    expect(buttonsOf(minimal).filter((b: any) => b.behaviors[0].value.tick !== undefined)).toHaveLength(0)
     // Sanity: the other modes still carry them.
     expect(lengthsOf(card)).toHaveLength(8)
+    expect(buttonsOf(card).filter((b: any) => b.behaviors[0].value.tick !== undefined)).toHaveLength(4)
   })
 
   it('offers the turn-card step behaviour only in the compact mode', () => {

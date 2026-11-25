@@ -253,14 +253,19 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       payload: { stepsFold },
     })))))
   }
-  elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: section(t.displayCardTickTitle, t.displayCardTickHint) })
-  const currentTick = parseElapsedRefreshSeconds(state.elapsedRefreshSeconds)
-  elements.push(buttonColumns(row(ELAPSED_REFRESH_SECONDS.map(seconds => ({
-    text: choice(`${seconds} ${t.displayCardTickUnit}`, seconds === currentTick),
-    active: seconds === currentTick,
-    payload: { tick: seconds },
-  })))))
+  // The elapsed-refresh interval drives the running clock on the COMPACT card
+  // (and the placeholder tick on step cards). The minimal card has neither, so
+  // the row would change nothing there — hide it rather than offer a no-op.
+  if (!minimal) {
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: section(t.displayCardTickTitle, t.displayCardTickHint) })
+    const currentTick = parseElapsedRefreshSeconds(state.elapsedRefreshSeconds)
+    elements.push(buttonColumns(row(ELAPSED_REFRESH_SECONDS.map(seconds => ({
+      text: choice(`${seconds} ${t.displayCardTickUnit}`, seconds === currentTick),
+      active: seconds === currentTick,
+      payload: { tick: seconds },
+    })))))
+  }
   elements.push({ tag: 'markdown', content: t.displayCardNote, text_size: 'notation' })
   return {
     schema: '2.0',

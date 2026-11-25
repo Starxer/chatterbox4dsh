@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 修正：极简模式下 `/display` 隐藏「耗时刷新」等所有不起作用的项（`src/feishu-display.ts` / `src/commands.ts`，2026-11-25）
+
+- 使用者的意见：极简模式既然不按固定间隔刷新，`/display` 卡上的「耗时刷新」就不该出现。
+- 卡上：极简模式隐藏**耗时刷新**那一节（它驱动的是紧凑卡的运行时钟；极简没有时钟、没有占位 tick），连同先前已隐藏的思考、截断长度、工具行、回合卡步骤，极简的 `/display` 卡只剩模式行。
+- 文本报告同样只列模式：极简下思考折叠、工具行、工具明细、输出截断、截断长度、耗时刷新这些行全部省略（它们在那里都没有作用）。
+- 测试：+2（极简卡无任何 `tick` 按钮、其它模式仍有 4 个；`/display` 无参报告在极简下只有模式行）；全量 83 文件 / 1,656 用例、typecheck、build、privacy 全绿。
+
+**English**: The minimal mode never repaints on a clock, so the `/display` card no longer offers the elapsed-refresh row there — together with the thinking, truncation-length, tool-row and step-fold rows it now shows only the mode row. The text report matches: in minimal it lists the mode alone, because every other row (thinking fold, tool row, tool detail, output truncation, preview lengths, refresh interval) would change nothing. Two tests added; 83 files / 1,656 tests, typecheck, build and privacy gate green.
+
 ### 修正：极简模式不再按固定间隔刷新，也不在没内容时开空卡（最省 API）（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-25）
 
 - 使用者的判断：极简模式应该是最省 API 调用的模式，不该有固定间隔刷新 —— 确认之前**确实会**：卡片一打开就按 `elapsedRefreshSeconds`（默认 5 秒）自刷新，另外阶段变化、思考链、注入提示这些「只服务于紧凑卡」的事件也都会各触发一次写入。
