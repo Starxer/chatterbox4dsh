@@ -17,7 +17,7 @@ import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { renderSupersededCard } from './card-supersede.ts'
 import type { CardTopicRegistry } from './card-topics.ts'
-import type { RecentModelEntry } from './recent-models.ts'
+import { RECENT_MODEL_PICKS, type RecentModelEntry } from './recent-models.ts'
 
 /** Minimal logger surface. */
 interface PluginLogger {
@@ -166,10 +166,11 @@ export function renderProviderSelectCard(
   const flowMarker = forNewSession ? { flow: 'new-session' as const } : {}
   // `/model` shows the current route MARKED inside the list (dropping it made
   // the whole section vanish when the memory held only that route). `/new`
-  // already shows it as its own tappable row above, so it is filtered out here
-  // instead of appearing twice — once dead.
-  const recentRows = (options.recent ?? []).filter(entry =>
-    !(forNewSession && entry.provider === current.provider && entry.model === current.model))
+  // already shows the default as its own tappable row above. Exclude it before
+  // applying the display limit so it does not take up a slot in the recent list.
+  const recentRows = (options.recent ?? [])
+    .filter(entry => !(forNewSession && entry.provider === current.provider && entry.model === current.model))
+    .slice(0, RECENT_MODEL_PICKS)
 
   return {
     schema: '2.0',
@@ -871,7 +872,10 @@ export function startFeishuModelSelect(deps: {
     const current = await resolveCurrent(chatMessage, flow)
     const providers = await discoverProviders()
     const lastUsed = await lastUsedRoute(chatMessage, current)
-    const recent = await recentModelChoices(chatMessage)
+    // /new lists the default separately; fetch one extra candidate so the
+    // renderer can exclude that route without leaving an empty recent slot.
+    const limit = RECENT_MODEL_PICKS + (flow === 'new-session' ? 1 : 0)
+    const recent = await recentModelChoices(chatMessage, limit)
     return renderProviderSelectCard(providers, current, flow, getTranslations(), { lastUsed, recent })
   }
 
@@ -1072,10 +1076,10 @@ export function startFeishuModelSelect(deps: {
   }
 
   /** The global+session shortlist for this chat (current route included, marked). */
-  async function recentModelChoices(chatMessage: ConversationMessage): Promise<readonly RecentModelEntry[]> {
+  async function recentModelChoices(chatMessage: ConversationMessage, limit: number): Promise<readonly RecentModelEntry[]> {
     const bridge = bridgeHolder.current
     if (bridge === undefined) return []
-    return bridge.recentModelChoices(chatMessage)
+    return bridge.recentModelChoices(chatMessage, limit)
   }
 
   /** Step 3: confirm button clicked, apply the selection. */

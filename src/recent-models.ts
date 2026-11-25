@@ -11,8 +11,8 @@
  * session also shows up in another's picker.
  *
  * Identity is `provider + model`: the reasoning effort is a property of the
- * most recent use, not a separate "recent model", otherwise three efforts of
- * the same model would fill the whole shortlist.
+ * most recent use, not a separate "recent model", so different efforts of
+ * the same model cannot fill multiple slots.
  *
  * @module @starxer/chatterbox4dsh/recent-models
  */
@@ -34,11 +34,11 @@ export interface ModelRoute {
   readonly reasoningEffort?: string
 }
 
-/** How many entries the persisted list keeps (the card shows the top 3). */
+/** How many entries the persisted list keeps. */
 export const RECENT_MODEL_MEMORY = 12
 
-/** How many entries the picker card offers. */
-export const RECENT_MODEL_PICKS = 3
+/** Maximum number of rows in the picker card's recent-model section. */
+export const RECENT_MODEL_PICKS = 5
 
 /** A persisted value is only used when it still has a usable route. */
 export function isRecentModelEntry(value: unknown): value is RecentModelEntry {

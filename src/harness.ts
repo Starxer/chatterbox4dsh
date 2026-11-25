@@ -8,7 +8,7 @@ import { conversationKey, parseChatKey, summarizeTurn, toSessionId } from './con
 import type { ConversationMessage } from './conversation.ts'
 import { collectCompletedTurns, type CompletedTurn, type TurnEventLike } from './turn-history.ts'
 import { collectRecentRoutes, type RecentRoute, type RouteEntry } from './route-history.ts'
-import { isRecentModelEntry, mergeRecentModels, rememberModel, topRecentModels, type ModelRoute, type RecentModelEntry } from './recent-models.ts'
+import { RECENT_MODEL_PICKS, isRecentModelEntry, mergeRecentModels, rememberModel, topRecentModels, type ModelRoute, type RecentModelEntry } from './recent-models.ts'
 import type { DomainName } from './config.ts'
 import { TurnFailureError, displayFailure } from './turn-failure.ts'
 import { noteDirectFeishuDispatch, noteFeishuPrompt } from './feishu-turn-origin.ts'
@@ -760,10 +760,10 @@ export class HarnessConversationService {
    * routes pushed into the global memory so later opens (in any chat) see them.
    *
    * @param message - chat coordinates.
-   * @param limit - how many entries to return (default 3).
+   * @param limit - how many entries to return (default {@link RECENT_MODEL_PICKS}).
    * @returns up to `limit` distinct routes, newest first.
    */
-  async recentModelChoices(message: ConversationMessage, limit = 3): Promise<readonly RecentModelEntry[]> {
+  async recentModelChoices(message: ConversationMessage, limit = RECENT_MODEL_PICKS): Promise<readonly RecentModelEntry[]> {
     const sessionRoutes = await this.recentRoutes(message, 6).catch(() => [] as readonly RecentRoute[])
     const merged = mergeRecentModels(this.recentModels, sessionRoutes, limit)
     // Backfill: the global memory only knows routes the plugin applied itself,
@@ -780,10 +780,10 @@ export class HarnessConversationService {
    * provider+model, excluding the route this Session already runs.
    *
    * @param exclude - current route of the Session asking (omitted = no filter).
-   * @param limit - how many entries to return (default 3).
+   * @param limit - how many entries to return (default {@link RECENT_MODEL_PICKS}).
    * @returns up to `limit` distinct routes.
    */
-  recentModelRoutes(exclude?: ModelRoute, limit = 3): readonly RecentModelEntry[] {
+  recentModelRoutes(exclude?: ModelRoute, limit = RECENT_MODEL_PICKS): readonly RecentModelEntry[] {
     return topRecentModels(this.recentModels, exclude, limit)
   }
 

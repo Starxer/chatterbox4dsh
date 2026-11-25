@@ -936,14 +936,16 @@ describe('HarnessConversationService', () => {
     expect(service2.recentModelRoutes({ provider: 'p1', model: 'm1' }, 3).map(item => item.model)).toEqual(['m2'])
   })
 
-  it('builds the picker shortlist from the global memory and keeps the current route', async () => {
+  it('returns the five newest model choices by default, with optional current-route exclusion', async () => {
     const f = fixture()
     const service = new HarnessConversationService(dependencies(f), { domain: 'feishu' })
-    service.rememberModelRoute({ provider: 'p1', model: 'm1' })
-    service.rememberModelRoute({ provider: 'p2', model: 'm2' })
+    for (let index = 1; index <= 7; index++) {
+      service.rememberModelRoute({ provider: 'p1', model: `m${index}` })
+    }
     const chat = { chatId: 'a', chatType: 'p2p' as const }
-    const choices = await service.recentModelChoices(chat, 3)
-    expect(choices.map(item => item.model)).toEqual(['m2', 'm1'])
+    const current = { provider: 'p1', model: 'm7' }
+    expect((await service.recentModelChoices(chat)).map(item => item.model)).toEqual(['m7', 'm6', 'm5', 'm4', 'm3'])
+    expect(service.recentModelRoutes(current).map(item => item.model)).toEqual(['m6', 'm5', 'm4', 'm3', 'm2'])
   })
 
   it('resolveChat carries the topic root so WebUI-driven cards stay in the topic', async () => {

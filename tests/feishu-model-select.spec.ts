@@ -405,6 +405,17 @@ describe('global recent-model rows', () => {
     expect(text).toContain(t.modelSelectNewSessionTitle)
   })
 
+  it('limits the /model card to the first five recent settings', () => {
+    const providers = [{ id: 'provA', name: 'A' }] as never
+    const current = { provider: 'provA', model: 'current' }
+    const recent = Array.from({ length: 7 }, (_, index) => ({
+      provider: 'provA', model: `a${index + 1}`, usedAt: 7 - index,
+    }))
+    const card = renderProviderSelectCard(providers, current, undefined, t, { recent }) as any
+    const rows = card.body.elements.filter((element: any) => element.tag === 'interactive_container')
+    expect(rows.map((row: any) => row.behaviors[0].value.model)).toEqual(['a1', 'a2', 'a3', 'a4', 'a5'])
+  })
+
   it('offers the previous-model quick action on the /new card too, with its own wording', () => {
     const providers = [{ id: 'provA', name: 'A' }, { id: 'provB', name: 'B' }] as never
     const current = { provider: 'provA', model: 'a1' }
@@ -529,18 +540,33 @@ describe('new-session model step', () => {
     handle.dispose()
   })
 
-  it('picks the route for the NEW session from a recent row, touching nothing running', async () => {
+  it('offers five recent rows besides the default and lets the fifth choose the new session model', async () => {
     const switchRoute = vi.fn(async () => ({ ok: true }))
-    const { fire, handle, onNewSessionConfirm, sessionController } = harness({ bridge: { switchRoute } })
+    const history = [
+      { provider: 'provA', model: 'a1', usedAt: 7 },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        provider: 'provB', model: `b${index + 1}`, reasoningEffort: 'high', usedAt: 6 - index,
+      })),
+    ]
+    const recentModelChoices = vi.fn(async (_chat: unknown, limit = 5) => history.slice(0, limit))
+    const { fire, cards, handle, onNewSessionConfirm, sessionController } = harness({
+      bridge: { recentModelChoices, switchRoute },
+    })
+    const chat = { chatId: 'oc_1', chatType: 'p2p' as const }
+    const sent = await handle.sendNewSessionProviderCard(chat)
+    expect(recentModelChoices).toHaveBeenCalledWith(chat, 6)
+    const rows = cards.at(-1).body.elements.filter((element: any) => element.tag === 'interactive_container')
+    const values = rows.map((row: any) => row.behaviors[0].value)
+    expect(values.map((value: any) => value.model)).toEqual(['a1', 'b1', 'b2', 'b3', 'b4', 'b5'])
     await fire({
-      chatId: 'oc_1',
-      messageId: 'm-1',
-      action: { value: { action: 'switch-recent', provider: 'provB', model: 'b1', effort: 'high', flow: 'new-session' } },
+      chatId: chat.chatId,
+      messageId: sent.messageId,
+      action: { value: values[5] },
     })
     expect(onNewSessionConfirm).toHaveBeenCalledTimes(1)
     const [, selection, messageId] = (onNewSessionConfirm as any).mock.calls[0]
-    expect(selection).toEqual({ provider: 'provB', model: 'b1', reasoningEffort: 'high' })
-    expect(messageId).toBe('m-1')
+    expect(selection).toEqual({ provider: 'provB', model: 'b5', reasoningEffort: 'high' })
+    expect(messageId).toBe(sent.messageId)
     // A `/new` pick is not a switch: neither the session-local override nor the
     // global default may move here (`关键坑 59`).
     expect(switchRoute).not.toHaveBeenCalled()

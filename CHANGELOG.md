@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 变更：模型卡的「最近使用」最多显示五条
+
+- `/model` 和 `/new` 的模型选择卡将最近模型设置的显示上限从 3 条提高到 5 条；排序、去重和推理等级的恢复方式不变。`/new` 的默认模型保留独立的可选行，不占最近记录的名额。
+
+**English**: The `/model` and `/new` pickers now show up to five recent model settings instead of three, with the same ordering, deduplication, and reasoning-effort handling. The separate default-model row in `/new` does not count toward the five.
+
 ### 清理：删除死模块与重复实现，格式化器收成一处（`src/format.ts`，2026-11-25）
 
 - **死代码**：删除 `src/feishu-toolcalls.ts`（253 行，`src/` 与 `tests/` 均无引用，从未被 `index.ts` 启动）；删除 7 个无引用导出（`CARD_MEDIA_MAX_FIELD`、`FEISHU_DOC_MAINTENANCE_SCOPES`、`FEISHU_MAX_FILE_MB`、`REASONING_PREVIEW_CHARS`、`SessionBridge`、`settleApprovalBySlash`、`threadChatKey`）。
