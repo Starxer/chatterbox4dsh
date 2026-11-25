@@ -119,8 +119,19 @@ export type ToolDetail = 'off' | 'summary' | 'full'
  */
 export const REASONING_PREVIEW_CHARS = 200
 
-/** The two card layouts: one turn card, or one card per step. */
-export type DisplayMode = 'compact' | 'detailed'
+/**
+ * The three card layouts:
+ *
+ * - `compact` — one turn card carrying the tool timeline, plus the answer card;
+ * - `minimal` — the same topology, but the process card shows ONLY each step's
+ *   reply line and its calls' `description` lines with a ✅/❌/⏳ marker: no step
+ *   headers, phases, durations, tool names, payloads or thinking;
+ * - `detailed` — one card per step.
+ */
+export type DisplayMode = 'minimal' | 'compact' | 'detailed'
+
+/** The modes in the order the `/display` card lists them. */
+export const DISPLAY_MODES: readonly DisplayMode[] = ['minimal', 'compact', 'detailed']
 
 /**
  * What the retired LEVEL NAMES mean now.
@@ -148,7 +159,7 @@ export type PreviewLengthField = keyof typeof PREVIEW_LENGTH_CHOICES
 
 /** One resolved set of display choices — what the renderers and the card read. */
 export interface DisplaySettings {
-  /** `compact` is a card TOPOLOGY (one turn card); `detailed` is per-step. */
+  /** Card topology; `minimal` and `compact` share the one-turn-card shape. */
   mode: DisplayMode
   reasoning: ReasoningDetail
   reasoningFold: boolean
@@ -176,6 +187,12 @@ export interface DisplayPolicy {
    * which has no turn card.
    */
   stepsFold: boolean
+  /**
+   * `minimal` mode: the turn card renders the reduced shape (one reply line plus
+   * one ✅/❌/⏳ `description` line per call). Also implies no thinking and no
+   * folding/paging — the reduced card is small by construction.
+   */
+  minimal: boolean
   tools: ToolDetail
   /** Whether tool ARGUMENT blocks are rendered at all. */
   toolArgs: boolean
@@ -230,6 +247,22 @@ export function parseTranscriptView(value: unknown): TranscriptView {
 }
 
 /**
+ * Read the stored CARD MODE, accepting `minimal` on top of the legacy levels.
+ *
+ * The mode has no setting of its own: the same `transcriptView` storage carries
+ * it (the `/display` row and the WebUI settings page write one field), so
+ * `minimal` is read here and every legacy level maps exactly as before
+ * ({@link parseTranscriptView}).
+ *
+ * @param value - whatever the settings store holds.
+ * @returns the card topology in force.
+ */
+export function parseDisplayMode(value: unknown): DisplayMode {
+  if (value === 'minimal') return 'minimal'
+  return parseTranscriptView(value) === 'compact' ? 'compact' : 'detailed'
+}
+
+/**
  * Project the stored settings onto one {@link DisplaySettings}.
  *
  * There are no presets any more: the operator picks the mode and every switch
@@ -255,8 +288,11 @@ export function resolveDisplaySettings(input: {
   toolDetail?: unknown
   toolOutputFull?: unknown
 }): DisplaySettings {
+  const mode = parseDisplayMode(input.transcriptView)
   const legacyName = parseTranscriptView(input.transcriptView)
-  const legacy = LEGACY_DEFAULTS[legacyName]
+  // `minimal` has no retired level to inherit from; its tool payloads never
+  // render, so the `compact` defaults are the right baseline.
+  const legacy = LEGACY_DEFAULTS[mode === 'minimal' ? 'compact' : legacyName]
   const explicitTools = typeof input.toolDetail === 'string'
     && (['off', 'summary', 'full'] as readonly string[]).includes(input.toolDetail)
     ? input.toolDetail as ToolDetail
@@ -264,7 +300,7 @@ export function resolveDisplaySettings(input: {
   const tools = input.showToolCalls === false ? 'off' : (explicitTools ?? legacy.tools)
   const reasoning = input.showReasoning === false ? 'off' : 'on'
   return {
-    mode: legacyName === 'compact' ? 'compact' : 'detailed',
+    mode,
     reasoning,
     reasoningFold: input.reasoningFold ?? true,
     // Default: fold the turn card's earlier steps (the pre-switch behavior).
@@ -295,15 +331,20 @@ export function resolveDisplaySettings(input: {
  */
 export function resolveDisplayPolicy(input: Parameters<typeof resolveDisplaySettings>[0]): DisplayPolicy {
   const settings = resolveDisplaySettings(input)
-  const compact = settings.mode === 'compact'
+  const minimal = settings.mode === 'minimal'
+  // `minimal` and `compact` share the one-turn-card topology; only the process
+  // card's shape differs.
+  const compact = settings.mode !== 'detailed'
   // Payloads exist only inside the full tool section: `summary`/`count` name the
   // calls and carry nothing to render, so the switches must not add them back.
   const full = !compact && settings.tools === 'full'
   return {
-    reasoning: settings.reasoning,
+    // `minimal` shows no thinking at all: the card carries two kinds of line.
+    reasoning: minimal ? 'off' : settings.reasoning,
     // compact: always folded (the flat form is a step-card shape, and compact
     // has no step card to give it).
     reasoningFold: compact ? true : settings.reasoningFold,
+    minimal,
     // Where the turn card's steps go once it grows: fold the old ones (on) or
     // page the card (off). Only the compact turn card reads it.
     stepsFold: settings.stepsFold,

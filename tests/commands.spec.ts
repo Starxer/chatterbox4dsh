@@ -109,7 +109,7 @@ const translations: CommandTranslations = {
   displayStepsFoldUsage: 'Usage: /display steps on|off',
 
   displayModeLabel: 'Mode',
-  displayModeName: (mode: 'compact' | 'detailed') => mode,
+  displayModeName: mode => mode,
   displayToolDetailName: (detail: string) => detail,
   displayToolDetailSet: (name: string) => `tool detail set to ${name}`,
   displayToolDetailUsage: 'Usage: /display tools off|count|summary|full',
@@ -364,6 +364,13 @@ describe('/display command', () => {
     const display = control()
     expect((await handleDisplayCommand(invocation('standard'), translations, display)).kind).toBe('error')
     expect((await handleDisplayCommand(invocation('verbose'), translations, display)).kind).toBe('error')
+  })
+
+  it('switches to the minimal card mode by name', async () => {
+    const display = control()
+    const result = await handleDisplayCommand(invocation('minimal'), translations, display)
+    expect(display.setLevel).toHaveBeenCalledWith('minimal')
+    expect(result.text?.toLowerCase()).toContain('level set to minimal')
   })
 
   it('toggles the thinking block between folded and flat', async () => {

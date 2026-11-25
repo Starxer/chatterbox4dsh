@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 新增：第三种模式「极简」——过程卡只留 reply 和工具 description（`src/display-level.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/config.ts` / `src/commands.ts` / `src/feishu-display.ts` / `src/i18n.ts`，2026-11-25）
+
+- 使用者在两版样板里选了 **B**：每步一块 —— reply 是正文行，每个工具调用的 `description` 用 `↳ ` 缩进，前面带 `✅` 成功 / `❌` 失败 / `⏳` 运行中。
+- **极简模式**是第三种卡片模式（`minimal` / `compact` / `detailed`），拓扑与紧凑相同（一轮一张过程卡 + 答案卡），但过程卡**只有**这两类行：没有步头、阶段图标、分阶段耗时、工具名、参数、结果、PTC 子行、注入提示、思考块 —— 实时状态与总耗时由**卡片标题**承担（`🐳 深度求索中 · 12.3s` / `⚙️ 第 N 轮 · 5 个工具 · 12.3s`）。
+- 细节：没有 `description` 的调用回退显示工具名（那行仍要说“跑了什么”）；reply 行内标记不成对时单独成元素（关键坑 60）；description 走紧凑行同一个 `progressRowText` 消毒。极简**不折叠、不分页**（卡本来就小，十几步也就几 KB），折叠/分页开关对它无效。
+- 入口：`/display` 卡的「模式」行变成三档 **极简 / 紧凑 / 详细**，文本命令 `/display minimal`；存储仍是 `transcriptView`（新增 `minimal` 值，旧的 `standard`/`verbose` 等名字照旧折叠到 `detailed`）。极简下思考、截断长度、工具行、回合卡步骤这些行都不显示（在那里没有作用）。
+- 测试：+10（极简渲染：reply+三种状态行、无描述回退、标题与轮次、不成对标记分元素；控制器：12 步仍一张卡、不折叠不分页；模式解析/策略；`/display` 卡三档与最小化后的空行、点选持久化；`/display minimal` 命令；streaming 接线一条）；全量 83 文件 / 1,653 用例、typecheck、build、privacy 全绿。
+
+**English**: A third card mode, **minimal**: the process card carries only each step's reply line plus its calls' `description` lines, indented with `↳ ` and marked `✅` / `❌` / `⏳` (the operator picked layout B). Same one-turn-card topology as compact, minus every other element — no step headers, phase icons, per-phase durations, tool names, arguments, results, PTC child rows, injections or thinking; the card HEADER still carries live state and totals. A call without a description falls back to the tool name, unbalanced inline markup gets its own element (关键坑 60), and descriptions use the compact rows' sanitizer. Minimal never folds or pages (the card is small by construction), so the fold/page switch does not apply. Exposed as a third option in the `/display` mode row and as `/display minimal`; the stored field stays `transcriptView` with a new `minimal` value, and the retired level names still collapse onto `detailed`. Ten tests added; 83 files / 1,653 tests, typecheck, build and privacy gate green.
+
 ### 修复：分页回合卡最后一步停在未完成状态就换卡；分页条件改为「步数或字节」先到（`src/feishu-progress.ts`，2026-11-25）
 
 - 使用者观察：每张分页卡**最后一个步骤显示不完整**，最后状态没更新就发了新卡片。

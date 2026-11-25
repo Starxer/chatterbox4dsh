@@ -24,7 +24,10 @@ describe('resolveSettingsConfig', () => {
   it('defaults the work-detail level to `detailed` and reads legacy values', () => {
     expect(resolveSettingsConfig({ appId: 'id' }).transcriptView).toBe('compact')
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'compact' }).transcriptView).toBe('compact')
-    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'verbose' }).transcriptView).toBe('verbose')
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'minimal' }).transcriptView).toBe('minimal')
+    // A retired level name collapses onto a MODE: `verbose` meant "everything
+    // visible", which is the `detailed` card now.
+    expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'verbose' }).transcriptView).toBe('detailed')
     // 0.2.0 reads the two WebUI legacy spellings as `detailed` (a hand-edited
     // settings.yaml can still hold one) and anything unreadable as the default.
     expect(resolveSettingsConfig({ appId: 'id', transcriptView: 'normal' as any }).transcriptView).toBe('detailed')
@@ -197,7 +200,7 @@ describe('connectionFingerprint', () => {
     const same = connectionFingerprint({
       ...base,
       showReasoning: false, showToolCalls: false, showToolArgs: false, showToolResults: false,
-      transcriptView: 'verbose',
+      transcriptView: 'detailed',
       elapsedRefreshSeconds: 30,
       locale: 'en',
       errorMessage: 'changed',

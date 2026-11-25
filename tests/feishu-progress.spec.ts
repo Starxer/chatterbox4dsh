@@ -3,7 +3,7 @@ import {
   PROGRESS_ELEMENT_SPACING, PROGRESS_MAX_FOLDED, PROGRESS_MAX_ROWS, PROGRESS_MAX_STEPS, PROGRESS_NOTE_MAX,
   PROGRESS_RUNNING_TICK_MS, PROGRESS_THINKING_MAX_BYTES, PROGRESS_WRITE_GAP_MS,
   PROGRESS_QUOTE_MARKER,
-  condenseStepNote, createProgressCards, formatProgressMs, inlineMarkupBalanced, renderProgressCard, type ProgressFacts,
+  condenseStepNote, createProgressCards, formatProgressMs, inlineMarkupBalanced, renderMinimalProgressCard, renderProgressCard, type ProgressFacts,
 } from '../src/feishu-progress.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
 import { translationsFor } from '../src/i18n.ts'
@@ -383,6 +383,63 @@ describe('renderProgressCard', () => {
     expect(unknown.header.title.content).toBe(t.turnCardTitleDone(0, 1, 0, '5.0s'))
     expect(unknown.header.title.content).not.toContain('第 0 轮')
     expect(unknown.header.title.content).not.toContain('本回合')
+  })
+
+  it('renders the minimal card as reply + description lines with a status marker', () => {
+    const factsMinimal = facts({
+      turn: 4,
+      endedAt: undefined,
+      steps: [
+        {
+          step: 1, startedAt: 0, endedAt: 1_000,
+          note: '先看现有渲染逻辑',
+          tools: [
+            { name: 'bash', startedAt: 10, elapsed: 200, description: '查渲染代码' },
+            { name: 'grep', startedAt: 300, elapsed: 50, isError: true, description: '找任务列' },
+          ],
+        },
+        {
+          step: 2, startedAt: 1_000,
+          tools: [
+            { name: 'bash', startedAt: 1_100, description: '跑单测' },
+            { name: 'read', startedAt: 1_200 }, // no description → the tool name
+          ],
+        },
+      ],
+      calls: 4,
+      now: 3_000,
+    })
+    const card: any = renderMinimalProgressCard(t, factsMinimal)
+    expect(card.header.title.content).toBe(t.turnCardTitleRunning('3.0s'))
+    const md = mdOf(card)
+    // The reply line, then one line per call: status marker + description (name
+    // when the call wrote none).
+    expect(md).toContain('先看现有渲染逻辑')
+    expect(md).toContain('↳ ✅ 查渲染代码')
+    expect(md).toContain('↳ ❌ 找任务列')
+    expect(md).toContain('↳ ⏳ 跑单测')
+    expect(md).toContain('↳ ⏳ read')
+    // Nothing else of the compact card: no step headers, phases, tool names in
+    // code spans, clocks or the thinking panel.
+    expect(md).not.toContain(t.turnCardStepDetail(1, '1.0s'))
+    expect(md).not.toContain('⏳ `bash`')
+    expect(tagsOf(card)).not.toContain('collapsible_panel')
+    // The settled title still names the round and counts the calls.
+    const done: any = renderMinimalProgressCard(t, { ...factsMinimal, endedAt: 3_000 })
+    expect(done.header.title.content).toBe(t.turnCardTitleDone(4, 4, 0, '3.0s'))
+  })
+
+  it('gives an unbalanced reply line its own element in the minimal card', () => {
+    // 关键坑 60: an odd `**` would pair with the next element's line.
+    const factsMinimal = facts({
+      steps: [{ step: 1, startedAt: 0, endedAt: 100, note: '没闭合的**加粗', tools: [{ name: 'bash', startedAt: 10, elapsed: 5, description: '跑一下' }] }],
+      calls: 1,
+      now: 200,
+    })
+    const card: any = renderMinimalProgressCard(t, factsMinimal)
+    const contents = (card.body.elements as any[]).map((el: any) => String(el.content))
+    expect(contents).toContain('没闭合的**加粗')
+    expect(contents).toContain('↳ ✅ 跑一下')
   })
 
   it('carries no button and no tappable row (the card must stay updatable)', () => {    // 关键坑 11: a card carrying buttons stops delivering callbacks after 2-3
@@ -819,7 +876,7 @@ describe('renderProgressCard', () => {
 })
 
 describe('createProgressCards', () => {
-  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number; foldSteps?: () => boolean } = {}) {
+  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number; foldSteps?: () => boolean; minimal?: () => boolean } = {}) {
     const channel = {
       send: vi.fn(async (_to: string, input: { card?: object; text?: string }) =>
         input.card !== undefined && options.failCardSend
@@ -839,6 +896,7 @@ describe('createProgressCards', () => {
       getTranslations: () => t,
       elapsedRefreshSeconds: options.elapsedRefreshSeconds,
       ...(options.foldSteps === undefined ? {} : { foldSteps: options.foldSteps }),
+      ...(options.minimal === undefined ? {} : { minimal: options.minimal }),
       ...(options.interleave === undefined ? {} : { interleave: options.interleave }),
     })
     return { channel, logger, cards }
@@ -1485,6 +1543,30 @@ describe('createProgressCards', () => {
     // Nine steps would still be ONE page under the step-count rule alone.
     expect(created).toBeGreaterThanOrEqual(2)
     expect(mdOf(latest(0))).not.toContain(t.turnCardStepDetail(9, '900ms'))
+  })
+
+  it('renders the minimal shape and never pages, however many steps run', async () => {
+    vi.useFakeTimers()
+    // `minimal` ignores the fold/page switch entirely: its card is two lines per
+    // step, so a twelve-step turn stays ONE card.
+    const { channel, cards } = harness({ foldSteps: () => false, minimal: () => true })
+    cards.beginTurn(chat, 's1', 0, 7)
+    for (let step = 1; step <= 12; step++) {
+      cards.stepStarted('s1', step, step * 1_000)
+      cards.stepNote('s1', step, `第 ${step} 步的说明`, step * 1_000 + 100)
+      cards.toolStarted('s1', 'bash', `c${step}`, step * 1_000 + 200, undefined, `跑第 ${step} 步`)
+      cards.toolFinished('s1', `c${step}`, 300, false, step * 1_000 + 600)
+      cards.stepEnded('s1', step * 1_000 + 900)
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    await cards.finish('s1', 20_000, false)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+    const md = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
+    // Every step's reply and every description line, nothing of the compact card.
+    expect(md).toContain('第 12 步的说明')
+    expect(md).toContain('↳ ✅ 跑第 12 步')
+    expect(md).not.toContain('▸')
+    expect(md).not.toContain('第 7 轮')
   })
 
   it('opens a NEW card after another module posts one, showing only new rows', async () => {

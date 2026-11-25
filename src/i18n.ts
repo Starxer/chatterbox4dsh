@@ -23,7 +23,7 @@
  * @module @starxer/chatterbox4dsh/i18n
  */
 
-import type { CompactToolRowStyle, TranscriptView } from './display-level.ts'
+import type { CompactToolRowStyle, DisplayMode, TranscriptView } from './display-level.ts'
 
 /** Locale identifiers the plugin ships. */
 export const LOCALE_IDS = ['zh', 'en'] as const
@@ -570,7 +570,7 @@ export interface Translations {
   displayCardToolDetailTitle: string
   displayCardOutputTitle: string
   /** Shared display vocabulary (mode, preset, tool detail, output, preview). */
-  displayModeName: (mode: 'compact' | 'detailed') => string
+  displayModeName: (mode: DisplayMode) => string
   displayPresetName: (name: string | undefined) => string
   displayToolDetailName: (detail: 'off' | 'summary' | 'full') => string
   displayOutputName: (full: boolean) => string
@@ -1308,7 +1308,7 @@ export const zh = {
   displayCardThinkingTitle: '**思考**',
   displayCardToolDetailTitle: '**工具调用展示**',
   displayCardOutputTitle: '**工具输出**',
-  displayModeName: mode => mode === 'compact' ? '紧凑' : '详细',
+  displayModeName: mode => ({ minimal: '极简', compact: '紧凑', detailed: '详细' })[mode],
   displayPresetName: name => name === undefined ? '自定义' : ({ compact: '简洁', standard: '标准', detailed: '详细', verbose: '完全展开' })[name] ?? name,
   displayToolDetailName: detail => ({ off: '关', summary: '一行摘要', full: '完整' })[detail],
   displayOutputName: full => full ? '不截断' : '截断',
@@ -1339,7 +1339,7 @@ export const zh = {
   displayShow: '显示',
   displayHide: '隐藏',
   displayCardTickUnit: '秒',
-  displayCardModeHint: '紧凑 = 一回合合并成一张过程卡（另发答案卡）；详细 = 每一步一张步骤卡。',
+  displayCardModeHint: '极简 = 过程卡只留每步的一句话和工具调用说明；紧凑 = 一回合合并成一张过程卡（另发答案卡）；详细 = 每一步一张步骤卡。',
   displayCardThinkingHint: '步骤卡与紧凑卡上是否显示模型的深度思考；显示时是折叠面板，点开展开全文。',
   displayFoldFixedCompact: '紧凑模式的思考块固定折叠（没有平铺形态）',
   displayCardToolDetailHint: '每一步的工具调用展示到什么程度；「完整」才带参数与结果。',
@@ -1963,7 +1963,7 @@ export const en: Translations = {
   displayCardThinkingTitle: '**Thinking**',
   displayCardToolDetailTitle: '**Tool calls**',
   displayCardOutputTitle: '**Tool output**',
-  displayModeName: mode => mode === 'compact' ? 'compact' : 'detailed',
+  displayModeName: mode => mode,
   displayPresetName: name => name === undefined ? 'custom' : ({ compact: 'compact', standard: 'standard', detailed: 'detailed', verbose: 'verbose' })[name] ?? name,
   displayToolDetailName: detail => ({ off: 'off', summary: 'one line', full: 'full' })[detail],
   displayOutputName: full => full ? 'untruncated' : 'truncated',
@@ -1992,7 +1992,7 @@ export const en: Translations = {
   displayShow: 'Show',
   displayHide: 'Hide',
   displayCardTickUnit: 's',
-  displayCardModeHint: 'Compact merges the turn onto one progress card (plus the answer card); Detailed posts one card per step.',
+  displayCardModeHint: 'Minimal keeps only each step\'s sentence plus its calls\' descriptions on one progress card; Compact merges the turn onto one progress card (plus the answer card); Detailed posts one card per step.',
   displayCardThinkingHint: "Whether step cards and the compact turn card show the model's deep thinking; when shown it is a folded panel — expand to read the whole chain.",
   displayFoldFixedCompact: "Compact mode always folds the thinking block (there is no flat form there).",
   displayCardToolDetailHint: 'How much of each tool call a step card shows; only "Full" carries arguments and results.',

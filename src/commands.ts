@@ -5,7 +5,7 @@ import type { LlmProviderInfo, LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { HarnessConversationService } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { PendingApprovalView } from './feishu-approvals.ts'
-import { type CompactToolRowStyle, type TranscriptView } from './display-level.ts'
+import { type CompactToolRowStyle, type DisplayMode, type TranscriptView } from './display-level.ts'
 import type { ApiUsageSnapshot } from './api-usage.ts'
 import type { DisplaySettings, PreviewLengthField, ToolDetail } from './display-level.ts'
 import { PREVIEW_LENGTH_CHOICES } from './display-level.ts'
@@ -74,7 +74,7 @@ export interface DisplayControl {
    */
   set: (key: DisplayToggleKey, value: boolean) => void | Promise<void>
   /** The work-detail level (`transcriptView`), mirroring the WebUI's four. */
-  getLevel: () => TranscriptView
+  getLevel: () => DisplayMode
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   getFold: () => boolean
   /** Effective display settings (`transcriptView` mode + the switches). */
@@ -98,7 +98,7 @@ export interface DisplayControl {
   /** Persist the step-fold choice. Asynchronous for the same reason as {@link set}. */
   setStepsFold: (folded: boolean) => void | Promise<void>
   /** Persist the level. Asynchronous for the same reason as {@link set}. */
-  setLevel: (level: TranscriptView) => void | Promise<void>
+  setLevel: (level: DisplayMode) => void | Promise<void>
   /** Shared clock refresh interval for compact progress and step placeholders. */
   getElapsedRefreshSeconds: () => number
   setElapsedRefreshSeconds: (seconds: ElapsedRefreshSeconds) => void | Promise<void>
@@ -225,7 +225,7 @@ export interface CommandTranslations {
   readonly displayStepsFoldUsage: string
   /** Mode (two layouts) and preset (a named bundle of switches). */
   readonly displayModeLabel: string
-  readonly displayModeName: (mode: 'compact' | 'detailed') => string
+  readonly displayModeName: (mode: DisplayMode) => string
   /** Tool detail + output truncation. */
   readonly displayToolDetailName: (detail: 'off' | 'summary' | 'full') => string
   readonly displayToolDetailSet: (name: string) => string
@@ -707,17 +707,26 @@ const DISPLAY_TOOL_ROW_ALIASES: Record<string, CompactToolRowStyle> = {
   only: 'description',
 }
 
-/** Accepted level spellings, including the WebUI's two legacy ones. */
-const DISPLAY_LEVEL_ALIASES: Record<string, TranscriptView> = {
+/**
+ * Accepted MODE spellings, including the WebUI's two legacy names.
+ *
+ * Three modes now: `minimal`, `compact` and `detailed`. The retired level names
+ * still type, because a habit should not become an error: `standard` / `verbose`
+ * are intercepted above with their "presets are gone" hint, and the rest map
+ * onto the mode that reads closest to what they meant.
+ */
+const DISPLAY_LEVEL_ALIASES: Record<string, DisplayMode> = {
+  minimal: 'minimal',
+  min: 'minimal',
   compact: 'compact',
   simple: 'compact',
-  standard: 'standard',
+  concise: 'compact',
   normal: 'detailed',
   detailed: 'detailed',
   detail: 'detailed',
-  verbose: 'verbose',
-  expanded: 'verbose',
-  full: 'verbose',
+  full: 'detailed',
+  expanded: 'detailed',
+  verbose: 'detailed',
 }
 
 /**
@@ -869,9 +878,9 @@ export async function handleDisplayCommand(
       return { kind: 'error', text: t.displayPresetsGone }
     }
     const level = DISPLAY_LEVEL_ALIASES[rawKey ?? '']
-    if (level === 'compact' || level === 'detailed') {
+    if (level === 'minimal' || level === 'compact' || level === 'detailed') {
       await display.setLevel(level)
-      return { kind: 'success', text: t.displayLevelSet(t.displayLevelName(level)) }
+      return { kind: 'success', text: t.displayLevelSet(t.displayModeName(level)) }
     }
   }
 

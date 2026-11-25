@@ -29,7 +29,7 @@ import { errorText } from './error-text.ts'
 import type { CardImageHydrator } from './card-images.ts'
 import {
   DETAILED_POLICY,
-  resolveDisplayPolicy, type CompactToolRowStyle, type DisplayPolicy, type TranscriptView,
+  resolveDisplayPolicy, type CompactToolRowStyle, type DisplayMode, type DisplayPolicy,
 } from './display-level.ts'
 import { injectionNotice } from './injection-notice.ts'
 import { pendingProducedCall, producedArtifacts, settleProducedCall, type ProducedPath } from './produced-files.ts'
@@ -186,7 +186,7 @@ export interface FeishuStreamingDeps {
    * (see display-level.ts): the level sets the baseline and each switch can
    * only take detail away.
    */
-  transcriptView?: () => TranscriptView
+  transcriptView?: () => DisplayMode
   /**
    * What one tool row of the compact turn card carries (`compactToolRow`), read
    * live so a settings write applies to the next render. Omitted keeps the
@@ -638,6 +638,8 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // Where a growing turn card's older steps go (folded away, or a new card
     // every 10 steps). Same live-read contract as the switch above.
     foldSteps: () => displayPolicy().stepsFold,
+    // `minimal` mode: the reduced process card (reply + description lines).
+    minimal: () => displayPolicy().minimal,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
     ...(interleave === undefined ? {} : { interleave }),
   })

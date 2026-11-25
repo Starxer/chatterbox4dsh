@@ -2,8 +2,8 @@ import z from '@deepseek-ai/schemastery'
 import type { Volatile } from '@deepseek-ai/cordis'
 import type { PluginLocale } from './i18n.ts'
 import {
-  COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, TRANSCRIPT_VIEWS,
-  parseCompactToolRow, parseTranscriptView, type CompactToolRowStyle, type TranscriptView,
+  COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, parseDisplayMode, TRANSCRIPT_VIEWS,
+  parseCompactToolRow, type CompactToolRowStyle, type DisplayMode,
 } from './display-level.ts'
 
 export type DomainName = 'feishu' | 'lark'
@@ -77,7 +77,7 @@ export interface Config {
    * still `detailed`). The four switches above still apply: a level can only
    * ever show LESS, never more (see {@link ../display-level.ts}).
    */
-  transcriptView?: TranscriptView
+  transcriptView?: DisplayMode | 'standard' | 'verbose'
   /**
    * What one tool row of the COMPACT turn card carries: the tool name plus what
    * it touched (default), the model's one-line description first and then the
@@ -303,7 +303,13 @@ export function readField<T>(field: Volatile<T> | T | undefined): T | undefined 
 export interface SettingsConfig extends Required<Pick<Config,
   'appId' | 'appSecretRef' | 'domain' | 'requireMention' | 'dmMode' | 'groupAllowlist' |
   'dmAllowlist' | 'errorMessage' | 'reactEmoji' | 'showReasoning' | 'showToolCalls' |
-  'showToolArgs' | 'showToolResults' | 'transcriptView'>> {
+  'showToolArgs' | 'showToolResults'>> {
+  /**
+   * The resolved CARD MODE: `minimal` / `compact` / `detailed`. The stored
+   * `transcriptView` may still hold a retired level name (`standard`,
+   * `verbose`); {@link resolveSettingsConfig} collapses it onto a mode.
+   */
+  transcriptView: DisplayMode
   /**
    * Compact tool-row style. Optional in the type (like `elapsedRefreshSeconds`)
    * because callers may pass a partial config; {@link resolveSettingsConfig}
@@ -400,7 +406,7 @@ export const ConfigSchema = z.object({
   showToolCalls: z.boolean().default(true).volatile().description('Show tool calls on step cards; when false a tool-only step sends no card'),
   showToolArgs: z.boolean().default(true).volatile().description('Show each tool call\'s arguments block'),
   showToolResults: z.boolean().default(true).volatile().description('Show each tool call\'s result preview'),
-  transcriptView: z.union([...TRANSCRIPT_VIEWS]).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('How much work detail a step card carries, mirroring the DSH WebUI: compact (default, shorter chat cards) counts tool calls only, standard adds one summary line per call, detailed adds arguments and result previews with an expandable reasoning block, verbose shows everything untruncated. The show* switches below can only reduce what a level allows.'),
+  transcriptView: z.union([...TRANSCRIPT_VIEWS, 'minimal']).default(DEFAULT_TRANSCRIPT_VIEW).volatile().description('Card layout. minimal: one process card per turn that shows only each step\'s reply line and its calls\' descriptions (with a status marker); compact (default): one turn card carrying the tool timeline, plus the answer card; standard/detailed/verbose: the retired per-step levels - detailed reproduces the old step-card look (arguments and result previews), verbose carries everything untruncated. The show* switches below can only reduce what a level allows.'),
   compactToolRow: z.union([...COMPACT_TOOL_ROW_STYLES]).default(DEFAULT_COMPACT_TOOL_ROW).volatile().description('What one tool row of the compact turn card carries: "tool-description" (default) puts the model-written description first and then the tool row, "tool" shows the tool name plus the file/programs it touched, "description" shows the description alone and never falls back when a call has none. Compact only; the other levels keep their own summary line.'),
   elapsedRefreshSeconds: z.union([...ELAPSED_REFRESH_SECONDS]).default(DEFAULT_ELAPSED_REFRESH_SECONDS).volatile().description('Seconds between elapsed-time refreshes on running cards, shared by compact progress and other levels\' thinking placeholders. Choose 3, 5 (default), 10 or 30; event-driven updates are unaffected.'),
   toolDetail: z.union(['off', 'summary', 'full']).volatile().description('What the tool section of a step card carries: off (nothing), summary (one line per call) or full (summary plus argument/result blocks). Unset keeps the value the retired level name implies, so an upgrade does not change the look.'),
@@ -448,7 +454,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     showToolCalls: readField(config.showToolCalls) ?? true,
     showToolArgs: readField(config.showToolArgs) ?? true,
     showToolResults: readField(config.showToolResults) ?? true,
-    transcriptView: parseTranscriptView(readField(config.transcriptView)),
+    transcriptView: parseDisplayMode(readField(config.transcriptView)),
     compactToolRow: parseCompactToolRow(readField(config.compactToolRow)),
     elapsedRefreshSeconds: parseElapsedRefreshSeconds(readField(config.elapsedRefreshSeconds)),
     ...(quota === undefined || quota <= 0 ? {} : { apiQuotaPerMonth: Math.min(10_000_000, Math.floor(quota)) }),

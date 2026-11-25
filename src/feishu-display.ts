@@ -28,8 +28,8 @@
 
 import type { DisplayControl, DisplayToggleKey } from './commands.ts'
 import {
-  COMPACT_TOOL_ROW_STYLES, isCompactToolRowStyle, TRANSCRIPT_VIEWS,
-  type CompactToolRowStyle, type TranscriptView,
+  COMPACT_TOOL_ROW_STYLES, DISPLAY_MODES, isCompactToolRowStyle,
+  type CompactToolRowStyle,
 } from './display-level.ts'
 import { PREVIEW_LENGTH_CHOICES, type DisplayMode, type DisplaySettings, type PreviewLengthField, type ToolDetail } from './display-level.ts'
 import type { ConversationMessage } from './conversation.ts'
@@ -103,11 +103,6 @@ export interface DisplayCardState {
 }
 
 
-/** True when `value` is one of the four levels. */
-function isLevel(value: unknown): value is TranscriptView {
-  return typeof value === 'string' && (TRANSCRIPT_VIEWS as readonly string[]).includes(value)
-}
-
 /**
  * Lay short choice buttons out in ONE card row.
  *
@@ -155,6 +150,7 @@ function buttonRows(buttons: readonly object[], size = 2): object[] {
 export function renderDisplayCard(state: DisplayCardState, t: Translations): object {
   const settings = state.settings
   const compact = state.mode === 'compact'
+  const minimal = state.mode === 'minimal'
   /** A section heading plus the one line that explains what it controls. */
   const section = (title: string, hint: string): string => `${title}\n_${hint}_`
   /** A selectable option: `✓ ` marks the current value (blue, still clickable). */
@@ -174,7 +170,7 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       content: section(`${t.displayCardModeTitle}：${t.displayModeName(state.mode)}`, t.displayCardModeHint),
     },
   ]
-  elements.push(buttonColumns(row((['compact', 'detailed'] as const).map(mode => ({
+  elements.push(buttonColumns(row(DISPLAY_MODES.map(mode => ({
     text: choice(t.displayModeName(mode), state.mode === mode),
     active: state.mode === mode,
     payload: { mode },
@@ -183,13 +179,15 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
   // `compact` each step's chain is a folded panel on the turn card, so the
   // display switch matters there too. The fold/flat choice stays a step-card
   // shape — compact always folds — hence its row is step-level only.
-  elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: section(t.displayCardThinkingTitle, t.displayCardThinkingHint) })
-  elements.push(buttonColumns(row([
-    { text: choice(t.displayShow, settings.reasoning !== 'off'), active: settings.reasoning !== 'off', payload: { key: 'reasoning', value: true } },
-    { text: choice(t.displayHide, settings.reasoning === 'off'), active: settings.reasoning === 'off', payload: { key: 'reasoning', value: false } },
-  ])))
-  if (!compact) {
+  if (!minimal) {
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: section(t.displayCardThinkingTitle, t.displayCardThinkingHint) })
+    elements.push(buttonColumns(row([
+      { text: choice(t.displayShow, settings.reasoning !== 'off'), active: settings.reasoning !== 'off', payload: { key: 'reasoning', value: true } },
+      { text: choice(t.displayHide, settings.reasoning === 'off'), active: settings.reasoning === 'off', payload: { key: 'reasoning', value: false } },
+    ])))
+  }
+  if (!compact && !minimal) {
     elements.push(buttonColumns(row([
       { text: choice(t.displayCardFoldName(true), state.folded), active: state.folded, payload: { folded: true } },
       { text: choice(t.displayCardFoldName(false), !state.folded), active: !state.folded, payload: { folded: false } },
@@ -225,15 +223,17 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
     })))))
   }
   // Truncation lengths: one row per field, the active choice marked.
-  elements.push({ tag: 'hr' })
-  elements.push({ tag: 'markdown', content: section(t.displayCardLengthTitle, t.displayCardLengthHint) })
-  for (const field of ['args', 'result'] as const) {
-    elements.push({ tag: 'markdown', content: t.displayLengthName(field, state.lengths[field]), text_size: 'notation' })
-    elements.push(buttonColumns(row(PREVIEW_LENGTH_CHOICES[field].map(chars => ({
-      text: choice(String(chars), state.lengths[field] === chars),
-      active: state.lengths[field] === chars,
-      payload: { length: field, chars },
-    })))))
+  if (!minimal) {
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: section(t.displayCardLengthTitle, t.displayCardLengthHint) })
+    for (const field of ['args', 'result'] as const) {
+      elements.push({ tag: 'markdown', content: t.displayLengthName(field, state.lengths[field]), text_size: 'notation' })
+      elements.push(buttonColumns(row(PREVIEW_LENGTH_CHOICES[field].map(chars => ({
+        text: choice(String(chars), state.lengths[field] === chars),
+        active: state.lengths[field] === chars,
+        payload: { length: field, chars },
+      })))))
+    }
   }
   if (compact) {
     elements.push({ tag: 'hr' })
@@ -392,7 +392,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       return
     }
     const mode = parsed.mode
-    if (mode === 'compact' || mode === 'detailed') {
+    if (mode === 'minimal' || mode === 'compact' || mode === 'detailed') {
       if (display.getSettings().mode === mode) return
       try {
         await display.setLevel(mode)

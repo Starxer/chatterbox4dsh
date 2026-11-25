@@ -989,6 +989,76 @@ export function renderProgressCard(
   }
 }
 
+/**
+ * The `minimal` process card: each step's reply line, then one line per tool call
+ * carrying only its `description` with a status marker.
+ *
+ * This is the whole card — no step headers, phase icons, durations, tool names,
+ * arguments, results, PTC child rows, injection notices or thinking (the operator
+ * picked this shape from a sample, 2026-11-25). The card HEADER is unchanged, so
+ * "still running / which round / how many calls / total time" still reads at a
+ * glance, and pagination/folding do not apply: the reduced card is small by
+ * construction.
+ *
+ * Deliberate detail choices:
+ * - a call with no `description` falls back to its tool NAME, so the line still
+ *   says something ran (the same fallback the description-only row style uses);
+ * - a reply line whose inline markup is unbalanced gets its own element, or it
+ *   would pair its `**` with the next step's line (关键坑 60);
+ * - descriptions go through `progressRowText`, the same sanitizer the compact
+ *   rows use, because they are free text from the model.
+ *
+ * @param t - active locale strings (header wording only).
+ * @param facts - the turn's steps and counters.
+ * @returns the Card JSON 2.0 object.
+ */
+export function renderMinimalProgressCard(t: Translations, facts: ProgressFacts): object {
+  const running = facts.endedAt === undefined
+  const end = facts.endedAt ?? facts.now
+  const total = formatProgressMs(end - facts.turnStart)
+  const title = running
+    ? t.turnCardTitleRunning(total)
+    : facts.failedTurn
+      ? t.turnCardTitleFailed(facts.turn ?? 0, facts.calls, total)
+      : t.turnCardTitleDone(facts.turn ?? 0, facts.calls, facts.failed, total)
+  const template = running ? 'grey' : facts.failedTurn ? 'red' : 'green'
+  const elements: object[] = []
+  for (const step of facts.steps.slice(facts.segmentFrom ?? 0)) {
+    const reply = step.note?.trim()
+    const lines: string[] = []
+    for (const tool of step.tools) {
+      const icon = tool.elapsed === undefined ? '⏳' : tool.isError === true ? '❌' : '✅'
+      const description = tool.description === undefined || tool.description === ''
+        ? ''
+        : progressRowText(tool.description, PROGRESS_NOTE_MAX)
+      lines.push(`↳ ${icon} ${description === '' ? tool.name : description}`)
+    }
+    if (reply !== undefined && reply !== '') {
+      // An unbalanced `**` / backtick in model prose would pair with the next
+      // element's line and bold the wrong thing (关键坑 60): give it its own
+      // element instead of joining.
+      if (!inlineMarkupBalanced(reply)) {
+        elements.push({ tag: 'markdown', content: reply })
+      } else if (lines.length > 0) {
+        elements.push({ tag: 'markdown', content: [reply, ...lines].join('\n') })
+        continue
+      } else {
+        elements.push({ tag: 'markdown', content: reply })
+        continue
+      }
+      if (lines.length > 0) elements.push({ tag: 'markdown', content: lines.join('\n') })
+    } else if (lines.length > 0) {
+      elements.push({ tag: 'markdown', content: lines.join('\n') })
+    }
+  }
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: title }, template },
+    body: { vertical_spacing: PROGRESS_ELEMENT_SPACING, elements },
+  }
+}
+
 /** One live progress card. */
 interface CardEntry {
   sessionId: string
@@ -1192,6 +1262,12 @@ export interface ProgressCardsDeps {
    */
   foldSteps?: (() => boolean) | undefined
   /**
+   * `minimal` mode: render the reduced process card (reply + description lines
+   * only) instead of the compact one. Read per render like the switches above;
+   * omitted = the compact shape.
+   */
+  minimal?: (() => boolean) | undefined
+  /**
    * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
    * new one below the interruption.
@@ -1287,10 +1363,12 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
    * chain renders (a settings write applies to the next card, no remount).
    */
   const renderCard = (facts: ProgressFacts): object =>
-    renderProgressCard(getTranslations(), facts, rowStyle(), {
-      thinking: deps.showReasoning?.() ?? true,
-      foldSteps: deps.foldSteps?.() ?? true,
-    })
+    deps.minimal?.() === true
+      ? renderMinimalProgressCard(getTranslations(), facts)
+      : renderProgressCard(getTranslations(), facts, rowStyle(), {
+        thinking: deps.showReasoning?.() ?? true,
+        foldSteps: deps.foldSteps?.() ?? true,
+      })
 
   /** Render one write, serialized behind the card's previous write. */
   const writeNow = (entry: CardEntry): void => {
@@ -1519,7 +1597,8 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     // budget — whichever comes first. The step count alone is not safe: ten
     // steps each carrying a 4 KB thinking body pass Feishu's ~30 KB card limit
     // and the card is refused whole (关键坑 42).
-    if (deps.foldSteps?.() === false
+    if (deps.minimal?.() !== true
+      && deps.foldSteps?.() === false
       && (turn.facts.steps.length - (turn.facts.segmentFrom ?? 0) >= COMPACT_PAGE_STEPS
         || pageOverflows(turn.facts))) {
       rotatePage(sessionId, turn, at)

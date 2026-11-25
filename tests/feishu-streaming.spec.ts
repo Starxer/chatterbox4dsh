@@ -3,7 +3,7 @@ import { createCardSendBarrier } from '../src/card-send-barrier.ts'
 import { deriveToolSummary, progressSubtoolDetails, progressToolDetails, renderStepCard, startFeishuStreaming, TURN_ACTIVE_STALE_MS, uncommittedToolNames } from '../src/feishu-streaming.ts'
 import { PROGRESS_MAX_DETAILS } from '../src/feishu-progress.ts'
 import { translationsFor } from '../src/i18n.ts'
-import type { TranscriptView } from '../src/display-level.ts'
+import type { DisplayMode } from '../src/display-level.ts'
 import { createCardInterleave, type CardInterleave } from '../src/card-interleave.ts'
 
 const t = translationsFor('zh')
@@ -475,8 +475,8 @@ function stepHarness(
     showToolCalls?: () => boolean
     showToolArgs?: () => boolean
     showToolResults?: () => boolean
-    /** Work-detail level; omitted means this harness's `detailed` baseline. */
-    transcriptView?: () => TranscriptView
+    /** Card mode; omitted means this harness's `detailed` baseline. */
+    transcriptView?: () => DisplayMode
     elapsedRefreshSeconds?: () => number
   } = {},
   extra: {
@@ -529,7 +529,7 @@ function stepHarness(
     // exercise the per-step renderer, so the harness keeps the `detailed`
     // baseline unless a case asks for another level; the default itself is
     // covered by `display-level.spec.ts` and `feishu-progress.spec.ts`.
-    transcriptView: () => 'detailed' as TranscriptView,
+    transcriptView: () => 'detailed' as DisplayMode,
     ...display,
     ...extra,
   })
@@ -2360,7 +2360,7 @@ describe('display levels on the step card (O22/O5)', () => {
   it('gives the verbose level the whole chain, still folded', () => {
     const long = 'y'.repeat(900)
     const card = renderStepCard(t, long, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false, minimal: false } }) as any
     const panel = panelOf(card)
     expect(panel.expanded).toBe(false)
     // The whole chain, verbatim and unfenced.
@@ -2370,7 +2370,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('shows the whole chain flat on the card when folding is turned off', () => {
     const card = renderStepCard(t, 'first line\nsecond line', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: false, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: false, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false, minimal: false } }) as any
     expect(panelOf(card)).toBeUndefined()
     const md = mdOf(card)
     expect(md).toContain('first line')
@@ -2395,7 +2395,7 @@ describe('display levels on the step card (O22/O5)', () => {
     const card = renderStepCard(t, 'hidden chain', undefined, []) as any
     expect(mdOf(card)).toContain('hidden chain')
     const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true, minimal: false } }) as any
     expect(mdOf(compact)).not.toContain('hidden chain')
     expect(panelOf(compact)).toBeUndefined()
   })
@@ -2409,7 +2409,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('names each call but carries no payload at the standard level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false, minimal: false } }) as any
     const md = mdOf(card)
     expect(md).toContain('bash')
     expect(md).not.toContain(t.stepToolArgsHeader)
@@ -2453,7 +2453,7 @@ describe('level + injection wiring through session events', () => {
     // card as a folded panel (and on the single card of a pure-answer turn,
     // which IS the turn card) — folded, never flat.
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: 'private chain' } })
     await vi.waitFor(() => { expect(ch.createCardInstance).toHaveBeenCalled() })
@@ -2470,7 +2470,7 @@ describe('level + injection wiring through session events', () => {
 
   it('takes the mid-turn reply off its own card and onto the turn card', async () => {
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: '我先看一下那段代码' } })
@@ -2500,7 +2500,7 @@ describe('level + injection wiring through session events', () => {
 
   it('merges an injection notice and the step narration onto the turn card', async () => {
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     // The runtime context lands on EVERY turn's first step, so this is the shape
     // that used to post a stray step card carrying the narration as a reply.
@@ -2563,7 +2563,7 @@ describe('level + injection wiring through session events', () => {
 
   it('renders the compact answer card without the section chrome', async () => {
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
     h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
@@ -2587,7 +2587,7 @@ describe('level + injection wiring through session events', () => {
   it('opens a NEW compact answer card after another module posts one', async () => {
     const interleave = createCardInterleave()
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, { interleave })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode }, { interleave })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'part one' } })
@@ -2609,7 +2609,7 @@ describe('level + injection wiring through session events', () => {
 
   it('shows the stream phase on the running step of the turn card (compact)', async () => {
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
@@ -2638,7 +2638,7 @@ describe('level + injection wiring through session events', () => {
     // that window is `tool-call-delta`; before this case it was dropped, so the
     // previous phase stayed on screen for the whole argument block.
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('tool/call', { callId: 'c0', name: 'bash', arguments: '{"command":"ls"}' })
@@ -2697,7 +2697,7 @@ describe('level + injection wiring through session events', () => {
     // did reaches the session stream as `tool/ptc-dispatch-*`. Until 2026-10-28
     // the card ignored them and a whole PTC turn read as bare `run_code` rows.
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('tool/call', {
@@ -2749,7 +2749,7 @@ describe('level + injection wiring through session events', () => {
     // a step card that rendered BLANK (a `tight` card shows no reasoning). The
     // turn card is the only card such a step may own.
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '只想不做' } })
@@ -2769,7 +2769,7 @@ describe('level + injection wiring through session events', () => {
 
   it('posts no card for a compact step that only ran tools', async () => {
     const ch = levelChannel()
-    const h = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const h = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     h.emit('turn/start')
     h.emit('step/start', { turn: 1, step: 1 })
     h.emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
@@ -2877,13 +2877,40 @@ describe('turn progress card wiring', () => {
       .map(call => call[1] as any)
       .filter(card => isTurnCardTitle(String(card.header?.title?.content ?? '')))
 
+  it('renders the minimal process card in the minimal mode', async () => {
+    const ch = channel()
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'minimal' as DisplayMode })
+    emit('turn/start', { turn: 1 })
+    emit('step/start', { turn: 1, step: 1 })
+    emit('assistant/chunk', { chunk: { type: 'text-delta', text: '先看一下代码结构' } })
+    emit('assistant/message', {
+      message: {
+        content: [
+          { type: 'text', text: '先看一下代码结构' },
+          { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"ls","description":"看目录"}' },
+        ],
+      },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls","description":"看目录"}' })
+    emit('tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } })
+    emit('turn/end', { reason: { kind: 'completed' } })
+    await vi.waitFor(() => { expect(mdOf(progressRenders(ch).at(-1)!)).toContain('↳ ✅ 看目录') })
+    const md = mdOf(progressRenders(ch).at(-1)!)
+    // The reply line plus the description marker — nothing of the compact card.
+    expect(md).toContain('先看一下代码结构')
+    expect(md).not.toContain('▸')
+    expect(md).not.toContain('🔧')
+    streaming.stop()
+  })
+
   it('opens the compact turn card when the level switches mid-turn', async () => {
     // Regression (2026-11-20): `compact` opened its turn card at `turn/start`
     // only. Tapping `/display compact` during a step-level turn therefore left
     // the rest of the turn without a progress card — later events wrote to a
     // card that did not exist and the user saw nothing but the final answer.
     const ch = channel()
-    let level: TranscriptView = 'detailed'
+    let level: DisplayMode = 'detailed'
     const { streaming, emit } = stepHarness(ch, { transcriptView: () => level })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
@@ -2920,7 +2947,7 @@ describe('turn progress card wiring', () => {
       sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
       updateCardInstance: vi.fn(async () => undefined),
     }
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, { interleave })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode }, { interleave })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
@@ -2964,7 +2991,7 @@ describe('turn progress card wiring', () => {
     // step's rows, because inside a step the model thinks first and calls tools
     // afterwards.
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '先想清楚，再动手。' } })
@@ -2991,7 +3018,7 @@ describe('turn progress card wiring', () => {
   it('hides the chain from the compact turn card when the switch is off', async () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, {
-      transcriptView: () => 'compact' as TranscriptView,
+      transcriptView: () => 'compact' as DisplayMode,
       showReasoning: () => false,
     })
     emit('turn/start')
@@ -3010,7 +3037,7 @@ describe('turn progress card wiring', () => {
   it('does not repeat the chain on the compact answer card', async () => {
     // The chain belongs to the turn card; the answer card is the reply itself.
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '第一段推理' } })
@@ -3041,7 +3068,7 @@ describe('turn progress card wiring', () => {
     // panel must survive the repaint — otherwise the chain the reader was just
     // watching disappears when the answer lands.
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'reasoning-delta', text: '这是一段思考' } })
@@ -3066,7 +3093,7 @@ describe('turn progress card wiring', () => {
 
   it('mirrors the whole turn onto one card at the compact level', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' })
@@ -3114,7 +3141,7 @@ describe('turn progress card wiring', () => {
 
   it('keeps the process card when the turn called tools (never a "pure answer")', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'bash', arguments: '{"command":"ls","description":"列出文件"}' })
@@ -3144,7 +3171,7 @@ describe('turn progress card wiring', () => {
 
   it('folds the turn summary into the compact answer card instead of a Turn Complete card', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('request/header', { header: { config: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' } } })
@@ -3188,7 +3215,7 @@ describe('turn progress card wiring', () => {
 
   it('puts the compact summary on the last overflow card when the answer is split', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     // Three block-sized paragraphs: the step card takes the first, and the reply
@@ -3222,7 +3249,7 @@ describe('turn progress card wiring', () => {
 
   it('counts nothing on a reply that needed exactly one continuation card', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: '正文\n\n'.repeat(200) + 'x'.repeat(3500) } })
@@ -3245,7 +3272,7 @@ describe('turn progress card wiring', () => {
     // Without it the line vanished from every card until the next route change
     // (reported 2026-10-15).
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, {
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode }, {
       sessionMeta: () => ({ model: 'deepseek-official/deepseek-flash', reasoningEffort: 'high' }),
     })
     /** The answer card (not the progress card): a text-only turn opens no other. */
@@ -3280,7 +3307,7 @@ describe('turn progress card wiring', () => {
 
   it("prefers the turn's own request header over the session record", async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView }, {
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode }, {
       sessionMeta: () => ({ model: 'stale-provider/stale-model', reasoningEffort: 'low' }),
     })
     const answerCards = (): any[] => [
@@ -3320,7 +3347,7 @@ describe('turn progress card wiring', () => {
     // asked for no tool display must not get a card listing tools.
     const ch = channel()
     const { streaming, emit } = stepHarness(ch, {
-      transcriptView: () => 'compact' as TranscriptView,
+      transcriptView: () => 'compact' as DisplayMode,
       showToolCalls: () => false,
     })
     emit('turn/start')
@@ -3336,7 +3363,7 @@ describe('turn progress card wiring', () => {
 
   it('uses ONE card for a turn that calls no tool: the turn card becomes the answer', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'no tools here' } })
@@ -3357,7 +3384,7 @@ describe('turn progress card wiring', () => {
 
   it('counts the pure-answer card as the turn\'s delivery (no duplicate reply card)', async () => {
     const ch = channel()
-    const { streaming, emit, bridge } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit, bridge } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
@@ -3377,7 +3404,7 @@ describe('turn progress card wiring', () => {
   it('withdraws the note when the answer card write is refused (fallback reply still goes out)', async () => {
     const ch = channel()
     ch.updateCardInstance = vi.fn(async () => { throw new Error('edit refused') })
-    const { streaming, emit, bridge } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit, bridge } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
@@ -3409,7 +3436,7 @@ describe('turn progress card wiring', () => {
 
   it('names the step the turn died in and the call it never ran (compact)', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     emit('tool/call', { callId: 'c1', name: 'read', arguments: '{"file_path":"a.ts"}' })
@@ -3438,7 +3465,7 @@ describe('turn progress card wiring', () => {
 
   it('drops the never-ran row when a retry commits and the call really runs (compact)', async () => {
     const ch = channel()
-    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as TranscriptView })
+    const { streaming, emit } = stepHarness(ch, { transcriptView: () => 'compact' as DisplayMode })
     emit('turn/start')
     emit('step/start', { turn: 1, step: 1 })
     // Attempt 1 streamed a call to `edit` and died…
@@ -3517,7 +3544,7 @@ describe('turn ownership across a plugin re-mount', () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(
       ch,
-      { transcriptView: () => 'compact' as TranscriptView },
+      { transcriptView: () => 'compact' as DisplayMode },
       { noTurnStart: true },
     )
     emit('step/start', { turn: 1, step: 1 })
@@ -3550,7 +3577,7 @@ describe('turn ownership across a plugin re-mount', () => {
     const ch = channel()
     const { streaming, emit } = stepHarness(
       ch,
-      { transcriptView: () => 'compact' as TranscriptView },
+      { transcriptView: () => 'compact' as DisplayMode },
       { noTurnStart: true, sessionMeta: () => ({ model: 'p/m', reasoningEffort: 'high' }) },
     )
     emit('request/header', { header: { config: { provider: 'cpa-codex', model: 'gpt-6.1-sol', reasoningEffort: 'xhigh' } } })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY,
-  isCompactToolRowStyle, parseCompactToolRow, parseTranscriptView, PREVIEW_LENGTH_CHOICES,
+  COMPACT_TOOL_ROW_STYLES, DEFAULT_COMPACT_TOOL_ROW, DEFAULT_TRANSCRIPT_VIEW, DETAILED_POLICY, DISPLAY_MODES,
+  isCompactToolRowStyle, parseCompactToolRow, parseDisplayMode, parseTranscriptView, PREVIEW_LENGTH_CHOICES,
   resolveDisplayPolicy, resolveDisplaySettings, TRANSCRIPT_VIEWS,
 } from '../src/display-level.ts'
 
@@ -76,17 +76,17 @@ describe('resolveDisplayPolicy', () => {
     // off there, and the fold is forced ON (compact has no step card to give a
     // flat chain).
     expect(resolveDisplayPolicy({ transcriptView: 'compact' })).toEqual({
-      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, minimal: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'compact', showReasoning: false }).reasoning).toBe('off')
     // A stored flat fold cannot un-fold the compact panel.
     expect(resolveDisplayPolicy({ transcriptView: 'compact', reasoningFold: false }).reasoningFold).toBe(true)
     expect(resolveDisplayPolicy({ transcriptView: 'standard' })).toEqual({
-      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, minimal: false, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(resolveDisplayPolicy({ transcriptView: 'verbose' })).toEqual({
-      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, minimal: false, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
     })
   })
 
@@ -95,7 +95,7 @@ describe('resolveDisplayPolicy', () => {
     // counting tool calls) instead of the WebUI's `detailed`.
     expect(DEFAULT_TRANSCRIPT_VIEW).toBe('compact')
     expect(resolveDisplayPolicy({})).toEqual({
-      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, minimal: false, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
   })
 
@@ -104,7 +104,7 @@ describe('resolveDisplayPolicy', () => {
     // that level changed.
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(DETAILED_POLICY).toEqual({
-      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, minimal: false, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
     })
   })
 
@@ -170,6 +170,32 @@ describe('turn-card step fold', () => {
     // both modes so the settings UI can read one source.
     expect(resolveDisplayPolicy({ transcriptView: 'detailed', stepsFold: false }).stepsFold).toBe(false)
     expect(DETAILED_POLICY.stepsFold).toBe(true)
+  })
+})
+
+describe('minimal mode', () => {
+  it('is a third card mode that keeps the compact (one turn card) topology', () => {
+    expect(DISPLAY_MODES).toEqual(['minimal', 'compact', 'detailed'])
+    expect(parseDisplayMode('minimal')).toBe('minimal')
+    expect(parseDisplayMode('compact')).toBe('compact')
+    expect(parseDisplayMode('verbose')).toBe('detailed')
+    expect(parseDisplayMode(undefined)).toBe('compact')
+    expect(resolveDisplaySettings({ transcriptView: 'minimal' }).mode).toBe('minimal')
+    const policy = resolveDisplayPolicy({ transcriptView: 'minimal' })
+    expect(policy).toMatchObject({
+      minimal: true,
+      turnCard: true,
+      // The minimal card carries no thinking and no tool payloads; the fold/page
+      // switch is ignored because the card is small by construction.
+      reasoning: 'off',
+      reasoningFold: true,
+      tools: 'off',
+      stepsFold: true,
+    })
+    // The three "richer" modes keep minimal off.
+    for (const level of ['compact', 'detailed'] as const) {
+      expect(resolveDisplayPolicy({ transcriptView: level }).minimal).toBe(false)
+    }
   })
 })
 

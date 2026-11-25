@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DISPLAY_KEYS, renderDisplayCard, startFeishuDisplay } from '../src/feishu-display.ts'
 import type { DisplayToggleKey } from '../src/commands.ts'
-import type { TranscriptView } from '../src/display-level.ts'
+import type { DisplayMode, TranscriptView } from '../src/display-level.ts'
 import { resolveDisplaySettings, type ToolDetail } from '../src/display-level.ts'
 import { translationsFor } from '../src/i18n.ts'
 
@@ -49,7 +49,7 @@ function switchesOf(card: any): any[] {
  */
 function cardFor(
   switches: Record<DisplayToggleKey, boolean>,
-  level: TranscriptView = 'detailed',
+  level: DisplayMode | TranscriptView = 'detailed',
   toolRow: 'tool' | 'tool-description' | 'description' = 'tool',
   overrides: {
     toolDetail?: ToolDetail
@@ -161,7 +161,7 @@ describe('renderDisplayCard', () => {
     const card = renderDisplayCard(cardFor(ALL_ON), t) as any
     expect(card.header.title.content).toBe('📇 卡片显示')
     // Two modes, no presets: the retired level names are gone from the card.
-    expect(modesOf(card).map((b: any) => b.behaviors[0].value.mode)).toEqual(['compact', 'detailed'])
+    expect(modesOf(card).map((b: any) => b.behaviors[0].value.mode)).toEqual(['minimal', 'compact', 'detailed'])
     expect(markdownsOf(card).join('\n')).not.toContain('预设')
     // The detailed mode offers the thinking switches and the tool rows.
     // Each boolean switch is a SHOW / HIDE pair (state, not a greyed-out toggle).
@@ -173,7 +173,7 @@ describe('renderDisplayCard', () => {
 
   it('offers no inert rows in the compact mode', () => {
     const card = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
-    expect(modesOf(card)).toHaveLength(2)
+    expect(modesOf(card)).toHaveLength(3)
     // Compact DOES show the thinking switch now (2026-11-25): its turn card
     // carries each step's chain as a folded panel. Everything else stays hidden
     // because compact's card carries the answer and the tool timeline:
@@ -240,6 +240,20 @@ describe('renderDisplayCard', () => {
     expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(0)
   })
 
+  it('offers the third mode, and the minimal card carries no inert rows', () => {
+    const card = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
+    expect(modesOf(card).map((b: any) => b.behaviors[0].value.mode)).toEqual(['minimal', 'compact', 'detailed'])
+    const minimal = renderDisplayCard(cardFor(ALL_ON, 'minimal'), t) as any
+    // Minimal shows no thinking, no truncation lengths, no tool row and no
+    // step-fold row: none of them would change anything there.
+    expect(switchesOf(minimal)).toHaveLength(0)
+    expect(lengthsOf(minimal)).toHaveLength(0)
+    expect(toolRowsOf(minimal)).toHaveLength(0)
+    expect(stepsFoldOf(minimal)).toHaveLength(0)
+    // Sanity: the other modes still carry them.
+    expect(lengthsOf(card)).toHaveLength(8)
+  })
+
   it('offers the turn-card step behaviour only in the compact mode', () => {
     const compact = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
     const buttons = stepsFoldOf(compact)
@@ -304,7 +318,7 @@ describe('renderDisplayCard', () => {
  */
 function makeDisplay(
   state: Record<DisplayToggleKey, boolean>,
-  level: TranscriptView = 'detailed',
+  level: DisplayMode = 'detailed',
   toolRow: 'tool' | 'tool-description' | 'description' = 'tool',
 ) {
   const spy = vi.fn()
@@ -376,7 +390,7 @@ function makeDisplay(
         state[key] = value
       },
       getLevel: () => level,
-      setLevel: (next: TranscriptView): void => {
+      setLevel: (next: DisplayMode): void => {
         levelSpy(next)
         level = next
       },
@@ -416,6 +430,19 @@ describe('startFeishuDisplay', () => {
     const activeRow = toolRowsOf(repainted(0)).find((b: any) => b.behaviors[0].value.toolRow === 'description')
     expect(activeRow).toMatchObject({ type: 'primary' })
     expect(activeRow.disabled).toBeUndefined()
+    handle.stop()
+  })
+
+  it('persists a minimal-mode tap then repaints the SAME card', async () => {
+    const { channel, click, sentCard, repainted } = makeChannel()
+    const { control, levelSpy } = makeDisplay(ALL_ON, 'compact')
+    const handle = startFeishuDisplay({ channel, display: control, logger: { warn: vi.fn(), error: vi.fn() }, getTranslations: () => t })
+    await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
+    const target = modesOf(sentCard(0)).find((b: any) => b.behaviors[0].value.mode === 'minimal')
+    await click({ messageId: 'om_1', action: { value: target.behaviors[0].value } })
+    expect(levelSpy).toHaveBeenCalledWith('minimal')
+    const active = modesOf(repainted(0)).find((b: any) => b.behaviors[0].value.mode === 'minimal')
+    expect(active).toMatchObject({ type: 'primary' })
     handle.stop()
   })
 
