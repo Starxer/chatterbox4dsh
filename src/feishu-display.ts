@@ -88,6 +88,8 @@ export interface DisplayCardState {
   switches: Record<DisplayToggleKey, boolean>
   /** Whether the thinking block folds into a panel (default) or shows flat. */
   folded: boolean
+  /** Compact only: fold the turn card's earlier steps (default) or page every 10. */
+  stepsFold: boolean
   /** What the tool section carries. */
   toolDetail: ToolDetail
   /** Whether tool payloads are carried untruncated. */
@@ -241,6 +243,15 @@ export function renderDisplayCard(state: DisplayCardState, t: Translations): obj
       active: style === state.toolRow,
       payload: { toolRow: style },
     })))))
+    // What happens to a growing turn card's steps: fold the old ones away, or
+    // page the card (nothing folds, a new card every 10 steps).
+    elements.push({ tag: 'hr' })
+    elements.push({ tag: 'markdown', content: section(t.displayCardStepsFoldTitle, t.displayCardStepsFoldHint) })
+    elements.push(buttonColumns(row(([true, false] as const).map(stepsFold => ({
+      text: choice(t.displayCardStepsFoldName(stepsFold), state.stepsFold === stepsFold),
+      active: state.stepsFold === stepsFold,
+      payload: { stepsFold },
+    })))))
   }
   elements.push({ tag: 'hr' })
   elements.push({ tag: 'markdown', content: section(t.displayCardTickTitle, t.displayCardTickHint) })
@@ -287,6 +298,7 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       settings,
       switches: display.get(),
       folded: settings.reasoningFold,
+      stepsFold: display.getStepsFold(),
       toolDetail: display.getToolDetail(),
       outputFull: display.getOutputFull(),
       lengths: {
@@ -352,6 +364,18 @@ export function startFeishuDisplay(deps: FeishuDisplayDeps): FeishuDisplayHandle
       }
       await repaint(messageId)
       console.log(`dsh-feishu: [display] folded=${String(parsed.folded)} card=${messageId}`)
+      return
+    }
+    if (typeof parsed.stepsFold === 'boolean') {
+      if (display.getStepsFold() === parsed.stepsFold) return
+      try {
+        await display.setStepsFold(parsed.stepsFold)
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        logger.warn(`dsh-feishu: display steps write failed: ${msg}`)
+      }
+      await repaint(messageId)
+      console.log(`dsh-feishu: [display] stepsFold=${String(parsed.stepsFold)} card=${messageId}`)
       return
     }
     const toolRow = parsed.toolRow

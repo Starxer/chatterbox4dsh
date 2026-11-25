@@ -152,6 +152,13 @@ export interface DisplaySettings {
   mode: DisplayMode
   reasoning: ReasoningDetail
   reasoningFold: boolean
+  /**
+   * `compact` only: whether earlier steps of the turn card fold away (default)
+   * or the card pages itself. On = the visible window keeps the newest steps and
+   * older ones move into a collapsed panel; off = no folding, the card carries
+   * up to {@link COMPACT_PAGE_STEPS} steps and the next step opens a new card.
+   */
+  stepsFold: boolean
   tools: ToolDetail
   toolArgs: boolean
   toolResults: boolean
@@ -163,6 +170,12 @@ export interface DisplayPolicy {
   reasoning: ReasoningDetail
   /** Render the whole chain inside a collapsed panel instead of flat on the card. */
   reasoningFold: boolean
+  /**
+   * `compact` only: fold the turn card's earlier steps (on) or paginate the card
+   * every {@link COMPACT_PAGE_STEPS} steps (off). Ignored outside `compact`,
+   * which has no turn card.
+   */
+  stepsFold: boolean
   tools: ToolDetail
   /** Whether tool ARGUMENT blocks are rendered at all. */
   toolArgs: boolean
@@ -176,6 +189,15 @@ export interface DisplayPolicy {
    */
   turnCard: boolean
 }
+
+/**
+ * Steps one paginated turn card carries.
+ *
+ * Only used when the fold switch is OFF (`stepsFold: false`): the card then
+ * shows every step instead of folding the old ones away, so it has to end
+ * somewhere — the next step after this many opens a new card below.
+ */
+export const COMPACT_PAGE_STEPS = 10
 
 /** The baseline switch values a resolved policy assumes. */
 export const DEFAULT_SWITCHES = {
@@ -229,6 +251,7 @@ export function resolveDisplaySettings(input: {
   showToolArgs?: boolean | undefined
   showToolResults?: boolean | undefined
   reasoningFold?: boolean | undefined
+  stepsFold?: boolean | undefined
   toolDetail?: unknown
   toolOutputFull?: unknown
 }): DisplaySettings {
@@ -244,6 +267,8 @@ export function resolveDisplaySettings(input: {
     mode: legacyName === 'compact' ? 'compact' : 'detailed',
     reasoning,
     reasoningFold: input.reasoningFold ?? true,
+    // Default: fold the turn card's earlier steps (the pre-switch behavior).
+    stepsFold: input.stepsFold ?? true,
     tools,
     toolArgs: input.showToolArgs !== false,
     toolResults: input.showToolResults !== false,
@@ -279,6 +304,9 @@ export function resolveDisplayPolicy(input: Parameters<typeof resolveDisplaySett
     // compact: always folded (the flat form is a step-card shape, and compact
     // has no step card to give it).
     reasoningFold: compact ? true : settings.reasoningFold,
+    // Where the turn card's steps go once it grows: fold the old ones (on) or
+    // page the card (off). Only the compact turn card reads it.
+    stepsFold: settings.stepsFold,
     tools: compact ? 'off' : settings.tools,
     toolArgs: full && settings.toolArgs,
     toolResults: full && settings.toolResults,

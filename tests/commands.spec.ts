@@ -103,6 +103,11 @@ const translations: CommandTranslations = {
   displayFoldFixedCompact: 'compact always folds',
   displayFoldSet: (name: string) => `fold set to ${name}`,
   displayFoldUsage: 'Usage: /display fold on|off',
+  displayStepsFoldLabel: 'steps',
+  displayStepsFoldName: (folded: boolean) => String(folded),
+  displayStepsFoldSet: (name: string) => `steps ${name}`,
+  displayStepsFoldUsage: 'Usage: /display steps on|off',
+
   displayModeLabel: 'Mode',
   displayModeName: (mode: 'compact' | 'detailed') => mode,
   displayToolDetailName: (detail: string) => detail,
@@ -142,10 +147,13 @@ const stubDisplay: DisplayControl = {
   setToolRow: vi.fn(),
   getFold: () => true,
   setFold: vi.fn(),
+  getStepsFold: () => true,
+  setStepsFold: vi.fn(),
   getSettings: () => ({
     mode: 'detailed' as const,
     reasoning: 'on' as const,
     reasoningFold: true,
+    stepsFold: true,
     tools: 'full' as const,
     toolArgs: true,
     toolResults: true,
@@ -307,6 +315,7 @@ describe('/display command', () => {
     setElapsedRefreshSeconds: vi.fn(),
     setToolRow: vi.fn(),
     setFold: vi.fn(),
+    setStepsFold: vi.fn(),
     setToolDetail: vi.fn(),
     setOutputFull: vi.fn(),
     setPreviewChars: vi.fn(),
@@ -366,6 +375,19 @@ describe('/display command', () => {
     await handleDisplayCommand(invocation('fold on'), translations, display)
     expect(display.setFold).toHaveBeenLastCalledWith(true)
     expect((await handleDisplayCommand(invocation('fold maybe'), translations, display)).kind).toBe('error')
+  })
+
+  it('switches the turn card between folding steps and paging every 10', async () => {
+    const display = { ...control(), getStepsFold: () => true }
+    const report = await handleDisplayCommand(invocation('steps'), translations, display)
+    expect(report.kind).toBe('success')
+    expect(report.text).toContain('Usage: /display steps on|off')
+    const paged = await handleDisplayCommand(invocation('steps off'), translations, display)
+    expect(display.setStepsFold).toHaveBeenCalledWith(false)
+    expect(paged.text).toContain(`steps ${String(false)}`)
+    await handleDisplayCommand(invocation('steps on'), translations, display)
+    expect(display.setStepsFold).toHaveBeenLastCalledWith(true)
+    expect((await handleDisplayCommand(invocation('steps maybe'), translations, display)).kind).toBe('error')
   })
 
   it('accepts aliases and on/off spellings', async () => {

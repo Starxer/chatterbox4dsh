@@ -90,6 +90,13 @@ export interface DisplayControl {
   setPreviewChars: (field: PreviewLengthField, chars: number) => void | Promise<void>
   /** Persist the fold choice. Asynchronous for the same reason as {@link set}. */
   setFold: (folded: boolean) => void | Promise<void>
+  /**
+   * Compact turn card: whether earlier steps fold away (default). Off means
+   * nothing folds — the card carries every step and a new card opens every 10.
+   */
+  getStepsFold: () => boolean
+  /** Persist the step-fold choice. Asynchronous for the same reason as {@link set}. */
+  setStepsFold: (folded: boolean) => void | Promise<void>
   /** Persist the level. Asynchronous for the same reason as {@link set}. */
   setLevel: (level: TranscriptView) => void | Promise<void>
   /** Shared clock refresh interval for compact progress and step placeholders. */
@@ -211,6 +218,11 @@ export interface CommandTranslations {
   readonly displayFoldFixedCompact: string
   readonly displayFoldSet: (name: string) => string
   readonly displayFoldUsage: string
+  /** Turn-card step behaviour (`/display steps on|off`; compact only). */
+  readonly displayStepsFoldLabel: string
+  readonly displayStepsFoldName: (folded: boolean) => string
+  readonly displayStepsFoldSet: (name: string) => string
+  readonly displayStepsFoldUsage: string
   /** Mode (two layouts) and preset (a named bundle of switches). */
   readonly displayModeLabel: string
   readonly displayModeName: (mode: 'compact' | 'detailed') => string
@@ -738,6 +750,7 @@ export async function handleDisplayCommand(
       `${t.displayModeLabel}: ${t.displayModeName(settings.mode)}`,
       `${t.displayFoldLabel}: ${t.displayFoldName(settings.reasoningFold)}`,
       ...(settings.mode === 'compact' ? [t.displayFoldFixedCompact] : []),
+      ...(settings.mode === 'compact' ? [`${t.displayStepsFoldLabel}: ${t.displayStepsFoldName(display.getStepsFold())}`] : []),
       `${t.displayToolRowLabel}: ${t.displayToolRowName(display.getToolRow())}`,
       `${t.displayToolDetailLabel}: ${t.displayToolDetailName(settings.tools)}`,
       `${t.displayOutputLabel}: ${t.displayOutputName(display.getOutputFull())}`,
@@ -765,6 +778,22 @@ export async function handleDisplayCommand(
     }
     await display.setFold(folded)
     return { kind: 'success', text: t.displayFoldSet(t.displayFoldName(folded)) }
+  }
+  if (rawKey === 'steps') {
+    if (rawValue === undefined) {
+      return {
+        kind: 'success',
+        text: `${t.displayStepsFoldLabel}: ${t.displayStepsFoldName(display.getStepsFold())}\n${t.displayStepsFoldUsage}`,
+      }
+    }
+    const folded = rawValue === 'on' || rawValue === 'fold' || rawValue === 'folded'
+      ? true
+      : rawValue === 'off' || rawValue === 'page' || rawValue === 'paged' ? false : undefined
+    if (extra !== undefined || folded === undefined) {
+      return { kind: 'error', text: t.displayStepsFoldUsage }
+    }
+    await display.setStepsFold(folded)
+    return { kind: 'success', text: t.displayStepsFoldSet(t.displayStepsFoldName(folded)) }
   }
   if (rawKey === 'tools') {
     const detail = rawValue === undefined
@@ -1051,7 +1080,7 @@ export function renderFeishuCommandsOnly(t: CommandTranslations): string {
     { name: 'model', description: t.modelDescription, hint: '[list|last|provider/model]' },
     { name: 'status', description: t.statusDescription },
     { name: 'reasoning', description: t.reasoningDescription, hint: '[off|low|high|max]' },
-    { name: 'display', description: t.displayDescription, hint: '[level|switch on/off|tick 3/5/10/30]' },
+    { name: 'display', description: t.displayDescription, hint: '[level|switch on/off|tick 3/5/10/30|toolrow|steps on/off]' },
     { name: 'new', description: t.newDescription },
     { name: 'session', description: t.threadDescription, hint: '[N]' },
     { name: 'detach', description: t.detachDescription, hint: '<N>' },

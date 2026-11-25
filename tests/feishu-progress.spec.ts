@@ -336,6 +336,40 @@ describe('renderProgressCard', () => {
     }
   })
 
+  it('keeps every step of a page visible when the fold switch is off', () => {
+    // `/display steps off`: nothing folds, so a page (COMPACT_PAGE_STEPS steps)
+    // renders every one of them — no older-steps panel at all.
+    const total = 10
+    const steps = Array.from({ length: total }, (_, i) => ({
+      step: i + 1,
+      startedAt: 0,
+      endedAt: 100,
+      tools: [{ name: `t${i}`, startedAt: 0, elapsed: 10 }],
+    }))
+    const card: any = renderProgressCard(t, { steps, calls: total, failed: 0, turnStart: 0, now: 200, failedTurn: false }, undefined, { foldSteps: false })
+    expect(tagsOf(card)).not.toContain('collapsible_panel')
+    const lines = visibleLines(card)
+    for (let i = 0; i < total; i++) {
+      expect(lines).toContain(t.turnCardStepDetail(i + 1, '100ms'))
+    }
+  })
+
+  it('folds the same page once the switch is on (the pre-switch shape)', () => {
+    const total = 10
+    const steps = Array.from({ length: total }, (_, i) => ({
+      step: i + 1,
+      startedAt: 0,
+      endedAt: 100,
+      tools: [{ name: `t${i}`, startedAt: 0, elapsed: 10 }],
+    }))
+    const folded: any = renderProgressCard(t, { steps, calls: total, failed: 0, turnStart: 0, now: 200, failedTurn: false }, undefined, { foldSteps: true })
+    expect(tagsOf(folded)).toContain('collapsible_panel')
+    expect(foldedElements(folded)).toHaveLength(total - PROGRESS_MAX_STEPS)
+    // An omitted option keeps the folded shape: the switch is opt-in.
+    const legacy: any = renderProgressCard(t, { steps, calls: total, failed: 0, turnStart: 0, now: 200, failedTurn: false })
+    expect(tagsOf(legacy)).toContain('collapsible_panel')
+  })
+
   it('carries no button and no tappable row (the card must stay updatable)', () => {    // 关键坑 11: a card carrying buttons stops delivering callbacks after 2-3
     // in-place updates; 关键坑 55: a tapped `interactive_container` row stops
     // delivering row callbacks. This card's whole model is "one message, many
@@ -770,7 +804,7 @@ describe('renderProgressCard', () => {
 })
 
 describe('createProgressCards', () => {
-  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number } = {}) {
+  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number; foldSteps?: () => boolean } = {}) {
     const channel = {
       send: vi.fn(async (_to: string, input: { card?: object; text?: string }) =>
         input.card !== undefined && options.failCardSend
@@ -789,6 +823,7 @@ describe('createProgressCards', () => {
       logger,
       getTranslations: () => t,
       elapsedRefreshSeconds: options.elapsedRefreshSeconds,
+      ...(options.foldSteps === undefined ? {} : { foldSteps: options.foldSteps }),
       ...(options.interleave === undefined ? {} : { interleave: options.interleave }),
     })
     return { channel, logger, cards }
@@ -1315,6 +1350,47 @@ describe('createProgressCards', () => {
       const card = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
       expect(card).toContain('↳')
     })
+  })
+
+  it('pages the turn card every 10 steps when the fold switch is off', async () => {
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ foldSteps: () => false })
+    let created = 0
+    channel.createCardInstance.mockImplementation((async () => `card-${++created}`) as any)
+    /** The newest card JSON written for one instance (its send render otherwise). */
+    const latest = (index: number): any => {
+      const id = `card-${index + 1}`
+      const writes = channel.updateCardInstance.mock.calls.filter((call: any[]) => call[0] === id)
+      return writes.length > 0
+        ? (writes.at(-1) as any[])[1]
+        : (channel.createCardInstance.mock.calls[index] as any[])[0]
+    }
+    cards.beginTurn(chat, 's1', 0)
+    for (let step = 1; step <= 10; step++) {
+      cards.stepStarted('s1', step, step * 1_000)
+      cards.stepEnded('s1', step * 1_000 + 900)
+      await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS + 100)
+    }
+    // A full page is still ONE card.
+    expect(created).toBe(1)
+    // The 11th step does not fit on a non-folding card: a new page opens below.
+    cards.stepStarted('s1', 11, 11_000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(created).toBe(2)
+    await cards.finish('s1', 12_000, false)
+    const page1 = latest(0)
+    const page2 = latest(1)
+    // Page 1 keeps its ten steps; page 2 owns the 11th only.
+    const page1Text = mdOf(page1)
+    expect(page1Text).toContain(t.turnCardStepDetail(1, '900ms'))
+    expect(page1Text).toContain(t.turnCardStepDetail(10, '900ms'))
+    expect(page1Text).not.toContain(t.turnCardStepDetail(11, '0ms'))
+    const page2Text = mdOf(page2)
+    expect(page2Text).toContain(t.turnCardStepDetail(11, '1.0s'))
+    expect(page2Text).not.toContain(t.turnCardStepDetail(10, '900ms'))
+    // Neither page folds anything away — that is the point of the switch.
+    expect(tagsOf(page1)).not.toContain('collapsible_panel')
+    expect(tagsOf(page2)).not.toContain('collapsible_panel')
   })
 
   it('opens a NEW card after another module posts one, showing only new rows', async () => {

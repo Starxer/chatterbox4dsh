@@ -164,6 +164,12 @@ export interface FeishuStreamingDeps {
    * chain flat on the card. Read live like the switches above.
    */
   reasoningFold?: () => boolean | undefined
+  /**
+   * Compact turn card only: fold its earlier steps (default) or page the card —
+   * no folding, a new card every `COMPACT_PAGE_STEPS` steps. Read live, so a
+   * `/display steps` write applies to the next event without a remount.
+   */
+  stepsFold?: () => boolean | undefined
   /** What the tool section carries (unset keeps the legacy level's default). */
   toolDetail?: () => 'off' | 'count' | 'summary' | 'full' | undefined
   /** Whether tool payloads are carried untruncated (unset keeps the legacy default). */
@@ -583,7 +589,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    */
   hasActiveTurn: () => boolean
 } {
-  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, toolDetail, toolOutputFull, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
+  const { ctx, channel, bridgeHolder, logger, showReasoning, showToolCalls, showToolArgs, showToolResults, transcriptView, reasoningFold, stepsFold, toolDetail, toolOutputFull, getTranslations, noteDetachedJob, hydrateImages, warmImages, interleave, produceCard: produceCardMode } = deps
   /** Live caps; read per render so a settings write needs no remount. */
   const previewLimits = (): PreviewLimits => deps.previewLimits?.() ?? DEFAULT_PREVIEW_LIMITS
   console.log('dsh-feishu: startFeishuStreaming (unified per-step cards)')
@@ -629,6 +635,9 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     // (2026-11-25); the switch is the same `showReasoning` the step cards use,
     // read live so toggling it repaints the next card without a remount.
     showReasoning: () => displayPolicy().reasoning !== 'off',
+    // Where a growing turn card's older steps go (folded away, or a new card
+    // every 10 steps). Same live-read contract as the switch above.
+    foldSteps: () => displayPolicy().stepsFold,
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
     ...(interleave === undefined ? {} : { interleave }),
   })
@@ -743,6 +752,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     showToolArgs: showToolArgs?.(),
     showToolResults: showToolResults?.(),
     reasoningFold: reasoningFold?.(),
+    stepsFold: stepsFold?.(),
     toolDetail: toolDetail?.(),
     toolOutputFull: toolOutputFull?.(),
   })

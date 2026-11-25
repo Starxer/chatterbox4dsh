@@ -55,6 +55,7 @@ function cardFor(
     toolDetail?: ToolDetail
     outputFull?: boolean
     folded?: boolean
+    stepsFold?: boolean
     preview?: boolean
     lengths?: Partial<Record<'args' | 'result', number>>
   } = {},
@@ -66,6 +67,7 @@ function cardFor(
     showToolArgs: switches.args,
     showToolResults: switches.results,
     reasoningFold: overrides.folded ?? true,
+    stepsFold: overrides.stepsFold ?? true,
     ...(overrides.toolDetail === undefined ? {} : { toolDetail: overrides.toolDetail }),
     ...(overrides.outputFull === undefined ? {} : { toolOutputFull: overrides.outputFull }),
   })
@@ -74,6 +76,7 @@ function cardFor(
     settings,
     switches,
     folded: settings.reasoningFold,
+    stepsFold: settings.stepsFold,
     toolDetail: settings.tools,
     outputFull: settings.toolOutputFull,
     lengths: { args: 2000, result: 1500, ...overrides.lengths },
@@ -105,6 +108,11 @@ function switchButtonsOf(card: any, key: DisplayToggleKey): any[] {
 /** Only the compact tool-row style buttons. */
 function toolRowsOf(card: any): any[] {
   return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.toolRow !== undefined)
+}
+
+/** Only the turn-card step behaviour buttons (fold / page). */
+function stepsFoldOf(card: any): any[] {
+  return buttonsOf(card).filter((b: any) => b.behaviors?.[0]?.value?.stepsFold !== undefined)
 }
 
 /**
@@ -232,6 +240,17 @@ describe('renderDisplayCard', () => {
     expect(toolRowsOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(0)
   })
 
+  it('offers the turn-card step behaviour only in the compact mode', () => {
+    const compact = renderDisplayCard(cardFor(ALL_ON, 'compact'), t) as any
+    const buttons = stepsFoldOf(compact)
+    expect(buttons.map((b: any) => b.behaviors[0].value.stepsFold)).toEqual([true, false])
+    const active = buttons.find((b: any) => b.behaviors[0].value.stepsFold === true)
+    expect(active).toMatchObject({ type: 'primary' })
+    expect(active.disabled).toBeUndefined()
+    // The detailed mode has no turn card, so the row would be inert.
+    expect(stepsFoldOf(renderDisplayCard(cardFor(ALL_ON, 'detailed'), t))).toHaveLength(0)
+  })
+
   it('marks the active tool detail and flips it with one tap', () => {
     const summary = renderDisplayCard(cardFor(ALL_ON, 'standard'), t) as any
     const activeDetail = toolDetailOf(summary).find((b: any) => b.behaviors[0].value.toolDetail === 'summary')
@@ -293,9 +312,11 @@ function makeDisplay(
   const tickSpy = vi.fn()
   const toolRowSpy = vi.fn()
   const foldSpy = vi.fn()
+  const stepsFoldSpy = vi.fn()
   const lengthSpy = vi.fn()
   let seconds = 5
   let folded = true
+  let stepsFold = true
   let preview = true
   let toolDetail: ToolDetail | undefined
   let outputFull: boolean | undefined
@@ -307,6 +328,7 @@ function makeDisplay(
     showToolArgs: state.args,
     showToolResults: state.results,
     reasoningFold: folded,
+    stepsFold,
     ...(toolDetail === undefined ? {} : { toolDetail }),
     ...(outputFull === undefined ? {} : { toolOutputFull: outputFull }),
   })
@@ -316,6 +338,7 @@ function makeDisplay(
     tickSpy,
     toolRowSpy,
     foldSpy,
+    stepsFoldSpy,
     lengthSpy,
     control: {
       getSettings: settings,
@@ -334,6 +357,11 @@ function makeDisplay(
       setFold: (next: boolean): void => {
         foldSpy(next)
         folded = next
+      },
+      getStepsFold: () => stepsFold,
+      setStepsFold: (next: boolean): void => {
+        stepsFoldSpy(next)
+        stepsFold = next
       },
       getToolRow: () => toolRow,
       setToolRow: (next: 'tool' | 'tool-description' | 'description'): void => {
@@ -388,6 +416,23 @@ describe('startFeishuDisplay', () => {
     const activeRow = toolRowsOf(repainted(0)).find((b: any) => b.behaviors[0].value.toolRow === 'description')
     expect(activeRow).toMatchObject({ type: 'primary' })
     expect(activeRow.disabled).toBeUndefined()
+    handle.stop()
+  })
+
+  it('persists a step-fold tap then repaints the SAME card', async () => {
+    const { channel, click, sentCard, repainted } = makeChannel()
+    const { control, stepsFoldSpy } = makeDisplay(ALL_ON, 'compact')
+    const handle = startFeishuDisplay({ channel, display: control, logger: { warn: vi.fn(), error: vi.fn() }, getTranslations: () => t })
+    await handle.open({ chatId: 'oc_1', chatType: 'p2p' })
+    const target = stepsFoldOf(sentCard(0)).find((b: any) => b.behaviors[0].value.stepsFold === false)
+    await click({ messageId: 'om_1', action: { value: target.behaviors[0].value } })
+    expect(stepsFoldSpy).toHaveBeenCalledWith(false)
+    expect(channel.updateCard.mock.calls[0]![0]).toBe('om_1')
+    const active = stepsFoldOf(repainted(0)).find((b: any) => b.behaviors[0].value.stepsFold === false)
+    expect(active).toMatchObject({ type: 'primary' })
+    // The active choice is a STATE: tapping it again writes nothing.
+    await click({ messageId: 'om_1', action: { value: { p: 'display', stepsFold: false } } })
+    expect(stepsFoldSpy).toHaveBeenCalledTimes(1)
     handle.stop()
   })
 
@@ -506,6 +551,8 @@ describe('startFeishuDisplay', () => {
         setPreviewChars: () => undefined,
         getFold: () => true,
         setFold: () => undefined,
+        getStepsFold: () => true,
+        setStepsFold: () => undefined,
         getPreview: () => true,
         setPreview: () => undefined,
         getLevel: () => 'detailed' as const,

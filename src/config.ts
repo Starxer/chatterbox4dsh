@@ -61,6 +61,11 @@ export interface Config {
    * chain flat on the step card. The chain is never truncated either way.
    */
   reasoningFold?: boolean
+  /**
+   * Compact only: fold the turn card's earlier steps into a collapsed panel
+   * (default) or page the card — no folding, a new card every 10 steps.
+   */
+  stepsFold?: boolean
   /** What the tool section carries; unset keeps the legacy level's default. */
   toolDetail?: 'off' | 'summary' | 'full'
   /** Whether tool payloads are carried untruncated; unset keeps the legacy default. */
@@ -316,6 +321,8 @@ export interface SettingsConfig extends Required<Pick<Config,
   apiQuotaPerMonth?: number
   /** Fold the thinking block (default) or show it flat; optional for partial callers. */
   reasoningFold?: boolean
+  /** Compact turn card: fold earlier steps (default) or page every 10 steps. */
+  stepsFold?: boolean
   /** Tool detail override; optional for partial callers. */
   toolDetail?: 'off' | 'summary' | 'full'
   /** Tool output truncation override; optional for partial callers. */
@@ -399,6 +406,7 @@ export const ConfigSchema = z.object({
   toolDetail: z.union(['off', 'summary', 'full']).volatile().description('What the tool section of a step card carries: off (nothing), summary (one line per call) or full (summary plus argument/result blocks). Unset keeps the value the retired level name implies, so an upgrade does not change the look.'),
   toolOutputFull: z.boolean().volatile().description('Whether tool argument/result blocks are carried untruncated (up to four times the configured preview length, hard cap 6000 characters, because a card near 30 KB is refused whole). Unset keeps the retired level name\'s value.'),
   reasoningFold: z.boolean().default(true).volatile().description('Fold the thinking block into a collapsed panel (default). Off shows the whole chain flat on the step card. The chain is never truncated either way: past one card it continues on follow-up cards.'),
+  stepsFold: z.boolean().default(true).volatile().description('Compact turn card only: fold earlier steps into a collapsed panel (default) so the card keeps showing only the newest work. Off means nothing folds away - the card shows every step and opens a NEW card once it holds 10 steps.'),
   apiQuotaPerMonth: z.number().min(0).max(10_000_000).default(0).volatile().description('Monthly API-call quota for this app, as shown in the open-platform console (default: unset = unknown). Kept for reference only and NOT rendered anywhere: the plugin counts only its OWN calls while the app quota is shared with other consumers, so a percentage would misrepresent the budget.'),
   resultPreviewChars: z.number().min(PREVIEW_CHARS.result.min).max(PREVIEW_CHARS.result.max).default(PREVIEW_CHARS.result.default).volatile().description('Characters of one tool result preview on a step card. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 1500.'),
   argsPreviewChars: z.number().min(PREVIEW_CHARS.args.min).max(PREVIEW_CHARS.args.max).default(PREVIEW_CHARS.args.default).volatile().description('Characters of one tool call\'s arguments block. The verbose level shows four times as much, capped at 6000. Range 200-6000, default 2000.'),
@@ -445,6 +453,7 @@ export function resolveSettingsConfig(config: ConfigInput): SettingsConfig {
     elapsedRefreshSeconds: parseElapsedRefreshSeconds(readField(config.elapsedRefreshSeconds)),
     ...(quota === undefined || quota <= 0 ? {} : { apiQuotaPerMonth: Math.min(10_000_000, Math.floor(quota)) }),
     reasoningFold: readField(config.reasoningFold) ?? true,
+    stepsFold: readField(config.stepsFold) ?? true,
     // Unset must stay absent (exactOptionalPropertyTypes): the resolver reads
     // "absent" as "keep whatever the retired level name implied".
     ...(readField(config.toolDetail) === undefined

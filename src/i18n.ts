@@ -580,6 +580,15 @@ export interface Translations {
   /** One row style's short name (`仅工具` / `描述 + 工具` / `仅描述`). */
   displayToolRowName: (style: CompactToolRowStyle) => string
   displayCardToolRowButton: (name: string, active: boolean) => string
+  /** Turn-card step behaviour (compact only): fold earlier steps or page every 10. */
+  displayCardStepsFoldTitle: string
+  displayCardStepsFoldHint: string
+  displayCardStepsFoldName: (folded: boolean) => string
+  /** `/display steps on|off` text-path strings. */
+  displayStepsFoldLabel: string
+  displayStepsFoldName: (folded: boolean) => string
+  displayStepsFoldSet: (name: string) => string
+  displayStepsFoldUsage: string
   /** Notation under the switches when the active level ignores some of them. */
   displayCardSwitchesHiddenByLevel: string
   /** `/display toolrow ...` text-path strings (also the `/display` listing). */
@@ -1309,6 +1318,13 @@ export const zh = {
     description: '仅描述',
   })[style],
   displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
+  displayCardStepsFoldTitle: '**回合卡步骤**（仅「紧凑」模式）',
+  displayCardStepsFoldHint: '_折叠 = 只展开最近的步骤，更早的收进折叠块；不折叠 = 每满 10 步就发一张新卡，一页里的步骤全部展开。_',
+  displayCardStepsFoldName: folded => folded ? '折叠之前的步骤' : '每 10 步一张卡',
+  displayStepsFoldLabel: '回合卡步骤',
+  displayStepsFoldName: folded => folded ? '折叠之前的步骤' : '每 10 步一张卡',
+  displayStepsFoldSet: name => `✅ 回合卡步骤已切换为「${name}」。`,
+  displayStepsFoldUsage: '用法：`/display steps on|off`（on = 折叠之前的步骤；off = 不折叠，每 10 步一张新卡）',
   displayCardSwitchesHiddenByLevel: '_当前模式下不起作用的开关已隐藏。_',
   displayCardChoice: (name, active) => `${active ? '✓ ' : ''}${name}`,
   displayShow: '显示',
@@ -1955,6 +1971,13 @@ export const en: Translations = {
     description: 'Description only',
   })[style],
   displayCardToolRowButton: (name, active) => `${active ? '🔘' : '⚪'} ${name}`,
+  displayCardStepsFoldTitle: '**Turn-card steps** (compact only)',
+  displayCardStepsFoldHint: '_Fold = keep the newest steps visible and tuck the older ones into a collapsed panel. Do not fold = open a NEW card every 10 steps and keep every step of a page expanded._',
+  displayCardStepsFoldName: folded => folded ? 'Fold earlier steps' : 'New card every 10 steps',
+  displayStepsFoldLabel: 'Turn-card steps',
+  displayStepsFoldName: folded => folded ? 'Fold earlier steps' : 'New card every 10 steps',
+  displayStepsFoldSet: name => `✅ Turn-card steps set to "${name}".`,
+  displayStepsFoldUsage: 'Usage: `/display steps on|off` (on = fold earlier steps; off = no folding, a new card every 10 steps)',
   displayCardSwitchesHiddenByLevel: '_Switches the active level cannot use are hidden: arguments/results apply to detailed and verbose only, reasoning is never shown in compact._',
   displayCardChoice: (name, active) => `${active ? '✓ ' : ''}${name}`,
   displayShow: 'Show',

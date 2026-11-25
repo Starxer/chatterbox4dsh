@@ -76,17 +76,17 @@ describe('resolveDisplayPolicy', () => {
     // off there, and the fold is forced ON (compact has no step card to give a
     // flat chain).
     expect(resolveDisplayPolicy({ transcriptView: 'compact' })).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'compact', showReasoning: false }).reasoning).toBe('off')
     // A stored flat fold cannot un-fold the compact panel.
     expect(resolveDisplayPolicy({ transcriptView: 'compact', reasoningFold: false }).reasoningFold).toBe(true)
     expect(resolveDisplayPolicy({ transcriptView: 'standard' })).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false,
     })
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(resolveDisplayPolicy({ transcriptView: 'verbose' })).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false,
     })
   })
 
@@ -95,7 +95,7 @@ describe('resolveDisplayPolicy', () => {
     // counting tool calls) instead of the WebUI's `detailed`.
     expect(DEFAULT_TRANSCRIPT_VIEW).toBe('compact')
     expect(resolveDisplayPolicy({})).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true,
     })
   })
 
@@ -104,7 +104,7 @@ describe('resolveDisplayPolicy', () => {
     // that level changed.
     expect(resolveDisplayPolicy({ transcriptView: 'detailed' })).toEqual(DETAILED_POLICY)
     expect(DETAILED_POLICY).toEqual({
-      reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
+      reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: false, turnCard: false,
     })
   })
 
@@ -157,6 +157,19 @@ describe('resolveDisplayPolicy', () => {
 
   it('reads an unreadable stored level the way the WebUI would', () => {
     expect(resolveDisplayPolicy({ transcriptView: 'expanded' }).reasoning).toBe('on')
+  })
+})
+
+describe('turn-card step fold', () => {
+  it('defaults to folding and keeps an explicit choice', () => {
+    expect(resolveDisplaySettings({}).stepsFold).toBe(true)
+    expect(resolveDisplayPolicy({}).stepsFold).toBe(true)
+    expect(resolveDisplaySettings({ stepsFold: false }).stepsFold).toBe(false)
+    expect(resolveDisplayPolicy({ stepsFold: false }).stepsFold).toBe(false)
+    // The switch is compact-only in effect, but the resolved value is carried in
+    // both modes so the settings UI can read one source.
+    expect(resolveDisplayPolicy({ transcriptView: 'detailed', stepsFold: false }).stepsFold).toBe(false)
+    expect(DETAILED_POLICY.stepsFold).toBe(true)
   })
 })
 

@@ -41,7 +41,7 @@ import { startFeishuStreaming } from './feishu-streaming.ts'
 import { installFeishuSurfacePrompt } from './feishu-surface.ts'
 import { startFeishuExternalTurns } from './feishu-external-turns.ts'
 import { sendStartupNoticeOnce } from './feishu-startup-notice.ts'
-import { resolveDisplaySettings } from './display-level.ts'
+import { resolveDisplayPolicy, resolveDisplaySettings } from './display-level.ts'
 import { noteDeliveredFile, wasDeliveredFile } from './deliver-files.ts'
 import { startFeishuDeliverables, type DeliverFileSender, type FeishuDeliverHandle } from './feishu-deliver.ts'
 import type { TurnStats } from './feishu-streaming.ts'
@@ -180,6 +180,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
     showToolArgs: currentSettings().showToolArgs,
     showToolResults: currentSettings().showToolResults,
     reasoningFold: currentSettings().reasoningFold,
+    stepsFold: currentSettings().stepsFold ?? true,
     toolDetail: currentSettings().toolDetail,
     toolOutputFull: currentSettings().toolOutputFull,
   })
@@ -1224,6 +1225,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       logger: ctx.logger('dsh-feishu'),
       showReasoning: () => currentSettings().showReasoning,
       reasoningFold: () => currentSettings().reasoningFold ?? true,
+      stepsFold: () => resolveDisplayPolicy(displayInput()).stepsFold,
       toolDetail: () => currentSettings().toolDetail,
       toolOutputFull: () => currentSettings().toolOutputFull,
       showToolCalls: () => currentSettings().showToolCalls,
@@ -1586,6 +1588,14 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
       const write = writeDisplaySetting([{ op: 'set', path: ['reasoningFold'], value: folded }])
       write.catch((error: unknown) => {
         console.log(`dsh-feishu: /display fold write failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return write
+    },
+    getStepsFold: () => currentSettings().stepsFold ?? true,
+    setStepsFold: (folded) => {
+      const write = writeDisplaySetting([{ op: 'set', path: ['stepsFold'], value: folded }])
+      write.catch((error: unknown) => {
+        console.log(`dsh-feishu: /display steps write failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       return write
     },

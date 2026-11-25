@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 新增：紧凑回合卡「之前的步骤」折叠开关，关掉就每 10 步一张新卡（`display-level.ts` / `config.ts` / `feishu-progress.ts` / `commands.ts` / `feishu-display.ts` / `i18n.ts` / `index.ts` / `feishu-streaming.ts`，2026-11-25）
+
+- 使用者的要求：紧凑模式的回合卡加一个开关，控制「之前的步骤是否锁起来（折叠）」；**关掉时每 10 个步骤一张卡片，满 10 步就发新卡**。
+- **开（默认）**：行为与之前一致 —— 只展开最近 5 步（`PROGRESS_MAX_STEPS`），更早的收进折叠面板，回合卡始终只有一张。
+- **关**：卡片不折叠，一页最多 10 步（`COMPACT_PAGE_STEPS`）；第 11 步开始时把当前卡**冻结**（按 `endSegment` 同一套机制：快照 facts、不再增长、`turn/end` 时补上整轮结局），并在线程里新开一张卡接着写。同一回合因此可以有多张分页卡，每张只显示自己那 10 步。
+- 设置项 `stepsFold`（默认 `true`），写进 profile 的 lark-channel 设置；`/display` 卡的「回合卡步骤」（仅紧凑模式显示）两个按钮，外加文本命令 `/display steps on|off`；`/display` 文本报告里也会列这一项（紧凑模式）。
+- 分页模式下行的行数上限放宽到 60（`PROGRESS_PAGE_MAX_ROWS`），否则工具密集的一页会把刚要求「别折叠」的步骤又折回去；卡片字节仍远低于 30KB。
+- 测试：+7（渲染 2：折叠关闭时 10 步全部可见且无面板 / 默认仍折叠；分页 1：第 11 步开新卡且两页内容不串；命令 1；`/display` 卡 2：仅紧凑出现、点一下写设置并原地重绘；策略 1）；全量 83 文件 / 1,641 用例、typecheck、build、privacy 全绿。
+
+**English**: The compact turn card gains a switch for what happens to its earlier steps (operator's request): fold them away (default, unchanged behavior — newest 5 visible, older in a collapsed panel, one card per turn) or **do not fold** — a page carries up to 10 steps and the 11th opens a NEW card below. The new `stepsFold` setting drives it; the page is frozen exactly like an interleave-closed segment (facts snapshot, no further growth, the turn outcome written at `turn/end`), and each page renders only its own steps. Exposed on the `/display` card ("turn-card steps", compact only) and as `/display steps on|off`; the text report lists it too. In paginated mode the row budget widens to 60 so a tool-heavy page cannot fold back the very steps that were meant to stay visible. Seven tests added (render, pagination end-to-end, command, card, policy); 83 files / 1,641 tests, typecheck, build and privacy gate green.
+
 ### 变更：后台任务面板的「任务」列改显示模型写的说明，完整命令保持原规则（`src/feishu-jobs.ts` / `src/feishu-streaming.ts`，2026-11-25）
 
 - 使用者从样板 A/B 里选了 B，并补一条约束：「完整命令还是保持原来的逻辑」。

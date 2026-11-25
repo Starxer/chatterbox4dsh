@@ -46,7 +46,7 @@
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
 import { interleaveHits, type CardInterleave, type InterleaveTarget } from './card-interleave.ts'
-import { DEFAULT_COMPACT_TOOL_ROW, type CompactToolRowStyle } from './display-level.ts'
+import { COMPACT_PAGE_STEPS, DEFAULT_COMPACT_TOOL_ROW, type CompactToolRowStyle } from './display-level.ts'
 import { errorText } from './error-text.ts'
 import { foldedPanel } from './card-fold.ts'
 import { neutralizeCardMarkdown } from './card-markdown.ts'
@@ -87,6 +87,17 @@ export const PROGRESS_MAX_STEPS = 5
 
 /** Folded lines carried in the panel body (the panel is collapsed, not free). */
 export const PROGRESS_MAX_FOLDED = 60
+
+/**
+ * Row budget of a PAGINATED card (fold switch off).
+ *
+ * The fold switch is what normally keeps a card short; with it off the budget is
+ * spent on whole STEPS instead ({@link COMPACT_PAGE_STEPS}), so the row bound has
+ * to grow or a single tool-heavy page would fold away steps the operator asked
+ * to keep visible. 60 rows of one-line markdown stay far below the ~30KB card
+ * limit.
+ */
+export const PROGRESS_PAGE_MAX_ROWS = 60
 
 /**
  * How often a still-running step repaints its elapsed clock. A step that settles
@@ -817,8 +828,14 @@ export function renderProgressCard(
   t: Translations,
   facts: ProgressFacts,
   style: CompactToolRowStyle = DEFAULT_COMPACT_TOOL_ROW,
-  options: { thinking?: boolean } = {},
+  options: { thinking?: boolean; foldSteps?: boolean } = {},
 ): object {
+  // Two ways to keep a growing turn card readable (the `/display steps` switch):
+  // fold earlier steps away (default) or page the card — the caller opens a new
+  // card every COMPACT_PAGE_STEPS steps, so this page shows every one of them.
+  const folded = options.foldSteps !== false
+  const maxSteps = folded ? PROGRESS_MAX_STEPS : COMPACT_PAGE_STEPS
+  const maxRows = folded ? PROGRESS_MAX_ROWS : PROGRESS_PAGE_MAX_ROWS
   const running = facts.endedAt === undefined
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
@@ -850,19 +867,19 @@ export function renderProgressCard(
   let steps = 0
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i]!
-    if (steps >= PROGRESS_MAX_STEPS) break
-    if (visible.length > 0 && visible.length + block.length > PROGRESS_MAX_ROWS) break
+    if (steps >= maxSteps) break
+    if (visible.length > 0 && visible.length + block.length > maxRows) break
     visible = block.concat(visible)
     steps += 1
   }
   // A single step larger than the whole budget still keeps its header plus its
   // newest rows; the dropped ones join the folded part.
-  if (visible.length > PROGRESS_MAX_ROWS) {
+  if (visible.length > maxRows) {
     const header = visible.find(line => line.header)
     const rows = visible.filter(line => !line.header)
     visible = header === undefined
-      ? rows.slice(rows.length - PROGRESS_MAX_ROWS)
-      : [header, ...rows.slice(Math.max(0, rows.length - (PROGRESS_MAX_ROWS - 1)))]
+      ? rows.slice(rows.length - maxRows)
+      : [header, ...rows.slice(Math.max(0, rows.length - (maxRows - 1)))]
   }
   const shown = new Set(visible)
   const hidden = lines.filter(line => !shown.has(line))
@@ -1133,6 +1150,12 @@ export interface ProgressCardsDeps {
    */
   showReasoning?: (() => boolean) | undefined
   /**
+   * Compact turn card only: whether earlier steps fold away (default) or the
+   * card pages itself. Read per render, so a `/display steps` write applies to
+   * the next event; omitted = folded (the pre-switch behavior).
+   */
+  foldSteps?: (() => boolean) | undefined
+  /**
    * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
    * new one below the interruption.
@@ -1230,6 +1253,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   const renderCard = (facts: ProgressFacts): object =>
     renderProgressCard(getTranslations(), facts, rowStyle(), {
       thinking: deps.showReasoning?.() ?? true,
+      foldSteps: deps.foldSteps?.() ?? true,
     })
 
   /** Render one write, serialized behind the card's previous write. */
@@ -1356,6 +1380,39 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     })
   }
 
+  /**
+   * Freeze the card of a FINISHED page and start the next page from scratch.
+   *
+   * Used only when the fold switch is off (`/display steps off`): the card shows
+   * every step, so a new one opens every {@link COMPACT_PAGE_STEPS} steps. The
+   * closed card is kept exactly like an interleave-closed segment — its body is
+   * frozen, it still receives the turn's outcome at `finish`, and it never grows
+   * again — while `segmentFrom` tells the renderer that the new card owns only
+   * the steps from here on.
+   */
+  const rotatePage = (sessionId: string, turn: { chat: ConversationMessage; facts: ProgressFacts }, at: number): void => {
+    const facts = turn.facts
+    const entry = cards.get(sessionId)
+    if (entry !== undefined) {
+      // A write still in flight must not land the NEXT page's steps on this
+      // card: freeze the facts it has rendered so far.
+      entry.facts = { ...facts, steps: [...facts.steps] }
+      entry.superseded = true
+      if (entry.timer !== undefined) {
+        clearTimeout(entry.timer)
+        entry.timer = undefined
+      }
+      const closed = closedSegments.get(sessionId) ?? []
+      closed.push(entry)
+      closedSegments.set(sessionId, closed)
+      cards.delete(sessionId)
+    }
+    // Every step so far belongs to the card just frozen; the new card starts
+    // empty and the caller pushes the step that triggered the rotation.
+    facts.segmentFrom = facts.steps.length
+    facts.now = at
+  }
+
   const stepStarted = (sessionId: string, step: number, at: number): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
@@ -1378,6 +1435,12 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       for (const closed of closedSegments.get(sessionId) ?? []) dropEntry(closed)
       cards.delete(sessionId)
       closedSegments.delete(sessionId)
+    }
+    // Paginated mode (`/display steps off`): nothing folds, so this page ends at
+    // COMPACT_PAGE_STEPS steps and the next step opens a new card below it.
+    if (deps.foldSteps?.() === false
+      && turn.facts.steps.length - (turn.facts.segmentFrom ?? 0) >= COMPACT_PAGE_STEPS) {
+      rotatePage(sessionId, turn, at)
     }
     turn.facts.steps.push({ step, startedAt: at, tools: [] })
     turn.facts.now = at

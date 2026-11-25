@@ -2357,7 +2357,7 @@ describe('display levels on the step card (O22/O5)', () => {
   it('gives the verbose level the whole chain, still folded', () => {
     const long = 'y'.repeat(900)
     const card = renderStepCard(t, long, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'full', toolArgs: true, toolResults: true, fullToolOutput: true, turnCard: false } }) as any
     const panel = panelOf(card)
     expect(panel.expanded).toBe(false)
     // The whole chain, verbatim and unfenced.
@@ -2367,7 +2367,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('shows the whole chain flat on the card when folding is turned off', () => {
     const card = renderStepCard(t, 'first line\nsecond line', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: false, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: false, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     expect(panelOf(card)).toBeUndefined()
     const md = mdOf(card)
     expect(md).toContain('first line')
@@ -2392,7 +2392,7 @@ describe('display levels on the step card (O22/O5)', () => {
     const card = renderStepCard(t, 'hidden chain', undefined, []) as any
     expect(mdOf(card)).toContain('hidden chain')
     const compact = renderStepCard(t, 'hidden chain', undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'off', reasoningFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
+      { display: { reasoning: 'off', reasoningFold: true, stepsFold: true, tools: 'off', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: true } }) as any
     expect(mdOf(compact)).not.toContain('hidden chain')
     expect(panelOf(compact)).toBeUndefined()
   })
@@ -2406,7 +2406,7 @@ describe('display levels on the step card (O22/O5)', () => {
 
   it('names each call but carries no payload at the standard level', () => {
     const card = renderStepCard(t, undefined, undefined, [tool], undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      { display: { reasoning: 'on', reasoningFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
+      { display: { reasoning: 'on', reasoningFold: true, stepsFold: true, tools: 'summary', toolArgs: false, toolResults: false, fullToolOutput: false, turnCard: false } }) as any
     const md = mdOf(card)
     expect(md).toContain('bash')
     expect(md).not.toContain(t.stepToolArgsHeader)
