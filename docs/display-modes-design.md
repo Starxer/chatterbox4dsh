@@ -76,7 +76,7 @@
 |---|---|---|
 | `💬` 回复 | 该步模型输出给用户的文字（旁白），**全文、保留换行、不截断** | 该步没写文字就没有这一行 |
 | `✅/❌/⏳` 工具说明 | 每个工具调用的 `description`（模型为这次调用写的那句话）；`✅` 成功、`❌` 失败、`⏳` 运行中 | 没有 description 时用**预制动作名 + 它碰到的对象**：`✅ 读取 feishu-progress.ts`、`✅ 编辑 config.ts`、`✅ 搜索 renderMinimalProgressCard`；预制表里没有的工具回退成 `工具名 · 对象`，两者都没有就是工具名 |
-| 谁有 description | 插件自带的 6 个工具（`feishu_doc_read` / `feishu_doc_write` / `feishu_doc_blocks` / `feishu_doc_comments` / `feishu_receive_file` / `feishu_send_file`）**参数里都要求必填 `description`**（`src/tool-caption.ts`，与宿主 `bash` 同一契约），所以它们永远走第一档；预制动作名只对宿主工具（`read` / `edit` / `grep`…）生效 |
+| 谁有 description | 插件自带的工具**参数里都要求必填 `description`**（`src/tool-caption.ts`，与宿主 `bash` 同一契约），所以它们永远走第一档；预制动作名只对宿主工具（`read` / `edit` / `grep`…）生效 |
 
 - **没有**：步头/步号、相位图标（📡🧠✍️🔧）、分阶段耗时、参数、结果、PTC 子行、注入提示、思考块。
 - **动作名是预制表，不是机翻**（`ZH_TOOL_ACTIONS` / `EN_TOOL_ACTIONS`，语言跟随插件）。起因（2026-11-25）：只列文件名看不出是 `read` 还是 `edit`；答案也不能退回工具名——`read` / `edit` 这种机器词在中文界面里读起来像噪声。表按语言给出动词（读取 / 编辑 / 搜索 / 发送文件……），跨语言一致，未收录的工具自动降级。对象由**极简专用的更宽派生**给出（文件名、shell 程序名、检索词、URL host），不动紧凑卡的行——紧凑只显示文件名/程序名。

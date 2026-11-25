@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 新增：用自然语言修改当前会话标题
+
+- `feishu_rename_session` 仅在宿主支持改名且当前 DSH 会话绑定飞书时可见。用户可指定标题，也可以请 agent 概括并改名。工具调用原生手动改名并返回实际保存的标题，不改飞书话题名或绑定关系；自动命名不会覆盖手动标题。
+
+**English**: `feishu_rename_session` lets an agent rename its current Feishu-bound DSH session on request. It returns the accepted manual title, which automatic naming does not overwrite, without changing the Feishu topic name or binding.
+
 ### 变更：模型卡的「最近使用」最多显示五条
 
 - `/model` 和 `/new` 的模型选择卡将最近模型设置的显示上限从 3 条提高到 5 条；排序、去重和推理等级的恢复方式不变。`/new` 的默认模型保留独立的可选行，不占最近记录的名额。

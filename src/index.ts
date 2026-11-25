@@ -83,6 +83,7 @@ const CARD_SEND_TIMEOUT_MS = CARD_BARRIER_TIMEOUT_MS + OUTBOUND_TIMEOUT_MS
 import { startFeishuQuestions } from './feishu-questions.ts'
 import { startFeishuSendFileTool, sendWorkspaceFile } from './feishu-send-file.ts'
 import { startFeishuReceiveFileTool } from './feishu-receive-file.ts'
+import { startFeishuRenameSessionTool } from './feishu-rename-session.ts'
 import { startFeishuDocTools } from './feishu-doc.ts'
 import { startFeishuDocCollabTools } from './feishu-doc-collab.ts'
 import { startFeishuModelSelect, renderProviderSelectCard, renderReasoningCard, sendModelCardV2, type FeishuModelSelectHandle, type ModelSelectChannel } from './feishu-model-select.ts'
@@ -1017,6 +1018,7 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
   }, 60_000)
   ;(livenessTimer as { unref?: () => void }).unref?.()
   ctx.effect(() => () => clearInterval(livenessTimer))
+  ctx.effect(() => startFeishuRenameSessionTool(ctx, bridgeHolder), 'dsh-feishu: rename session tool')
   // `feishu_send_file` is independent of the questions/approvals seams: it only
   // needs the live channel + the session→chat reverse lookup, so it registers
   // unconditionally. Unbound sessions fail at execution time with a clear error.
