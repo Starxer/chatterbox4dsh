@@ -1697,6 +1697,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     'deliverables/presented', 'user/message',
   ])
 
+  /** The host-assigned turn number a frame carries (`turn/start` and `step/start` do). */
+  const eventTurnNumber = (event: { data?: any }): number =>
+    typeof event.data?.turn === 'number' ? event.data.turn : 0
+
   const handleEvent = (session: { id: string }, event: { type: string; time?: number; data?: any }): void => {
     try {
       const sessionId = session.id
@@ -1731,7 +1735,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       if (event.type !== 'turn/end'
         && displayPolicy().turnCard
         && !progressCards.hasTurn(sessionId)) {
-        progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
+        progressCards.beginTurn(chat, sessionId, event.time ?? Date.now(), eventTurnNumber(event))
       }
 
       if (event.type === 'assistant/chunk') {
@@ -2152,7 +2156,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         state.turnNumber = (event.data?.turn as number | undefined) ?? 0
         state.stepNumber = (event.data?.step as number | undefined) ?? 0
         if (displayPolicy().turnCard) {
-          progressCards.stepStarted(sessionId, state.stepNumber, state.stepStartTime)
+          progressCards.stepStarted(sessionId, state.stepNumber, state.stepStartTime, state.turnNumber)
         }
         // Injections that arrived before this `step/start` (a compaction's
         // re-injection, a session's opening baseline) belong to THIS step's
@@ -2219,7 +2223,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // "step 1" on one card (2026-11-23): a detailed-mode turn start skipped
         // this reset, the stale facts survived, and switching back to compact
         // mid-turn appended the new turn's steps to them.
-        progressCards.beginTurn(chat, sessionId, event.time ?? Date.now())
+        progressCards.beginTurn(chat, sessionId, event.time ?? Date.now(), eventTurnNumber(event))
         state.turnStats = {
           turnStartTime: event.time ?? Date.now(),
           stepCount: 0,

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 变更：回合卡标题不再写「本回合」，改成写第几轮（`src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/i18n.ts`，2026-11-25）
+
+- 使用者的意见：「本回合」含糊不清，卡片标题要写清是第几轮。
+- **结束态**：`⚙️ 本回合 · 3 个工具 · 12.3s` → `⚙️ 第 12 轮 · 3 个工具 · 12.3s`；失败态 `⚙️ 本回合失败 · …` → `⚙️ 第 12 轮失败 · …`。英文 `⚙️ Turn 12 · …`。
+- **回合号来源**：`turn/start` / `step/start` 的 `data.turn`。`beginTurn()` / `stepStarted()` 各新增可选回合号（懒开卡路径没有 turn 帧，由下一次 `step/start` 补上）；`ProgressFacts.turn` 记在 facts 上。**从来没拿到过回合号的卡省略那一节**（`⚙️ · 3 个工具 · …`），不写「第 0 轮」。
+- 运行中的标题（`🐳 深度求索中 · 12.3s`）不变：它没有「本回合」，且是运行态措辞。
+- 测试：新增「结束标题带回合号 / 没回合号时省略而不是第 0 轮」「懒开卡由 step/start 补回合号」两条，并修正 9 处断言的签名、`isTurnCardTitle` 测试助手与两条正则；全量 83 文件 / 1,643 用例、typecheck、build、privacy 全绿。
+
+**English**: The finished turn-card title no longer says "this turn" — it names the round (`⚙️ 第 12 轮 · …` / `⚙️ Turn 12 · …`, failed: `第 12 轮失败`), because "本回合" did not say WHICH round. The number comes from `turn/start` / `step/start`'s `data.turn`; `beginTurn()` and `stepStarted()` take it optionally (a card opened lazily mid-turn learns it from the next `step/start`) and `ProgressFacts.turn` carries it. A card that never learned the number omits the segment entirely instead of printing "第 0 轮". The running title is unchanged (it never said "this turn"). Two tests added, nine assertion signatures fixed; 83 files / 1,643 tests, typecheck, build and privacy gate green.
+
 ### 修正：回合卡步骤开关的文案说清「折叠的是哪些步骤」（`src/i18n.ts` / `src/commands-i18n.ts`，2026-11-25）
 
 - 使用者的反馈：「折叠之前的步骤」没写清楚 —— 到底折叠的是什么时候的步骤。

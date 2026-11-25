@@ -255,9 +255,15 @@ export interface Translations {
    */
   turnCardTitleRunning: (elapsed: string) => string
   /** Title once the turn ended normally. */
-  turnCardTitleDone: (calls: number, failed: number, elapsed: string) => string
+  /**
+   * Finished turn card title. `turn` is the host-assigned round ("第 12 轮");
+   * `0` means the number was never learned, and the title then omits it rather
+   * than printing "第 0 轮".
+   */
+  turnCardTitleDone: (turn: number, calls: number, failed: number, elapsed: string) => string
   /** Title when the turn ended in an error (the reason rides the failure card). */
-  turnCardTitleFailed: (calls: number, elapsed: string) => string
+  /** Failed turn card title; `turn` follows the same rule as {@link turnCardTitleDone}. */
+  turnCardTitleFailed: (turn: number, calls: number, elapsed: string) => string
   /**
    * Section header of one step: the step number plus an already-formatted
    * `detail` (`**[2]** · 🧠 1.4s · 🔧 5.2s`).
@@ -1140,9 +1146,10 @@ export const zh = {
 
   // 回合过程卡（feishu-progress.ts）：紧凑模式把整轮的工具活动合并到一张卡上。
   turnCardTitleRunning: elapsed => `🐳 深度求索中 · ${elapsed}`,
-  turnCardTitleDone: (calls, failed, elapsed) =>
-    `⚙️ 本回合 · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
-  turnCardTitleFailed: (calls, elapsed) => `⚙️ 本回合失败 · ${calls} 个工具 · ${elapsed}`,
+  turnCardTitleDone: (turn, calls, failed, elapsed) =>
+    `⚙️ ${turn > 0 ? `第 ${turn} 轮` : ''} · ${calls} 个工具${failed > 0 ? ` · ${failed} 个失败` : ''} · ${elapsed}`,
+  turnCardTitleFailed: (turn, calls, elapsed) =>
+    `⚙️ ${turn > 0 ? `第 ${turn} 轮失败` : '失败'} · ${calls} 个工具 · ${elapsed}`,
   turnCardStepDetail: (step, detail) => `▸ **[${step}]** · ${detail}`,
   turnCardStepFailed: '❌ 失败',
   turnCardCallUnrun: name => `⚠️ \`${name}\` · 未执行`,
@@ -1792,10 +1799,10 @@ export const en: Translations = {
   // `深度求索中` is the Chinese name of DeepSeek read as "DeepSeek is at work";
   // the English locale keeps the same pun in verb form.
   turnCardTitleRunning: elapsed => `🐳 DeepSeeking · ${elapsed}`,
-  turnCardTitleDone: (calls, failed, elapsed) =>
-    `⚙️ This turn · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
-  turnCardTitleFailed: (calls, elapsed) =>
-    `⚙️ This turn failed · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
+  turnCardTitleDone: (turn, calls, failed, elapsed) =>
+    `⚙️ ${turn > 0 ? `Turn ${turn}` : ''} · ${calls} tool ${calls === 1 ? 'call' : 'calls'}${failed > 0 ? ` · ${failed} failed` : ''} · ${elapsed}`,
+  turnCardTitleFailed: (turn, calls, elapsed) =>
+    `⚙️ ${turn > 0 ? `Turn ${turn} failed` : 'Failed'} · ${calls} tool ${calls === 1 ? 'call' : 'calls'} · ${elapsed}`,
   turnCardStepDetail: (step, detail) => `▸ **[${step}]** · ${detail}`,
   turnCardStepFailed: '❌ failed',
   turnCardStepThinking: '🐳 **Deep Thinking**',

@@ -10,7 +10,7 @@ const t = translationsFor('zh')
 /**
  * The running compact turn progress card, told apart from a step card by its
  * title: the live phase (`🔧 工具调用中 · 1.2s` / `🐳 深度求索中 · 1.2s`) while
- * running, `⚙️ 本回合 · …` once settled.
+ * running, `⚙️ 第 N 轮 · …` once settled.
  */
 const TURN_RUNNING = t.turnCardTitleRunning('')
 /**
@@ -20,7 +20,10 @@ const TURN_RUNNING = t.turnCardTitleRunning('')
  */
 const RUNNING_TITLES = [TURN_RUNNING.trimEnd(), t.turnCardPhaseTool, t.turnCardPhaseReplying, t.turnCardPhaseAwaiting, t.turnCardPhaseThinking]
 const isTurnCardTitle = (title: string): boolean =>
-  title.includes('本回合') || RUNNING_TITLES.some(prefix => title.startsWith(prefix))
+  // The settled title names the ROUND (`⚙️ 第 12 轮 · …`, `⚙️ 第 12 轮失败 · …`);
+  // a step card's own title also carries a round (`回复 · 第 12 轮 · 第 3 步`), so
+  // the gear prefix is what separates them.
+  /^⚙️ 第 \d+ 轮/.test(title) || RUNNING_TITLES.some(prefix => title.startsWith(prefix))
 
 function codeBlocksOf(card: any): string[] {
   return card.body.elements
@@ -2944,7 +2947,7 @@ describe('turn progress card wiring', () => {
     // The interrupted card is frozen at its own content, but it MUST say the
     // turn ended (otherwise it claims to be running forever and, worse, keeps
     // the elapsed-time timer that repaints it).
-    expect(updatesOf('card-1').map(titleOf).some(title => title.startsWith('⚙️ 本回合'))).toBe(true)
+    expect(updatesOf('card-1').map(titleOf).some(title => /^⚙️ 第 \d+ 轮/.test(title))).toBe(true)
     // The new segment keeps the step that was still running: its header and its
     // settled row are on the fresh card even though that step started before the
     // interruption.
@@ -3428,7 +3431,7 @@ describe('turn progress card wiring', () => {
     expect(md).toContain(t.turnCardCallUnrun('edit'))
     // It is not a tool row and not a tool count: only `read` ran.
     expect(md).not.toContain('`edit` · 4')
-    expect(last.header.title.content).toMatch(/^⚙️ 本回合失败 · 1 个工具 · /)
+    expect(last.header.title.content).toMatch(/^⚙️ 第 \d+ 轮失败 · 1 个工具 · /)
     expect(last.header.title.content).not.toContain('2 个工具')
     streaming.stop()
   })

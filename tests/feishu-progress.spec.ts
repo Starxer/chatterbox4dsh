@@ -164,7 +164,7 @@ describe('renderProgressCard', () => {
     }
     // The turn ending still wins over any phase.
     const done = renderProgressCard(t, facts()) as any
-    expect(done.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
+    expect(done.header.title.content).toBe(t.turnCardTitleDone(0, 1, 0, '5.0s'))
   })
 
   it('renders the live tool phase pushed by the assistant stream', () => {
@@ -184,13 +184,13 @@ describe('renderProgressCard', () => {
   it('freezes green with the totals once the turn ended', () => {
     const card: any = renderProgressCard(t, facts())
     expect(card.header.template).toBe('green')
-    expect(card.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
+    expect(card.header.title.content).toBe(t.turnCardTitleDone(0, 1, 0, '5.0s'))
   })
 
   it('freezes red when the turn failed (the reason rides the failure card)', () => {
     const card: any = renderProgressCard(t, facts({ failedTurn: true }))
     expect(card.header.template).toBe('red')
-    expect(card.header.title.content).toBe(t.turnCardTitleFailed(1, '5.0s'))
+    expect(card.header.title.content).toBe(t.turnCardTitleFailed(0, 1, '5.0s'))
   })
 
   it('names the step the turn died in, and the call it never got to run', () => {
@@ -214,7 +214,7 @@ describe('renderProgressCard', () => {
     expect(visibleLines(card)).toContain(t.turnCardStepDetail(5, '1.0s'))
     // A call that never ran is NOT one of the turn's tool calls: the title still
     // counts the one that did.
-    expect(card.header.title.content).toBe(t.turnCardTitleFailed(1, '2.0s'))
+    expect(card.header.title.content).toBe(t.turnCardTitleFailed(0, 1, '2.0s'))
   })
 
   it('merges consecutive same-named calls into one row with a summed duration', () => {
@@ -370,6 +370,21 @@ describe('renderProgressCard', () => {
     expect(tagsOf(legacy)).toContain('collapsible_panel')
   })
 
+  it('names the round in the finished title instead of "本回合"', () => {
+    const done: any = renderProgressCard(t, facts({ turn: 7 }))
+    expect(done.header.title.content).toBe(t.turnCardTitleDone(7, 1, 0, '5.0s'))
+    expect(done.header.title.content).toContain('第 7 轮')
+    expect(done.header.title.content).not.toContain('本回合')
+    const failed: any = renderProgressCard(t, facts({ turn: 7, failedTurn: true }))
+    expect(failed.header.title.content).toContain('第 7 轮失败')
+    // A card that never learned the number omits the round rather than
+    // printing "第 0 轮".
+    const unknown: any = renderProgressCard(t, facts())
+    expect(unknown.header.title.content).toBe(t.turnCardTitleDone(0, 1, 0, '5.0s'))
+    expect(unknown.header.title.content).not.toContain('第 0 轮')
+    expect(unknown.header.title.content).not.toContain('本回合')
+  })
+
   it('carries no button and no tappable row (the card must stay updatable)', () => {    // 关键坑 11: a card carrying buttons stops delivering callbacks after 2-3
     // in-place updates; 关键坑 55: a tapped `interactive_container` row stops
     // delivering row callbacks. This card's whole model is "one message, many
@@ -498,7 +513,7 @@ describe('renderProgressCard', () => {
     expect(md).not.toContain('`old`')
     expect(md).toContain('`fresh`')
     // The counters stay turn-wide: the title counts the whole turn's calls.
-    expect(card.header.title.content).toBe(t.turnCardTitleDone(2, 0, '200ms'))
+    expect(card.header.title.content).toBe(t.turnCardTitleDone(0, 2, 0, '200ms'))
   })
 
   it('keeps the rows close together (measured spacing, not the loose default)', () => {
@@ -730,7 +745,7 @@ describe('renderProgressCard', () => {
       expect(mdOf(card)).toContain(`↳ ${t.turnCardToolFailed('`bash` · npm', '30ms')}`)
       // `calls`/`failed` count the MODEL's calls (the title), so a failed
       // sub-call must not make a one-call turn read as "1 个工具 · 1 个失败".
-      expect(card.header.title.content).toBe(t.turnCardTitleDone(1, 0, '5.0s'))
+      expect(card.header.title.content).toBe(t.turnCardTitleDone(0, 1, 0, '5.0s'))
     })
 
     it('keeps sub-call rows inside their step\'s one markdown element', () => {
@@ -1139,13 +1154,14 @@ describe('createProgressCards', () => {
 
   it('finishes with a green render and ignores anything after turn/end', async () => {
     const { channel, cards } = harness()
-    cards.beginTurn(chat, 's1', 0)
+    cards.beginTurn(chat, 's1', 0, 4)
     cards.toolStarted('s1', 'read', 'c1', 10)
     await vi.waitFor(() => expect(channel.sendCardByReference).toHaveBeenCalledTimes(1))
     await cards.finish('s1', 1_000, false)
     const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
     expect(card.header.template).toBe('green')
-    expect(card.header.title.content).toBe(t.turnCardTitleDone(1, 0, '1.0s'))
+    // The finished title names the ROUND the frame carried (not "this turn").
+    expect(card.header.title.content).toBe(t.turnCardTitleDone(4, 1, 0, '1.0s'))
     cards.toolStarted('s1', 'bash', 'c2', 1_100)
     await Promise.resolve()
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
@@ -1160,7 +1176,7 @@ describe('createProgressCards', () => {
     const texts = channel.send.mock.calls.filter(call => (call[1] as any).text !== undefined)
     expect(texts).toHaveLength(1)
     const body = (texts[0] as any)[1].text as string
-    expect(body).toContain(t.turnCardTitleDone(1, 0, '1.0s'))
+    expect(body).toContain(t.turnCardTitleDone(0, 1, 0, '1.0s'))
     expect(body).toContain(t.turnCardToolDone('`read`', '400ms'))
   })
 
@@ -1350,6 +1366,18 @@ describe('createProgressCards', () => {
       const card = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
       expect(card).toContain('↳')
     })
+  })
+
+  it('learns the round from step/start when the opener had no turn number', async () => {
+    // A card opened lazily (mode switched mid-turn) has no turn number; the
+    // next step/start carries it, and the finished title must use it.
+    const { channel, cards } = harness()
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0, 5)
+    await vi.waitFor(() => expect(channel.createCardInstance).toHaveBeenCalledTimes(1))
+    await cards.finish('s1', 1_000, false)
+    const card = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
+    expect(card.header.title.content).toContain('第 5 轮')
   })
 
   it('pages the turn card every 10 steps when the fold switch is off', async () => {
@@ -1731,7 +1759,7 @@ describe('createProgressCards', () => {
     expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
     const updated = (channel.updateCardInstance.mock.calls.at(-1) as any)[1]
     expect(updated.header.template).toBe('green')
-    expect(updated.header.title.content).toBe(t.turnCardTitleDone(1, 0, '15m00s'))
+    expect(updated.header.title.content).toBe(t.turnCardTitleDone(0, 1, 0, '15m00s'))
     // The body is the frozen one: the turn's own rows, unchanged.
     expect(mdOf(updated)).toContain('⏳ `ask_user_question`')
   })

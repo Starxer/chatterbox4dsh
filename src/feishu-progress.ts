@@ -299,6 +299,13 @@ export interface ProgressFacts {
   failed: number
   /** When the turn started (`turn/start`). */
   turnStart: number
+  /**
+   * The host-assigned turn number (`turn/start` / `step/start`'s `turn`), used
+   * by the finished title ("第 12 轮"). Absent or 0 when the instance never saw
+   * a frame that carried it, and the title then omits the round instead of
+   * claiming "第 0 轮".
+   */
+  turn?: number | undefined
   /** Set once the turn ended. */
   endedAt?: number | undefined
   /** The turn ended in an error (`turn/end` → `reason.kind === 'error'`). */
@@ -847,8 +854,8 @@ export function renderProgressCard(
   const title = running
     ? t.turnCardTitleRunning(total)
     : facts.failedTurn
-      ? t.turnCardTitleFailed(facts.calls, total)
-      : t.turnCardTitleDone(facts.calls, facts.failed, total)
+      ? t.turnCardTitleFailed(facts.turn ?? 0, facts.calls, total)
+      : t.turnCardTitleDone(facts.turn ?? 0, facts.calls, facts.failed, total)
   const template = running ? 'grey' : facts.failedTurn ? 'red' : 'green'
 
   // This card owns the turn from `segmentFrom` on: an earlier card — one that is
@@ -1011,10 +1018,21 @@ interface CardEntry {
 
 /** The controller's public surface, driven by the streaming module. */
 export interface ProgressCardsHandle {
-  /** `turn/start`: forget the previous turn's card and start a new row set. */
-  beginTurn(chat: ConversationMessage, sessionId: string, at: number): void
-  /** `step/start`: open a new section. */
-  stepStarted(sessionId: string, step: number, at: number): void
+  /**
+   * `turn/start`: forget the previous turn's card and start a new row set.
+   *
+   * @param turn - the host-assigned turn number, when the frame carried one;
+   *               the finished title names it ("第 12 轮").
+   */
+  beginTurn(chat: ConversationMessage, sessionId: string, at: number, turn?: number): void
+  /**
+   * `step/start`: open a new section.
+   *
+   * @param turn - the step's turn number (`step/start` carries it). Recorded on
+   *               the facts so a card opened lazily (mode switched mid-turn)
+   *               still gets the round in its finished title.
+   */
+  stepStarted(sessionId: string, step: number, at: number, turn?: number): void
   /**
    * `agent/assistant-stream`: what the model is doing in the open step.
    *
@@ -1362,7 +1380,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     entry.dirty = false
   }
 
-  const beginTurn = (chat: ConversationMessage, sessionId: string, at: number): void => {
+  const beginTurn = (chat: ConversationMessage, sessionId: string, at: number, turn?: number): void => {
     if (stopped) return
     // A new turn owns a new card: the previous one is a historical record and a
     // card entity may only be sent once, so it is simply forgotten here — after
@@ -1376,7 +1394,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     closedSegments.delete(sessionId)
     turns.set(sessionId, {
       chat,
-      facts: { steps: [], calls: 0, failed: 0, turnStart: at, failedTurn: false, now: at },
+      facts: {
+        steps: [], calls: 0, failed: 0, turnStart: at, failedTurn: false, now: at,
+        ...(turn === undefined || turn <= 0 ? {} : { turn }),
+      },
     })
   }
 
@@ -1413,10 +1434,11 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     facts.now = at
   }
 
-  const stepStarted = (sessionId: string, step: number, at: number): void => {
+  const stepStarted = (sessionId: string, step: number, at: number, turnNumber?: number): void => {
     if (stopped) return
     const turn = turns.get(sessionId)
     if (turn === undefined) return
+    if (turnNumber !== undefined && turnNumber > 0) turn.facts.turn = turnNumber
     // A card belongs to ONE turn and its steps are numbered INSIDE that turn, so
     // a step number that does not move forward means a second turn is writing
     // into this card (the operator reported "step 11 showed as step 1",
@@ -1988,6 +2010,6 @@ function renderTitle(t: Translations, facts: ProgressFacts): string {
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
   if (facts.endedAt === undefined) return t.turnCardTitleRunning(total)
-  if (facts.failedTurn) return t.turnCardTitleFailed(facts.calls, total)
-  return t.turnCardTitleDone(facts.calls, facts.failed, total)
+  if (facts.failedTurn) return t.turnCardTitleFailed(facts.turn ?? 0, facts.calls, total)
+  return t.turnCardTitleDone(facts.turn ?? 0, facts.calls, facts.failed, total)
 }
