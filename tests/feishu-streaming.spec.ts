@@ -3594,6 +3594,32 @@ describe('uncommittedToolNames', () => {
 // Turn ownership: a plugin re-mounted mid-turn must not render that turn's tail
 // ---------------------------------------------------------------------------
 
+describe('shutdown during a turn end', () => {
+  it('keeps the delivery note instead of asking channel.ts for a fallback reply', async () => {
+    // 2026-11-25: a restart landed while a turn was finishing; the channel went
+    // down before the answer card's write was confirmed, `flushed()` read
+    // `delivered=0`, and channel.ts posted its fallback reply card on top of the
+    // card that HAD reached the chat (two identical bodies). A disposed module
+    // must not trigger that fallback.
+    const ch = {
+      send: vi.fn(async () => ({ messageId: 'm-plain' })),
+      updateCard: vi.fn(async () => undefined),
+      createCardInstance: vi.fn(async () => 'card-1'),
+      sendCardByReference: vi.fn(async () => ({ messageId: 'm-ref' })),
+      updateCardInstance: vi.fn(async () => undefined),
+    }
+    const h = stepHarness(ch as any)
+    h.emit('turn/start')
+    h.emit('step/start', { turn: 1, step: 1 })
+    h.emit('assistant/chunk', { chunk: { type: 'text-delta', text: 'the answer' } })
+    h.emit('assistant/message', { usage: { inputTokens: 1, outputTokens: 1 } })
+    h.streaming.stop()
+    expect(await h.streaming.flushed('s-1')).toBeUndefined()
+    // Not withdrawn: channel.ts will treat the answer as delivered.
+    expect(h.bridge.clearIntermediateSent).not.toHaveBeenCalled()
+  })
+})
+
 describe('turn ownership across a plugin re-mount', () => {
   function channel(): StepChannel {
     return {

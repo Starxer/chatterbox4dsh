@@ -1325,6 +1325,18 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
 
 /** Flush promises: resolved by turn/end after the final card update. */
   const flushPromises = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+  /**
+   * The module was disposed (`stop()`): a queued turn-end handler must not keep
+   * talking to Feishu, and `flushed()` must not withdraw the delivery note.
+   *
+   * On 2026-11-25 a restart landed while the turn was finishing: the channel
+   * went down before the answer card's write was confirmed, `flushed()` saw
+   * `delivered=0`, withdrew the note, and channel.ts posted its fallback reply
+   * card ON TOP of the card that had already reached the chat — two cards with
+   * the same body. Once disposed, the answer card either landed or the process
+   * is dying anyway; posting a second copy is never the better outcome.
+   */
+  let stopped = false
 
   /**
    * The most recent step-card `send` promise per session. `flushed()` awaits
@@ -2771,6 +2783,10 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
    * become "no footer at all".
    */
   const flushed = async (sessionId: string): Promise<TurnStats | undefined> => {
+    if (stopped) {
+      console.log(`dsh-feishu: flushed(${sessionId}) after stop → keeping the delivery note (the turn was cut by a restart)`)
+      return undefined
+    }
     const entry = flushPromises.get(sessionId)
     const lastSend = lastStepSendPromises.get(sessionId)
     const flushReady = entry !== undefined ? entry.promise : Promise.resolve()
@@ -2835,6 +2851,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         && now - state.turnEventAt < TURN_ACTIVE_STALE_MS)
     },
     stop: () => {
+      stopped = true
       disposeListener()
       disposeStream()
       unsubscribeInterleave?.()

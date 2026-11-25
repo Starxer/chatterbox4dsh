@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：重启打断回合收尾时，回复卡与兜底回复卡重复（`src/feishu-streaming.ts`，2026-11-25）
+
+- 使用者现场（16:47）：一轮末尾收到**两张卡片，正文完全一样** —— 一张是答案卡，一张是 channel 的兜底回复卡。
+- **取证**（journal）：16:47:19–20 答案卡已创建并发送、`[update] seq=1` 发出；16:47:21 `channel down (socket closed, pipeline drained)`（5 秒重启到点）；紧接着 `flushed(...) delivered=0 failed=0 keepNote=false` → `[reply] no step card carried the text → posting 1 reply card(s)`。即**重启在答案卡写入确认之前切断了通道**，送达记录读成 0，插件按「答案没上屏」补发了一张兜底回复卡，而答案卡其实已经到了。
+- **修法**：流式模块新增 `stopped` 标志（`stop()` 第一行置位）。已销毁的模块不再参与送达判定：`flushed()` 直接返回、**保留乐观送达标记**（不调用 `clearIntermediateSent`），并打一行 `flushed(...) after stop → keeping the delivery note`——重启正在切断回合时，答案卡要么已经落地、要么进程都要没了，再补发第二份永远不是更好的结果。
+- 顺带说明：这类重复的触发条件是「重启恰好落在回合收尾的 1～2 秒窗口内」，与极简/紧凑模式无关（两种拓扑都会走同一条送达判定）。
+- 测试：+1（`stop()` 之后 `flushed()` 返回 undefined 且不撤回标记）；全量 83 文件 / 1,664 用例、typecheck、build、privacy 全绿。
+
+**English**: The operator saw two cards with identical bodies at the end of one turn (16:47). The journal shows the answer card was created, sent and updated at 16:47:19–20; at 16:47:21 the channel went down (the 5-second restart landed) and `flushed()` reported `delivered=0 failed=0 keepNote=false`, so channel.ts posted its fallback reply card on top of a card that had already reached the chat. Fix: a `stopped` flag set at the top of `stop()`; a disposed module no longer takes part in the delivery verdict — `flushed()` returns early, KEEPS the optimistic delivery note (no `clearIntermediateSent`), and logs `flushed(...) after stop → keeping the delivery note`. A restart that cuts a turn-end either has the card on screen already or is killing the process; posting a second copy is never the better outcome. The trigger is a restart landing inside the 1–2 second turn-end window, independent of the minimal/compact topology. One test added; 83 files / 1,664 tests, typecheck, build and privacy gate green.
+
 ### 变更：极简模式不再发遗留的 Turn Complete 卡片，摘要折进答案卡（`src/display-level.ts` / `src/index.ts` / `src/feishu-streaming.ts`，2026-11-25）
 
 - 使用者的观察：极简模式还在发一张和详细模式一样的 Turn Complete 卡，那是历史遗留；问有没有更好的做法。
