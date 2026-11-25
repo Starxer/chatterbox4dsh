@@ -989,8 +989,9 @@ describe('createProgressCards', () => {
     await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS)
     const settled = mdOf((channel.updateCardInstance.mock.calls.at(-1) as any)[1])
     // Settled: every phase prints as icon + its own duration, no live words.
-    // Settled segments print in run order: thinking → replying → tool → awaiting.
-    expect(settled).toContain(t.turnCardStepDetail(1, '🧠 100ms · 🔧 490ms · 📡 100ms'))
+    // Settled segments print in the order the step actually ran them:
+    // the tool first, then the wait, then the thinking that followed.
+    expect(settled).toContain(t.turnCardStepDetail(1, '🔧 490ms · 📡 100ms · 🧠 100ms'))
     expect(settled).not.toContain(t.turnCardPhaseThinking)
   })
 
@@ -1516,6 +1517,23 @@ describe('createProgressCards', () => {
       calls: 1, failed: 0, turnStart: 0, now: 1_400, failedTurn: false,
     }) as any
     expect(mdOf(card)).toContain(t.turnCardStepDetail(3, `🧠 600ms · ${t.turnCardPhaseTool} · 800ms…`))
+  })
+
+  it('orders the phase segments by the step\'s real timeline', () => {
+    // A real step starts by waiting for the first token, then thinks, then runs
+    // its tools — so the header must read 📡 → 🧠 → 🔧, not a fixed vocabulary
+    // order (operator's request, 2026-11-25).
+    const facts: ProgressFacts = {
+      steps: [{
+        step: 1, startedAt: 0, endedAt: 15_000,
+        phaseMs: { thinking: 400, tool: 2_100, awaiting: 12_400 },
+        phaseOrder: ['awaiting', 'thinking', 'tool'],
+        tools: [{ name: 'bash', callId: 'c1', startedAt: 12_900, elapsed: 2_100, detail: ['ls'] }],
+      }],
+      calls: 1, failed: 0, turnStart: 0, endedAt: 15_000, now: 15_000, failedTurn: false,
+    }
+    const card = renderProgressCard(t, facts, 'tool') as any
+    expect(mdOf(card)).toContain(t.turnCardStepDetail(1, '📡 12.4s · 🧠 400ms · 🔧 2.1s'))
   })
 
   it('renders a step\'s thinking chain as a folded panel between its header and rows', () => {

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 变更：步头的分阶段耗时按真实时间顺序排列（`📡 等待 → 🧠 思考 → ✍️ 回复 → 🔧 工具`）（`src/feishu-progress.ts`，2026-11-25）
+
+- 使用者的意见：顺序应当按这一步真实发生的过程排，而不是按固定词表排。
+- 实现：`ProgressStep` 新增 `phaseOrder`（各阶段**首次出现**的顺序，由阶段结算时记录），渲染按它输出；正在跑的阶段仍排最后。实际一步的顺序因此是 `📡 12.4s · 🧠 400ms · 🔧 2.1s` —— 一眼能看出「慢在等模型，不是慢在工具」。
+- 没有历史顺序的 facts（手写/测试数据）回退到词表顺序，行为不变。
+- 测试：新增「按真实时间线排序」用例并修正一条旧断言；全量 83 文件 / 1,628 用例、typecheck、build、privacy 全绿。
+
+**English**: The per-phase step header now follows the step's REAL timeline instead of a fixed vocabulary order (operator's request, 2026-11-25). `ProgressStep` records `phaseOrder` (the first occurrence of each phase, appended when a phase is banked) and the renderer prints in that order, keeping the live phase last; a real step therefore reads `📡 12.4s · 🧠 400ms · 🔧 2.1s` — "slow waiting on the model, not on a tool" at a glance. Hand-built facts without history fall back to the vocabulary order. One test added, one assertion corrected; 83 files / 1,628 tests, typecheck, build and privacy gate green.
+
 ### 回退：上下文注入提示行恢复可读中文叫法（上一版照搬裸 `kind` 太生硬）（`src/injection-notice.ts` / `src/i18n.ts`，2026-11-25）
 
 - 使用者的反馈：直接接官方行标题的「原生 kind」写法（`上下文注入 · plugin` / `skill-catalog` / `runtime-context` / `goal` / `user-approval`）很生硬，旧的可读叫法更好。

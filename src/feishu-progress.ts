@@ -214,6 +214,12 @@ export interface ProgressStep {
    */
   phaseMs?: Partial<Record<ProgressPhase, number>> | undefined
   /**
+   * The phases this step actually WENT THROUGH, in the order they first ran, so
+   * the header reads along the step's real timeline (`📡 12.4s · 🧠 400ms · 🔧
+   * 2.1s`) instead of a fixed vocabulary order (operator's request, 2026-11-25).
+   */
+  phaseOrder?: ProgressPhase[] | undefined
+  /**
    * When the CURRENT phase began, so the renderer can show its running clock and
    * the next boundary can bank the interval. Cleared at `step/end`.
    */
@@ -515,6 +521,10 @@ const PHASE_ORDER: readonly ProgressPhase[] = ['thinking', 'replying', 'tool', '
 function advancePhaseClock(step: ProgressStep, at: number): void {
   const since = step.phaseSince
   const phase = stepLivePhase(step)
+  if (phase !== undefined) {
+    const order = step.phaseOrder ?? (step.phaseOrder = [])
+    if (!order.includes(phase)) order.push(phase)
+  }
   if (since !== undefined && phase !== undefined) {
     const spent = Math.max(0, at - since)
     if (spent > 0) {
@@ -543,8 +553,12 @@ function phaseSegments(t: Translations, step: ProgressStep, now: number): string
     || (banked !== undefined && Object.keys(banked).length > 0)
   if (!hasTiming) return []
   const live = step.endedAt === undefined ? stepLivePhase(step) : undefined
+  // Run order first, then anything only present in the buckets (a hand-built
+  // `ProgressFacts` has no history); the live phase still comes last.
+  const order = step.phaseOrder ?? PHASE_ORDER
+  const sequence = [...order, ...PHASE_ORDER.filter(phase => !order.includes(phase))]
   const parts: string[] = []
-  for (const phase of PHASE_ORDER) {
+  for (const phase of sequence) {
     if (phase === live) continue
     let ms = step.phaseMs?.[phase] ?? 0
     if (ms <= 0) continue
