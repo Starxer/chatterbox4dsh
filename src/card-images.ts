@@ -64,7 +64,6 @@ export const MB = 1024 * 1024
  * exposes, this is the same fact one layer down.
  */
 export const FEISHU_MAX_IMAGE_MB = 10
-export const FEISHU_MAX_FILE_MB = 30
 /** Default inline ceiling per kind, used when no live setting is wired. */
 export const DEFAULT_MAX_IMAGE_MB = FEISHU_MAX_IMAGE_MB
 export const DEFAULT_MAX_VIDEO_MB = 15

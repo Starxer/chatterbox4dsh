@@ -33,13 +33,6 @@ export interface SessionEntry {
 }
 
 /** Narrow bridge surface the panel consumes. */
-export interface SessionBridge {
-  listSessions(): Promise<SessionEntry[]>
-  attachSession(message: ConversationMessage, sessionId: string): 'ok' | 'archived'
-  detachSession(sessionId: string): { kind: 'released'; ownerLabel: string } | { kind: 'free' }
-  describeChatKey(key: string): string
-}
-
 /** DSH session rename/fork (optional — degrade gracefully when absent). */
 export interface SessionControllerLike {
   rename?(request: { sessionId: string; title: string }): Promise<unknown>

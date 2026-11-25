@@ -14,6 +14,7 @@ import { TurnFailureError, renderTurnFailureCard, turnFailureText } from './turn
 import { chunkText, truncateInline, CARD_TEXT_MAX } from './text-chunk.ts'
 import { sniffImageMime, type ImageMediaTypeId } from './media-sniff.ts'
 import { downloadInboundResource, downloadMessageResource, type ResourceScope } from './feishu-resource.ts'
+import { formatDuration, formatTokenCount } from './format.ts'
 import { conversationKey } from './conversation.ts'
 import { fitImageToLimits } from './image-fit.ts'
 import { assertImageBudget, attachmentMessageText, createPendingAttachments, EMPTY_IMAGE_BUDGET, type ImageBudget } from './pending-attachments.ts'
@@ -1247,21 +1248,6 @@ export async function startChannel(
   }
 }
 
-/** Compact token count display: 517 / 12.2K / 1.2M */
-function formatTokenCount(n: number): string {
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${Math.round(n / 100) / 10}K`
-  return `${Math.round(n / 100_000) / 10}M`
-}
-
-function formatMs(ms: number): string {
-  if (ms < 1_000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.round((ms % 60_000) / 1000)
-  return `${m}m${s}s`
-}
-
 /**
  * Render a reasoning-only card for the two-phase reply pattern.
  * Shown first, then updated with the full reply content.
@@ -1495,9 +1481,9 @@ export function renderFooterCard(
     const llmMs = turnStats.totalStepMs
     const toolMs = turnStats.totalToolMs
     const durParts: string[] = [
-      `⏱ ${formatMs(totalMs)}`,
-      `🧠 LLM ${formatMs(llmMs)}`,
-      `🔧 Tools ${formatMs(toolMs)}`,
+      `⏱ ${formatDuration(totalMs)}`,
+      `🧠 LLM ${formatDuration(llmMs)}`,
+      `🔧 Tools ${formatDuration(toolMs)}`,
     ]
     elements.push({ tag: 'markdown', content: durParts.join(' · '), text_size: 'notation' })
 
@@ -1513,7 +1499,7 @@ export function renderFooterCard(
     // Performance: TTFT · tok/s · steps
     const perfParts: string[] = []
     if (turnStats.firstStepTtftMs !== null && turnStats.firstStepTtftMs > 0) {
-      perfParts.push(`⚡ TTFT ${formatMs(turnStats.firstStepTtftMs)}`)
+      perfParts.push(`⚡ TTFT ${formatDuration(turnStats.firstStepTtftMs)}`)
     }
     if (turnStats.totalDecodeMs > 0 && turnStats.totalDecodeTokens > 0) {
       // Pair tokens and decode time over the SAME steps (the Web UI does the

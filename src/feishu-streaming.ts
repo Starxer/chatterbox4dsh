@@ -20,6 +20,7 @@ import type { HarnessConversationService } from './harness.ts'
 import { autoTurnTrigger, foldTurnTrigger, type AutoTurnTrigger, type TurnTriggerState } from './feishu-turn-origin.ts'
 import type { ConversationMessage } from './conversation.ts'
 import type { Translations } from './i18n.ts'
+import { formatTokenCount } from './format.ts'
 import { translationsFor } from './i18n.ts'
 import type { DetachedJobNotice } from './feishu-jobs.ts'
 import { expandAssistantStream, isTokenDelta, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
@@ -3179,13 +3180,6 @@ function renderReasoningOverflowCard(
     },
     body: { elements: [{ tag: 'markdown', content: text }] },
   }
-}
-
-/** Format a token count for display (e.g. 1234 → "1.2K"). */
-function formatTokenCount(n: number): string {
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${Math.round(n / 100) / 10}K`
-  return `${Math.round(n / 100_000) / 10}M`
 }
 
 // ─── Tool-call summary (recovered) ─────────────────────────────────────────

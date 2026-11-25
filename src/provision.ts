@@ -117,13 +117,6 @@ export const FEISHU_DOC_SCOPES = [
  * ] } }
  * ```
  *
- * They are exported so the docs and any future maintenance command use one
- * source of truth.
- */
-export const FEISHU_DOC_MAINTENANCE_SCOPES = [
-  'space:document:retrieve',
-  'space:document:delete',
-]
 
 /**
  * Scope required to call the "update application config" OpenAPI, which the

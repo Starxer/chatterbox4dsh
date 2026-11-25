@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   createPanelSender,
-  formatDuration,
   PANEL_MAX_ROWS,
   PANEL_ROW_TTL_MS,
   renderTable,
@@ -78,16 +77,6 @@ describe('renderTable', () => {
       '| 1 | 2 |',
       '| 3 | 4 |',
     ].join('\n'))
-  })
-})
-
-describe('formatDuration', () => {
-  it('formats across the unit boundaries', () => {
-    expect(formatDuration(820)).toBe('820ms')
-    expect(formatDuration(4_300)).toBe('4.3s')
-    expect(formatDuration(125_000)).toBe('2m 05s')
-    expect(formatDuration(-1)).toBe('—')
-    expect(formatDuration(Number.NaN)).toBe('—')
   })
 })
 

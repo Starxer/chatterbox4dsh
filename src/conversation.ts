@@ -18,11 +18,6 @@ export function conversationKey(message: ConversationMessage): string {
     : `thread:${message.chatId}:${message.threadId}`
 }
 
-/** Chat key for a Feishu topic: one DSH session per (chat, thread) pair. */
-export function threadChatKey(chatId: string, threadId: string): string {
-  return `thread:${chatId}:${threadId}`
-}
-
 /**
  * Inverse of {@link conversationKey}. Topic thread ids contain no `:`, but the
  * `rest.join(':')` keeps a malformed key from silently truncating the id.

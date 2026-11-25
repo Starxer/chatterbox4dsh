@@ -27,7 +27,8 @@
 
 import { conversationKey, type ConversationMessage } from './conversation.ts'
 import { decodeCardValue } from './card-action.ts'
-import { createPanelSender, formatDuration, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, replyOptsForChat, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
+import { createPanelSender, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, replyOptsForChat, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
+import { formatDurationPadded } from './format.ts'
 import type { Translations } from './i18n.ts'
 
 /** Current lifecycle state of one job. */
@@ -405,7 +406,7 @@ export function renderJobPanelCard(
         ? tableCell(label === '' ? t.jobUntitled : label, { code: true, max: JOB_LABEL_TABLE_MAX })
         : tableCell(described, { max: JOB_LABEL_TABLE_MAX }),
       tableCell(view.id, { code: true }),
-      formatDuration(end - view.startedAt),
+      formatDurationPadded(end - view.startedAt),
       dynamic.trim() === '' ? '—' : tableCell(dynamic, { max: 48 }),
     ]
   })

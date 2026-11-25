@@ -238,16 +238,6 @@ export function renderTable(headers: readonly string[], rows: readonly (readonly
  * @param ms - elapsed milliseconds; a non-finite or negative value renders `—`.
  * @returns the display string.
  */
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '—'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  const seconds = ms / 1000
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
-  const minutes = Math.floor(seconds / 60)
-  const rest = Math.round(seconds - minutes * 60)
-  return `${minutes}m ${String(rest).padStart(2, '0')}s`
-}
-
 /**
  * Create the send-only snapshot sender shared by both panels.
  *

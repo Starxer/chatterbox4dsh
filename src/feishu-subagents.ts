@@ -57,7 +57,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { conversationKey, type ConversationMessage } from './conversation.ts'
-import { createPanelSender, formatDuration, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, replyOptsForChat, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
+import { createPanelSender, PANEL_MAX_ROWS, PANEL_ROW_TTL_MS, renderTable, replyOptsForChat, tableCell, type PanelChannel, type PanelLogger, type PanelSnapshot } from './feishu-panel.ts'
+import { formatDurationPadded } from './format.ts'
 import type { Translations } from './i18n.ts'
 import { withTimeout } from './outbound-timeout.ts'
 
@@ -613,7 +614,7 @@ export function renderSubagentPanelCard(rows: readonly SubagentPanelRow[], t: Tr
       : row.epochMs ?? (row.settledAt ?? now) - row.epochStart
     // A catalog-only row has no run to measure: the catalog records when the
     // child was created, never how long an epoch took. `—` is the truth.
-    const duration = row.catalogOnly === true ? '—' : formatDuration(elapsed)
+    const duration = row.catalogOnly === true ? '—' : formatDurationPadded(elapsed)
     // The Host's rc.5 identity is the agent NAME (unique among its siblings);
     // the label is the delegation description and the only identity a rc.1 row
     // — or a row this process alone observed — has. A diagnostic row names no

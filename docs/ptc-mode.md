@@ -33,7 +33,7 @@ PTC 预设（`packages/bundle/web-app/presets/ptc.patch.yml`）为 agent 挂载 
 | **非 compact 档的步骤卡** | `state.toolCalls`（仅 `tool/call`） | ⚠️ 待设计：`turnCard` 只对 `compact` 开启，`standard`/`detailed`/`verbose` 下 PTC 子调用整段被忽略，步骤卡只剩 `run_code` 一行 |
 | **`/status` 的工具次数** | `harness.deriveSessionStats()` 数 `tool/call` | ❌ 已修复：一个 PTC 回合的内层调用原先全不计 |
 | PTC 内层结果文本（`showToolResults`） | `tool/ptc-dispatch.content` | ⚠️ 未展示；compact 子行只有状态，detailed 连子行都没有（与上一行一并设计） |
-| `src/feishu-toolcalls.ts` | 独立旧模块，未被 `index.ts` 启动 | ⚠️ 疑似死代码，与 PTC 无关，待确认清理或保留 |
+| `src/feishu-toolcalls.ts` | 独立旧模块，从未被 `index.ts` 启动 | ✅ 2026-11-25 已删除（死代码清理，与 PTC 无关） |
 
 ## 3. 已修复（2026-11-17 / 2026-11-18）
 
@@ -48,7 +48,7 @@ PTC 预设（`packages/bundle/web-app/presets/ptc.patch.yml`）为 agent 挂载 
 
 - **非 compact 档步骤卡**：两种形状可选 —— 把子调用作为缩进行挂进 `state.toolCalls`（类似 compact 的 `↳` 子行），或按 `tools = summary` 输出一行 `run_code › name, name, …`。前者信息完整、更接近 Web UI 轨迹；后者更紧凑。选定后再改，避免先改外观再返工。
 - **PTC 内层结果文本**：`showToolResults` 打开时是否在子行/步骤卡展示 `content` 摘要（含失败的 `error`）。
-- **`feishu-toolcalls.ts`**：确认用途后清理，或作为未来工具卡入口保留。
+- ~~**`feishu-toolcalls.ts`**：确认用途后清理~~ —— 2026-11-25 已删除（`src/`、`tests/` 均无引用）。
 
 ## 5. 排查 / 复查
 

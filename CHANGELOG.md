@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 清理：删除死模块与重复实现，格式化器收成一处（`src/format.ts`，2026-11-25）
+
+- **死代码**：删除 `src/feishu-toolcalls.ts`（253 行，`src/` 与 `tests/` 均无引用，从未被 `index.ts` 启动）；删除 7 个无引用导出（`CARD_MEDIA_MAX_FIELD`、`FEISHU_DOC_MAINTENANCE_SCOPES`、`FEISHU_MAX_FILE_MB`、`REASONING_PREVIEW_CHARS`、`SessionBridge`、`settleApprovalBySlash`、`threadChatKey`）。
+- **重复实现**：`formatTokenCount` 原先有 5 份逐字相同的副本，耗时格式化也有 5 份（其中 panel 与卡片各有一套规则）。现在统一到 `src/format.ts`：`formatTokenCount` / `formatDuration`（状态行、回合摘要、`/status`） / `formatDurationPadded`（job、子代理面板的表格列，保留空格与补零）。卡片自己的 `formatProgressMs` 与思考头的 `formatMsShort` 保持独立——它们是刻意不同的排版，不参与合并。
+- 顺带修一处潜在显示错误：耗时格式化对**非有限或负数**输入返回 `—`，不再印出 `NaNms`（这些值来自两个时间戳相减）。
+- 净变化：**-388 行**（删除 405 / 新增 17，另加 `src/format.ts` 与它的测试）。
+- 测试：新增 `tests/format.spec.ts`（三个函数的边界与非法输入），`feishu-panel` 里那份迁走；全量 84 文件 / 1,673 用例、typecheck、build、privacy 全绿。
+
+**English**: Dead-code and duplication pass. Removed the orphan `src/feishu-toolcalls.ts` (253 lines, referenced nowhere since the module was never started) and seven unreferenced exports. `formatTokenCount` existed five times verbatim and the duration formatter five times with two different rules; both now live in `src/format.ts` as `formatTokenCount` / `formatDuration` / `formatDurationPadded` (the padded flavour keeps the job and subagent tables' aligned seconds column). The turn card's own `formatProgressMs` and the reasoning header's `formatMsShort` stay separate on purpose — their padding is a layout decision, not wording. Non-finite or negative durations now render `—` instead of `NaNms`. Net -388 lines; a new `tests/format.spec.ts` covers the boundaries, and 84 files / 1,673 tests, typecheck, build and the privacy gate are green.
+
 ### 变更：插件自己的 6 个飞书工具全部要求必填 `description`（`src/tool-caption.ts` + 4 个工具文件，2026-11-25）
 
 - 使用者要求：飞书插件自带的工具「全部要求 description」。同时反馈过程卡上有些说明太口语化（例：「跑 typecheck 与单测」）。

@@ -67,7 +67,7 @@
 
 - **扫码流程不会申请这两项**——删除权不该默认授予，文档工具本身也从不删除文档；
 - 需要清理时再显式开通：用应用凭证调 `application.v7.applicationConfig.patch` 的 `scope.add_scopes`（免审权限，立即生效），或在开发者后台勾选后创建版本发布；
-- 它们只作用于应用自己创建/有权限的文档；应用代码里对应 `src/provision.ts` 的 `FEISHU_DOC_MAINTENANCE_SCOPES`。
+- 它们只作用于应用自己创建/有权限的文档；扫码预填清单（`src/provision.ts`）**故意不含**这两项。
 
 > 应用身份（tenant access token）只能操作**已把应用添加为协作者**的文档：打开文档 → 分享 → 添加协作者 → 搜索应用名。新建文档归应用所有，用户要看到它需要另行授权，或在 `create` 时给一个应用有写权限的 `folder_token`。
 

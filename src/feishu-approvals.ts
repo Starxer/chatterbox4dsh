@@ -419,23 +419,3 @@ function renderApprovalExpiredCard(entry: PendingApproval, t: Translations): obj
     },
   }
 }
-
-/**
- * Resolve one pending approval to a final outcome via the slash command
- * path (`/approve` / `/deny [/short]`). Returns `undefined` when nothing
- * matched so the command can surface a translated error.
- */
-export async function settleApprovalBySlash(
-  settle: (pendingId: string, outcome: 'allowed-once' | 'rejected') => Promise<void>,
-  view: PendingApprovalView,
-  outcome: 'allowed-once' | 'rejected',
-  logger: PluginLogger,
-): Promise<boolean> {
-  try {
-    await settle(view.pendingId, outcome)
-    return true
-  } catch (error: unknown) {
-    logger.warn(`dsh-feishu: failed to deliver ${outcome}: ${error instanceof Error ? error.message : String(error)}`)
-    return false
-  }
-}

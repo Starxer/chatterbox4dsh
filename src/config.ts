@@ -264,13 +264,6 @@ export function clampCardMediaMaxMb(kind: CardMediaMaxKind, value: number | unde
   return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
 }
 
-/** The config field that carries one kind's inline size limit. */
-export const CARD_MEDIA_MAX_FIELD = {
-  image: 'cardImageMaxMb',
-  video: 'cardVideoMaxMb',
-  audio: 'cardAudioMaxMb',
-} as const satisfies Record<CardMediaMaxKind, keyof Config>
-
 /**
  * The live configuration the Cordis loader hands to `apply()` (DSH 0.1.7+).
  *

@@ -1,21 +1,7 @@
 import type { CommandTranslations, DisplayToggleKey } from './commands.ts'
 import type { ApiUsageSnapshot } from './api-usage.ts'
 
-/** Format a token count as a compact human-readable number (e.g. 12.3K). */
-function formatTokenCount(n: number): string {
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${Math.round(n / 100) / 10}K`
-  return `${Math.round(n / 100_000) / 10}M`
-}
-
-/** Format a millisecond duration as a short human-readable string. */
-function formatDuration(ms: number): string {
-  if (ms < 1_000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.round((ms % 60_000) / 1000)
-  return `${m}m${s}s`
-}
+import { formatDuration, formatTokenCount } from './format.ts'
 
 /**
  * One `/status` line about the plugin's own Feishu API usage.

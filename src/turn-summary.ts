@@ -33,6 +33,7 @@
 
 import type { Translations } from './i18n.ts'
 import type { TurnStats } from './feishu-streaming.ts'
+import { formatDuration, formatTokenCount } from './format.ts'
 import { renderDeliverableElements, type DeliverRow } from './feishu-deliver.ts'
 
 /** Everything the compact summary can state; every field is optional. */
@@ -60,22 +61,6 @@ export interface CompletionFacts {
    * `⚡`/`💬` attribution the answer card would otherwise carry.
    */
   source?: string | undefined
-}
-
-/** `12.3s` / `1m40s` / `850ms` — the footer's own wording, kept local. */
-function formatMs(ms: number): string {
-  if (ms < 1_000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.round((ms % 60_000) / 1000)
-  return `${m}m${s}s`
-}
-
-/** `517` / `12.2K` / `1.2M`, the same compaction the other cards use. */
-function formatTokenCount(n: number): string {
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${Math.round(n / 100) / 10}K`
-  return `${Math.round(n / 100_000) / 10}M`
 }
 
 /** Last path segment of a `provider/model` route. */
@@ -157,7 +142,7 @@ export function compactCompletionTitle(
   if (part !== undefined) segments.push(t.turnContinuedPart(part.part, part.total))
   const stats = facts.stats
   const ms = stats === undefined ? 0 : stats.totalTurnMs > 0 ? stats.totalTurnMs : stats.totalStepMs
-  if (ms > 0) segments.push(formatMs(ms))
+  if (ms > 0) segments.push(formatDuration(ms))
   return segments.join(' · ')
 }
 

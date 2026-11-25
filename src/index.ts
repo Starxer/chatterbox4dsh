@@ -20,6 +20,7 @@ import { DEFAULT_COMPACT_TOOL_ROW } from './display-level.ts'
 import type { Config as PluginConfig, SettingsConfig } from './config.ts'
 import { HarnessConversationService, TurnDroppedError, type BusyMode } from './harness.ts'
 import type { ConversationMessage } from './conversation.ts'
+import { formatDuration, formatTokenCount } from './format.ts'
 import { startChannel, type ReplyCardMeta, type SlashCommandHandler } from './channel.ts'
 import { TURN_CONTINUE_ACTION } from './turn-failure.ts'
 import { LarkRuntime, halfOpenRebuildDue } from './runtime.ts'
@@ -1806,21 +1807,6 @@ export async function apply(ctx: Context, rawConfig: PluginConfig): Promise<void
  * change.
  */
 
-/** Compact token count display: 517 / 12.2K / 1.2M */
-function formatTokenCount(n: number): string {
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${Math.round(n / 100) / 10}K`
-  return `${Math.round(n / 100_000) / 10}M`
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1_000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.round((ms % 60_000) / 1000)
-  return `${m}m${s}s`
-}
-
 // Active command-layer translations. Kept in sync with the resolved locale by
 // the apply closure (see `setActiveCommandTranslations`); module-level command
 // handlers read this single cell so they render in the user's language without
@@ -1829,6 +1815,7 @@ let activeCommandTranslations: CommandTranslations = commandTranslationsFor('zh'
 function setActiveCommandTranslations(locale: 'zh' | 'en'): void {
   activeCommandTranslations = commandTranslationsFor(locale)
 }
+
 /**
  * Live Feishu API-usage counter for the `/status` card.
  *

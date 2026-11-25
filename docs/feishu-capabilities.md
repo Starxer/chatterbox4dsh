@@ -400,7 +400,7 @@ SDK 的 `SafetyPipeline` 提供去重与串行保障；这些是并发机制，*
 
 - 平台模板已给到 `docx:document:readonly`、`docx:document:write_only`、`docx:document.block:convert`、`wiki:node:read`、`drive:drive.metadata:readonly`、`docs:document.comment:*` —— 所以**读、改已存在文档、解析 wiki 链接、取 URL 本来就通**。
 - 缺的五项（已全部进入扫码预填 `FEISHU_DOC_SCOPES`）：`docx:document:create`（新建）、`docs:document.content:read`（Markdown 读取）、`docs:document.media:upload`（图片上传）、`docs:document.media:download`（图片下载）、`docs:permission.member:create`（加协作者）。**2026-11-04 已通过 `applicationConfig.patch` 的 `scope.add_scopes` 给当前应用补上**（免审权限，立即生效），随后 `document.create`、`media.uploadAll`、`media.download`、`permissionMember.create` 全部实测成功。
-- 清理用的 `space:document:retrieve` / `space:document:delete` 也已补齐（**不进扫码默认**，见 `FEISHU_DOC_MAINTENANCE_SCOPES`），当前应用共 46 项授权（另有实验性开通但工具未使用的 `search:docs:read`）。
+- 清理用的 `space:document:retrieve` / `space:document:delete` 也已补齐（**不进扫码默认**，见 `src/provision.ts` 的预填清单），当前应用共 46 项授权（另有实验性开通但工具未使用的 `search:docs:read`）。
 - 其余链路（`document.get`、`documentBlock.*`、`documentChild create/batchDelete`、`document.convert`、`wiki.space.getNode`、`drive.meta.batchQuery`）从一开始就没有权限码，假 token 时报的是资源级 `1770002` / `131005`。
 - 删除文档需要 `space:document:delete`（已补齐、已实测）；应用自建文档归机器人所有，`create` 后由工具自动共享给发起用户。
 

@@ -113,13 +113,6 @@ export type ReasoningDetail = 'off' | 'on'
 export type ToolDetail = 'off' | 'summary' | 'full'
 
 /**
- * Default length of the live reasoning preview (characters) shown while the
- * model is thinking. Not a truncation of the settled block: the finished block
- * always carries the whole chain.
- */
-export const REASONING_PREVIEW_CHARS = 200
-
-/**
  * The three card layouts:
  *
  * - `compact` — one turn card carrying the tool timeline, plus the answer card;
