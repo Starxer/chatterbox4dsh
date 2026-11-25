@@ -1027,7 +1027,11 @@ export function renderProgressCard(
  * @param facts - the turn's steps and counters.
  * @returns the Card JSON 2.0 object.
  */
-export function renderMinimalProgressCard(t: Translations, facts: ProgressFacts): object {
+export function renderMinimalProgressCard(
+  t: Translations,
+  facts: ProgressFacts,
+  options: { media?: boolean } = {},
+): object {
   const running = facts.endedAt === undefined
   const end = facts.endedAt ?? facts.now
   const total = formatProgressMs(end - facts.turnStart)
@@ -1041,12 +1045,14 @@ export function renderMinimalProgressCard(t: Translations, facts: ProgressFacts)
   for (const step of facts.steps.slice(facts.segmentFrom ?? 0)) {
     // The FULL reply, not the condensed one-liner: this card exists to show what
     // the model said, so it is not truncated (2026-11-25, the operator's rule).
-    // Neutralized anyway: a model-written image/link would reject the WHOLE card
-    // (关键坑 39), and that is not truncation, it is protection.
+    // Media: with a hydrator the Markdown keeps its `![](…)` references, which
+    // `cardImages.hydrate` turns into real inline images; without one, the
+    // references are neutralized to text so a model-written image cannot reject
+    // the WHOLE card (关键坑 39).
     const rawReply = step.reply?.trim()
     const reply = rawReply === undefined || rawReply === ''
       ? step.note?.trim()
-      : neutralizeCardMarkdown(rawReply)
+      : options.media === true ? rawReply : neutralizeCardMarkdown(rawReply)
     const lines: string[] = []
     for (const tool of step.tools) {
       const icon = tool.elapsed === undefined ? '⏳' : tool.isError === true ? '❌' : '✅'
@@ -1296,6 +1302,17 @@ export interface ProgressCardsDeps {
    */
   minimal?: (() => boolean) | undefined
   /**
+   * Hydrate the card's media references before it is written — the SAME
+   * hydrator the step cards and the answer card use (`cardImages.hydrate`).
+   *
+   * Present, a `minimal` reply keeps its image/video references in Markdown, so
+   * a screenshot or clip the model wrote actually shows up inline (the operator's
+   * point, 2026-11-25: media inlining already exists, do not degrade it to text).
+   * Absent (tests, a deployment without the hydrator) the reply is neutralized to
+   * text instead, which is the 关键坑 39 safety net rather than a choice.
+   */
+  hydrateCard?: ((card: object, sessionId: string) => Promise<object>) | undefined
+  /**
    * "Another message was posted into this chat" (`src/card-interleave.ts`).
    * Ends the current segment: this card stops growing, the next event opens a
    * new one below the interruption.
@@ -1399,11 +1416,27 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
    */
   const renderCard = (facts: ProgressFacts): object =>
     deps.minimal?.() === true
-      ? renderMinimalProgressCard(getTranslations(), facts)
+      ? renderMinimalProgressCard(getTranslations(), facts, { media: deps.hydrateCard !== undefined })
       : renderProgressCard(getTranslations(), facts, rowStyle(), {
         thinking: deps.showReasoning?.() ?? true,
         foldSteps: deps.foldSteps?.() ?? true,
       })
+
+  /**
+   * Resolve the card's media references into Feishu keys before a write, using
+   * the shared hydrator. Best-effort by construction: the hydrator never
+   * rejects, and a throw here falls back to the un-hydrated card (whose
+   * references the channel's writer then neutralizes to text).
+   */
+  const prepare = async (card: object, sessionId: string): Promise<object> => {
+    if (deps.hydrateCard === undefined) return card
+    try {
+      return await deps.hydrateCard(card, sessionId)
+    } catch (error: unknown) {
+      logger.warn(`dsh-feishu: progress card hydration failed: ${errorText(error, 'unknown error')}`)
+      return card
+    }
+  }
 
   /** Render one write, serialized behind the card's previous write. */
   const writeNow = (entry: CardEntry): void => {
@@ -1411,7 +1444,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     entry.lastWriteOk = false
     entry.chain = entry.chain.then(async () => {
       if (entry.dead) return
-      const card = entry.answer ?? renderCard(entry.facts)
+      const card = await prepare(entry.answer ?? renderCard(entry.facts), entry.sessionId)
       const cardId = await entry.cardId
       const messageId = await entry.messageId
       // CardKit instance first: its update API has no edit cap, unlike
@@ -1459,10 +1492,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
   /** Open the card with the render the caller already has. */
   const open = (entry: CardEntry): void => {
     const opts = topicOpts(entry.chat)
-    const render = (): object => renderCard(entry.facts)
+    const rendered = prepare(renderCard(entry.facts), entry.sessionId)
     const useInstance = channel.createCardInstance !== undefined && channel.sendCardByReference !== undefined
     entry.cardId = useInstance
-      ? channel.createCardInstance!(render())
+      ? rendered.then(card => channel.createCardInstance!(card))
         .then(id => (id === '' ? undefined : id))
         .catch((error: unknown) => {
           logger.warn(`dsh-feishu: progress card create failed: ${errorText(error, 'unknown error')}`)
@@ -1473,7 +1506,7 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
       if (id !== undefined) {
         return channel.sendCardByReference!(entry.chat.chatId, id, opts).then(r => r.messageId)
       }
-      return channel.send(entry.chat.chatId, { card: render() }, opts).then(r => r.messageId)
+      return rendered.then(card => channel.send(entry.chat.chatId, { card }, opts)).then(r => r.messageId)
     }).catch((error: unknown) => {
       logger.warn(`dsh-feishu: progress card send failed: ${errorText(error, 'unknown error')}`)
       // No card exists any more: the turn's summary goes out as ONE text message

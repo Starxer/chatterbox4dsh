@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修正：极简回复里的图片/视频走既有的媒体内联管线，而不是降级成文字（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-25）
+
+- 使用者的指正：媒体（图片/视频/音频）内联早就做过了，不该因为补齐「不截断」又把它降级成文字。
+- 现在进度卡写入前会走**和步骤卡/答案卡同一个** `cardImages.hydrate`：`ProgressCardsDeps` 新增 `hydrateCard`，`writeNow()` 与开卡路径都先 hydrate 再发/更新；没有 hydrator 的场合（测试、未接媒体的部署）才回退到 `neutralizeCardMarkdown`（关键坑 39 的保护网，不是取舍）。
+- 效果：极简回复里模型写的 `![截图](/path/shot.png)` 会真的内联成图片；无法内联的媒体仍由 hydrator 自己的降级路径处理（超限/格式不支持 → 文字或按原文件发送，与步骤卡一致）。
+- 开卡渲染改为异步（hydrate 之后再 create/send），相关测试断言相应补一次微任务推进；新增 2 条用例（有 hydrator：`img_v3_…` 出现在卡里、原始路径消失；无 hydrator：降级为 `🖼 …` 文本）。
+- 全量 83 文件 / 1,661 用例、typecheck、build、privacy 全绿。
+
+**English**: The progress card (minimal AND compact) now hydrates its media through the SAME `cardImages.hydrate` the step and answer cards use: `ProgressCardsDeps.hydrateCard` is awaited before every create/update, so a `![](…)` the model wrote inside a minimal reply becomes a real inline image instead of `🖼 path` text. Only when no hydrator is wired (tests, media-less deployments) does the reply fall back to `neutralizeCardMarkdown` — the 关键坑 39 safety net, not a preference. Card opening became async (hydrate then create/send), and two tests pin both paths. 83 files / 1,661 tests, typecheck, build and privacy gate green.
+
 ### 变更：极简模式的中间回复完整显示，不再截断（`src/feishu-progress.ts`，2026-11-25）
 
 - 使用者的要求：极简模式里的中间回复不该截断，要完整展示。

@@ -640,6 +640,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     foldSteps: () => displayPolicy().stepsFold,
     // `minimal` mode: the reduced process card (reply + description lines).
     minimal: () => displayPolicy().minimal,
+    // Media stays inline on that card: a reply's `![](…)` goes through the SAME
+    // hydrator the step and answer cards use, instead of degrading to text.
+    ...(deps.hydrateImages === undefined
+      ? {}
+      : { hydrateCard: (card: object, sessionId: string) => deps.hydrateImages!(card, { sessionId }) }),
     getTranslations: () => getTranslations?.() ?? translationsFor('zh'),
     ...(interleave === undefined ? {} : { interleave }),
   })

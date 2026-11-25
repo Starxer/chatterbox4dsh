@@ -898,7 +898,7 @@ describe('renderProgressCard', () => {
 })
 
 describe('createProgressCards', () => {
-  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number; foldSteps?: () => boolean; minimal?: () => boolean } = {}) {
+  function harness(options: { failCardSend?: boolean; interleave?: CardInterleave; elapsedRefreshSeconds?: () => number; foldSteps?: () => boolean; minimal?: () => boolean; hydrateCard?: (card: object, sessionId: string) => Promise<object> } = {}) {
     const channel = {
       send: vi.fn(async (_to: string, input: { card?: object; text?: string }) =>
         input.card !== undefined && options.failCardSend
@@ -919,6 +919,7 @@ describe('createProgressCards', () => {
       elapsedRefreshSeconds: options.elapsedRefreshSeconds,
       ...(options.foldSteps === undefined ? {} : { foldSteps: options.foldSteps }),
       ...(options.minimal === undefined ? {} : { minimal: options.minimal }),
+      ...(options.hydrateCard === undefined ? {} : { hydrateCard: options.hydrateCard }),
       ...(options.interleave === undefined ? {} : { interleave: options.interleave }),
     })
     return { channel, logger, cards }
@@ -1523,6 +1524,8 @@ describe('createProgressCards', () => {
       cards.stepStarted('s1', step, step * 1_000)
       cards.stepEnded('s1', step * 1_000 + 900)
     }
+    // The open path is async (it may hydrate media first).
+    await vi.advanceTimersByTimeAsync(0)
     // No timer advanced: every settled state is still pending.
     expect(created).toBe(1)
     cards.stepStarted('s1', 11, 11_000)
@@ -1636,6 +1639,47 @@ describe('createProgressCards', () => {
       await vi.advanceTimersByTimeAsync(0)
     }
     expect(created).toBeGreaterThanOrEqual(2)
+  })
+
+  it('keeps a minimal reply\'s images for the media hydrator instead of degrading them', async () => {
+    // Media inlining already exists for step/answer cards; the minimal card must
+    // use the same path, not neutralization (2026-11-25, the operator's point).
+    vi.useFakeTimers()
+    const seen: string[] = []
+    const { channel, cards } = harness({
+      minimal: () => true,
+      hydrateCard: async (card, sessionId) => {
+        seen.push(sessionId)
+        // Stand-in for `cardImages.hydrate`: the local reference becomes a key.
+        return JSON.parse(JSON.stringify(card).replaceAll('/tmp/shot.png', 'img_v3_abc'))
+      },
+    })
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.stepNote('s1', 1, '截图如下：\n![截图](/tmp/shot.png)', 100)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(seen).toContain('s1')
+    // The card opens ON its first line, so the CREATE render is the one carrying
+    // the reply — and it is the post-hydration object.
+    const md = mdOf((channel.createCardInstance.mock.calls.at(-1) as any)[0])
+    expect(md).toContain('![截图](img_v3_abc)')
+    expect(md).not.toContain('/tmp/shot.png')
+  })
+
+  it('neutralizes a minimal reply\'s images when no hydrator is wired', async () => {
+    // Without the hydrator the raw reference would make Feishu reject the WHOLE
+    // card (关键坑 39), so it degrades to readable text — the safety net, not a
+    // preference.
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ minimal: () => true })
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    cards.stepNote('s1', 1, '截图如下：\n![截图](/tmp/shot.png)', 100)
+    await vi.advanceTimersByTimeAsync(0)
+    const md = mdOf((channel.createCardInstance.mock.calls.at(-1) as any)[0])
+    expect(md).not.toContain('![')
+    expect(md).toContain('🖼')
+    expect(md).toContain('/tmp/shot.png')
   })
 
   it('opens a NEW card after another module posts one, showing only new rows', async () => {
