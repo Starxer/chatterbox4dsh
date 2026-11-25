@@ -2904,6 +2904,23 @@ describe('turn progress card wiring', () => {
     streaming.stop()
   })
 
+  it('opens no blank process card for a minimal turn before a line exists', async () => {
+    const ch = channel()
+    const { streaming, emit, emitStream } = stepHarness(ch, { transcriptView: () => 'minimal' as DisplayMode })
+    emit('turn/start', { turn: 1 })
+    emit('step/start', { turn: 1, step: 1 })
+    emitStream({ type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 })
+    emitStream({
+      type: 'chunk', attemptId: 'a1', revision: 2, index: 0, time: Date.now(),
+      chunk: { type: 'reasoning-delta', text: '只是思考，不往极简卡上写' },
+    })
+    await tick(150)
+    // Thinking produces no line and no phase on this card, so it must not open
+    // one at all (a header-only card reads as a BLANK card).
+    expect(ch.createCardInstance).not.toHaveBeenCalled()
+    streaming.stop()
+  })
+
   it('opens the compact turn card when the level switches mid-turn', async () => {
     // Regression (2026-11-20): `compact` opened its turn card at `turn/start`
     // only. Tapping `/display compact` during a step-level turn therefore left

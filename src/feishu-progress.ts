@@ -1336,10 +1336,17 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
    * first tick clears the timer, so fast work costs nothing.
    */
   const armRunningTick = (entry: CardEntry): void => {
+    // The minimal card carries no clocks and no running rows: its lines only
+    // change when an EVENT says so, so a periodic repaint would be pure API
+    // spend (the operator's rule for this mode: cheapest possible).
+    if (deps.minimal?.() === true) return
     if (entry.runningTick !== undefined || entry.dead) return
     entry.runningTick = setTimeout(() => {
       entry.runningTick = undefined
       if (stopped || entry.dead) return
+      // Switched to `minimal` while this tick was armed: stop repainting (and
+      // stop re-arming) — that card has nothing that changes on a clock.
+      if (deps.minimal?.() === true) return
       if (!hasLiveStep(entry.facts)) return
       entry.facts.now = Date.now()
       // Straight to the write: this repaint is the point of the timer, so it
@@ -1607,6 +1614,10 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     turn.facts.now = at
     const entry = cards.get(sessionId)
     if (entry === undefined) {
+      // `minimal` has no phase and no clock to show: a card opened here would be
+      // a bare HEADER (a blank card) until the first narration or description
+      // line lands. It opens on the first real line instead (stepNote/toolStarted).
+      if (deps.minimal?.() === true) return
       // Open the card with the step the model just started: `step/start` is
       // appended BEFORE the request is sent, so this is the earliest moment a
       // "what is happening now" card can be honest — and it is what removed the
@@ -1674,7 +1685,11 @@ export function createProgressCards(deps: ProgressCardsDeps): ProgressCardsHandl
     if (entry !== undefined) {
       entry.facts = facts
       schedule(entry)
+      return
     }
+    // First visible line of a `minimal` turn: open the card now (facts already
+    // carry the note, so the first render is complete).
+    if (deps.minimal?.() === true) openTurnCard(sessionId, turn.chat, facts)
   }
 
   /**

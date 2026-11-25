@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 修正：极简模式不再按固定间隔刷新，也不在没内容时开空卡（最省 API）（`src/feishu-progress.ts` / `src/feishu-streaming.ts`，2026-11-25）
+
+- 使用者的判断：极简模式应该是最省 API 调用的模式，不该有固定间隔刷新 —— 确认之前**确实会**：卡片一打开就按 `elapsedRefreshSeconds`（默认 5 秒）自刷新，另外阶段变化、思考链、注入提示这些「只服务于紧凑卡」的事件也都会各触发一次写入。
+- 现在极简模式：
+  - **不装运行时钟**：`armRunningTick` 在极简下直接返回，定时回调里再判一次（中途切到极简会停下）；卡片内容只在 reply/description 事件时写。
+  - **跳过只为紧凑卡存在的写入**：`stepPhase`（阶段变化）、`stepReasoning`（思考链）、`stepAttempt`（未执行标记）、`stepInjection`（注入行）在极简下不再推送 —— 极简根本不渲染它们，写了纯属浪费 API。
+  - **懒开卡**：`step/start` 不再开卡（只开成一张只有标题的空白卡），第一次出现 reply 或 description 行时才建卡。因此一次「只有思考、还没说话」的极简回合一整张过程卡都不会发。
+- 顺带说明那张**空白卡**的来源：它是 16:00 我做的「空 body 卡片能否被飞书接受」探针（直接用 tenant token 发的测试卡，`body.elements: []`），不是插件发的；插件日志里同一时段没有任何卡片失败/空卡记录。上面这条懒开卡正是从那探针学到的边界。
+- 测试：+2（极简：`step/start`/`step/end` 都不开卡、第一行才开卡，且工具运行中 30 秒零重绘；streaming：只有思考的极简回合一整轮不开卡）；全量 83 文件 / 1,655 用例、typecheck、build、privacy 全绿。
+
+**English**: The minimal mode was still paying for things it never shows: the running-elapsed tick (one write per `elapsedRefreshSeconds`, 5s by default) and the per-event writes for phase changes, thinking chains, unrun markers and injection rows. It now arms no tick (and the tick callback re-checks the mode, so switching mid-turn stops it), skips those four write-only-for-compact paths, and opens its card lazily — `step/start` no longer creates a header-only (blank) card; the card is created at the first reply or description line, so a thinking-only minimal turn posts no process card at all. Also recorded the source of the BLANK card seen on 2026-11-25: it was my own empty-body probe card sent via tenant token at 16:00 (testing whether Feishu accepts `elements: []`), not the plugin — the journal has no card failure around then. Two tests added; 83 files / 1,655 tests, typecheck, build and privacy gate green.
+
 ### 新增：第三种模式「极简」——过程卡只留 reply 和工具 description（`src/display-level.ts` / `src/feishu-progress.ts` / `src/feishu-streaming.ts` / `src/config.ts` / `src/commands.ts` / `src/feishu-display.ts` / `src/i18n.ts`，2026-11-25）
 
 - 使用者在两版样板里选了 **B**：每步一块 —— reply 是正文行，每个工具调用的 `description` 用 `↳ ` 缩进，前面带 `✅` 成功 / `❌` 失败 / `⏳` 运行中。

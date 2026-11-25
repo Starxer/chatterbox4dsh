@@ -759,6 +759,16 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
     toolOutputFull: toolOutputFull?.(),
   })
 
+  /**
+   * Whether the reduced (`minimal`) process card is in force.
+   *
+   * That card carries no phase, no clock and no thinking row, so the events that
+   * exist only to repaint those would be pure API spend there: every one of them
+   * is a card write. They are skipped below rather than rendered away, which is
+   * what makes this mode the cheapest one.
+   */
+  const minimalProgress = (): boolean => displayPolicy().minimal
+
   /** Whether reasoning content is rendered on cards. */
   const reasoningShown = (): boolean => displayPolicy().reasoning !== 'off'
 
@@ -1805,7 +1815,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // The attempt COMMITTED: whatever an abandoned attempt of this step had
         // streamed is now either a real call row or no longer the step's state,
         // so the "never ran" marker goes (2026-10-14, `ProgressStep.unrun`).
-        if (displayPolicy().turnCard) {
+        if (displayPolicy().turnCard && !minimalProgress()) {
           progressCards.stepAttempt(sessionId, state.stepNumber, [], state.messageTime)
         }
         const usage = event.data?.usage
@@ -1869,7 +1879,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // The compact turn card carries each step's thinking chain as a folded
         // panel (2026-11-25). The message is committed, so this step's chain is
         // final — hand it over before any tool row of this step is scheduled.
-        if (displayPolicy().turnCard) {
+        if (displayPolicy().turnCard && !minimalProgress()) {
           progressCards.stepReasoning(sessionId, state.stepNumber, state.reasoning, state.messageTime)
         }
         const hasContent = state.reasoning.trim() !== '' || state.text.trim() !== ''
@@ -1934,7 +1944,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         // The row set is REPLACED per attempt and cleared by a commit or a real
         // `tool/call` (see `ProgressStep.unrun`), so a retry that works leaves
         // nothing behind.
-        if (displayPolicy().turnCard) {
+        if (displayPolicy().turnCard && !minimalProgress()) {
           const stream = Array.isArray((event.data as { stream?: unknown } | undefined)?.stream)
             ? (event.data as { stream: readonly AssistantStreamRecord[] }).stream
             : undefined
@@ -1978,7 +1988,11 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         if (displayPolicy().turnCard) {
           // A real call answers the question the unrun marker asks — this step is
           // RUNNING its calls, not dying on them — so the marker goes first.
-          progressCards.stepAttempt(sessionId, state.stepNumber, [], toolCall.startedAt)
+          // (The minimal card has no unrun row to clear; clearing it would cost a
+          // write for nothing.)
+          if (!minimalProgress()) {
+            progressCards.stepAttempt(sessionId, state.stepNumber, [], toolCall.startedAt)
+          }
           progressCards.toolStarted(
             sessionId,
             toolName,
@@ -2183,9 +2197,12 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
         const stepPolicy = displayPolicy()
         if (stepPolicy.turnCard) {
           // Anything buffered before this `step/start` belongs to THIS step's
-          // request, so it becomes a row of this step's section right away.
-          for (const notice of state.injections) {
-            progressCards.stepInjection(sessionId, state.stepNumber, notice, state.stepStartTime)
+          // request, so it becomes a row of this step's section right away. The
+          // minimal card renders no injection row, so it skips the write.
+          if (!minimalProgress()) {
+            for (const notice of state.injections) {
+              progressCards.stepInjection(sessionId, state.stepNumber, notice, state.stepStartTime)
+            }
           }
         } else {
           queueStepCardSend(chat, sessionId, state)
@@ -2292,8 +2309,13 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
             // cards that said nothing but "本步无输出" plus the notice, and — on
             // every turn's first step, which always claims the runtime context —
             // a stray card carrying the step's narration as if it were a reply.
-            state.injections.push(notice)
-            progressCards.stepInjection(sessionId, state.stepNumber, notice, event.time ?? Date.now())
+            // The minimal card has no such row, and recording it would cost a
+            // write for nothing, so it is dropped (its answer card is the only
+            // card that turn posts).
+            if (!minimalProgress()) {
+              state.injections.push(notice)
+              progressCards.stepInjection(sessionId, state.stepNumber, notice, event.time ?? Date.now())
+            }
           } else if (liveStep && state.stepCardSent) {
             // The step's card is on screen and the step is still running: this
             // injection precedes a request that has not been sent yet, so it
@@ -2674,7 +2696,7 @@ export function startFeishuStreaming(deps: FeishuStreamingDeps): {
       // present, and this frame is the only live signal the module ever gets.
       // Pushed on transitions only — the branches above already return on a
       // repeat frame, and `stepPhase` drops an unchanged phase as well.
-      if (displayPolicy().turnCard) {
+      if (displayPolicy().turnCard && !minimalProgress()) {
         progressCards.stepPhase(
           sessionId,
           state.stepNumber,

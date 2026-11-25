@@ -1569,6 +1569,34 @@ describe('createProgressCards', () => {
     expect(md).not.toContain('第 7 轮')
   })
 
+  it('opens the minimal card on its first line, and never repaints it on a timer', async () => {
+    // The minimal card has no phase and no clock: a card opened at `step/start`
+    // would be a bare HEADER (a blank card) until content landed, and a periodic
+    // repaint would buy nothing. It opens on the first reply/description line,
+    // and only events write to it after that.
+    vi.useFakeTimers()
+    const { channel, cards } = harness({ minimal: () => true })
+    cards.beginTurn(chat, 's1', 0)
+    cards.stepStarted('s1', 1, 0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.createCardInstance).not.toHaveBeenCalled()
+    cards.stepEnded('s1', 900)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.createCardInstance).not.toHaveBeenCalled() // nothing to show
+    cards.stepStarted('s1', 2, 1_000)
+    cards.stepNote('s1', 2, '看一下那段代码', 1_100)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.createCardInstance).toHaveBeenCalledTimes(1)
+
+    // Let the throttled write land, then watch a LONG window with a tool still
+    // running: the elapsed tick is off in this mode, so nothing repaints.
+    cards.toolStarted('s1', 'bash', 'c1', 1_200, undefined, '跑单测')
+    await vi.advanceTimersByTimeAsync(PROGRESS_WRITE_GAP_MS + 10)
+    const writes = channel.updateCardInstance.mock.calls.length
+    await vi.advanceTimersByTimeAsync(PROGRESS_RUNNING_TICK_MS * 6)
+    expect(channel.updateCardInstance.mock.calls.length).toBe(writes)
+  })
+
   it('opens a NEW card after another module posts one, showing only new rows', async () => {
     const interleave = createCardInterleave()
     const { channel, cards } = harness({ interleave })
