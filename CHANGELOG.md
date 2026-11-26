@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.5.0 (2026-11-26)
+
+- **三种展示模式**：`/display` 可选极简、紧凑（默认）或详细。极简保留完整回复和工具说明；紧凑支持折叠思考、折叠或分页查看早期步骤。极简和紧凑将回合摘要并入答案卡，不另发完成卡。
+- **会话和模型**：可用自然语言修改当前飞书绑定的 DSH 会话标题；自动命名不覆盖手动标题，飞书话题不变。`/model` 和 `/new` 最多显示五个最近使用的模型设置。
+- **稳定性**：改进连接超时和半开连接恢复，修复重启撞上回合收尾时的重复回复卡；失败可重试时提供「继续生成」，媒体无法内联时可回退发送原件（受飞书大小限制）。
+- **DSH 集成**：适配 `0.2.2-rc.5` 的子代理和团队看板，修复 PTC 下后台任务和产出文件的漏记，`/status` 显示插件发出的飞书 API 调用计数。
+- **升级注意**：直接调用插件模型工具时需补上必填 `description`（卡片上的调用说明）；旧展示档位仍可读取，未配置展示模式时默认用紧凑。DSH `0.2.3-alpha` 未验证。
+
+**English**: Three card modes (Minimal, Compact by default, Detailed), on-demand session renaming, five recent model settings, and better reconnection, retry, and media fallback. Includes DSH `0.2.2-rc.5` subagent/team integration, PTC bookkeeping fixes, and Feishu API usage in `/status`. Direct callers of plugin tools must supply `description`. Existing display settings are still read; DSH `0.2.3-alpha` has not been verified.
+
 ### 新增：用自然语言修改当前会话标题
 
 - `feishu_rename_session` 仅在宿主支持改名且当前 DSH 会话绑定飞书时可见。用户可指定标题，也可以请 agent 概括并改名。工具调用原生手动改名并返回实际保存的标题，不改飞书话题名或绑定关系；自动命名不会覆盖手动标题。
@@ -19,10 +29,10 @@
 - **死代码**：删除 `src/feishu-toolcalls.ts`（253 行，`src/` 与 `tests/` 均无引用，从未被 `index.ts` 启动）；删除 7 个无引用导出（`CARD_MEDIA_MAX_FIELD`、`FEISHU_DOC_MAINTENANCE_SCOPES`、`FEISHU_MAX_FILE_MB`、`REASONING_PREVIEW_CHARS`、`SessionBridge`、`settleApprovalBySlash`、`threadChatKey`）。
 - **重复实现**：`formatTokenCount` 原先有 5 份逐字相同的副本，耗时格式化也有 5 份（其中 panel 与卡片各有一套规则）。现在统一到 `src/format.ts`：`formatTokenCount` / `formatDuration`（状态行、回合摘要、`/status`） / `formatDurationPadded`（job、子代理面板的表格列，保留空格与补零）。卡片自己的 `formatProgressMs` 与思考头的 `formatMsShort` 保持独立——它们是刻意不同的排版，不参与合并。
 - 顺带修一处潜在显示错误：耗时格式化对**非有限或负数**输入返回 `—`，不再印出 `NaNms`（这些值来自两个时间戳相减）。
-- 净变化：**-388 行**（删除 405 / 新增 17，另加 `src/format.ts` 与它的测试）。
+- 净变化：**-260 行**（全提交删除 409 / 新增 149，包含 `src/format.ts` 和测试）。
 - 测试：新增 `tests/format.spec.ts`（三个函数的边界与非法输入），`feishu-panel` 里那份迁走；全量 84 文件 / 1,673 用例、typecheck、build、privacy 全绿。
 
-**English**: Dead-code and duplication pass. Removed the orphan `src/feishu-toolcalls.ts` (253 lines, referenced nowhere since the module was never started) and seven unreferenced exports. `formatTokenCount` existed five times verbatim and the duration formatter five times with two different rules; both now live in `src/format.ts` as `formatTokenCount` / `formatDuration` / `formatDurationPadded` (the padded flavour keeps the job and subagent tables' aligned seconds column). The turn card's own `formatProgressMs` and the reasoning header's `formatMsShort` stay separate on purpose — their padding is a layout decision, not wording. Non-finite or negative durations now render `—` instead of `NaNms`. Net -388 lines; a new `tests/format.spec.ts` covers the boundaries, and 84 files / 1,673 tests, typecheck, build and the privacy gate are green.
+**English**: Dead-code and duplication pass. Removed the orphan `src/feishu-toolcalls.ts` (253 lines, referenced nowhere since the module was never started) and seven unreferenced exports. `formatTokenCount` existed five times verbatim and the duration formatter five times with two different rules; both now live in `src/format.ts` as `formatTokenCount` / `formatDuration` / `formatDurationPadded` (the padded flavour keeps the job and subagent tables' aligned seconds column). The turn card's own `formatProgressMs` and the reasoning header's `formatMsShort` stay separate on purpose — their padding is a layout decision, not wording. Non-finite or negative durations now render `—` instead of `NaNms`. Net -260 lines across the whole commit; a new `tests/format.spec.ts` covers the boundaries, and 84 files / 1,673 tests, typecheck, build and the privacy gate are green.
 
 ### 变更：插件自己的 6 个飞书工具全部要求必填 `description`（`src/tool-caption.ts` + 4 个工具文件，2026-11-25）
 
